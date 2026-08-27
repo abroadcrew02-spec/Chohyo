@@ -1,0 +1,58 @@
+# --- 個人情報・要配慮個人情報（要件 §6.5）---------------------------
+# 実運用の帳票は指定端末のみで扱い、検証後に削除する。リポジトリへ入れない。
+/samples/real/
+/samples/**/real/
+*.pdf
+
+# 中間データ（読取値・信頼度・展開画像を含む）
+/workdir/
+/intermediate/
+*.sqlite
+*.sqlite3
+*.db
+
+# 出力（帳票の記入値そのもの）
+/output/
+output_*.xlsx
+output_*.csv
+
+# ログ（記入値は書かない設計だが、事故時の保険として除外）
+/logs/
+app.log
+error.log
+
+# --- 資格情報 -------------------------------------------------------
+*.key
+*.pem
+service-account*.json
+credentials*.json
+.env
+.env.*
+
+# --- 作業ログ（ローカル完結・リモート非公開）------------------------
+/worklog/
+
+# --- Python ---------------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / Tauri ---------------------------------------------------
+node_modules/
+dist/
+target/
+/src-tauri/target/
+
+# --- OS / エディタ --------------------------------------------------
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+
+# --- 同梱バイナリ（配布時に配置・リポジトリには入れない）------------
+/vendor/poppler/
