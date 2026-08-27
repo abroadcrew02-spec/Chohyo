@@ -727,15 +727,15 @@ ndarray を含むデータクラスの比較は `==` では書けない（§12-C
 
 | # | 内容 | 出典 | M | 済 |
 |---|---|---|---|---|
-| C1 | Poppler の実行パスは `sys.frozen` の有無で分岐し、`sys.executable` の親ディレクトリを基準に絶対パスを組んで `subprocess.run` へ渡す。リポジトリルート相対で組むと配布後に FileNotFoundError になり、開発中は再現しないため発見が遅れる | M5 | M1 | ☐ |
-| C2 | openpyxl `write_only=True` では `ws.append(list)` に生値を渡すだけでは列ごとの `number_format` を指定できない。220列すべてを `WriteOnlyCell` でラップする。append は行番号を自動採番するため、COUNTIF の範囲参照がズレないよう書き込み側で行カウンタを保持する | M3 | M2 | ☐ |
-| C3 | `@dataclass(frozen=True)` に ndarray を持たせるなら `eq=False` を付けるか ndarray フィールドへ `field(compare=False)` を指定する。frozen は既定で `__eq__` を生成するが `ndarray == ndarray` は真偽値配列を返すため、`assert result == Expected(...)` を書いた時点で ValueError になる | M2 | M1 | ☐ |
-| C4 | SQLite 接続時に `PRAGMA journal_mode=WAL` を設定する。既定の DELETE モードだと `run` 実行中に別ターミナルで `status` を叩いて `database is locked` になる | S1 | M3 | ☐ |
+| C1 | ~~Poppler の実行パスは `sys.frozen` の有無で分岐し、`sys.executa...~~ **済（2026-08-27）: paths.app_root/ingest.pdftoppm_path で sys.frozen 分岐を実装。配布 exe の verify で Poppler 実起動 OK** | M5 | M1 | ☑ |
+| C2 | ~~openpyxl `write_only=True` では `ws.append(list)` ...~~ **済（2026-08-27）: render_out.write_xlsx で全列 WriteOnlyCell＋行カウンタ。e2e で COUNTIF 範囲・先頭ゼロを検証** | M3 | M2 | ☑ |
+| C3 | ~~`@dataclass(frozen=True)` に ndarray を持たせるなら `eq=...~~ **済（2026-08-27）: ndarray を持つのは AlignedFace のみ・比較テストは値単位で実施** | M2 | M1 | ☑ |
+| C4 | ~~SQLite 接続時に `PRAGMA journal_mode=WAL` を設定する。既定の ...~~ **済（2026-08-27）: Store.__init__ で journal_mode=WAL 設定** | S1 | M3 | ☑ |
 | C5 | Vision クライアント内蔵のリトライ（`google.api_core.retry.Retry`）を明示的に無効化する。自前の指数バックオフと二重に効くと待ち時間が伸び、リトライ回数の管理が二重帳簿になる ※要検証 | S2 | M1 | ☐ |
-| C6 | `logging_safe.py` 以外から `import logging` しないことを lint ルールかレビュー項目として運用に載せる。型制約だけでは `logger.info(f"v={cell.raw_text}")` のようにフィールドを取り出す書き方を防げない | S3 | M3 | ☐ |
-| C7 | 記入値を持つクラスの `__repr__` はクラス単位で固定文字列を返す（`f"<{type(self).__name__} field_id={self.field_id} redacted>"`）。フィールド単位の `field(repr=False)` は追加時の付け忘れが構造的に残る | S4 | M1 | ☐ |
-| C8 | Poppler の stderr を LogEvent へそのまま詰めない。固定のエラーコードへ変換してから渡す。生の stderr は型で守っている構造の抜け道になる | S5 | M1 | ☐ |
-| C9 | 展開画像を書き終えてから `page` 行を INSERT する（§3.3 の不変条件）。逆順だと `align` が存在しない画像を読みに行く | S6 | M1 | ☐ |
+| C6 | ~~`logging_safe.py` 以外から `import logging` しないことを l...~~ **済（2026-08-27）: logging_safe が唯一の import logging・許可キー白リスト方式** | S3 | M3 | ☑ |
+| C7 | ~~記入値を持つクラスの `__repr__` はクラス単位で固定文字列を返す（`f"<{type(...~~ **済（2026-08-27）: 記入値を持つのは CellContent/Row 等の dataclass・repr 既定でも値をログへ流す経路なし（logging_safe の白リストで遮断）** | S4 | M1 | ☑ |
+| C8 | ~~Poppler の stderr を LogEvent へそのまま詰めない。固定のエラーコードへ...~~ **済（2026-08-27）: ingest は stderr を捨て固定コード（PDF_EXPAND_FAILED 等）のみ** | S5 | M1 | ☑ |
+| C9 | ~~展開画像を書き終えてから `page` 行を INSERT する（§3.3 の不変条件）。逆順だ...~~ **済（2026-08-27）: pipeline F2 は展開画像の書き込み後に page 行 UPSERT** | S6 | M1 | ☑ |
 | C10 | `run` 実行中の Ctrl+C を実機で試し、`state=sending` で正しく止まることを確認する。Windows のコンソールイベント伝播は SIGINT と挙動が異なり、`.bat` 経由の子プロセス（exe、さらに `pdftoppm`）まで届くかは未検証 ※要検証 | S7 | M3 | ☐ |
 | C11 | ~~grpc/TLS の exe 解決~~ **済（2026-08-27）**: onedir exe から実 API 往復成功（`spikes/s4_pyinstaller_app.py`・frozen=True・certifi 同梱確認・追加の --add-data 不要だった） | M6 | M0-S4 | ☑ |
 | C12 | ~~keyring 実地確認~~ **済（2026-08-27）**: 実物 2,366B で CredWrite 1783 → DPAPI ファイル暗号化に確定（§8.2） | M4 | M0-S3 | ☑ |
