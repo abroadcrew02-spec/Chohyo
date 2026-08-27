@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "template_id": "chouhyo-v1",
+  "render_dpi": 300,
+  "image": { "width": 2490, "height": 3510 },
+  "record": { "pages": 1 },
+  "faces": [
+    {
+      "face_id": "front",
+      "source": { "page_offset": 0, "rect": { "x": 0, "y": 0, "w": 2490, "h": 1880 } },
+      "exclusions": [
+        { "id": "ring_left",  "rect": { "x": 0, "y": 0, "w": 60, "h": 1880 } },
+        { "id": "ring_right", "rect": { "x": 2430, "y": 0, "w": 60, "h": 1880 } },
+        { "id": "blackout",   "rect": { "x": 1955, "y": 1775, "w": 475, "h": 105 } }
+      ],
+      "fields": [
+        { "field_id": "person_電話番号", "kind": "text", "rect": { "x": 1860, "y": 0, "w": 570, "h": 60 } },
+        { "field_id": "person_ふりがな", "kind": "text", "rect": { "x": 600, "y": 58, "w": 1140, "h": 72 } },
+        { "field_id": "person_氏名", "kind": "text", "rect": { "x": 600, "y": 130, "w": 1140, "h": 160 } },
+        { "field_id": "person_生年月日_元号", "kind": "choice",
+          "rect": { "x": 1758, "y": 135, "w": 75, "h": 155 },
+          "choice_marks": [
+            { "value": "昭", "rect": { "x": 1766, "y": 141, "w": 62, "h": 47 } },
+            { "value": "平", "rect": { "x": 1766, "y": 188, "w": 62, "h": 47 } },
+            { "value": "令", "rect": { "x": 1766, "y": 238, "w": 62, "h": 47 } }
+          ] },
+        { "field_id": "person_生年月日_年", "kind": "text", "rect": { "x": 1835, "y": 135, "w": 170, "h": 155 } },
+        { "field_id": "person_生年月日_月", "kind": "text", "rect": { "x": 2020, "y": 135, "w": 150, "h": 155 } },
+        { "field_id": "person_生年月日_日", "kind": "text", "rect": { "x": 2180, "y": 135, "w": 180, "h": 155 } },
+        { "field_id": "person_郵便番号1", "kind": "text", "rect": { "x": 600, "y": 290, "w": 430, "h": 72 } },
+        { "field_id": "person_住所1", "kind": "text", "rect": { "x": 600, "y": 362, "w": 1850, "h": 96 } },
+        { "field_id": "person_郵便番号2", "kind": "text", "rect": { "x": 600, "y": 458, "w": 430, "h": 68 } },
+        { "field_id": "person_住所2", "kind": "text", "rect": { "x": 600, "y": 526, "w": 1850, "h": 76 } },
+        { "field_id": "person_会社名屋号", "kind": "text", "rect": { "x": 630, "y": 602, "w": 1820, "h": 120 } },
+        { "field_id": "person_所在地", "kind": "text", "rect": { "x": 630, "y": 722, "w": 1820, "h": 128 } },
+        { "field_id": "person_備考", "kind": "text", "rect": { "x": 400, "y": 1471, "w": 2030, "h": 190 } }
+      ],
+      "tables": [
+        {
+          "table_id": "family",
+          "row_pitch": 113,
+          "row_height": 105,
+          "blocks": [
+            { "origin": { "x": 392, "y": 907 }, "rows": 5 },
+            { "origin": { "x": 1409, "y": 907 }, "rows": 5 }
+          ],
+          "columns": [
+            { "name": "続柄", "x_offset": 0, "width": 248, "kind": "text" },
+            { "name": "氏名", "x_offset": 248, "width": 420, "kind": "text" },
+            { "name": "生年月日_元号", "x_offset": 668, "width": 58, "kind": "choice",
+              "choice_marks": [
+                { "value": "昭", "x_offset": 680, "width": 38, "y_offset": 2,  "height": 33 },
+                { "value": "平", "x_offset": 680, "width": 38, "y_offset": 35, "height": 33 },
+                { "value": "令", "x_offset": 680, "width": 38, "y_offset": 68, "height": 33 }
+              ] },
+            { "name": "生年月日", "x_offset": 726, "width": 281, "kind": "text",
+              "subfields": ["年", "月", "日"] }
+          ]
+        }
+      ]
+    },
+    {
+      "face_id": "back",
+      "source": { "page_offset": 0, "rect": { "x": 0, "y": 1880, "w": 2490, "h": 1630 } },
+      "exclusions": [
+        { "id": "ring_left",  "rect": { "x": 0, "y": 0, "w": 60, "h": 1630 } },
+        { "id": "ring_right", "rect": { "x": 2430, "y": 0, "w": 60, "h": 1630 } }
+      ],
+      "fields": [],
+      "tables": [
+        {
+          "table_id": "detail",
+          "row_pitch": 104,
+          "row_height": 100,
+          "blocks": [
+            { "origin": { "x": 70, "y": 93 }, "rows": 14 },
+            { "origin": { "x": 1123, "y": 93 }, "rows": 14 }
+          ],
+          "columns": [
+            { "name": "来店年月日_年", "x_offset": 0, "width": 84, "kind": "text" },
+            { "name": "来店年月日_月", "x_offset": 84, "width": 83, "kind": "text" },
+            { "name": "来店年月日_日", "x_offset": 167, "width": 83, "kind": "text" },
+            { "name": "金額", "x_offset": 250, "width": 240, "kind": "text" },
+            { "name": "品目", "x_offset": 490, "width": 563, "kind": "text" }
+          ]
+        }
+      ]
+    }
+  ]
+}

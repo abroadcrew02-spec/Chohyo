@@ -5,8 +5,14 @@
   "description": "座標定義ファイルの正本。Python コアは読み込み時に、テンプレート編集画面は保存前に、このファイルで検証する。設計は 02_design.md §4.2。スキーマは将来の様式（左右分割・4分割・複数ページ1帳票）を表現できるが、v1 の実装は受け入れ範囲を絞る（各プロパティの v1受入 を参照）。範囲外は読み込み時に拒否し、黙って続行しない。",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "template_id", "render_dpi", "image", "record", "faces"],
-
+  "required": [
+    "schema_version",
+    "template_id",
+    "render_dpi",
+    "image",
+    "record",
+    "faces"
+  ],
   "properties": {
     "schema_version": {
       "description": "既知のバージョンでなければ読み込みを拒否する。自動マイグレーションもフォールバックも実装しない（02_design.md §4.2）。",
@@ -34,7 +40,9 @@
       "description": "1帳票（出力1行）が消費する入力ページ数。出力行数 = 入力ページ数 ÷ record.pages。割り切れなければ実行前にエラーで停止する。",
       "type": "object",
       "additionalProperties": false,
-      "required": ["pages"],
+      "required": [
+        "pages"
+      ],
       "properties": {
         "pages": {
           "description": "v1受入: 1 のみ。2以上は「表面が1ページ目・裏面が2ページ目」型の様式のための拡張余地。",
@@ -49,54 +57,92 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 16,
-      "items": { "$ref": "#/$defs/face" }
+      "items": {
+        "$ref": "#/$defs/face"
+      }
     }
   },
-
   "$defs": {
     "size": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["width", "height"],
+      "required": [
+        "width",
+        "height"
+      ],
       "properties": {
-        "width": { "type": "integer", "minimum": 1 },
-        "height": { "type": "integer", "minimum": 1 }
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-
     "point": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["x", "y"],
+      "required": [
+        "x",
+        "y"
+      ],
       "properties": {
-        "x": { "type": "integer", "minimum": 0 },
-        "y": { "type": "integer", "minimum": 0 }
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
-
     "rect": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["x", "y", "w", "h"],
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ],
       "properties": {
-        "x": { "type": "integer", "minimum": 0 },
-        "y": { "type": "integer", "minimum": 0 },
-        "w": { "type": "integer", "minimum": 1 },
-        "h": { "type": "integer", "minimum": 1 }
+        "x": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "w": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "h": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-
     "kind": {
       "description": "項目種別。text は OCR の読取値を、choice は丸印など選択の判定結果を値とする。抽出方式はこの属性だけで決まり、項目名の命名規則には依存しない（要件 §5.2）。元号は choice の一例であって特例ではない。",
       "type": "string",
-      "enum": ["text", "choice"]
+      "enum": [
+        "text",
+        "choice"
+      ]
     },
-
     "face": {
       "description": "1つの面。source 以外の矩形はすべて面ローカル座標（位置合わせ後の面画像の左上が原点、寸法は source.rect の w×h）。",
       "type": "object",
       "additionalProperties": false,
-      "required": ["face_id", "source"],
+      "required": [
+        "face_id",
+        "source"
+      ],
       "properties": {
         "face_id": {
           "description": "面の識別子。中間データの alignment と token.face の結合キーになるため、改名すると既存トークンが使えなくなる（02_design.md §6.7 幾何セクション）。v1受入: front または back。",
@@ -109,7 +155,10 @@
           "description": "この面を入力ページのどこから切り出すか。ここだけが入力ページ座標。",
           "type": "object",
           "additionalProperties": false,
-          "required": ["page_offset", "rect"],
+          "required": [
+            "page_offset",
+            "rect"
+          ],
           "properties": {
             "page_offset": {
               "description": "帳票内での入力ページ番号（0 起点）。record.pages 未満でなければならない。v1受入: 0 のみ。",
@@ -130,10 +179,19 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "rect"],
+            "required": [
+              "id",
+              "rect"
+            ],
             "properties": {
-              "id": { "type": "string", "minLength": 1, "maxLength": 64 },
-              "rect": { "$ref": "#/$defs/rect" }
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "rect": {
+                "$ref": "#/$defs/rect"
+              }
             }
           }
         },
@@ -141,21 +199,28 @@
           "description": "単発欄（繰り返しでない欄）。field_id はテンプレート全体で一意でなければならない——JSON Schema では表現できないため読み込み時に検証する。",
           "type": "array",
           "default": [],
-          "items": { "$ref": "#/$defs/field" }
+          "items": {
+            "$ref": "#/$defs/field"
+          }
         },
         "tables": {
           "description": "繰り返し欄。行はここから格子として展開する。矩形を1行ずつ列挙しない。",
           "type": "array",
           "default": [],
-          "items": { "$ref": "#/$defs/table" }
+          "items": {
+            "$ref": "#/$defs/table"
+          }
         }
       }
     },
-
     "field": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["field_id", "kind", "rect"],
+      "required": [
+        "field_id",
+        "kind",
+        "rect"
+      ],
       "properties": {
         "field_id": {
           "description": "出力列名と同一（02_design.md §4.1・§4.3）。面とは独立で、person_ は本人欄というグループを指し表面を指すのではない。",
@@ -163,8 +228,12 @@
           "minLength": 1,
           "maxLength": 128
         },
-        "kind": { "$ref": "#/$defs/kind" },
-        "rect": { "$ref": "#/$defs/rect" },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
+        "rect": {
+          "$ref": "#/$defs/rect"
+        },
         "choice_marks": {
           "description": "kind が choice のときのみ意味を持ち、そのとき必須。各選択肢の印字文字の外接矩形で、環状帯はこの外側からセル境界までを取る（02_design.md §6.8）。",
           "type": "array",
@@ -172,28 +241,61 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["value", "rect"],
+            "required": [
+              "value",
+              "rect"
+            ],
             "properties": {
-              "value": { "type": "string", "minLength": 1, "maxLength": 32 },
-              "rect": { "$ref": "#/$defs/rect" }
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              },
+              "rect": {
+                "$ref": "#/$defs/rect"
+              }
             }
           }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "choice" } }, "required": ["kind"] },
-          "then": { "required": ["choice_marks"] },
-          "else": { "not": { "required": ["choice_marks"] } }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "choice"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "choice_marks"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "choice_marks"
+              ]
+            }
+          }
         }
       ]
     },
-
     "table": {
       "description": "繰り返し欄の定義。blocks を定義順に走り、各ブロックで rows 回だけ origin.y + row_pitch * i を計算して行の上端を求める。行の通し番号はブロックを跨いで連番（左ブロック 01..、右ブロック はその続き）。読み順「左→右」は blocks の定義順で表す。",
       "type": "object",
       "additionalProperties": false,
-      "required": ["table_id", "row_pitch", "row_height", "blocks", "columns"],
+      "required": [
+        "table_id",
+        "row_pitch",
+        "row_height",
+        "blocks",
+        "columns"
+      ],
       "properties": {
         "table_id": {
           "description": "field_id の接頭辞になる（例: family → family_01_続柄）。",
@@ -219,29 +321,42 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["origin", "rows"],
+            "required": [
+              "origin",
+              "rows"
+            ],
             "properties": {
               "origin": {
                 "description": "このブロックの1行目・1列目の左上（面ローカル）。",
                 "$ref": "#/$defs/point"
               },
-              "rows": { "type": "integer", "minimum": 1, "maximum": 200 }
+              "rows": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200
+              }
             }
           }
         },
         "columns": {
           "type": "array",
           "minItems": 1,
-          "items": { "$ref": "#/$defs/tableColumn" }
+          "items": {
+            "$ref": "#/$defs/tableColumn"
+          }
         }
       }
     },
-
     "tableColumn": {
       "description": "テーブルの1列。矩形は x = origin.x + x_offset、y = 行の上端、幅 = width、高さ = row_height で決まる。",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "x_offset", "width", "kind"],
+      "required": [
+        "name",
+        "x_offset",
+        "width",
+        "kind"
+      ],
       "properties": {
         "name": {
           "description": "field_id の末尾になる（例: 続柄 → family_01_続柄）。",
@@ -249,30 +364,92 @@
           "minLength": 1,
           "maxLength": 64
         },
-        "x_offset": { "type": "integer", "minimum": 0 },
-        "width": { "type": "integer", "minimum": 1 },
-        "kind": { "$ref": "#/$defs/kind" },
+        "x_offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "kind": {
+          "$ref": "#/$defs/kind"
+        },
         "choice_marks": {
-          "description": "kind が choice のときのみ意味を持ち、そのとき必須。縦の範囲は行そのもの（行の上端から row_height）を使うため、ここでは横方向だけを指定する。",
+          "description": "kind が choice のときのみ意味を持ち、そのとき必須。横位置は x_offset/width、縦位置は y_offset/height（省略時は行全体）。家族欄では昭平令が行内に縦積みされるため縦指定が要る。",
           "type": "array",
           "minItems": 2,
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["value", "x_offset", "width"],
+            "required": [
+              "value",
+              "x_offset",
+              "width"
+            ],
             "properties": {
-              "value": { "type": "string", "minLength": 1, "maxLength": 32 },
-              "x_offset": { "type": "integer", "minimum": 0 },
-              "width": { "type": "integer", "minimum": 1 }
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 32
+              },
+              "x_offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "y_offset": {
+                "description": "行上端からのオフセット（px）。省略時は行全体。家族欄のように選択肢が行内へ縦に積まれる様式で使う。",
+                "type": "integer",
+                "minimum": 0
+              },
+              "height": {
+                "description": "マークの高さ（px）。省略時は行の残り全部。",
+                "type": "integer",
+                "minimum": 1
+              }
             }
+          }
+        },
+        "subfields": {
+          "description": "複合セル。1つの矩形に書かれた値（例: 家族欄の生年月日『7.7.20』）を、区切り文字で分割して subfields の数だけ出力列にする（列名は <name>_<subfield>）。分割規則は 02_design.md D-23。分割数が合わない場合は当該サブ列すべてを〓にする。物理的に別セルが並ぶ場合（明細の年月日）はこの属性を使わず列を分ける。",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
           }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "choice" } }, "required": ["kind"] },
-          "then": { "required": ["choice_marks"] },
-          "else": { "not": { "required": ["choice_marks"] } }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "choice"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "choice_marks"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "choice_marks"
+              ]
+            }
+          }
         }
       ]
     }
