@@ -107,6 +107,25 @@ def cmd_import_credentials(args) -> int:
     return 0
 
 
+def cmd_detect_grid(args) -> int:
+    """枠候補の生成（設計 §6.9）。テンプレート編集画面が呼ぶ・GUI なしでも検証可。"""
+    import numpy as np
+    from PIL import Image
+    from .grid import detect_ruled, make_uniform
+    region = tuple(int(v) for v in args.region.split(","))
+    if args.mode == "uniform":
+        fit = make_uniform(region, args.rows, args.cols)
+    else:
+        gray = np.asarray(Image.open(args.image).convert("L"))
+        fit = detect_ruled(gray, region)
+        if fit is None:
+            _progress({"event": "detect_grid", "ok": False,
+                       "error": "罫線が検出できない。等分割生成（--mode uniform）へ切り替える"})
+            return 1
+    _progress({"event": "detect_grid", "ok": True, **fit.to_json()})
+    return 0
+
+
 def cmd_purge(args) -> int:
     cfg = load_config(args.config)
     if not args.yes:
@@ -150,6 +169,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("import-credentials", help="資格情報 JSON を DPAPI 暗号化で取り込む")
     p.add_argument("json_path")
     p.set_defaults(fn=cmd_import_credentials)
+
+    p = sub.add_parser("detect-grid", help="枠候補の生成（罫線検出 or 等分割）")
+    p.add_argument("--image", help="面画像（--mode ruled で必須）")
+    p.add_argument("--region", required=True, help="x,y,w,h（面ローカル）")
+    p.add_argument("--mode", choices=["ruled", "uniform"], default="ruled")
+    p.add_argument("--rows", type=int, default=1)
+    p.add_argument("--cols", type=int, default=1)
+    p.set_defaults(fn=cmd_detect_grid)
 
     p = sub.add_parser("purge", help="中間データの削除（--yes 必須）")
     p.add_argument("--yes", action="store_true")
