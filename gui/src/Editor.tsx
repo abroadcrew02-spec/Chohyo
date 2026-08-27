@@ -384,38 +384,38 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const panel = () => {
     if (pending && tool === "table") return (
       <div className="panel">
-        <h3>枠候補の生成</h3>
+        <h3>表のわくを自動でつくる</h3>
         <label>方式
           <select value={genMode} onChange={(e) => setGenMode(e.target.value as any)}>
-            <option value="ruled">罫線の自動検出</option>
-            <option value="uniform">等分割</option>
+            <option value="ruled">罫線から自動で見つける</option>
+            <option value="uniform">等分割（行数と列数を入力）</option>
           </select></label>
         {genMode === "uniform" && (<>
           <label>行数 <input type="number" value={genRows}
             onChange={(e) => setGenRows(+e.target.value)} /></label>
           <label>列数 <input type="number" value={genCols}
             onChange={(e) => setGenCols(+e.target.value)} /></label></>)}
-        <button className="primary" onClick={generate}>生成</button>
-        <button onClick={() => setPending(null)}>取消</button>
+        <button className="btn primary" onClick={generate}>この設定でつくる</button>
+        <button className="btn" onClick={() => setPending(null)}>やめる</button>
       </div>);
-    if (!sel) return <div className="panel"><h3>未選択</h3>
-      <p>ツールを選び、キャンバスでドラッグ。Alt+ドラッグ=パン／ホイール=ズーム</p></div>;
+    if (!sel) return <div className="panel"><h3>なにも選ばれていません</h3>
+      <p className="note">上のツールを選んで、帳票の上をドラッグしてください。<br />ホイール＝拡大縮小／Alt＋ドラッグ＝画面を動かす</p></div>;
     if (sel.type === "field") {
       const f = fields.find((x) => x.uid === sel.uid);
       if (!f) return null;
       return (
         <div className="panel">
-          <h3>単発欄</h3>
-          <label>field_id <input value={f.field_id}
+          <h3>選択中の欄</h3>
+          <label>この欄の名前（出力の列名になります）<input value={f.field_id}
             onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
-          <label>種別
+          <label>なにが書かれる欄？
             <select value={f.kind}
               onChange={(e) => updateField(f.uid, { kind: e.target.value as any })}>
-              <option value="text">text（文字）</option>
-              <option value="choice">choice（選択式）</option>
+              <option value="text">文字（手書きの字を読む）</option>
+              <option value="choice">丸で選ぶ（昭・平・令など）</option>
             </select></label>
           {f.kind === "choice" && (
-            <label>マーク値（縦積みで自動生成）
+            <label>選択肢（カンマ区切り・縦に自動配置）
               <input placeholder="昭,平,令"
                 defaultValue={f.marks.map((m) => m.value).join(",")}
                 onBlur={(e) => genFieldMarks(f, e.target.value)} /></label>)}
@@ -440,8 +440,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!t) return null;
     return (
       <div className="panel">
-        <h3>繰り返し欄</h3>
-        <label>table_id <input value={t.table_id}
+        <h3>選択中の表</h3>
+        <label>表の名前 <input value={t.table_id}
           onChange={(e) => updateTable(t.uid, { table_id: e.target.value })} /></label>
         <label>行ピッチ <input type="number" value={t.row_pitch}
           onChange={(e) => updateTable(t.uid, { row_pitch: +e.target.value })} /></label>
@@ -478,21 +478,22 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
           </div>))}
         <button onClick={removeSel}>テーブル削除</button>
-        <p className="note">choice 列のマークは保存 JSON を直接編集で調整可（v1 縮退範囲）</p>
+        <p className="note">丸で選ぶ列のこまかな位置は、保存した JSON を直接編集して調整できます（v1 の範囲）</p>
       </div>);
   };
 
   return (
     <div className="editor">
+      <div className="adminstrip">この画面は<b>帳票の読み取り位置（枠）を決める管理者向けの画面</b>です。ふだんの読み取りは「実行」タブで行います。</div>
       <div className="toolbar">
-        <button onClick={loadImage}>画像を読み込む</button>
-        <button onClick={loadTemplate}>テンプレートを開く</button>
-        <button className="primary" onClick={saveTemplate}>保存＋検証</button>
+        <button className="btn" onClick={loadImage}>画像を読み込む</button>
+        <button className="btn" onClick={loadTemplate}>テンプレートを開く</button>
+        <button className="btn primary" onClick={saveTemplate}>保存して検証</button>
         <span className="sep" />
         {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => (
-          <button key={t} className={tool === t ? "active" : ""}
+          <button key={t} className={tool === t ? "btn active" : "btn"}
             onClick={() => setTool(t)}>
-            {{ select: "選択", field: "単発欄", excl: "除外", table: "テーブル", split: "分割線" }[t]}
+            {{ select: "選択", field: "欄を描く", excl: "読まない場所", table: "表をつくる", split: "表と裏のさかい目" }[t]}
           </button>))}
         <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>

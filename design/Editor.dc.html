@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+  <style>
+    body { margin: 0; font-family: "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif; }
+    a { color: #2563eb; } a:hover { color: #1d4ed8; }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 860px; background: #f4f6f9; color: #1a2233; display: flex; flex-direction: column;">
+
+  <div style="background: #ffffff; border-bottom: 1px solid #dde3ec; padding: 14px 28px; display: flex; align-items: center; gap: 16px;">
+    <div style="width: 34px; height: 34px; border-radius: 8px; background: #2563eb; display: flex; align-items: center; justify-content: center;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"></rect><line x1="8" y1="8" x2="16" y2="8"></line><line x1="8" y1="12" x2="16" y2="12"></line><line x1="8" y1="16" x2="12" y2="16"></line></svg>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+      <div style="font-size: 17px; font-weight: 700;">帳票OCRツール</div>
+      <div style="font-size: 12px; color: #5a6577;">紙の帳票を読み取って Excel にするツール</div>
+    </div>
+    <div style="margin-left: auto; display: flex; gap: 6px;">
+      <div style="padding: 9px 22px; border-radius: 8px; color: #5a6577; font-size: 14px;">実行</div>
+      <div style="padding: 9px 22px; border-radius: 8px; background: #2563eb; color: #fff; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px;">テンプレート編集
+        <span style="font-size: 10px; background: rgba(255,255,255,0.25); border-radius: 4px; padding: 1px 6px;">管理者向け</span>
+      </div>
+    </div>
+  </div>
+
+  <div style="background: #fff8ef; border-bottom: 1px solid #f0c98d; padding: 8px 28px; font-size: 12px; color: #8a5a13;">
+    この画面は<b>帳票の読み取り位置（枠）を決める管理者向けの画面</b>です。ふだんの読み取りは「実行」タブで行います。
+  </div>
+
+  <!-- ツールバー -->
+  <div style="background: #ffffff; border-bottom: 1px solid #dde3ec; padding: 10px 28px; display: flex; align-items: center; gap: 8px;">
+    <div style="display: flex; gap: 6px;">
+      <div style="display: flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; border: 1px solid #cdd6e4; font-size: 13px; color: #3c4657;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3c4657" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l7 16 2.5-6.5L20 11z"></path></svg>選択
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; background: #eaf1ff; border: 1.5px solid #2563eb; font-size: 13px; color: #2563eb; font-weight: 500;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><rect x="4" y="6" width="16" height="12" rx="1"></rect></svg>欄を描く
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; border: 1px solid #cdd6e4; font-size: 13px; color: #3c4657;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3c4657" stroke-width="2"><rect x="4" y="5" width="16" height="14" rx="1"></rect><line x1="5" y1="18" x2="19" y2="6"></line></svg>読まない場所
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; border: 1px solid #cdd6e4; font-size: 13px; color: #3c4657;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3c4657" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="1"></rect><line x1="4" y1="10" x2="20" y2="10"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="11" y1="4" x2="11" y2="20"></line></svg>表をつくる
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px; padding: 9px 14px; border-radius: 8px; border: 1px solid #cdd6e4; font-size: 13px; color: #3c4657;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3c4657" stroke-width="2" stroke-dasharray="3 3"><line x1="3" y1="12" x2="21" y2="12"></line></svg>表と裏のさかい目
+      </div>
+    </div>
+    <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+      <div style="font-size: 12px; color: #16a34a; display: flex; align-items: center; gap: 5px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5"><path d="M20 6L9 17l-5-5"></path></svg>検証OK（218列）
+      </div>
+      <div style="padding: 9px 18px; border-radius: 8px; border: 1px solid #cdd6e4; font-size: 13px; color: #3c4657;">開く</div>
+      <div style="padding: 9px 18px; border-radius: 8px; background: #2563eb; color: #fff; font-size: 13px; font-weight: 500;">保存して検証</div>
+    </div>
+  </div>
+
+  <div style="flex: 1; display: flex; min-height: 0;">
+    <!-- キャンバス（帳票ワイヤー） -->
+    <div style="flex: 1; background: #e7ebf1; display: flex; align-items: center; justify-content: center; position: relative;">
+      <div style="width: 500px; height: 660px; background: #ffffff; border: 1px solid #c7cfdc; box-shadow: 0 6px 22px rgba(30,40,60,0.14); position: relative;">
+        <div style="position: absolute; left: 40px; top: 24px; width: 240px; height: 26px; border: 1.5px solid #4fc3f7; background: rgba(79,195,247,0.08);"></div>
+        <div style="position: absolute; left: 40px; top: 58px; width: 300px; height: 40px; border: 2px solid #2563eb; background: rgba(37,99,235,0.10);">
+          <div style="position: absolute; right: -6px; bottom: -6px; width: 10px; height: 10px; background: #2563eb; border-radius: 2px;"></div>
+          <div style="position: absolute; left: 0; top: -20px; font-size: 11px; color: #2563eb; font-weight: 700;">person_氏名</div>
+        </div>
+        <div style="position: absolute; left: 40px; top: 118px; width: 420px; height: 64px; border: 1.5px solid #4fc3f7; background: rgba(79,195,247,0.08);"></div>
+        <div style="position: absolute; left: 40px; top: 210px; width: 420px; height: 150px;">
+          <div style="width: 100%; height: 100%; border: 1.5px solid #16a34a; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(5, minmax(0, 1fr));">
+            <div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div>
+            <div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div>
+            <div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div>
+            <div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div>
+            <div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div><div style="border: 0.5px solid rgba(22,163,74,0.35);"></div>
+          </div>
+          <div style="position: absolute; left: 0; top: -18px; font-size: 11px; color: #16a34a; font-weight: 700;">family（5行×4列）</div>
+        </div>
+        <div style="position: absolute; left: 0; top: 392px; width: 100%; border-top: 2.5px dashed #ff5577;"></div>
+        <div style="position: absolute; right: 8px; top: 396px; font-size: 10px; color: #ff5577; font-weight: 700;">表とうらのさかい目</div>
+        <div style="position: absolute; left: 24px; top: 420px; width: 452px; height: 210px; border: 1.5px solid #16a34a; background: rgba(22,163,74,0.05);"></div>
+        <div style="position: absolute; right: 14px; bottom: 46px; width: 90px; height: 26px; border: 1.5px solid #8a94a6; background: repeating-linear-gradient(45deg, rgba(120,130,145,0.25), rgba(120,130,145,0.25) 4px, transparent 4px, transparent 8px);"></div>
+      </div>
+      <div style="position: absolute; left: 20px; bottom: 16px; font-size: 11px; color: #8a94a6;">ホイール＝拡大縮小 ／ Alt＋ドラッグ＝画面を動かす</div>
+    </div>
+
+    <!-- 右パネル -->
+    <div style="width: 330px; background: #ffffff; border-left: 1px solid #dde3ec; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px;">
+      <div style="font-size: 14px; font-weight: 700;">選択中の欄</div>
+      <label style="display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: #5a6577;">この欄の名前
+        <input style="border: 1px solid #cdd6e4; border-radius: 7px; padding: 9px 11px; font-size: 13px; font-family: inherit;" value="person_氏名">
+      </label>
+      <div style="display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #5a6577;">なにが書かれる欄？
+        <div style="display: flex; gap: 6px;">
+          <div style="flex: 1; text-align: center; padding: 9px; border-radius: 7px; background: #eaf1ff; border: 1.5px solid #2563eb; color: #2563eb; font-size: 13px; font-weight: 500;">文字</div>
+          <div style="flex: 1; text-align: center; padding: 9px; border-radius: 7px; border: 1px solid #cdd6e4; color: #5a6577; font-size: 13px;">丸で選ぶ（昭・平・令）</div>
+        </div>
+      </div>
+      <div style="font-family: Consolas, monospace; font-size: 12px; color: #8a94a6; background: #f4f6f9; border-radius: 7px; padding: 8px 12px;">位置 x:600 y:130　大きさ 1140×160</div>
+      <div style="padding: 9px; text-align: center; border-radius: 7px; border: 1px solid #efb3b3; color: #b91c1c; font-size: 13px;">この欄を削除</div>
+      <div style="border-top: 1px solid #eef1f6; padding-top: 12px; font-size: 11px; color: #8a94a6; line-height: 1.8;">
+        「表をつくる」で外わくを描くと、罫線から行と列を<b>自動で見つけます</b>。うまくいかないときは「等分割」に切り替えてください。
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap">
+  <style>
+    body { margin: 0; font-family: "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif; }
+    a { color: #2563eb; } a:hover { color: #1d4ed8; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</helmet>
+<div style="width: 1280px; height: 860px; background: #f4f6f9; color: #1a2233; display: flex; flex-direction: column;">
+
+  <div style="background: #ffffff; border-bottom: 1px solid #dde3ec; padding: 14px 28px; display: flex; align-items: center; gap: 16px;">
+    <div style="width: 34px; height: 34px; border-radius: 8px; background: #2563eb; display: flex; align-items: center; justify-content: center;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="2"></rect><line x1="8" y1="8" x2="16" y2="8"></line><line x1="8" y1="12" x2="16" y2="12"></line><line x1="8" y1="16" x2="12" y2="16"></line></svg>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+      <div style="font-size: 17px; font-weight: 700;">帳票OCRツール</div>
+      <div style="font-size: 12px; color: #5a6577;">紙の帳票を読み取って Excel にするツール</div>
+    </div>
+    <div style="margin-left: auto; display: flex; gap: 6px;">
+      <div style="padding: 9px 22px; border-radius: 8px; background: #2563eb; color: #fff; font-size: 14px; font-weight: 500;">実行</div>
+      <div style="padding: 9px 22px; border-radius: 8px; color: #b9c2d0; font-size: 14px;">テンプレート編集</div>
+    </div>
+  </div>
+
+  <div style="flex: 1; display: flex; align-items: center; justify-content: center; padding: 28px;">
+    <div style="width: 720px; display: flex; flex-direction: column; gap: 22px;">
+
+      <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 14px; padding: 34px 38px; display: flex; flex-direction: column; gap: 22px;">
+        <div style="display: flex; align-items: center; gap: 16px;">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" style="animation: spin 1.2s linear infinite;"><path d="M21 12a9 9 0 1 1-6.2-8.56"></path></svg>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <div style="font-size: 19px; font-weight: 700;">読み取っています…</div>
+            <div style="font-size: 13px; color: #5a6577;">このままお待ちください。パソコンを操作してもかまいません。</div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: baseline;">
+            <div style="font-size: 14px; color: #3c4657;">いま <b style="font-size: 20px;">37</b> 枚目 / 全 <b>120</b> 枚</div>
+            <div style="font-size: 13px; color: #5a6577;">およそ 12 分ほどかかります</div>
+          </div>
+          <div style="height: 14px; background: #e6ebf2; border-radius: 7px; overflow: hidden;">
+            <div style="width: 31%; height: 100%; background: #2563eb; border-radius: 7px;"></div>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; align-items: center; background: #f4f6f9; border-radius: 8px; padding: 10px 14px;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5a6577" stroke-width="2" stroke-linecap="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z"></path></svg>
+          <div style="font-size: 12px; color: #5a6577;">とちゅうで閉じても大丈夫。次に開いたとき、残りの紙だけを読み取ります。</div>
+        </div>
+      </div>
+
+      <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 12px; padding: 14px 20px; display: flex; flex-direction: column; gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #5a6577;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5a6577" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          くわしい記録（開く）
+        </div>
+        <div style="font-family: Consolas, monospace; font-size: 11px; color: #8a94a6; line-height: 1.7;">
+          scan_0036.pdf … 完了<br>scan_0037.pdf … 読み取り中
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

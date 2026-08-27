@@ -67,3 +67,6 @@ desktop.ini
 
 # --- 同梱バイナリ（配布時に配置・リポジトリには入れない）------------
 /vendor/poppler/
+
+# design canvas の seed 済み成果物（再生成可能・~2MB）
+/design/chouhyo-ocr-gui.html

@@ -1,0 +1,42 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: "Yu Gothic UI", Meiryo, sans-serif; }
+    a { color: #4f8dff; } a:hover { color: #78a9ff; }
+  </style>
+</helmet>
+<div style="width: 640px; height: 430px; background: #14161b; color: #dce1e8; display: flex; flex-direction: column; border-radius: 8px; overflow: hidden;">
+  <div style="padding: 10px 16px; border-bottom: 1px solid #2a2f3a; display: flex; gap: 6px; font-size: 12px;">
+    <div style="padding: 5px 14px; background: #2a3040; border-radius: 5px;">実行</div>
+    <div style="padding: 5px 14px; color: #6b7484;">テンプレート編集</div>
+  </div>
+  <div style="padding: 16px; display: flex; flex-direction: column; gap: 10px; font-size: 12px;">
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <div style="padding: 7px 12px; border: 1px solid #3a4255; border-radius: 5px;">入力フォルダ選択</div>
+      <span style="color: #6b7484;">（未選択）</span>
+    </div>
+    <div style="display: flex; gap: 8px; align-items: center;">
+      <div style="padding: 7px 12px; border: 1px solid #3a4255; border-radius: 5px;">出力先選択</div>
+      <span style="color: #9fb4d0;">output</span>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <div style="padding: 7px 14px; background: #2f6feb; border-radius: 5px; color: #fff;">実行開始</div>
+      <div style="padding: 7px 14px; border: 1px solid #3a4255; border-radius: 5px;">出力フォルダを開く</div>
+    </div>
+    <div style="flex: 1; margin-top: 6px; background: #0d0f13; border: 1px solid #2a2f3a; border-radius: 6px; padding: 10px; font-family: Consolas, monospace; font-size: 10px; color: #8a94a6; line-height: 1.8; height: 180px;">
+      {"event":"start","total":2}<br>
+      {"event":"page","page_id":"...p0001","status":"done"}<br>
+      {"event":"summary","pages":2,"rows":2,...}
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
