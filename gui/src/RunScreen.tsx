@@ -1,14 +1,28 @@
 // 実行画面（設計 §7.1・最小構成の6機能）。処理ロジックを持たず、
 // コアの起動と JSON Lines 進捗（§7.3）の表示に徹する。
 // UI はデザインカンバス「帳票OCRツール GUI」準拠: 番号つき手順・平易な言葉。
-import { invoke } from "@tauri-apps/api/core";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "./bridge";
+import { listen } from "./bridge";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
 
 type Summary = {
   pages: number; rows: number; align_failed: number;
   api_calls: number; unclear_cells: number; overflow: number;
   xlsx?: string; csv?: string;
+};
+type Verify = { template: boolean; poppler: boolean; cred: string };
+type Failure = { page_id: string; status: string };
+
+// ステータス → 平易な言葉（エラー一覧用）
+const STATUS_JA: Record<string, string> = {
+  "位置合わせ失敗": "読み取れませんでした（この行はぜんぶ〓）",
+  "様式不一致": "帳票の形が合いませんでした（この行はぜんぶ〓）",
+  "展開失敗": "ファイルを開けませんでした",
+  "送信失敗": "クラウドへ送れませんでした（通信を確認してください）",
+  "未処理（送信上限到達）": "今回の上限に達したため未処理です（次回、続きから）",
+  "未処理（中断）": "中断したため未処理です（次回、続きから）",
+  "超過あり": "欄からはみ出た記入があります",
 };
 
 const FolderIcon = ({ c }: { c: string }) => (
@@ -27,7 +41,49 @@ export default function RunScreen() {
   const [log, setLog] = useState<string[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState("");
+  const [verify, setVerify] = useState<Verify | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [failures, setFailures] = useState<Failure[]>([]);
+  const interruptedRef = useRef(false);
+  const [notice, setNotice] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
+
+  const parseVerify = (text: string): Verify => {
+    const v: Verify = { template: false, poppler: false, cred: "missing" };
+    for (const line of text.split("\n")) {
+      try {
+        const e = JSON.parse(line);
+        if (e.event !== "verify") continue;
+        if (e.check === "template") v.template = !!e.ok;
+        if (e.check === "poppler") v.poppler = !!e.ok;
+        if (e.check === "credentials") v.cred = e.state ?? (e.ok ? "env" : "missing");
+      } catch { /* skip */ }
+    }
+    return v;
+  };
+  const runVerify = async () => {
+    try {
+      setVerify(parseVerify(await invoke<string>("run_core_capture", { args: ["verify"] })));
+    } catch (e) {
+      setVerify(parseVerify(String(e)));  // verify は不備時に終了コード1で stdout ごと届く
+    }
+  };
+  useEffect(() => { runVerify(); }, []);
+
+  const importCredentials = async () => {
+    const p = await invoke<string | null>("pick_json", { save: false });
+    if (!p) return;
+    setImporting(true);
+    try {
+      await invoke<string>("run_core_capture", { args: ["import-credentials", p] });
+      setNotice("鍵を安全な形で取り込みました。元のファイルは削除してかまいません。");
+      await runVerify();
+    } catch (e) {
+      setError(`鍵の取り込みに失敗しました: ${e}`);
+    } finally {
+      setImporting(false);
+    }
+  };
 
   useEffect(() => {
     invoke<Record<string, unknown>>("read_config").then((c) => {
@@ -46,7 +102,12 @@ export default function RunScreen() {
         try {
           const ev = JSON.parse(e.payload);
           if (ev.event === "start") { setTotal(ev.todo ?? ev.total ?? 0); setDone(0); }
-          if (ev.event === "page") setDone((d) => d + 1);
+          if (ev.event === "page") {
+            setDone((d) => d + 1);
+            if (ev.status && ev.status !== "done") {
+              setFailures((f) => [...f, { page_id: ev.page_id, status: ev.status }]);
+            }
+          }
           if (ev.event === "summary") setSummary(ev as Summary);
         } catch { /* JSON 以外の行は無視 */ }
       }),
@@ -68,15 +129,25 @@ export default function RunScreen() {
     await invoke("write_config", { patch: { output_dir: p } });
   };
   const start = async () => {
-    setRunning(true); setSummary(null); setError(""); setLog([]); setDone(0); setTotal(0);
+    setRunning(true); setSummary(null); setError(""); setNotice("");
+    setLog([]); setDone(0); setTotal(0); setFailures([]);
+    interruptedRef.current = false;
     try {
       const code = await invoke<number>("run_core", { args: ["run", "--input", inputDir] });
-      if (code !== 0) setError(`読み取りが途中で止まりました（終了コード ${code}）。もう一度「読み取りを開始する」を押すと続きから進みます。`);
+      if (interruptedRef.current) {
+        setNotice("中断しました。ここまでの読み取りは保存されています。もう一度開始すると続きから進みます。");
+      } else if (code !== 0) {
+        setError(`読み取りが途中で止まりました（終了コード ${code}）。もう一度「読み取りを開始する」を押すと続きから進みます。`);
+      }
     } catch (e) {
-      setError(String(e));
+      if (!interruptedRef.current) setError(String(e));
     } finally {
       setRunning(false);
     }
+  };
+  const interrupt = async () => {
+    interruptedRef.current = true;
+    try { await invoke("kill_core"); } catch { /* 既に終了 */ }
   };
   const openOutput = () =>
     invoke("open_folder", { path: outputDir }).catch((e) => setError(String(e)));
@@ -124,6 +195,8 @@ export default function RunScreen() {
             <button className="btn primary big" onClick={openOutput}>
               <FolderIcon c="#ffffff" />出力フォルダを開く
             </button>
+            <button className="btn big" onClick={start}>もう一度読み取る</button>
+            <button className="btn" onClick={() => setSummary(null)}>読み取る条件を変える</button>
           </div>
         )}
 
@@ -142,16 +215,44 @@ export default function RunScreen() {
             </div>
             <div className="counter">いま <b>{Math.min(done + 1, Math.max(total, 1))}</b> 枚目 / 全 <b>{total || "?"}</b> 枚</div>
             <div className="bar"><div style={{ width: `${total ? (done / total) * 100 : 4}%` }} /></div>
-            <div className="softnote">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5a6577"
-                strokeWidth="2" strokeLinecap="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z" /></svg>
-              とちゅうで閉じても大丈夫。次に開いたとき、残りの紙だけを読み取ります。
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div className="softnote" style={{ flex: 1 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5a6577"
+                  strokeWidth="2" strokeLinecap="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z" /></svg>
+                とちゅうで閉じても大丈夫。次に開いたとき、残りの紙だけを読み取ります。
+              </div>
+              <button className="btn" onClick={interrupt}>中断する</button>
             </div>
           </div>
         )}
 
-        {/* 手順 1〜3 */}
-        {!running && (
+        {/* はじめの準備（資格情報が無いときだけ） */}
+        {!running && verify && verify.cred === "missing" && (
+          <div className="card" style={{ borderColor: "var(--warn-line)", background: "var(--warn-bg)" }}>
+            <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8a5a13"
+                strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                <circle cx="8" cy="15" r="4" />
+                <path d="M11 12L21 2" /><path d="M17 6l3 3" /><path d="M14 9l2 2" /></svg>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <b style={{ color: "var(--warn-ink)", fontSize: 15 }}>はじめに1回だけ: 読み取り用の鍵を設定します</b>
+                <div style={{ fontSize: 12.5, color: "#7a5a26", lineHeight: 1.7 }}>
+                  管理者から渡された<b>鍵ファイル（JSON）</b>を選んでください。
+                  安全な形に変換して保存します（元のファイルは以後不要です）。
+                </div>
+                <button className="btn primary" style={{ width: "fit-content" }}
+                  onClick={importCredentials} disabled={importing}>
+                  {importing ? "取り込み中…" : "鍵ファイルを選ぶ"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {notice && <div className="tipbox">{notice}</div>}
+
+        {/* 手順 1〜3（完了後は「読み取る条件を変える」で再表示） */}
+        {!running && !summary && (
           <>
             <div className="card step on">
               <div className="no">1</div>
@@ -184,10 +285,10 @@ export default function RunScreen() {
               <div className="no">3</div>
               <div className="body">
                 <button className="btn primary big" style={{ width: "fit-content" }}
-                  onClick={start} disabled={!inputDir}>
+                  onClick={start} disabled={!inputDir || verify?.cred === "missing"}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="#ffffff">
                     <polygon points="6,4 20,12 6,20" /></svg>
-                  {summary ? "もう一度読み取る" : "読み取りを開始する"}
+                  読み取りを開始する
                 </button>
                 {!inputDir && <span className="muted">フォルダを選ぶと押せるようになります</span>}
               </div>
@@ -200,6 +301,25 @@ export default function RunScreen() {
               読み取りにはインターネット接続が必要です
             </div>
           </>
+        )}
+
+        {summary && failures.length > 0 && (
+          <div className="card">
+            <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>
+              うまくいかなかった紙（{failures.length} 件）
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {failures.map((f, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, fontSize: 12.5,
+                  alignItems: "baseline", borderTop: i ? "1px solid var(--line)" : "none",
+                  paddingTop: i ? 6 : 0 }}>
+                  <span style={{ fontFamily: "Consolas, monospace", color: "var(--sub)",
+                    flexShrink: 0 }}>{f.page_id}</span>
+                  <span>{STATUS_JA[f.status] ?? f.status}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
 
         {error && <div className="error">{error}</div>}

@@ -3,7 +3,11 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// 実行中のコアの PID（中断ボタン用・同時実行は1つの前提）
+pub struct CoreProc(pub Mutex<Option<u32>>);
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -62,11 +66,13 @@ fn core_command(root: &PathBuf) -> Result<Command, String> {
 
 /// コアを起動し stdout(JSON Lines)/stderr を行単位でイベント中継、終了コードを返す。
 #[tauri::command]
-async fn run_core(app: AppHandle, args: Vec<String>) -> Result<i32, String> {
+async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
+                  args: Vec<String>) -> Result<i32, String> {
     let root = repo_root(&app)?;
     let mut cmd = core_command(&root)?;
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("コア起動に失敗: {e}"))?;
+    *state.0.lock().unwrap() = Some(child.id());
 
     let stdout = child.stdout.take().ok_or("stdout を取得できない")?;
     let app_out = app.clone();
@@ -87,7 +93,21 @@ async fn run_core(app: AppHandle, args: Vec<String>) -> Result<i32, String> {
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
+    *state.0.lock().unwrap() = None;
     Ok(status.code().unwrap_or(-1))
+}
+
+/// 実行中のコアを子プロセス（pdftoppm 等）ごと停止する。中断分は
+/// 「未処理（中断）」として出力され、次回 run で続きから再開する（要件 §5.8）。
+#[tauri::command]
+fn kill_core(state: State<'_, CoreProc>) -> Result<(), String> {
+    let pid = state.0.lock().unwrap().take().ok_or("実行中の処理がありません")?;
+    let mut c = Command::new("taskkill");
+    c.args(["/T", "/F", "/PID", &pid.to_string()]);
+    #[cfg(windows)]
+    c.creation_flags(CREATE_NO_WINDOW);
+    let out = c.output().map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(()) } else { Err("停止できませんでした".into()) }
 }
 
 /// コアを起動し stdout を丸ごと返す（編集画面の detect-grid / verify 用）。
@@ -212,10 +232,12 @@ fn write_text(path: String, content: String) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(CoreProc(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             run_core,
             run_core_capture,
+            kill_core,
             pick_folder,
             pick_image,
             pick_json,

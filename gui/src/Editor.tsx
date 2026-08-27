@@ -2,7 +2,7 @@
 // この画面が行うのはテンプレート JSON の読み書きと画像表示だけ。
 // 枠候補の生成（罫線検出・等分割）はコアの detect-grid を呼ぶ（§6.9）。
 // 座標はすべて「ページ座標」で編集し、保存時に表裏の面ローカルへ変換する。
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./bridge";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Rect = { x: number; y: number; w: number; h: number };
