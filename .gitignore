@@ -22,10 +22,15 @@ app.log
 error.log
 
 # --- 資格情報 -------------------------------------------------------
+# GCP のサービスアカウント鍵は <project-id>-<hash>.json という名前で降ってくる。
+# service-account*.json のような名前ベースの列挙では取りこぼすため、
+# リポジトリ直下の .json をまとめて除外する（schema/ 配下は対象外）。
+/*.json
 *.key
 *.pem
 service-account*.json
 credentials*.json
+*-????????????.json
 .env
 .env.*
 
