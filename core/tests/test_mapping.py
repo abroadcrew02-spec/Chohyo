@@ -35,13 +35,13 @@ def text(result, fid):
 
 
 def test_person_fields(result):
-    assert text(result, "person_郵便番号1") == "262-0032"
-    # 紙には「071-8111」と書かれているが Vision は末尾の「11」を検出しない
-    # （word='071-81' で終端・最後の1は conf 0.66 → 閾値 0.85 なら〓化され目検へ回る）。
-    # このテストは第1層（配置の正しさ）の検証であり、第2層（読取内容の正しさ）は
-    # 保証対象外（要件 §8）。期待値は Vision の実際の読取値とする。
-    assert text(result, "person_郵便番号2") == "071-81"
+    # 郵便番号は住所ブロックへ統合（page2 で記入位置がラベル右/ラベル下の
+    # 2流儀あることが判明し、独立列の前提が崩れたため。設計 D-24）。
+    # 住所値の先頭に郵便番号がそのまま転記される。
+    assert text(result, "person_住所1").startswith("262-0032")
     assert "千葉県千葉市" in text(result, "person_住所1")
+    # 末尾「071-8111→071-81」は Vision の読み落とし（第2層・保証対象外）
+    assert text(result, "person_住所2").startswith("071-81")
     assert "北海道旭川市" in text(result, "person_住所2")
     assert "アブロード" in text(result, "person_会社名屋号")
     assert text(result, "person_ふりがな") == "じょうにしりょう"

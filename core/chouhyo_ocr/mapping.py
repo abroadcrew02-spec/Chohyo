@@ -58,20 +58,48 @@ def symbols_from_response(resp: dict) -> list[Symbol]:
 
 
 def to_face_local(face: Face, symbols: Iterable[Symbol]) -> list[Symbol]:
-    """ページ座標の symbol を面ローカルへ変換する（source.rect 内のみ・平行移動）。"""
+    """ページ座標の symbol を面ローカルへ変換する（source.rect 内のみ・平行移動）。
+
+    除外領域（要件 §5.2: 抽出対象外）内の symbol はここで捨てる。実送信では
+    マスク済み画像を送るため応答に現れないが、マスク前の応答を replay した
+    場合も同じ結果になるようにする。
+    """
     r = face.source_rect
     out = []
     for s in symbols:
-        if r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h:
-            out.append(Symbol(s.text, s.x - r.x, s.y - r.y, s.conf))
+        if not (r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h):
+            continue
+        lx, ly = s.x - r.x, s.y - r.y
+        if any(e.x <= lx < e.x + e.w and e.y <= ly < e.y + e.h
+               for e in face.exclusions):
+            continue
+        out.append(Symbol(s.text, lx, ly, s.conf))
     return out
 
 
+_LINE_GAP = 30.0  # 行の切れ目とみなす y ギャップ（px・300dpi）※実物で調整
+
+
 def _cell_text(cell: CellSpec, syms: list[Symbol]) -> str:
-    """y → x の順で連結（設計 §6.4）。1行内の y ゆらぎはセル高の1/3で量子化 ※解釈。"""
-    quantum = max(1.0, cell.rect.h / 3)
-    ordered = sorted(syms, key=lambda s: (round(s.y / quantum), s.x))
-    return "".join(s.text for s in ordered)
+    """y → x の順で連結（設計 §6.4）。
+
+    行の分離は固定量子化でなく y ギャップのクラスタリングで行う。
+    住所欄のように「郵便番号の行＋住所の行」を1セルで持つ場合、
+    固定量子化では行の境界と量子境界がずれて文字順が混ざる（実データで確認）。
+    """
+    if not syms:
+        return ""
+    by_y = sorted(syms, key=lambda s: s.y)
+    lines: list[list[Symbol]] = [[by_y[0]]]
+    for s in by_y[1:]:
+        if s.y - lines[-1][-1].y > _LINE_GAP:
+            lines.append([s])
+        else:
+            lines[-1].append(s)
+    out = []
+    for line in lines:
+        out.extend(sorted(line, key=lambda s: s.x))
+    return "".join(s.text for s in out)
 
 
 def assign(

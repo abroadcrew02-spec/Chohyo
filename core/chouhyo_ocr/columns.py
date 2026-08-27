@@ -18,7 +18,7 @@ META_COLUMNS: tuple[str, ...] = (
     "ステータス",
 )
 
-V1_EXPECTED_TOTAL = 220  # 管理6＋本人14＋家族60＋明細140（要件 §5.6 v3.10）
+V1_EXPECTED_TOTAL = 218  # 管理6＋本人12＋家族60＋明細140（要件 §5.6 v3.11・郵便番号は住所へ統合）
 
 
 def derive_columns(template: Template) -> list[str]:

@@ -5,21 +5,23 @@
 *.pdf
 
 # 中間データ（読取値・信頼度・展開画像を含む）
-/workdir/
-/intermediate/
+workdir/
+intermediate/
 *.sqlite
 *.sqlite3
 *.db
 
 # 出力（帳票の記入値そのもの）
-/output/
+output/
 output_*.xlsx
 output_*.csv
 
 # ログ（記入値は書かない設計だが、事故時の保険として除外）
-/logs/
+logs/
 app.log
 error.log
+
+*.dpapi
 
 # --- 資格情報 -------------------------------------------------------
 # GCP のサービスアカウント鍵は <project-id>-<hash>.json という名前で降ってくる。
