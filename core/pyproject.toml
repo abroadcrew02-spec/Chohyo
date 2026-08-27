@@ -1,0 +1,9 @@
+[project]
+name = "chouhyo-ocr"
+version = "0.1.0"
+description = "帳票OCRツール Python コア（CLI）"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

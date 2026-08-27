@@ -1,0 +1,128 @@
+"""symbol → セル割付・空行判定・枠外分類（設計 §6.4・§6.5）。
+
+割付は word ではなく **symbol（1文字）単位**。Vision はセルを跨いで数字を
+1 word に結合することがあり（S2 ドライランで日付と金額の混線を実測）、
+文字ごとに物理位置で振り直せば結合の影響を受けない。
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Iterable, Mapping, Sequence
+
+from .template import CellSpec, Face
+
+
+@dataclass(frozen=True)
+class Symbol:
+    """1文字。座標は文脈による（ページ座標 or 面ローカル）。x/y は中心点。"""
+    text: str
+    x: float
+    y: float
+    conf: float
+
+
+@dataclass(frozen=True)
+class CellContent:
+    """1物理セルへ割り付いた読取内容。"""
+    text: str
+    conf_min: float | None  # symbol が無ければ None
+
+
+@dataclass(frozen=True)
+class MappingResult:
+    cells: Mapping[str, CellContent]          # field_id → 内容（symbol 有りのセルのみ）
+    empty_rows: frozenset[tuple[str, int]]    # (table_id, row_no)
+    unassigned_below_table: int               # D-06 の入力
+    unassigned_other: int                     # D-15 の入力
+
+
+def symbols_from_response(resp: dict) -> list[Symbol]:
+    """DOCUMENT_TEXT_DETECTION 応答（MessageToDict 形式）→ ページ座標の symbol 列。"""
+    out: list[Symbol] = []
+    fta = resp.get("fullTextAnnotation") or {}
+    for page in fta.get("pages", []):
+        for block in page.get("blocks", []):
+            for para in block.get("paragraphs", []):
+                for word in para.get("words", []):
+                    for sym in word.get("symbols", []):
+                        vs = sym["boundingBox"]["vertices"]
+                        xs = [v.get("x", 0) for v in vs]
+                        ys = [v.get("y", 0) for v in vs]
+                        out.append(Symbol(
+                            text=sym["text"],
+                            x=(min(xs) + max(xs)) / 2,
+                            y=(min(ys) + max(ys)) / 2,
+                            conf=sym.get("confidence", 0.0),
+                        ))
+    return out
+
+
+def to_face_local(face: Face, symbols: Iterable[Symbol]) -> list[Symbol]:
+    """ページ座標の symbol を面ローカルへ変換する（source.rect 内のみ・平行移動）。"""
+    r = face.source_rect
+    out = []
+    for s in symbols:
+        if r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h:
+            out.append(Symbol(s.text, s.x - r.x, s.y - r.y, s.conf))
+    return out
+
+
+def _cell_text(cell: CellSpec, syms: list[Symbol]) -> str:
+    """y → x の順で連結（設計 §6.4）。1行内の y ゆらぎはセル高の1/3で量子化 ※解釈。"""
+    quantum = max(1.0, cell.rect.h / 3)
+    ordered = sorted(syms, key=lambda s: (round(s.y / quantum), s.x))
+    return "".join(s.text for s in ordered)
+
+
+def assign(
+    cells: Sequence[CellSpec],
+    symbols_by_face: Mapping[str, Sequence[Symbol]],
+    faces: Sequence[Face],
+) -> MappingResult:
+    """面ローカル symbol をセルへ割り付け、空行と枠外を分類する。"""
+    per_cell: dict[str, list[Symbol]] = {}
+    below = other = 0
+
+    cells_by_face: dict[str, list[CellSpec]] = {}
+    for c in cells:
+        cells_by_face.setdefault(c.face_id, []).append(c)
+    face_by_id = {f.face_id: f for f in faces}
+
+    for face_id, syms in symbols_by_face.items():
+        face_cells = cells_by_face.get(face_id, [])
+        zones = face_by_id[face_id].table_zones if face_id in face_by_id else ()
+        for s in syms:
+            hit = None
+            for c in face_cells:
+                r = c.rect
+                if r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h:
+                    hit = c
+                    break
+            if hit is not None:
+                per_cell.setdefault(hit.field_id, []).append(s)
+            elif any(z.x_min <= s.x < z.x_max and s.y >= z.bottom for z in zones):
+                below += 1  # テーブル最終行より下＝行数超過の候補（D-06）
+            else:
+                other += 1  # 印字ラベル等を含む枠外（D-15。ベースラインが高い点に注意）
+
+    # 空行判定: 行内の text セルに symbol がひとつも無い行（choice の印字は数えない・§6.5）
+    rows: dict[tuple[str, int], bool] = {}
+    for c in cells:
+        if c.table_id is None or c.kind != "text":
+            continue
+        key = (c.table_id, c.row_no)
+        rows[key] = rows.get(key, False) or bool(per_cell.get(c.field_id))
+    empty = frozenset(k for k, has in rows.items() if not has)
+
+    index = {c.field_id: c for c in cells}
+    contents = {
+        fid: CellContent(text=_cell_text(index[fid], syms),
+                         conf_min=min(s.conf for s in syms))
+        for fid, syms in per_cell.items()
+    }
+    return MappingResult(
+        cells=contents,
+        empty_rows=empty,
+        unassigned_below_table=below,
+        unassigned_other=other,
+    )
