@@ -86,15 +86,30 @@ def binarize_face(gray: "np.ndarray", face: Face) -> "np.ndarray":
 
 
 def _deskew_angle(binary: "np.ndarray") -> float:
-    """行射影の分散が最大になる角度（degree）。同点は 0° 優先。"""
-    small = binary[::4, ::4]
+    """行射影の分散が最大になる角度（degree）。同点は 0° 優先。
+
+    粗（0.75°刻み）→細（最良点の±0.5°を 0.25°刻み）の2段探索。
+    全域 0.25°刻み（25回転）と同じ 0.25° 分解能を 13回転で得る。
+    """
+    small = binary[::6, ::6]
     im = Image.fromarray(small.astype(np.uint8) * 255)
-    best_angle, best_var = 0.0, -1.0
-    for a in np.arange(-3.0, 3.0 + 1e-9, 0.25):
+
+    def var_at(a: float) -> float:
         rot = np.asarray(im.rotate(a, expand=False, fillcolor=0)) > 0
-        var = float(np.var(rot.sum(axis=1)))
-        if var > best_var + 1e-6 or (abs(var - best_var) <= 1e-6 and abs(a) < abs(best_angle)):
-            best_var, best_angle = var, float(a)
+        return float(np.var(rot.sum(axis=1)))
+
+    best_angle, best_var = 0.0, var_at(0.0)
+    for a in np.arange(-3.0, 3.0 + 1e-9, 0.75):
+        if abs(a) < 1e-9:
+            continue
+        v = var_at(float(a))
+        if v > best_var + 1e-6:
+            best_var, best_angle = v, float(a)
+    center = best_angle
+    for a in np.arange(center - 0.5, center + 0.5 + 1e-9, 0.25):
+        v = var_at(float(a))
+        if v > best_var + 1e-6 or (abs(v - best_var) <= 1e-6 and abs(a) < abs(best_angle)):
+            best_var, best_angle = v, float(a)
     return best_angle
 
 

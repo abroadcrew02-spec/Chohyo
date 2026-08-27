@@ -64,6 +64,10 @@ CREATE TABLE IF NOT EXISTS run(
   started_at REAL NOT NULL,
   config TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS source_file(
+  hash TEXT PRIMARY KEY,
+  name TEXT NOT NULL
+);
 """
 
 
@@ -188,6 +192,18 @@ class Store:
     def era_scores(self, page_id: str) -> dict[str, dict]:
         return {fid: json.loads(s) for fid, s in self.con.execute(
             "SELECT field_id, scores FROM era_score WHERE page_id=?", (page_id,))}
+
+    def known_source(self, file_hash: str) -> str | None:
+        """同一内容の取り込み済みファイル名（要件 §5.1 Could の二重投入検知）。"""
+        row = self.con.execute(
+            "SELECT name FROM source_file WHERE hash=?", (file_hash,)).fetchone()
+        return row[0] if row else None
+
+    def record_source(self, file_hash: str, name: str) -> None:
+        self.con.execute(
+            "INSERT OR REPLACE INTO source_file(hash, name) VALUES(?,?)",
+            (file_hash, name))
+        self.con.commit()
 
     def record_run(self, run_id: str, config_json: str) -> None:
         self.con.execute(

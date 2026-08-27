@@ -1,6 +1,7 @@
 """`run` の処理フロー F1〜F9（設計 §3.3）と `remap`・`render`（§6.7）。"""
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import time
@@ -99,6 +100,14 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
     # --- F1/F2: 列挙・展開（画像を書き終えてから page 行 INSERT・§12-C9）---
     taken: set[str] = set()
     for source in ingest.list_inputs(input_dir):
+        # 同一内容の二重投入検知（要件 §5.1 Could）: 別名で同じ中身なら追加しない
+        digest = hashlib.sha1(source.read_bytes()).hexdigest()
+        seen_as = store.known_source(digest)
+        if seen_as is not None and seen_as != source.name:
+            log.info("skip_duplicate_content", source_file=source.name, value=seen_as)
+            progress({"event": "skip_duplicate", "file": source.name,
+                      "same_as": seen_as})
+            continue
         try:
             page_images = ingest.expand(source, template.render_dpi, pages_dir)
         except ingest.IngestError as e:
@@ -108,6 +117,7 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
             store.set_status(pid, render_rows.STATUS_EXPAND_FAILED)
             log.error("expand_failed", source_file=source.name, error_code=e.code)
             continue
+        store.record_source(digest, source.name)
         for i, img_path in enumerate(page_images, start=1):
             pid = ingest.page_id_for(source, i, taken)
             taken.add(pid)

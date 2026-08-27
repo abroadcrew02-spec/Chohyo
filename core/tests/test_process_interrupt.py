@@ -26,15 +26,18 @@ PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
 pytestmark = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答が無い環境")
 
-N_PAGES = 12  # 位置合わせ（deskew）が1枚 約0.5秒 → kill を差し込む窓を作る
+N_PAGES = 40  # 位置合わせが1枚 約0.2秒（2段探索後）→ kill を差し込む窓を作る
 
 
 @pytest.fixture()
 def env(tmp_path):
     inp = tmp_path / "input"; inp.mkdir()
     resp = tmp_path / "resp"; resp.mkdir()
+    base = PAGE_PNG.read_bytes()
     for i in range(1, N_PAGES + 1):
-        shutil.copy(PAGE_PNG, inp / f"page{i:02d}.png")
+        # 同一内容だと二重取り込み検知（要件 §5.1 Could）に食われるため
+        # IEND 後に1バイト足して内容をユニーク化する（PIL は無視する）
+        (inp / f"page{i:02d}.png").write_bytes(base + bytes([i]))
         shutil.copy(RESP, resp / f"page{i:02d}_p0001.json")
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({
@@ -46,19 +49,22 @@ def env(tmp_path):
     return tmp_path, inp, resp, cfg
 
 
-def run_cli(cfg, inp, resp):
+def run_cli(cfg, inp, resp, tmp):
+    # stdout は必ずファイルへ。PIPE を読まずに待つとページ数次第で
+    # パイプバッファが詰まりコア側の print がブロックする（perf 計測で実測）
+    out = open(tmp / "run.out", "wb")
+    err = open(tmp / "run.err", "wb")
     return subprocess.Popen(
         [str(PYTHON), "-X", "utf8", "-m", "chouhyo_ocr.cli",
          "--config", str(cfg), "run", "--input", str(inp), "--replay", str(resp)],
-        cwd=app_root() / "core",
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cwd=app_root() / "core", stdout=out, stderr=err)
 
 
 def test_kill_midway_then_resume_completes(env):
     tmp, inp, resp, cfg = env
 
     # 1回目: 数ページ進んだところで強制終了（taskkill /T /F 相当）
-    proc = run_cli(cfg, inp, resp)
+    proc = run_cli(cfg, inp, resp, tmp)
     db = tmp / "wd" / "intermediate.sqlite"
     deadline = time.time() + 60
     while time.time() < deadline:
@@ -68,7 +74,7 @@ def test_kill_midway_then_resume_completes(env):
                 done = con.execute(
                     "SELECT COUNT(*) FROM page WHERE state='done'").fetchone()[0]
                 con.close()
-                if done >= 2:
+                if done >= 3:
                     break
             except sqlite3.OperationalError:
                 pass  # スキーマ作成中
