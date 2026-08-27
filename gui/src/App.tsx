@@ -1,51 +1,46 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
+// GUI は2画面で構成する（要件 §5.10）: 実行画面とテンプレート編集画面。
+// 編集画面に未保存の変更がある状態でのタブ切替は破棄確認を出す（v3.7 追加分）。
+import { useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import Editor from "./Editor";
+import RunScreen from "./RunScreen";
 import "./App.css";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [tab, setTab] = useState<"run" | "editor">("run");
+  const editorDirty = useRef(false);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    const un = getCurrentWindow().onCloseRequested((e) => {
+      if (editorDirty.current &&
+          !window.confirm("テンプレートに未保存の編集があります。破棄して終了しますか？")) {
+        e.preventDefault();
+      }
+    });
+    return () => { un.then((f) => f()); };
+  }, []);
+
+  const switchTo = (t: "run" | "editor") => {
+    if (tab === "editor" && t !== "editor" && editorDirty.current &&
+        !window.confirm("テンプレートに未保存の編集があります。破棄してよいですか？")) {
+      return;
+    }
+    setTab(t);
+  };
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <div className="app">
+      <nav className="tabs">
+        <button className={tab === "run" ? "active" : ""}
+          onClick={() => switchTo("run")}>実行</button>
+        <button className={tab === "editor" ? "active" : ""}
+          onClick={() => switchTo("editor")}>テンプレート編集</button>
+      </nav>
+      {/* 編集画面はマウントを維持し、タブ切替で状態を失わない */}
+      <div style={{ display: tab === "run" ? "block" : "none" }}><RunScreen /></div>
+      <div className="editor-wrap" style={{ display: tab === "editor" ? "flex" : "none" }}>
+        <Editor onDirty={(d) => { editorDirty.current = d; }} />
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+    </div>
   );
 }
-
-export default App;

@@ -1,0 +1,507 @@
+// テンプレート編集画面（設計 §7.2・要件 §5.10）。
+// この画面が行うのはテンプレート JSON の読み書きと画像表示だけ。
+// 枠候補の生成（罫線検出・等分割）はコアの detect-grid を呼ぶ（§6.9）。
+// 座標はすべて「ページ座標」で編集し、保存時に表裏の面ローカルへ変換する。
+import { invoke } from "@tauri-apps/api/core";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+type Rect = { x: number; y: number; w: number; h: number };
+type Mark = { value: string; rect: Rect };
+type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rect; marks: Mark[] };
+type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
+type Column = { name: string; x_offset: number; width: number; kind: "text" | "choice";
+                subfields: string; marks: ColMark[] };
+type Block = { x: number; y: number; rows: number };
+type Table = { uid: string; table_id: string; row_pitch: number; row_height: number;
+               blocks: Block[]; columns: Column[] };
+type Excl = { uid: string; id: string; rect: Rect };
+type Sel = { type: "field" | "table" | "excl"; uid: string } | null;
+type Tool = "select" | "field" | "excl" | "table" | "split";
+
+let seq = 0;
+const uid = () => `u${++seq}`;
+
+export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
+  const [splitY, setSplitY] = useState(1880);
+  const [fields, setFields] = useState<Field[]>([]);
+  const [tables, setTables] = useState<Table[]>([]);
+  const [excls, setExcls] = useState<Excl[]>([]);
+  const [sel, setSel] = useState<Sel>(null);
+  const [tool, setTool] = useState<Tool>("select");
+  const [zoom, setZoom] = useState(0.35);
+  const [pan, setPan] = useState({ x: 10, y: 10 });
+  const [dirtyState, setDirtyState] = useState(false);
+  const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始");
+  const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
+  const [genRows, setGenRows] = useState(5);
+  const [genCols, setGenCols] = useState(4);
+  const [genMode, setGenMode] = useState<"ruled" | "uniform">("ruled");
+  const [imgPath, setImgPath] = useState("");
+  const drag = useRef<{ mode: string; start: { x: number; y: number };
+                        orig?: Rect; extra?: { x: number; y: number } } | null>(null);
+
+  const markDirty = useCallback((d: boolean) => { setDirtyState(d); onDirty(d); }, [onDirty]);
+  const confirmDiscard = () =>
+    !dirtyState || window.confirm("未保存の編集があります。破棄してよいですか？");
+
+  // ---------- 描画 ----------
+  const draw = useCallback(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const ctx = cv.getContext("2d")!;
+    const { width, height } = cv.getBoundingClientRect();
+    cv.width = width; cv.height = height;
+    ctx.fillStyle = "#1c1f26"; ctx.fillRect(0, 0, width, height);
+    ctx.save();
+    ctx.translate(pan.x, pan.y); ctx.scale(zoom, zoom);
+    if (imgRef.current) ctx.drawImage(imgRef.current, 0, 0);
+    const W = imgSize?.w ?? 2490;
+    const px = 1 / zoom;
+
+    // 表裏分割線
+    ctx.strokeStyle = "#ff5577"; ctx.lineWidth = 3 * px;
+    ctx.beginPath(); ctx.moveTo(0, splitY); ctx.lineTo(W, splitY); ctx.stroke();
+
+    const rect = (r: Rect, stroke: string, fill?: string) => {
+      if (fill) { ctx.fillStyle = fill; ctx.fillRect(r.x, r.y, r.w, r.h); }
+      ctx.strokeStyle = stroke; ctx.strokeRect(r.x, r.y, r.w, r.h);
+    };
+    ctx.lineWidth = 2 * px;
+    for (const e of excls)
+      rect(e.rect, sel?.uid === e.uid ? "#ffd54a" : "#888",
+           "rgba(120,120,120,0.35)");
+    for (const f of fields) {
+      rect(f.rect, sel?.uid === f.uid ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+      for (const m of f.marks) rect(m.rect, "#c586ff");
+      ctx.fillStyle = "#9fd8ff"; ctx.font = `${13 * px * 2}px sans-serif`;
+      ctx.fillText(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px);
+    }
+    for (const t of tables) {
+      const totalW = t.columns.length
+        ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
+      for (const b of t.blocks) {
+        const bh = t.row_pitch * (b.rows - 1) + t.row_height;
+        rect({ x: b.x, y: b.y, w: totalW, h: bh },
+             sel?.uid === t.uid ? "#ffd54a" : "#7ce38b");
+        ctx.strokeStyle = "rgba(124,227,139,0.55)"; ctx.lineWidth = px;
+        for (let i = 0; i < b.rows; i++) {
+          const top = b.y + t.row_pitch * i;
+          for (const c of t.columns)
+            ctx.strokeRect(b.x + c.x_offset, top, c.width, t.row_height);
+        }
+        ctx.lineWidth = 2 * px;
+      }
+      if (t.blocks[0]) {
+        ctx.fillStyle = "#7ce38b";
+        ctx.fillText(t.table_id, t.blocks[0].x, t.blocks[0].y - 8 * px);
+      }
+    }
+    if (pending) rect(pending, "#ff9f43");
+    ctx.restore();
+  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize]);
+
+  useEffect(() => { draw(); }, [draw]);
+  useEffect(() => {
+    const onResize = () => draw();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [draw]);
+
+  // ---------- 入出力 ----------
+  const loadImage = async () => {
+    if (!confirmDiscard()) return;
+    const p = await invoke<string | null>("pick_image");
+    if (!p) return;
+    const src = await invoke<string>("read_file_b64", { path: p });
+    const im = new Image();
+    im.onload = () => {
+      imgRef.current = im;
+      setImgSize({ w: im.naturalWidth, h: im.naturalHeight });
+      setImgPath(p); setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}`);
+      draw();
+    };
+    im.src = src;
+  };
+
+  const toEditorState = (t: any) => {
+    const fs: Field[] = []; const ts: Table[] = []; const es: Excl[] = [];
+    let sy = 0;
+    for (const face of t.faces) {
+      const oy = face.source.rect.y;
+      if (face.face_id === "back") sy = oy;
+      for (const e of face.exclusions ?? [])
+        es.push({ uid: uid(), id: e.id, rect: { ...e.rect, y: e.rect.y + oy } });
+      for (const f of face.fields ?? [])
+        fs.push({ uid: uid(), field_id: f.field_id, kind: f.kind,
+                  rect: { ...f.rect, y: f.rect.y + oy },
+                  marks: (f.choice_marks ?? []).map((m: any) =>
+                    ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })) });
+      for (const tb of face.tables ?? [])
+        ts.push({ uid: uid(), table_id: tb.table_id, row_pitch: tb.row_pitch,
+                  row_height: tb.row_height,
+                  blocks: tb.blocks.map((b: any) =>
+                    ({ x: b.origin.x, y: b.origin.y + oy, rows: b.rows })),
+                  columns: tb.columns.map((c: any) => ({
+                    name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
+                    subfields: (c.subfields ?? []).join(","),
+                    marks: c.choice_marks ?? [] })) });
+    }
+    setFields(fs); setTables(ts); setExcls(es); setSplitY(sy || 1880);
+  };
+
+  const loadTemplate = async () => {
+    if (!confirmDiscard()) return;
+    const p = await invoke<string | null>("pick_json", { save: false });
+    if (!p) return;
+    const text = await invoke<string>("read_text", { path: p });
+    toEditorState(JSON.parse(text));
+    markDirty(false); setMsg(`テンプレート読込: ${p}`);
+  };
+
+  const buildTemplate = () => {
+    const W = imgSize?.w ?? 2490; const H = imgSize?.h ?? 3510;
+    const face = (id: "front" | "back") => {
+      const [y0, y1] = id === "front" ? [0, splitY] : [splitY, H];
+      const inFace = (y: number) => y >= y0 && y < y1;
+      return {
+        face_id: id,
+        source: { page_offset: 0, rect: { x: 0, y: y0, w: W, h: y1 - y0 } },
+        exclusions: excls.filter((e) => inFace(e.rect.y)).map((e) => ({
+          id: e.id, rect: { ...e.rect, y: e.rect.y - y0 } })),
+        fields: fields.filter((f) => inFace(f.rect.y)).map((f) => ({
+          field_id: f.field_id, kind: f.kind,
+          rect: { ...f.rect, y: f.rect.y - y0 },
+          ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
+            value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
+        tables: tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y)).map((t) => ({
+          table_id: t.table_id, row_pitch: Math.round(t.row_pitch),
+          row_height: t.row_height,
+          blocks: t.blocks.map((b) => ({ origin: { x: b.x, y: b.y - y0 }, rows: b.rows })),
+          columns: t.columns.map((c) => ({
+            name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
+            ...(c.subfields.trim()
+              ? { subfields: c.subfields.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
+            ...(c.kind === "choice" ? { choice_marks: c.marks } : {}) })) })),
+      };
+    };
+    return {
+      schema_version: 1, template_id: "chouhyo-v1", render_dpi: 300,
+      image: { width: W, height: H }, record: { pages: 1 },
+      faces: [face("front"), face("back")],
+    };
+  };
+
+  const saveTemplate = async () => {
+    const p = await invoke<string | null>("pick_json", { save: true });
+    if (!p) return;
+    await invoke("write_text", { path: p, content: JSON.stringify(buildTemplate(), null, 2) });
+    markDirty(false);
+    // 保存物をコアで検証（§8-14: エディタの JSON をコアがそのまま読めること）
+    try {
+      const out = await invoke<string>("run_core_capture",
+        { args: ["verify", "--template", p] });
+      const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .find((e) => e && e.check === "template");
+      setMsg(tpl?.ok ? `保存＋コア検証 OK（${tpl.columns} 列）: ${p}`
+                     : `保存したがコア検証 NG: ${tpl?.error ?? "不明"}`);
+    } catch (e) { setMsg(`保存したがコア検証 NG: ${e}`); }
+  };
+
+  // ---------- 枠候補の生成（detect-grid）----------
+  const generate = async () => {
+    if (!pending) return;
+    const region = [pending.x, pending.y, pending.w, pending.h].map(Math.round).join(",");
+    try {
+      let args: string[];
+      if (genMode === "ruled") {
+        if (!imgPath) { setMsg("罫線検出には画像が必要。等分割へ切り替えるか画像を読み込む"); return; }
+        args = ["detect-grid", "--image", imgPath, "--region", region];
+      } else {
+        args = ["detect-grid", "--region", region, "--mode", "uniform",
+                "--rows", String(genRows), "--cols", String(genCols)];
+      }
+      const out = await invoke<string>("run_core_capture", { args });
+      const fit = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .find((e) => e && e.event === "detect_grid");
+      if (!fit?.ok) { setMsg(`検出不成立 → 等分割生成へ切り替え可: ${fit?.error ?? ""}`); return; }
+      const t: Table = {
+        uid: uid(), table_id: `table${tables.length + 1}`,
+        row_pitch: fit.row_pitch, row_height: fit.row_height,
+        blocks: [{ x: fit.origin_x, y: fit.origin_y, rows: fit.rows }],
+        columns: fit.columns.map((c: any, i: number) =>
+          ({ name: `列${i + 1}`, x_offset: c.x_offset, width: c.width,
+             kind: "text" as const, subfields: "", marks: [] })),
+      };
+      setTables((ts) => [...ts, t]); setSel({ type: "table", uid: t.uid });
+      setPending(null); markDirty(true);
+      setMsg(`枠候補を生成（${fit.mode}・${fit.rows}行・残差 ${fit.residual_px}px）`);
+    } catch (e) { setMsg(`detect-grid 失敗: ${e}`); }
+  };
+
+  // ---------- マウス ----------
+  const toPage = (e: React.MouseEvent) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    return { x: (e.clientX - r.left - pan.x) / zoom, y: (e.clientY - r.top - pan.y) / zoom };
+  };
+  const hit = (p: { x: number; y: number }): Sel => {
+    const inR = (r: Rect) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
+    for (const f of fields) if (inR(f.rect)) return { type: "field", uid: f.uid };
+    for (const e of excls) if (inR(e.rect)) return { type: "excl", uid: e.uid };
+    for (const t of tables) {
+      const w = t.columns.length ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
+      for (const b of t.blocks)
+        if (inR({ x: b.x, y: b.y, w, h: t.row_pitch * (b.rows - 1) + t.row_height }))
+          return { type: "table", uid: t.uid };
+    }
+    return null;
+  };
+  const selRect = (): Rect | null => {
+    if (!sel) return null;
+    if (sel.type === "field") return fields.find((f) => f.uid === sel.uid)?.rect ?? null;
+    if (sel.type === "excl") return excls.find((e) => e.uid === sel.uid)?.rect ?? null;
+    return null;
+  };
+
+  const onDown = (e: React.MouseEvent) => {
+    const p = toPage(e);
+    if (e.button === 1 || e.altKey) {
+      drag.current = { mode: "pan", start: { x: e.clientX, y: e.clientY },
+                       extra: { ...pan } };
+      return;
+    }
+    if (tool === "split") { setSplitY(Math.round(p.y)); markDirty(true); return; }
+    if (tool === "select") {
+      const h = hit(p);
+      setSel(h);
+      if (h) {
+        const r = selRect();
+        if (r && h.type !== "table") {
+          const nearBR = Math.abs(p.x - (r.x + r.w)) < 12 / zoom &&
+                         Math.abs(p.y - (r.y + r.h)) < 12 / zoom;
+          drag.current = { mode: nearBR ? "resize" : "move", start: p, orig: { ...r } };
+        } else if (h.type === "table") {
+          const t = tables.find((x) => x.uid === h.uid)!;
+          drag.current = { mode: "moveTable", start: p,
+                           extra: { x: t.blocks[0].x, y: t.blocks[0].y } };
+        }
+      }
+      return;
+    }
+    drag.current = { mode: `draw-${tool}`, start: p };
+  };
+
+  const onMove = (e: React.MouseEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const p = toPage(e);
+    if (d.mode === "pan" && d.extra) {
+      setPan({ x: d.extra.x + (e.clientX - d.start.x), y: d.extra.y + (e.clientY - d.start.y) });
+      return;
+    }
+    const dx = p.x - d.start.x, dy = p.y - d.start.y;
+    const norm = (a: { x: number; y: number }, b: { x: number; y: number }): Rect => ({
+      x: Math.round(Math.min(a.x, b.x)), y: Math.round(Math.min(a.y, b.y)),
+      w: Math.round(Math.abs(b.x - a.x)), h: Math.round(Math.abs(b.y - a.y)) });
+    if (d.mode.startsWith("draw-")) { setPending(norm(d.start, p)); return; }
+    if (!sel) return;
+    if (d.mode === "move" && d.orig) {
+      const r = { ...d.orig, x: Math.round(d.orig.x + dx), y: Math.round(d.orig.y + dy) };
+      applySelRect(r);
+    } else if (d.mode === "resize" && d.orig) {
+      applySelRect({ ...d.orig, w: Math.max(5, Math.round(d.orig.w + dx)),
+                     h: Math.max(5, Math.round(d.orig.h + dy)) });
+    } else if (d.mode === "moveTable" && d.extra) {
+      const t = tables.find((x) => x.uid === sel.uid);
+      if (t) {
+        const ddx = Math.round(d.extra.x + dx) - t.blocks[0].x;
+        const ddy = Math.round(d.extra.y + dy) - t.blocks[0].y;
+        updateTable(sel.uid, { blocks: t.blocks.map((b) =>
+          ({ ...b, x: b.x + ddx, y: b.y + ddy })) });
+      }
+    }
+  };
+
+  const onUp = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d || !d.mode.startsWith("draw-") || !pending) return;
+    if (pending.w < 8 || pending.h < 8) { setPending(null); return; }
+    if (d.mode === "draw-field") {
+      const f: Field = { uid: uid(), field_id: `field_${fields.length + 1}`,
+                         kind: "text", rect: pending, marks: [] };
+      setFields((fs) => [...fs, f]); setSel({ type: "field", uid: f.uid });
+      setPending(null); markDirty(true);
+    } else if (d.mode === "draw-excl") {
+      const x: Excl = { uid: uid(), id: `excl_${excls.length + 1}`, rect: pending };
+      setExcls((es) => [...es, x]); setSel({ type: "excl", uid: x.uid });
+      setPending(null); markDirty(true);
+    }
+    // draw-table は pending を残し、サイドパネルの「枠候補を生成」で確定する
+  };
+
+  const onWheel = (e: React.WheelEvent) => {
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const r = canvasRef.current!.getBoundingClientRect();
+    const cx = e.clientX - r.left, cy = e.clientY - r.top;
+    setPan((p) => ({ x: cx - (cx - p.x) * factor, y: cy - (cy - p.y) * factor }));
+    setZoom((z) => Math.min(3, Math.max(0.05, z * factor)));
+  };
+
+  // ---------- 選択対象の更新 ----------
+  const applySelRect = (r: Rect) => {
+    if (!sel) return;
+    if (sel.type === "field")
+      setFields((fs) => fs.map((f) => f.uid === sel.uid ? { ...f, rect: r } : f));
+    if (sel.type === "excl")
+      setExcls((es) => es.map((x) => x.uid === sel.uid ? { ...x, rect: r } : x));
+    markDirty(true);
+  };
+  const updateField = (u: string, patch: Partial<Field>) => {
+    setFields((fs) => fs.map((f) => f.uid === u ? { ...f, ...patch } : f)); markDirty(true);
+  };
+  const updateTable = (u: string, patch: Partial<Table>) => {
+    setTables((ts) => ts.map((t) => t.uid === u ? { ...t, ...patch } : t)); markDirty(true);
+  };
+  const removeSel = () => {
+    if (!sel) return;
+    if (sel.type === "field") setFields((fs) => fs.filter((f) => f.uid !== sel.uid));
+    if (sel.type === "excl") setExcls((es) => es.filter((e) => e.uid !== sel.uid));
+    if (sel.type === "table") setTables((ts) => ts.filter((t) => t.uid !== sel.uid));
+    setSel(null); markDirty(true);
+  };
+  const genFieldMarks = (f: Field, values: string) => {
+    const vs = values.split(",").map((s) => s.trim()).filter(Boolean);
+    const h = Math.floor(f.rect.h / Math.max(vs.length, 1));
+    updateField(f.uid, { marks: vs.map((v, i) => ({
+      value: v, rect: { x: f.rect.x + 4, y: f.rect.y + i * h + 2,
+                        w: Math.max(8, f.rect.w - 8), h: Math.max(8, h - 4) } })) });
+  };
+
+  // ---------- サイドパネル ----------
+  const panel = () => {
+    if (pending && tool === "table") return (
+      <div className="panel">
+        <h3>枠候補の生成</h3>
+        <label>方式
+          <select value={genMode} onChange={(e) => setGenMode(e.target.value as any)}>
+            <option value="ruled">罫線の自動検出</option>
+            <option value="uniform">等分割</option>
+          </select></label>
+        {genMode === "uniform" && (<>
+          <label>行数 <input type="number" value={genRows}
+            onChange={(e) => setGenRows(+e.target.value)} /></label>
+          <label>列数 <input type="number" value={genCols}
+            onChange={(e) => setGenCols(+e.target.value)} /></label></>)}
+        <button className="primary" onClick={generate}>生成</button>
+        <button onClick={() => setPending(null)}>取消</button>
+      </div>);
+    if (!sel) return <div className="panel"><h3>未選択</h3>
+      <p>ツールを選び、キャンバスでドラッグ。Alt+ドラッグ=パン／ホイール=ズーム</p></div>;
+    if (sel.type === "field") {
+      const f = fields.find((x) => x.uid === sel.uid);
+      if (!f) return null;
+      return (
+        <div className="panel">
+          <h3>単発欄</h3>
+          <label>field_id <input value={f.field_id}
+            onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
+          <label>種別
+            <select value={f.kind}
+              onChange={(e) => updateField(f.uid, { kind: e.target.value as any })}>
+              <option value="text">text（文字）</option>
+              <option value="choice">choice（選択式）</option>
+            </select></label>
+          {f.kind === "choice" && (
+            <label>マーク値（縦積みで自動生成）
+              <input placeholder="昭,平,令"
+                defaultValue={f.marks.map((m) => m.value).join(",")}
+                onBlur={(e) => genFieldMarks(f, e.target.value)} /></label>)}
+          <div className="mono">x:{f.rect.x} y:{f.rect.y} w:{f.rect.w} h:{f.rect.h}</div>
+          <button onClick={removeSel}>削除</button>
+        </div>);
+    }
+    if (sel.type === "excl") {
+      const x = excls.find((e) => e.uid === sel.uid);
+      if (!x) return null;
+      return (
+        <div className="panel">
+          <h3>除外領域</h3>
+          <label>id <input value={x.id} onChange={(e) => {
+            setExcls((es) => es.map((v) => v.uid === x.uid ? { ...v, id: e.target.value } : v));
+            markDirty(true); }} /></label>
+          <div className="mono">x:{x.rect.x} y:{x.rect.y} w:{x.rect.w} h:{x.rect.h}</div>
+          <button onClick={removeSel}>削除</button>
+        </div>);
+    }
+    const t = tables.find((x) => x.uid === sel.uid);
+    if (!t) return null;
+    return (
+      <div className="panel">
+        <h3>繰り返し欄</h3>
+        <label>table_id <input value={t.table_id}
+          onChange={(e) => updateTable(t.uid, { table_id: e.target.value })} /></label>
+        <label>行ピッチ <input type="number" value={t.row_pitch}
+          onChange={(e) => updateTable(t.uid, { row_pitch: +e.target.value })} /></label>
+        <label>行高 <input type="number" value={t.row_height}
+          onChange={(e) => updateTable(t.uid, { row_height: +e.target.value })} /></label>
+        {t.blocks.map((b, i) => (
+          <label key={i}>ブロック{i + 1} 行数 <input type="number" value={b.rows}
+            onChange={(e) => updateTable(t.uid, { blocks: t.blocks.map((v, j) =>
+              j === i ? { ...v, rows: +e.target.value } : v) })} /></label>))}
+        <button onClick={() => updateTable(t.uid, { blocks: [...t.blocks,
+          { ...t.blocks[t.blocks.length - 1],
+            x: t.blocks[t.blocks.length - 1].x + 1020 }] })}>右ブロック追加（複製）</button>
+        <h4>列</h4>
+        {t.columns.map((c, i) => (
+          <div className="colrow" key={i}>
+            <input className="w8" value={c.name} title="列名"
+              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                j === i ? { ...v, name: e.target.value } : v) })} />
+            <input className="w4" type="number" value={c.x_offset} title="x_offset"
+              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                j === i ? { ...v, x_offset: +e.target.value } : v) })} />
+            <input className="w4" type="number" value={c.width} title="width"
+              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                j === i ? { ...v, width: +e.target.value } : v) })} />
+            <select value={c.kind}
+              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                j === i ? { ...v, kind: e.target.value as any } : v) })}>
+              <option value="text">text</option><option value="choice">choice</option>
+            </select>
+            <input className="w6" placeholder="subfields（年,月,日）" value={c.subfields}
+              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                j === i ? { ...v, subfields: e.target.value } : v) })} />
+            <button onClick={() => updateTable(t.uid,
+              { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
+          </div>))}
+        <button onClick={removeSel}>テーブル削除</button>
+        <p className="note">choice 列のマークは保存 JSON を直接編集で調整可（v1 縮退範囲）</p>
+      </div>);
+  };
+
+  return (
+    <div className="editor">
+      <div className="toolbar">
+        <button onClick={loadImage}>画像を読み込む</button>
+        <button onClick={loadTemplate}>テンプレートを開く</button>
+        <button className="primary" onClick={saveTemplate}>保存＋検証</button>
+        <span className="sep" />
+        {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => (
+          <button key={t} className={tool === t ? "active" : ""}
+            onClick={() => setTool(t)}>
+            {{ select: "選択", field: "単発欄", excl: "除外", table: "テーブル", split: "分割線" }[t]}
+          </button>))}
+        <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
+      </div>
+      <div className="editor-body">
+        <canvas ref={canvasRef} className="canvas"
+          onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
+          onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
+        {panel()}
+      </div>
+    </div>
+  );
+}

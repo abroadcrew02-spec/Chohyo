@@ -15,5 +15,18 @@ def app_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def project_root() -> Path:
+    """設定・入出力の基準。cwd から templates/ マーカーで遡り、無ければ app_root。
+
+    GUI は cwd=<root>/core でコアを起動する。開発（python -m）と配布（frozen exe）
+    で app_root が変わっても、config.json の解決先が GUI と食い違わないようにする。
+    """
+    d = Path.cwd()
+    for cand in [d, *d.parents]:
+        if (cand / "templates" / "chouhyo-v1.json").exists():
+            return cand
+    return app_root()
+
+
 def template_schema_path() -> Path:
     return app_root() / "schema" / "template.schema.json"

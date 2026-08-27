@@ -140,6 +140,11 @@ def cmd_purge(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # frozen exe では -X utf8 が効かない。JSON Lines（§7.3）が cp932 に
+    # なると GUI 側で文字化けするため、stdout/stderr を UTF-8 へ固定する。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(prog="chouhyo-ocr")
     ap.add_argument("--config", default=None, help="設定ファイル（既定: config.json）")
     sub = ap.add_subparsers(dest="cmd", required=True)

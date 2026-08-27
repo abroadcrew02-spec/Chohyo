@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .paths import app_root
+from .paths import project_root
 
 
 @dataclass(frozen=True)
@@ -19,7 +19,7 @@ class Config:
 
 
 def config_path() -> Path:
-    return app_root() / "config.json"
+    return project_root() / "config.json"
 
 
 def load_config(path: str | Path | None = None) -> Config:
