@@ -85,6 +85,22 @@ class ReplayClient:
         return json.loads(p.read_text(encoding="utf-8"))
 
 
+def load_saved_response(workdir: str | Path, page_id: str) -> dict | None:
+    """保存済み応答を読む（issue #38: 受信済みページを再送しないため）。
+
+    壊れている・読めない場合は None を返して再送へ倒す（黙って古い内容を
+    使うより、送り直すほうが安全）。
+    """
+    p = Path(workdir) / "responses" / f"{page_id}.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def save_response(workdir: str | Path, page_id: str, resp: dict) -> Path:
     d = Path(workdir) / "responses"
     d.mkdir(parents=True, exist_ok=True)

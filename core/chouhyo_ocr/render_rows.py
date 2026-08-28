@@ -92,6 +92,11 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
         if is_empty:
             values.extend([""] * len(out_cols))
             continue
+        # 型不正の conf は「信頼度なし」＝〓へ倒す（issue #39）。数値比較で
+        # TypeError を出すと、そのページだけでなくバッチ全体の出力が失われる
+        if conf is not None and (isinstance(conf, bool)
+                                 or not isinstance(conf, (int, float))):
+            conf = None
         unclear = ((raw == "") or (conf is None) or (conf < cfg.unclear_threshold)
                    or bool(_ILLEGAL_XLSX.search(raw)))
         if unclear:

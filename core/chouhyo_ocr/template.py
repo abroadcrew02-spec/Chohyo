@@ -289,6 +289,28 @@ def load_template(path: str | Path) -> Template:
         dup = sorted({i for i in ids if ids.count(i) > 1})
         raise TemplateError(f"field_id が重複している: {dup[:5]}")
 
+    # 選択肢の値が重複していると era.decide の候補が1つに潰れ、共通フロア減算で
+    # 自分自身のスコアが消えて**丸印があっても永久に未選択（〓）**になる
+    # （issue #31・実測: decide({'昭': 0.3}) → 未選択）。スキーマの minItems:2 は
+    # 重複を弾けないのでここで検証する
+    for c in cells:
+        vals = [m.value for m in c.choice_marks]
+        if len(set(vals)) != len(vals):
+            raise TemplateError(
+                f"選択肢の値が重複している（{c.field_id}: {vals}）。"
+                "同じ値が2つ以上あると、その欄は丸印があっても常に〓になる")
+
+    # 面の切り出し矩形が重なると、同じ記入が両面のセルへ割り付いて二重転記に
+    # なる（issue #32）。エディタの「表裏の境界」の誤操作で作れてしまう
+    for i, a in enumerate(faces):
+        for b in faces[i + 1:]:
+            ra, rb = a.source_rect, b.source_rect
+            if (ra.x < rb.x + rb.w and rb.x < ra.x + ra.w
+                    and ra.y < rb.y + rb.h and rb.y < ra.y + ra.h):
+                raise TemplateError(
+                    f"面 '{a.face_id}' と '{b.face_id}' の切り出し範囲が重なっている。"
+                    "同じ記入が両面へ二重に転記されるため、表裏の境界を見直す")
+
     return Template(
         template_id=raw["template_id"],
         render_dpi=raw["render_dpi"],

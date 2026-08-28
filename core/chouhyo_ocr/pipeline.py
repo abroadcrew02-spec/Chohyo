@@ -20,7 +20,8 @@ from .render_out import write_outputs
 from .render_rows import Row, build_failure_row, build_row
 from .store import Store
 from .template import Template, load_template
-from .vision_client import OcrClient, SendError, save_response
+from .vision_client import (OcrClient, SendError, load_saved_response,
+                            save_response)
 
 Progress = Callable[[dict], None]
 
@@ -96,11 +97,17 @@ def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
 
 
 def _map_and_score(store: Store, template: Template, page_id: str,
-                   resp: dict, aligned_faces) -> tuple[int, int]:
-    """応答 → token 保存 → 割付 → cell/era 保存。(below, other, total) を返す。"""
+                   resp: dict, aligned_faces) -> tuple[int, int, int, int]:
+    """応答 → token 保存 → 割付 → cell/era 保存。
+
+    (below, other, total, page_total) を返す。page_total は応答全体の symbol 数
+    で、面内に1つも落ちなかったケース（total==0）を D-15 が素通りする穴を
+    塞ぐために使う（issue #37）。
+    """
     page_syms = symbols_from_response(resp)
     by_face = {f.face_id: to_face_local(f, page_syms) for f in template.faces}
     total_syms = sum(len(v) for v in by_face.values())
+    page_total = len(page_syms)
 
     store.replace_tokens(page_id, [
         (seq, fid, s.text, s.conf, s.x, s.y)
@@ -130,12 +137,30 @@ def _map_and_score(store: Store, template: Template, page_id: str,
     store.upsert_eras(page_id, era_scores)
 
     store.set_unassigned(page_id, result.unassigned_below_table, result.unassigned_other)
-    return result.unassigned_below_table, result.unassigned_other, total_syms
+    return (result.unassigned_below_table, result.unassigned_other,
+            total_syms, page_total)
 
 
 def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
         client: OcrClient, progress: Progress = lambda e: None,
         resend_on_template_change: bool = False) -> Summary:
+    """一括処理。同一 workdir の多重起動はロックで断る（issue #35）。"""
+    from .runlock import RunLock, RunLockError
+    lock = RunLock(cfg.workdir)
+    try:
+        lock.acquire()
+    except RunLockError as e:
+        raise SystemExit(str(e)) from None
+    try:
+        return _run_locked(input_dir, template_path, cfg, client, progress,
+                           resend_on_template_change)
+    finally:
+        lock.release()
+
+
+def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
+                client: OcrClient, progress: Progress,
+                resend_on_template_change: bool) -> Summary:
     template, raw, geo_hash = _load(template_path)
     from .align import ALGO_VERSION, template_hash as _template_hash
     tpl_hash = _template_hash(raw)
@@ -203,6 +228,12 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
             existing = store.page(pid)
             if existing and existing["state"] == "done":
                 continue  # 再開規則: 処理済みは再送信しない（要件 §5.8）
+            if existing and existing["state"] == "received":
+                # 応答は取得済み（受信後・割付前で中断）。ここで expanded へ
+                # 戻すと保存済み応答を使える条件が消え、再送＝再課金になる
+                # （issue #38）。画像パスだけ更新して進捗は保つ
+                store.set_image_path(pid, str(img_path))
+                continue
             store.upsert_page(pid, source.name, i, "expanded", str(img_path))
 
     # 今回の入力に無いページが中間データに残っていれば可視化する（issue #28）。
@@ -260,28 +291,54 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
             store.set_status(pid, render_rows.STATUS_CAP)
             progress({"event": "page", "page_id": pid, "status": render_rows.STATUS_CAP})
             continue
-        store.set_state(pid, "sending")
-        store.bump_attempt(pid)
-        sends += 1
-        try:
-            resp = client.annotate(_png_bytes(composite), pid)
-        except SendError as e:
-            store.set_state(pid, "failed")
-            store.set_status(pid, render_rows.STATUS_SEND_FAILED)
-            log.error("send_failed", page_id=pid, error_code=e.code)
-            progress({"event": "page", "page_id": pid,
-                      "status": render_rows.STATUS_SEND_FAILED})
-            continue
-        summary.api_calls += 1
-        save_response(cfg.workdir, pid, resp)
-        store.set_state(pid, "received")
+        # 保存済み応答があれば再送しない（issue #38）。受信後・割付前で落ちた
+        # ページは応答を持っているので、再実行のたびに送り直すのは課金の無駄。
+        # vision_client の docstring が約束していた契約をここで実装する
+        saved = load_saved_response(cfg.workdir, pid)
+        if saved is not None and page["state"] == "received":
+            resp = saved
+            log.info("reuse_saved_response", page_id=pid)
+        else:
+            store.set_state(pid, "sending")
+            store.bump_attempt(pid)
+            sends += 1
+            try:
+                resp = client.annotate(_png_bytes(composite), pid)
+            except SendError as e:
+                store.set_state(pid, "failed")
+                store.set_status(pid, render_rows.STATUS_SEND_FAILED)
+                log.error("send_failed", page_id=pid, error_code=e.code)
+                progress({"event": "page", "page_id": pid,
+                          "status": render_rows.STATUS_SEND_FAILED})
+                continue
+            summary.api_calls += 1
+            save_response(cfg.workdir, pid, resp)
+            store.set_state(pid, "received")
 
         # --- F7/F8: 割付・丸印 ---
-        below, other, total = _map_and_score(store, template, pid, resp, faces)
+        # 応答の構造異常で落ちても received のまま宙に浮かせない（issue #38）。
+        # 浮かせると次回実行で再送対象になり、実行のたびに課金が発生する
+        try:
+            below, other, total, page_total = _map_and_score(
+                store, template, pid, resp, faces)
+        except Exception as e:  # noqa: BLE001
+            store.set_state(pid, "failed")
+            store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
+            log.error("map_failed", page_id=pid, error_code=type(e).__name__)
+            progress({"event": "page", "page_id": pid,
+                      "status": render_rows.STATUS_FORMAT_MISMATCH})
+            continue
 
-        # D-15: 枠外率が閾値超なら配置を信用できない → 様式不一致・全〓行へ
-        # （母集団は below_table を除く。設計 §6.4）
-        if total > 0 and other / total > render_rows.FORMAT_MISMATCH_RATIO:
+        # D-15: 配置を信用できないページは様式不一致・全〓行へ（設計 §6.4）。
+        # ①応答に symbol が1つも無い（印字ラベルすら検出されない＝白紙か壊れた
+        # 応答。実測で正常ページは常に 70+ の印字ラベル symbol を含む）
+        # ②面内に1つも落ちない（全部が面外＝座標系が合っていない）
+        # ③枠外率が閾値超（母集団は below_table を除く）
+        # ①②を入れる前は total==0 でガードごと素通りし「正常なのに212列中200列
+        # が空白」になっていた（issue #37 実測）
+        mismatch = (page_total == 0 or total == 0
+                    or other / total > render_rows.FORMAT_MISMATCH_RATIO)
+        if mismatch:
             store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
             store.set_state(pid, "failed")
             log.error("format_mismatch", page_id=pid, count=other)
@@ -327,8 +384,20 @@ def render(template_path: str | Path, cfg: Config,
     for page in store.pages():
         p = dict(page)
         if page["state"] == "done":
-            rows.append(build_row(template, p, store.cells(page["page_id"]),
-                                  store.era_scores(page["page_id"]), cfg))
+            # 1ページの破損がバッチ全体の出力を失わせない（issue #39）。
+            # 中間データに型不正が残っていた場合、旧実装は render/remap/run の
+            # どれを叩いても同じ箇所で落ち、送信済み（＝課金済み）の正常ページも
+            # 二度と取り出せなかった（回復手段は purge のみだった）
+            try:
+                rows.append(build_row(template, p, store.cells(page["page_id"]),
+                                      store.era_scores(page["page_id"]), cfg))
+                continue
+            except Exception as e:  # noqa: BLE001
+                log.error("row_build_failed", page_id=page["page_id"],
+                          error_code=type(e).__name__)
+                p["status"] = render_rows.STATUS_FORMAT_MISMATCH
+                rows.append(build_failure_row(template, p))
+                continue
         else:
             if not p.get("status"):
                 p["status"] = render_rows.STATUS_INTERRUPTED

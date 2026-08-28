@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
+from . import logging_safe as log
 from .template import CellSpec, Face
 
 
@@ -47,21 +48,37 @@ class MappingResult:
 def symbols_from_response(resp: dict) -> list[Symbol]:
     """DOCUMENT_TEXT_DETECTION 応答（MessageToDict 形式）→ ページ座標の symbol 列。"""
     out: list[Symbol] = []
+    dropped: list[int] = []
     fta = resp.get("fullTextAnnotation") or {}
     for page in fta.get("pages", []):
         for block in page.get("blocks", []):
             for para in block.get("paragraphs", []):
                 for word in para.get("words", []):
                     for sym in word.get("symbols", []):
-                        vs = sym["boundingBox"]["vertices"]
+                        # 防御的パース（issue #40）: 応答の部分欠落・切り詰めで
+                        # 1 symbol が壊れていても、応答全体を落として run を
+                        # 止めない（止めると received のまま再送ループへ入る）。
+                        # 捨てた件数は呼び出し側がログへ出す
+                        vs = (sym.get("boundingBox") or {}).get("vertices") or []
+                        text = sym.get("text")
+                        if not vs or not isinstance(text, str):
+                            dropped.append(1)
+                            continue
                         xs = [v.get("x", 0) for v in vs]
                         ys = [v.get("y", 0) for v in vs]
+                        conf = sym.get("confidence", 0.0)
+                        if isinstance(conf, bool) or not isinstance(conf, (int, float)):
+                            # 型不正の confidence は「信頼度なし」として扱う
+                            # （render 側で〓へ倒れる。数値比較で落ちない・#39）
+                            conf = 0.0
                         out.append(Symbol(
-                            text=sym["text"],
+                            text=text,
                             x=(min(xs) + max(xs)) / 2,
                             y=(min(ys) + max(ys)) / 2,
-                            conf=sym.get("confidence", 0.0),
+                            conf=float(conf),
                         ))
+    if dropped:
+        log.warn("response_symbols_dropped", count=len(dropped))
     return out
 
 

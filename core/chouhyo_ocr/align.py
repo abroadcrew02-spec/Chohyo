@@ -246,15 +246,17 @@ def align_page(page_img: "Image.Image", template: Template) -> tuple[list[Aligne
     composite = Image.new("RGB", (W, H), "white")
     faces: list[AlignedFace] = []
 
+    # 探索余白つきキャンバスはページ単位で1回だけ作る（面ごとに作り直すと
+    # 30MB 規模の確保と貼り付けが面の数だけ走り、実測で align が数倍遅くなる）
+    pad = max((max(f.shift_limits) for f in template.faces), default=0)
+    padded = Image.new("RGB", (W + 2 * pad, H + 2 * pad), "white")
+    padded.paste(page, (pad, pad))
+
     for face in template.faces:
         r = face.source_rect
-        n_x, n_y = face.shift_limits
-        pad = max(n_x, n_y)
-        # 探索余白つき切り出し（ページ外は白。回転を2回かけないため、シフトは
-        # この padded crop の内側の窓取りで行う）
-        canvas = Image.new("RGB", (W + 2 * pad, H + 2 * pad), "white")
-        canvas.paste(page, (pad, pad))
-        big = canvas.crop((r.x, r.y, r.x + r.w + 2 * pad, r.y + r.h + 2 * pad))
+        # ページ外は白。回転を2回かけないため、シフトはこの padded crop の
+        # 内側の窓取りで行う
+        big = padded.crop((r.x, r.y, r.x + r.w + 2 * pad, r.y + r.h + 2 * pad))
 
         # 傾き推定は従来どおり中央窓（w×h）で行う
         gray = np.asarray(big.crop((pad, pad, pad + r.w, pad + r.h)).convert("L"))

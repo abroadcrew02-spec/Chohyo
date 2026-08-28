@@ -118,6 +118,13 @@ class Store:
                          (state, time.time(), page_id))
         self.con.commit()
 
+    def set_image_path(self, page_id: str, image_path: str) -> None:
+        """state を触らずに展開画像のパスだけ更新する（issue #38）。"""
+        self.con.execute(
+            "UPDATE page SET image_path=?, updated_at=? WHERE page_id=?",
+            (image_path, time.time(), page_id))
+        self.con.commit()
+
     def set_status(self, page_id: str, status: str) -> None:
         self.con.execute("UPDATE page SET status=?, updated_at=? WHERE page_id=?",
                          (status, time.time(), page_id))

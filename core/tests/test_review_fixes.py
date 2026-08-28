@@ -435,3 +435,35 @@ def test_risky_prefix_detection_has_no_side_effects(tmp_path):
     # 検出は列名だけを見て値を持ち出さない
     assert all(len(t) == 2 and isinstance(t[1], str) for t in
                scan_risky_prefixes(cols, [risky_row]))
+
+
+# ---------- #31/#32: テンプレート検証の穴（ファジングで検出）----------
+
+def test_duplicate_choice_values_rejected(tmp_path):
+    """選択肢の値重複を拒否する（issue #31）。
+
+    重複すると era の候補が1つに潰れ、共通フロア減算で自滅して
+    丸印があっても永久に〓になる（実測: decide({'昭': 0.3}) → 未選択）。
+    """
+    from chouhyo_ocr.template import TemplateError
+    t = json.loads(TPL.read_text(encoding="utf-8"))
+    for face in t["faces"]:
+        for tb in face.get("tables", []):
+            for c in tb["columns"]:
+                for m in c.get("choice_marks", []):
+                    m["value"] = "昭"  # 全部同じ値に
+    p = tmp_path / "dup.json"
+    p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(TemplateError, match="選択肢の値が重複"):
+        load_template(p)
+
+
+def test_overlapping_face_rects_rejected(tmp_path):
+    """面の切り出し範囲の重なりを拒否する（issue #32・二重転記の防止）。"""
+    from chouhyo_ocr.template import TemplateError
+    t = json.loads(TPL.read_text(encoding="utf-8"))
+    t["faces"][1]["source"]["rect"]["y"] = 100  # front(0..1880) と大きく重なる
+    p = tmp_path / "ov.json"
+    p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(TemplateError, match="重なっている"):
+        load_template(p)

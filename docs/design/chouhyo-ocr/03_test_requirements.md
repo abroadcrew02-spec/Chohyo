@@ -48,6 +48,9 @@
 | core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
 | core/tests/test_leak_guards.py | 3 | 漏出防止の再発防止（issue #2/#3/#4） |
 | core/tests/test_local_storage_guard.py | 2 | 同期フォルダ検知（issue #8） |
+| core/tests/test_response_robustness.py | 15 | 応答異常・出力の原子性・多重起動（#35〜#40）|
+| core/tests/test_reuse_guards.py | 5 | 中間データ再利用の歯止め・重複行（#25/#29 B-2）|
+| core/tests/test_alignment_robustness.py | 3 | 位置合わせ頑健性（回転・平行移動・#30）|
 | core/tests/test_review_fixes.py | 14 | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page） |
 | core/tests/test_gui_smoke.py | 5 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip） |
 | gui/src-tauri（cargo test） | 2 | サブコマンド白リスト（issue #7） |

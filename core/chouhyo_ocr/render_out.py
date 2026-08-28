@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -144,6 +145,30 @@ def write_outputs(
     d.mkdir(parents=True, exist_ok=True)
     xlsx = d / f"output_{timestamp}.xlsx"
     csvp = d / f"output_{timestamp}.csv"
-    write_xlsx(xlsx, columns, rows)
-    write_csv(csvp, columns, rows)
+    # 一時ファイルへ書いてから os.replace で差し替える（issue #36）。
+    # 直接書くと、出力を Excel で開いたまま再実行したときに
+    # 「open→truncate→ロック違反」の順で **既存の正常な成果物が 0 バイトに
+    # 破壊される**（実測: 9246→0）。置換が完了するまで既存ファイルは無傷に保つ
+    tmp_x = xlsx.with_suffix(".xlsx.tmp")
+    tmp_c = csvp.with_suffix(".csv.tmp")
+    try:
+        write_xlsx(tmp_x, columns, rows)
+        write_csv(tmp_c, columns, rows)
+        try:
+            os.replace(tmp_x, xlsx)
+            os.replace(tmp_c, csvp)
+        except PermissionError as e:
+            # Windows は開かれているファイルを置換できない。既存ファイルは
+            # 無傷のままなので、何が起きたかを利用者の言葉で伝える
+            raise PermissionError(
+                f"出力ファイルを更新できない（{xlsx.name} が Excel などで"
+                "開かれている可能性）。閉じてからやり直す。"
+                "既存のファイルは壊れていない") from e
+    finally:
+        for t in (tmp_x, tmp_c):
+            if t.exists():
+                try:
+                    t.unlink()
+                except OSError:
+                    pass
     return xlsx, csvp, scan_risky_prefixes(columns, rows)
