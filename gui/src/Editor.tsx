@@ -541,16 +541,20 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                 j === i ? { ...v, width: +e.target.value } : v) })} />
             <select value={c.kind} title="列の種類"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
-                // 選択式へ切り替えたら正規化は値ごと落とす。残すと select が
-                // 無効表示でも「隠れた値が保存され続ける」状態になる（レビュー D-5）
+                // 選択式へ切り替えたら正規化・分割は値ごと落とす。残すと画面に
+                // 見えない値が保存され続け、分割は行の列数まで狂わせる
+                // （レビュー D-5・issue #26）
                 j === i ? { ...v, kind: e.target.value as any,
-                            ...(e.target.value === "choice" ? { normalize: undefined } : {}) }
+                            ...(e.target.value === "choice"
+                              ? { normalize: undefined, subfields: "" } : {}) }
                         : v) })}>
               <option value="text">文字</option><option value="choice">選択式</option>
             </select>
             <span className="lbl">分割</span>
             <input className="w6" placeholder="年,月,日" value={c.subfields}
-              title="複合セルの分割（例: 年,月,日）"
+              disabled={c.kind === "choice"}
+              title={c.kind === "choice" ? "選択式の列では使いません"
+                                         : "複合セルの分割（例: 年,月,日）"}
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, subfields: e.target.value,
                             ...(e.target.value.trim() ? { normalize: undefined } : {}) } : v) })} />

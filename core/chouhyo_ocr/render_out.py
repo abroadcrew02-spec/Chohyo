@@ -78,7 +78,6 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
                 text(r.source_file), text(str(r.page_no)), text(r.status)]
         body = [WriteOnlyCell(ws, value=v) if isinstance(v, int) else text(v)
                 for v in r.values]
-        assert len(body) == n_extract
         ws.append(meta + body)
     wb.save(path)
     _normalize_zip(path)
@@ -96,6 +95,14 @@ def write_csv(path: Path, columns: list[str], rows: list[Row]) -> None:
 
 def write_outputs(out_dir: str | Path, timestamp: str,
                   columns: list[str], rows: list[Row]) -> tuple[Path, Path]:
+    # 行の値数＝抽出列数は出力の中核不変条件。assert（-O で消える）でなく
+    # 明示例外で、xlsx/csv 両形式が必ず通るこの一箇所で検査する（issue #27）
+    n_extract = len(columns) - 6
+    for r in rows:
+        if len(r.values) != n_extract:
+            raise ValueError(
+                f"行の値数({len(r.values)})が抽出列数({n_extract})と一致しない"
+                f"（帳票ID: {r.page_id}）。テンプレートと中間データの整合を確認する")
     d = Path(out_dir)
     d.mkdir(parents=True, exist_ok=True)
     xlsx = d / f"output_{timestamp}.xlsx"

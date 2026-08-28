@@ -157,7 +157,12 @@ class Store:
 
     # --- cell ---
     def upsert_cells(self, page_id: str, rows: list[tuple]) -> None:
-        """rows: (field_id, raw_text, conf, kind, is_empty_row)"""
+        """rows: (field_id, raw_text, conf, kind, is_empty_row)。同一ページ分を総入れ替え。
+
+        今回書かなかった field_id は消す（issue #28: 旧テンプレートの残骸セルが
+        生き残ると、field_id 再利用＋rect 移動→render の順で旧位置の値が出る。
+        replace_tokens と同じ「余剰を明示 DELETE」の形に揃える）
+        """
         self.con.executemany(
             """INSERT INTO cell(page_id, field_id, raw_text, conf, kind, is_empty_row)
                VALUES(?,?,?,?,?,?)
@@ -165,6 +170,11 @@ class Store:
                  raw_text=excluded.raw_text, conf=excluded.conf,
                  kind=excluded.kind, is_empty_row=excluded.is_empty_row""",
             [(page_id, *r) for r in rows])
+        keep = [r[0] for r in rows]
+        ph = ",".join("?" * len(keep))
+        self.con.execute(
+            f"DELETE FROM cell WHERE page_id=? AND field_id NOT IN ({ph})",
+            (page_id, *keep))
         self.con.commit()
 
     def cells(self, page_id: str) -> dict[str, tuple]:
@@ -189,10 +199,15 @@ class Store:
         return {h for (h,) in self.con.execute("SELECT DISTINCT geometry_hash FROM alignment")}
 
     def upsert_eras(self, page_id: str, scores_by_field: dict[str, dict]) -> None:
-        """ページ内の choice セル全件を1トランザクションで書く（issue #16）。"""
+        """ページ内の choice セル全件を1トランザクションで総入れ替え（issue #16/#28）。
+
+        今回書かなかった field_id の旧スコアは消す——残すとテンプレートに
+        存在しない選択肢名が render で出うる（issue #28 実証）。
+        """
+        # 総入れ替えなので先に当該ページ分を消してから入れる
+        self.con.execute("DELETE FROM era_score WHERE page_id=?", (page_id,))
         self.con.executemany(
-            """INSERT INTO era_score(page_id, field_id, scores) VALUES(?,?,?)
-               ON CONFLICT(page_id, field_id) DO UPDATE SET scores=excluded.scores""",
+            "INSERT INTO era_score(page_id, field_id, scores) VALUES(?,?,?)",
             [(page_id, fid, json.dumps(s)) for fid, s in scores_by_field.items()])
         self.con.commit()
 

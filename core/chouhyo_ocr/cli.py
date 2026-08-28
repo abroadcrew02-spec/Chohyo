@@ -49,7 +49,7 @@ def cmd_remap(args) -> int:
     cfg = load_config(args.config)
     log.init(cfg.log_dir)
     from .pipeline import remap, render
-    n = remap(args.template, cfg)
+    n = remap(args.template, cfg, progress=_progress)
     xlsx, csvp, rows = render(args.template, cfg)
     _progress({"event": "remapped", "pages": n, "xlsx": str(xlsx), "csv": str(csvp)})
     return 0

@@ -99,6 +99,15 @@ def expand(source: Path, dpi: int, out_dir: Path,
         return [source]
 
     prefix = out_dir / source.stem
+    # 展開前に同一 stem の残骸を必ず消す（issue #20）。out_dir は実行をまたいで
+    # 永続するため、同名 PDF を差し替えて再実行すると旧展開分が混ざり、
+    # **別の帳票のデータが新ファイル名で送信・出力される**（実測: 12頁→2頁の
+    # 差し替えで14頁化。ゼロ埋め幅の差で順序も入り乱れる）
+    stale_pat = re.compile(rf"{re.escape(source.stem)}-\d+")
+    for old in out_dir.glob(f"{glob.escape(source.stem)}-*.png"):
+        if stale_pat.fullmatch(old.stem):
+            old.unlink()
+
     exe = pdftoppm_path()
     args = [str(exe), "-r", str(dpi), "-png"]
     if page is not None:
@@ -119,9 +128,15 @@ def expand(source: Path, dpi: int, out_dir: Path,
     # page 指定時は該当番号のみに絞る（過去の全ページ展開の残骸を拾わない）。
     # pdftoppm はゼロ埋めすることがあるため 0* を許す
     num = rf"0*{page}" if page is not None else r"\d+"
-    pat = re.compile(rf"{re.escape(source.stem)}-{num}")
-    pages = sorted(p for p in out_dir.glob(f"{glob.escape(source.stem)}-*.png")
-                   if pat.fullmatch(p.stem))
+    pat = re.compile(rf"{re.escape(source.stem)}-(?P<no>{num})")
+    # 辞書順ではなくページ番号の数値順（issue #20: ゼロ埋め幅が総ページ数で
+    # 変わるため、文字列 sorted() は 1,10,11,...,2 の並びになりうる）
+    hits = []
+    for p in out_dir.glob(f"{glob.escape(source.stem)}-*.png"):
+        m = pat.fullmatch(p.stem)
+        if m:
+            hits.append((int(m.group("no")), p))
+    pages = [p for _no, p in sorted(hits)]
     if not pages:
         raise IngestError("PDF_EXPAND_EMPTY")
     return pages

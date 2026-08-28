@@ -101,7 +101,8 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
 
     # --- F1/F2: 列挙・展開（画像を書き終えてから page 行 INSERT・§12-C9）---
     taken: set[str] = set()
-    for source in ingest.list_inputs(input_dir):
+    inputs = ingest.list_inputs(input_dir)
+    for source in inputs:
         # 同一内容の二重投入検知（要件 §5.1 Could）: 別名で同じ中身なら追加しない
         digest = hashlib.sha1(source.read_bytes()).hexdigest()
         seen_as = store.known_source(digest)
@@ -129,8 +130,20 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 continue  # 再開規則: 処理済みは再送信しない（要件 §5.8）
             store.upsert_page(pid, source.name, i, "expanded", str(img_path))
 
-    todo = [p for p in store.pages() if p["state"] != "done"]
-    total = len(store.pages())
+    # 今回の入力に無いページが中間データに残っていれば可視化する（issue #28）。
+    # render は store の全ページを出力するため、消えた入力の行が黙って
+    # Excel に残り続ける——検知だけでも見えるようにする（削除は purge のみ）
+    all_pages = store.pages()
+    input_names = {s.name for s in inputs}
+    stale = sorted({p["source_file"] for p in all_pages
+                    if p["source_file"] not in input_names})
+    if stale:
+        log.error("stale_pages", count=len(stale))
+        progress({"event": "stale_pages", "count": len(stale),
+                  "files": stale[:5]})
+
+    todo = [p for p in all_pages if p["state"] != "done"]
+    total = len(all_pages)
     progress({"event": "start", "total": total, "todo": len(todo)})
 
     summary = Summary(pages=total)
@@ -235,7 +248,8 @@ def render(template_path: str | Path, cfg: Config,
     return xlsx, csvp, rows
 
 
-def remap(template_path: str | Path, cfg: Config) -> int:
+def remap(template_path: str | Path, cfg: Config,
+          progress: Progress = lambda e: None) -> int:
     """保存済み token から cell を作り直す（テンプレートの非幾何変更後・§6.7）。
 
     幾何セクションが変わっていたら拒否して `run` を促す。
@@ -274,6 +288,7 @@ def remap(template_path: str | Path, cfg: Config) -> int:
         # choice_marks の変更に追従: 保存済み位置合わせ画像から環状帯を再スコア
         import numpy as np
         era_scores: dict[str, dict] = {}
+        missing_aligned = 0
         for cell in template.cells:
             if cell.kind != "choice":
                 continue
@@ -281,12 +296,20 @@ def remap(template_path: str | Path, cfg: Config) -> int:
                 continue
             img_p = aligned_dir / f"{pid}_{cell.face_id}.png"
             if not img_p.exists():
+                # 再スコアできない。無言スキップすると旧スコア残置と区別が
+                # つかない（issue #28）——総入れ替えで旧スコアは消え〓へ倒れる
+                # ので誤値は出ないが、件数を可視化する
+                missing_aligned += 1
                 continue
             gray = np.asarray(Image.open(img_p).convert("L"))
             from .align import binarize_face
             binary = binarize_face(gray, template.face(cell.face_id))
             era_scores[cell.field_id] = era.score_cell(binary, cell)
         store.upsert_eras(pid, era_scores)
+        if missing_aligned:
+            log.error("remap_missing_aligned", page_id=pid, count=missing_aligned)
+            progress({"event": "remap_warning", "page_id": pid,
+                      "missing_aligned_cells": missing_aligned})
         store.set_unassigned(pid, result.unassigned_below_table, result.unassigned_other)
         n += 1
     store.close()

@@ -17,6 +17,9 @@ from chouhyo_ocr.template import load_template
 
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 CFG = Config(unclear_threshold=0.85, era_threshold=0.06)
+RESP = (app_root() / "core" / "workdir" / "responses"
+        / "帳票抽出検証用2026-08-24_p0001.json")
+PAGE_PNG_EXISTS = (app_root() / "workdir" / "pages" / "sample-1.png").exists()
 
 
 # ---------- #11: 金額正規化の発火条件 ----------
@@ -172,6 +175,95 @@ def test_expand_page_cli_returns_png(tmp_path):
     assert r2.returncode == 1
 
 
+def test_choice_with_subfields_keeps_row_length(tmp_path):
+    """choice＋subfields のテンプレートでも行の値数＝列数が保たれる（issue #26）。
+
+    エディタの種類切替が分割指定を残しても、読み込み時に落として無害化する。
+    """
+    from chouhyo_ocr.render_rows import build_row
+    t = json.loads(TPL.read_text(encoding="utf-8"))
+    for face in t["faces"]:
+        for tb in face.get("tables", []):
+            for c in tb["columns"]:
+                if c.get("subfields"):
+                    c["kind"] = "choice"  # エディタの切替事故を装う
+                    c.pop("normalize", None)
+                    c["choice_marks"] = [
+                        {"value": "A", "x_offset": 0, "width": 20},
+                        {"value": "B", "x_offset": 20, "width": 20}]
+    p = tmp_path / "t.json"
+    p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
+    template = load_template(p)
+    # choice セルの subfields は落ち、output_columns は常に1
+    assert all(len(c.output_columns()) == 1
+               for c in template.cells if c.kind == "choice")
+    n_extract = sum(len(c.output_columns()) for c in template.cells)
+    cells = {c.field_id: ("", None, c.kind, False) for c in template.cells}
+    row = build_row(
+        template,
+        {"page_id": "p", "source_file": "s.png", "page_no": 1,
+         "status": "", "unassigned_below_table": 0},
+        cells, {}, CFG)
+    assert len(row.values) == n_extract
+
+
+def test_write_outputs_rejects_row_length_mismatch(tmp_path):
+    """値数≠列数の行は明示例外で拒否される（issue #27・assert 非依存）。"""
+    from chouhyo_ocr.render_out import write_outputs
+    from chouhyo_ocr.render_rows import Row
+    cols = ["要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名",
+            "ページ番号", "ステータス", "a", "b", "c"]
+    bad = Row(page_id="p1", source_file="s.pdf", page_no=1, status="正常",
+              values=["x", "y"], unclear_count=0, min_conf="")  # 3列に2値
+    with pytest.raises(ValueError, match="値数"):
+        write_outputs(tmp_path, "t", cols, [bad])
+
+
+def test_store_upserts_sweep_stale_rows(tmp_path):
+    """cell/era の総入れ替えで、今回書かなかった残骸が消える（issue #28）。"""
+    from chouhyo_ocr.store import Store
+    st = Store(tmp_path / "s.db")
+    st.upsert_page("p1", "a.pdf", 1, "expanded")
+    st.upsert_cells("p1", [("f_old", "旧値", 0.9, "text", 0),
+                           ("f_keep", "残す", 0.9, "text", 0)])
+    st.upsert_eras("p1", {"era_old": {"昭": 0.5}})
+    # テンプレ変更後の再割付を模す: f_old / era_old は今回書かれない
+    st.upsert_cells("p1", [("f_keep", "新値", 0.95, "text", 0),
+                           ("f_new", "追加", 0.9, "text", 0)])
+    st.upsert_eras("p1", {"era_new": {"S": 0.4}})
+    cells = st.cells("p1")
+    assert set(cells) == {"f_keep", "f_new"}       # f_old が残らない
+    assert cells["f_keep"][0] == "新値"
+    assert set(st.era_scores("p1")) == {"era_new"}  # 旧選択肢名が残らない
+    st.close()
+
+
+def test_run_reports_stale_pages(tmp_path):
+    """入力から消えたファイルの行が残っている場合、run が可視化する（issue #28）。"""
+    if not (RESP.exists() and PAGE_PNG_EXISTS):
+        pytest.skip("保存済み応答が無い環境")
+    import shutil
+
+    from chouhyo_ocr.pipeline import run
+    from chouhyo_ocr.vision_client import ReplayClient
+    from chouhyo_ocr.paths import app_root
+    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    cfg = Config(unclear_threshold=0.4, output_dir=str(tmp_path / "o"),
+                 workdir=str(tmp_path / "w"), log_dir=str(tmp_path / "l"))
+    inp = tmp_path / "in"; inp.mkdir()
+    resp = tmp_path / "resp"; resp.mkdir()
+    shutil.copy(page_png, inp / "a.png")
+    shutil.copy(RESP, resp / "a_p0001.json")
+    run(inp, TPL, cfg, ReplayClient(resp))
+
+    (inp / "a.png").rename(inp / "b.png")  # a を消し b を足す
+    shutil.copy(RESP, resp / "b_p0001.json")
+    events = []
+    run(inp, TPL, cfg, ReplayClient(resp), progress=events.append)
+    stale = [e for e in events if e.get("event") == "stale_pages"]
+    assert stale and stale[0]["count"] == 1 and stale[0]["files"] == ["a.png"]
+
+
 def test_run_e2e_with_single_file_input(tmp_path):
     """単一ファイル入力で run→render が完走し、通常の1行出力になる（issue #19）。"""
     import shutil
@@ -195,6 +287,31 @@ def test_run_e2e_with_single_file_input(tmp_path):
     _x, _c, rows = render(TPL, cfg, timestamp="sf")
     assert rows[0].source_file == "scan_0001.png"
     assert rows[0].status == "正常"
+
+
+def test_expand_replaced_pdf_does_not_mix_stale_pages(tmp_path):
+    """同名 PDF の差し替え再実行で旧展開分が混ざらない（issue #20 の実測シナリオ）。
+
+    12頁→2頁へ差し替えると、旧実装は残骸と合わせ14頁を返し、ゼロ埋め幅の
+    差（12頁=2桁・2頁=1桁）で辞書順ソートの並びも崩れていた。
+    """
+    from PIL import Image
+
+    from chouhyo_ocr.ingest import expand
+    out = tmp_path / "pages"; out.mkdir()
+    src = tmp_path / "y.pdf"
+
+    frames = [Image.new("L", (100, 140), 255 - i) for i in range(12)]
+    frames[0].save(src, save_all=True, append_images=frames[1:])
+    first = expand(src, dpi=36, out_dir=out)
+    assert len(first) == 12
+
+    frames2 = [Image.new("L", (100, 140), 250), Image.new("L", (100, 140), 249)]
+    frames2[0].save(src, save_all=True, append_images=frames2[1:])
+    second = expand(src, dpi=36, out_dir=out)
+    assert len(second) == 2, f"残骸が混ざった: {[p.name for p in second]}"
+    nos = [int(p.stem.rsplit("-", 1)[1]) for p in second]
+    assert nos == [1, 2]  # 数値順
 
 
 def test_expand_does_not_pick_sibling_stem_pages(tmp_path):
