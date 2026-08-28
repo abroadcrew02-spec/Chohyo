@@ -189,7 +189,14 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
 
     # --- F1/F2: 列挙・展開（画像を書き終えてから page 行 INSERT・§12-C9）---
     taken: set[str] = set()
-    inputs = ingest.list_inputs(input_dir)
+    skipped_files: list[str] = []
+    inputs = ingest.list_inputs(input_dir, skipped_files)
+    if skipped_files:
+        # 対象外ファイルを進捗イベントへ出す（レビュー M-2）。ログだけだと
+        # 利用者には「total=0 の正常終了」にしか見えない
+        log.info("skip_unsupported_total", count=len(skipped_files))
+        progress({"event": "skipped_unsupported", "count": len(skipped_files),
+                  "files": skipped_files[:5]})
     for source in inputs:
         # 同一内容の二重投入検知（要件 §5.1 Could）: 別名で同じ中身なら送信しない。
         # ただし黙って落とさず「スキップ（重複）」の全〓行を出す（#29 B-2・

@@ -103,11 +103,20 @@ class Store:
     # --- page ---
     def upsert_page(self, page_id: str, source_file: str, page_no: int,
                     state: str, image_path: str | None = None) -> None:
+        """ページ行の登録・更新。
+
+        page_id を再利用する場合（同 stem・別拡張子の入替など）に
+        source_file / page_no も更新する（レビュー B-3）。据え置くと出力の
+        「入力ファイル名」列と実際の値の由来が食い違う。UNIQUE(source_file,
+        page_no) 違反はここでは握りつぶさず、呼び出し側の失敗として扱う。
+        """
         self.con.execute(
             """INSERT INTO page(page_id, source_file, page_no, state, image_path, updated_at)
                VALUES(?,?,?,?,?,?)
                ON CONFLICT(page_id) DO UPDATE SET
                  state=excluded.state,
+                 source_file=excluded.source_file,
+                 page_no=excluded.page_no,
                  image_path=COALESCE(excluded.image_path, page.image_path),
                  updated_at=excluded.updated_at""",
             (page_id, source_file, page_no, state, image_path, time.time()))

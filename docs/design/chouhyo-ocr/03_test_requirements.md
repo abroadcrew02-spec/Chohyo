@@ -48,7 +48,8 @@
 | core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
 | core/tests/test_leak_guards.py | 3 | 漏出防止の再発防止（issue #2/#3/#4） |
 | core/tests/test_local_storage_guard.py | 2 | 同期フォルダ検知（issue #8） |
-| core/tests/test_response_robustness.py | 15 | 応答異常・出力の原子性・多重起動（#35〜#40）|
+| core/tests/test_response_robustness.py | 16 | 応答異常・出力の原子性・多重起動・対象外入力の可視化（#35〜#40・M-2）|
+| core/tests/test_era_calibration.py | 3 | 丸印判定の較正（#23・8箇所全問正解と閾値への余裕）|
 | core/tests/test_reuse_guards.py | 5 | 中間データ再利用の歯止め・重複行（#25/#29 B-2）|
 | core/tests/test_alignment_robustness.py | 3 | 位置合わせ頑健性（回転・平行移動・#30）|
 | core/tests/test_review_fixes.py | 14 | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page） |
@@ -135,6 +136,12 @@ D-01（金額）・D-06（below_table）・D-14（218列導出）・D-15（様�
 - 平行移動: 補正機構が無く、±12px で元号の誤選択・±18px で大規模混入。**いずれも status=正常のまま**で自己検出（D-15）が発火しない（issue #30）
 
 以後、配置系の受入検証には「較正画像と異なる（ずらした・別スキャンの）入力」を必ず含める。
+
+### 教訓4: 正解表そのものが誤っていた（2026-08-28・issue #23）
+
+丸印判定の「実サンプル 5/5 正解」は、**誤った正解表に対する 5/8** だった。設計書 v2.0 は page2 の家族3行を「丸なし＝未選択が正しい」と記録していたが、切り出し画像を拡大すると3行とも明瞭な丸がある。判定が〓を返すのを「丸が無いのだから正しい」と解釈してしまい、取りこぼしが実績として記録された。
+
+対策: 判定系（丸印・選択式）の較正と評価は、**切り出し画像の目視で正解を確定させてから**行う。test_era_calibration.py は正解表を docstring に明記し、全問正解に加えて「閾値への余裕」（トップ値 0.0658・1位2位差 0.0647）も固定して、ぎりぎりで通る較正に戻らないようにしている。
 
 ## 6. 手動残（L3）
 

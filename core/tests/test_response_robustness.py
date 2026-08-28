@@ -274,3 +274,20 @@ def test_stale_lock_from_dead_process_is_reclaimed(tmp_path):
     c = CountingReplay(respd)
     run(inp, TPL, cfg, c)  # 例外を出さずに実行できる
     assert c.calls == 1
+
+
+def test_unsupported_input_is_visible_not_silent(tmp_path):
+    """非対応拡張子のファイルが進捗イベントで可視化される（レビュー M-2）。
+
+    実測（修正前）: .docx をドロップして実行すると total=0 の正常終了で、
+    利用者には何が起きたか分からなかった。
+    """
+    cfg = make_cfg(tmp_path)
+    inp = tmp_path / "input"; inp.mkdir()
+    respd = tmp_path / "resp"; respd.mkdir()
+    (inp / "memo.docx").write_bytes(b"not an image")
+    events = []
+    run(inp, TPL, cfg, ReplayClient(respd), progress=events.append)
+    skipped = [e for e in events if e.get("event") == "skipped_unsupported"]
+    assert skipped and skipped[0]["count"] == 1
+    assert skipped[0]["files"] == ["memo.docx"]

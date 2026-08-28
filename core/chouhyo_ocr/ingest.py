@@ -55,17 +55,23 @@ def pdf_page_count(source: Path) -> int | None:
     return None
 
 
-def list_inputs(input_dir: str | Path) -> list[Path]:
+def list_inputs(input_dir: str | Path,
+                skipped: list[str] | None = None) -> list[Path]:
     """入力の列挙。フォルダなら中の対応ファイル、単一ファイルならそれ1つ。
 
     実運用は「スキャンした PDF が数枚」のことがあり、フォルダ縛りだと
     利用者がファイルを選べない（2026-08-28 ユーザー指摘）。
+    skipped を渡すと、対象外だったファイル名を追記する——呼び出し側が
+    進捗イベントへ出すため（レビュー M-2: ログだけだと「total=0 の正常終了」
+    にしか見えず、利用者は何が起きたか分からない）。
     """
     root = Path(input_dir)
     if root.is_file():
         if root.suffix.lower() in SUPPORTED:
             return [root]
         log.info("skip_unsupported", source_file=root.name)
+        if skipped is not None:
+            skipped.append(root.name)
         return []
     files = []
     for p in sorted(root.iterdir()):
@@ -75,6 +81,8 @@ def list_inputs(input_dir: str | Path) -> list[Path]:
             files.append(p)
         else:
             log.info("skip_unsupported", source_file=p.name)
+            if skipped is not None:
+                skipped.append(p.name)
     return files
 
 

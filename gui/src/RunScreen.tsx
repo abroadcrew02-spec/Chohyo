@@ -47,6 +47,7 @@ export default function RunScreen() {
   const [failures, setFailures] = useState<Failure[]>([]);
   const interruptedRef = useRef(false);
   const [notice, setNotice] = useState("");
+  const [notices, setNotices] = useState<string[]>([]);  // 実行時の警告（M-2・#28）
   const logRef = useRef<HTMLPreElement>(null);
 
   const parseVerify = (text: string): Verify => {
@@ -109,6 +110,18 @@ export default function RunScreen() {
               setFailures((f) => [...f, { page_id: ev.page_id, status: ev.status }]);
             }
           }
+          // 対象外ファイル・古いページの警告（レビュー M-2・issue #28）。
+          // ログだけだと「total=0 の正常終了」にしか見えない
+          if (ev.event === "skipped_unsupported") {
+            setNotices((n) => [...n,
+              `読み取れない形式のファイルを ${ev.count} 件とばしました: `
+              + (ev.files ?? []).join("、")]);
+          }
+          if (ev.event === "stale_pages") {
+            setNotices((n) => [...n,
+              `前回までの結果が ${ev.count} 件残っています（今回の入力に無いファイル）。`
+              + `出力にはその行も含まれます: ` + (ev.files ?? []).join("、")]);
+          }
           if (ev.event === "summary") setSummary(ev as Summary);
         } catch { /* JSON 以外の行は無視 */ }
       }),
@@ -152,7 +165,7 @@ export default function RunScreen() {
   };
   const start = async () => {
     setRunning(true); setSummary(null); setError(""); setNotice("");
-    setLog([]); setDone(0); setTotal(0); setFailures([]);
+    setLog([]); setDone(0); setTotal(0); setFailures([]); setNotices([]);
     interruptedRef.current = false;
     try {
       const code = await invoke<number>("run_core", { args: ["run", "--input", inputDir] });
@@ -318,7 +331,7 @@ export default function RunScreen() {
                     <polygon points="6,4 20,12 6,20" /></svg>
                   読み取りを開始
                 </button>
-                {!inputDir && <span className="muted">フォルダを選択すると実行できます</span>}
+                {!inputDir && <span className="muted">読み取る帳票を選択すると実行できます</span>}
               </div>
             </div>
 
@@ -373,6 +386,12 @@ export default function RunScreen() {
               <div className="row"><b>3.</b>
                 <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
             </div>
+            {notices.length > 0 && (
+              <div className="card warnbox">
+                <b>実行時のお知らせ</b>
+                {notices.map((t, i) => <div key={i}>{t}</div>)}
+              </div>
+            )}
             {(summary.risky_cells ?? 0) > 0 && (
               // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
               // 出ており、修正の必要はない——CSV の開き方だけの注意

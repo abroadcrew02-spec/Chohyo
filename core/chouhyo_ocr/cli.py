@@ -140,10 +140,6 @@ def cmd_expand_page(args) -> int:
     except IngestError as e:
         _progress({"event": "expand_page", "ok": False, "error": str(e)})
         return 0
-    if not pages:
-        _progress({"event": "expand_page", "ok": False,
-                   "error": f"ページ {args.page} を展開できない"})
-        return 0
     # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
     # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
     # 編集画面が「展開中…」のまま止まった原因・2026-08-28）

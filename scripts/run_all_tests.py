@@ -33,7 +33,8 @@ def main():
     # 1) pytest（GUI スモークは dev サーバー無しなら自動 skip）
     results.append(run(
         "pytest",
-        [str(PYTHON), "-X", "utf8", "-m", "pytest", "-q", "--tb=short"],
+        # -rf: 失敗したテスト名を必ず末尾に出す（パイプで切り詰めても分かる）
+        [str(PYTHON), "-X", "utf8", "-m", "pytest", "-q", "--tb=short", "-rf"],
         ROOT / "core"))
 
     # 2) cargo test（サブコマンド白リスト・issue #7）
@@ -59,6 +60,10 @@ def main():
         status = "PASS" if code == 0 else "FAIL"
         if code != 0:
             fail = True
+            # 失敗したテスト名だけは必ずサマリへ載せる（全文はその後）
+            names = [l for l in out.splitlines() if l.startswith("FAILED")]
+            for n in names:
+                lines.append(f"  ✗ {n}")
             print(f"----- {name} 出力（失敗のため全文） -----")
             print(out)
         lines.append(f"{name}: {status} ({counts}, {dt:.1f}s)")

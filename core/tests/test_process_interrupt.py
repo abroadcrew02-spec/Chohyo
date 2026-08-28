@@ -26,7 +26,9 @@ PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
 pytestmark = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答が無い環境")
 
-N_PAGES = 40  # 位置合わせが1枚 約0.2秒（2段探索後）→ kill を差し込む窓を作る
+N_PAGES = 12  # kill を差し込む窓が作れる最小規模。位置合わせに平行移動補正が
+              # 入って 1枚 約3秒になったため、40枚だとフルスイート並走時に
+              # 再開実行がタイムアウトしていた（実測・単体では通るフレーク）
 
 
 @pytest.fixture()
@@ -107,7 +109,8 @@ def test_kill_midway_then_resume_completes(env):
         [str(PYTHON), "-X", "utf8", "-m", "chouhyo_ocr.cli",
          "--config", str(cfg), "run", "--input", str(inp), "--replay", str(resp)],
         cwd=app_root() / "core", capture_output=True, text=True,
-        encoding="utf-8", timeout=180)
+        # 再開は残り約9ページ。CPU 競合下でも余裕を持たせる
+        encoding="utf-8", timeout=420)
     assert out.returncode == 0, out.stderr[-500:]
     summary = next(json.loads(l) for l in out.stdout.splitlines()
                    if '"summary"' in l)

@@ -36,7 +36,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [pan, setPan] = useState({ x: 10, y: 10 });
   const [dirtyState, setDirtyState] = useState(false);
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
-  const [saveErr, setSaveErr] = useState("");
+  const [errMsg, setErrMsg] = useState("");
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   const [genRows, setGenRows] = useState(5);
   const [genCols, setGenCols] = useState(4);
@@ -136,14 +136,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           .map((l) => { try { return JSON.parse(l); } catch { return null; } })
           .find((e) => e && e.event === "expand_page");
         if (!ev?.ok) {
-          setSaveErr(`PDF を開けませんでした: ${ev?.error ?? "不明"}`);
+          setErrMsg(`PDF を開けませんでした: ${ev?.error ?? "不明"}`);
           setMsg("");
           return;
         }
         imagePath = ev.page_path;
         note = ev.pages > 1 ? `（PDF の 1/${ev.pages} ページ目を表示）` : "（PDF を展開）";
       } catch (e) {
-        setSaveErr(`PDF を開けませんでした: ${e}`);
+        setErrMsg(`PDF を開けませんでした: ${e}`);
         setMsg("");
         return;
       }
@@ -154,7 +154,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     try {
       src = await invoke<string>("read_file_b64", { path: imagePath });
     } catch (e) {
-      setSaveErr(`画像を読み込めませんでした: ${e}`);
+      setErrMsg(`画像を読み込めませんでした: ${e}`);
       setMsg("");
       return;
     }
@@ -163,11 +163,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       imgRef.current = im;
       setImgSize({ w: im.naturalWidth, h: im.naturalHeight });
       setImgPath(imagePath);
-      setSaveErr("");
+      setErrMsg("");
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       draw();
     };
-    im.onerror = () => { setSaveErr("画像の表示に失敗しました"); setMsg(""); };
+    im.onerror = () => { setErrMsg("画像の表示に失敗しました"); setMsg(""); };
     im.src = src;
   };
 
@@ -211,7 +211,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     const text = await invoke<string>("read_text", { path: p });
     toEditorState(JSON.parse(text));
     // 前のファイルの検証エラーを現在の状態と誤読させない（レビュー N-5）
-    setSaveErr("");
+    setErrMsg("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
   };
 
@@ -266,14 +266,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.check === "template");
       if (tpl?.ok) {
-        setSaveErr("");
+        setErrMsg("");
         setMsg(`保存＋コア検証 OK（${tpl.columns} 列）: ${p}`);
       } else {
         // 検証 NG を成功と同じ灰色の小さい文字で出すと気づかれない（レビュー D-7）
         setMsg(`保存先: ${p}`);
-        setSaveErr(`保存しましたが、コアの検証で問題が見つかりました: ${tpl?.error ?? "不明"}`);
+        setErrMsg(`保存しましたが、コアの検証で問題が見つかりました: ${tpl?.error ?? "不明"}`);
       }
-    } catch (e) { setMsg(""); setSaveErr(`保存しましたが、コアの検証で問題が見つかりました: ${e}`); }
+    } catch (e) { setMsg(""); setErrMsg(`保存しましたが、コアの検証で問題が見つかりました: ${e}`); }
   };
 
   // ---------- 枠候補の生成（detect-grid）----------
@@ -593,7 +593,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           </button>))}
         <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
-      {saveErr && <div className="errbox" style={{ margin: "8px 18px" }}>{saveErr}</div>}
+      {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
