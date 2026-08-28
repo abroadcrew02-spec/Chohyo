@@ -49,8 +49,10 @@ export default function RunScreen(
   const [importing, setImporting] = useState(false);
   const [failures, setFailures] = useState<Failure[]>([]);
   const interruptedRef = useRef(false);
+  const refusedRef = useRef(false);
   const [notice, setNotice] = useState("");
   const [notices, setNotices] = useState<string[]>([]);  // 実行時の警告（M-2・#28）
+  const [refused, setRefused] = useState("");  // 業務的な拒否（H-C）
   const logRef = useRef<HTMLPreElement>(null);
 
   const parseVerify = (text: string): Verify => {
@@ -132,6 +134,19 @@ export default function RunScreen(
               `前回までの結果が ${ev.count} 件残っています（今回の入力に無いファイル）。`
               + `出力にはその行も含まれます: ` + (ev.files ?? []).join("、")]);
           }
+          // 業務的な拒否（テンプレ変更・多重起動など）を正しく伝える（H-C）。
+          // 旧実装は exit≠0 の固定文言「再度押すと続きから処理します」を
+          // 出していたが、決定論的な拒否なので押しても永久に同じ結果になる
+          if (ev.event === "refused") {
+            refusedRef.current = true;
+            setRefused(ev.error + (ev.hint ? `
+${ev.hint}` : ""));
+          }
+          if (ev.event === "source_replaced") {
+            setNotices((n) => [...n,
+              `${ev.file} は前回と内容が変わっていたため、`
+              + `前回の結果 ${ev.dropped_pages} 件を破棄して読み直します。`]);
+          }
           if (ev.event === "summary") setSummary(ev as Summary);
         } catch { /* JSON 以外の行は無視 */ }
       }),
@@ -181,10 +196,13 @@ export default function RunScreen(
   const start = async () => {
     setRunning(true); setSummary(null); setError(""); setNotice("");
     setLog([]); setDone(0); setTotal(0); setFailures([]); setNotices([]);
-    interruptedRef.current = false;
+    setRefused("");
+    interruptedRef.current = false; refusedRef.current = false;
     try {
       const code = await invoke<number>("run_core", { args: ["run", "--input", inputDir] });
-      if (interruptedRef.current) {
+      if (refusedRef.current) {
+        // 拒否済み: 固定文言（再実行を促す）を出さない
+      } else if (interruptedRef.current) {
         setNotice("中断しました。処理済みの内容は保存されています。再開すると続きから処理します。");
       } else if (code !== 0) {
         setError(`読み取りが中断されました（終了コード ${code}）。再度「読み取りを開始」を押すと続きから処理します。`);
@@ -278,6 +296,13 @@ export default function RunScreen(
               </div>
               <button className="btn" onClick={interrupt}>中断</button>
             </div>
+          </div>
+        )}
+
+        {refused && (
+          <div className="card errbox" style={{ whiteSpace: "pre-wrap" }}>
+            <b>読み取りを開始できません</b>
+            <div>{refused}</div>
           </div>
         )}
 

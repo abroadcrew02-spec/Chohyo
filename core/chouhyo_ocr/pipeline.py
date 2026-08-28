@@ -18,12 +18,14 @@ from .config import Config
 from .mapping import assign, symbols_from_response, to_face_local
 from .render_out import write_outputs
 from .render_rows import Row, build_failure_row, build_row
+from .pipeline_errors import OperationRefused
 from .store import Store
 from .template import Template, load_template
 from .vision_client import (OcrClient, SendError, load_saved_response,
                             save_response)
 
 Progress = Callable[[dict], None]
+
 
 
 @dataclass
@@ -77,21 +79,21 @@ def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
     stored_geo = store.geometry_hashes()
     if stored_geo and stored_geo != {geo_hash}:
         store.close()
-        raise SystemExit(
+        raise OperationRefused(
             "テンプレートの幾何セクション（render_dpi/image/record/faces.source/"
             "face_id/exclusions）が変わっている。token 座標が無効のため"
             "——`run` で再処理する（API 送信が発生する）")
     stored_algo = store.algo_versions()
     if stored_algo and stored_algo != {ALGO_VERSION}:
         store.close()
-        raise SystemExit(
+        raise OperationRefused(
             "位置合わせ方式が更新されている。旧方式で作った中間データは"
             "再利用できない——`run` で再処理する（API 送信が発生する）")
     if check_template:
         stored_tpl = store.template_hashes() - {""}
         if stored_tpl and stored_tpl != {tpl_hash}:
             store.close()
-            raise SystemExit(
+            raise OperationRefused(
                 "テンプレートが変わっている（欄・列の定義の変更）。"
                 "割付が旧テンプレートのままのため——`remap` で割付をやり直す")
 
@@ -150,7 +152,7 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
     try:
         lock.acquire()
     except RunLockError as e:
-        raise SystemExit(str(e)) from None
+        raise OperationRefused(str(e)) from None
     try:
         return _run_locked(input_dir, template_path, cfg, client, progress,
                            resend_on_template_change)
@@ -174,7 +176,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     if stale:
         if not resend_on_template_change:
             store.close()
-            raise SystemExit(
+            raise OperationRefused(
                 f"テンプレートまたは位置合わせ方式が変わっている（対象 {len(stale)} ページ）。"
                 "再処理には API 送信（課金）が発生するため中止した。"
                 "旧テンプレートへ戻す／`purge --yes` で作り直す／"
@@ -188,7 +190,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     aligned_dir.mkdir(parents=True, exist_ok=True)
 
     # --- F1/F2: 列挙・展開（画像を書き終えてから page 行 INSERT・§12-C9）---
-    taken: set[str] = set()
+    # 採番は DB 上の既存 ID も避ける（レビュー H-A）。実行内だけの集合だと、
+    # 別ファイルが持っている ID を奪って UNIQUE(source_file,page_no) と衝突する
+    taken: set[str] = store.all_page_ids()
     skipped_files: list[str] = []
     inputs = ingest.list_inputs(input_dir, skipped_files)
     if skipped_files:
@@ -203,6 +207,18 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # PM/architect 裁定 2026-08-28: 投入した紙が黙って消えると §3.4 の
         # 行数保存が破れ、正本がソート順次第で落ちる）
         digest = hashlib.sha1(source.read_bytes()).hexdigest()
+        # 同じ名前で中身が変わっていたら、そのファイルの旧データを捨てる
+        # （レビュー H-B）。旧実装は hash→name の一方向しか持たず、差し替えても
+        # 再送されずに**旧値が「正常」として出続けていた**（実測）。ページ数が
+        # 減る差し替えでは余った行が幽霊として残り、stale 検知にもかからない
+        prev = store.hash_of_source(source.name)
+        if prev is not None and prev != digest:
+            dropped = store.drop_pages_of(source.name)
+            store.forget_source(source.name)
+            log.info("source_content_changed", source_file=source.name,
+                     count=dropped)
+            progress({"event": "source_replaced", "file": source.name,
+                      "dropped_pages": dropped})
         seen_as = store.known_source(digest)
         if seen_as is not None and seen_as != source.name:
             log.info("skip_duplicate_content", source_file=source.name,
@@ -214,7 +230,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             n_pages = sum(1 for p in store.pages()
                           if p["source_file"] == seen_as) or 1
             for i in range(1, n_pages + 1):
-                pid = ingest.page_id_for(source, i, taken)
+                pid = (store.page_id_of(source.name, i)
+                       or ingest.page_id_for(source, i, taken))
                 taken.add(pid)
                 store.upsert_page(pid, source.name, i, "skipped_duplicate")
                 store.set_status(pid, render_rows.STATUS_DUPLICATE)
@@ -222,7 +239,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         try:
             page_images = ingest.expand(source, template.render_dpi, pages_dir)
         except ingest.IngestError as e:
-            pid = ingest.page_id_for(source, 1, taken)
+            pid = (store.page_id_of(source.name, 1)
+                   or ingest.page_id_for(source, 1, taken))
             taken.add(pid)
             store.upsert_page(pid, source.name, 1, "failed")
             store.set_status(pid, render_rows.STATUS_EXPAND_FAILED)
@@ -230,7 +248,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             continue
         store.record_source(digest, source.name)
         for i, img_path in enumerate(page_images, start=1):
-            pid = ingest.page_id_for(source, i, taken)
+            # 既存行があればその page_id を使い続ける（H-A）
+            pid = (store.page_id_of(source.name, i)
+                   or ingest.page_id_for(source, i, taken))
             taken.add(pid)
             existing = store.page(pid)
             if existing and existing["state"] == "done":
@@ -398,6 +418,7 @@ def render(template_path: str | Path, cfg: Config,
     # 出力を1バイトも書く前に、中間データが現テンプレートの産物かを検査（#25）
     check_reusable(store, geo_hash, _tpl_hash(raw), check_template=True)
     rows: list[Row] = []
+    build_failures: list[str] = []
     for page in store.pages():
         p = dict(page)
         if page["state"] == "done":
@@ -410,10 +431,17 @@ def render(template_path: str | Path, cfg: Config,
                                       store.era_scores(page["page_id"]), cfg))
                 continue
             except Exception as e:  # noqa: BLE001
+                import traceback
+                # 型名だけだと自コードのバグが全ページ「様式不一致」に化け、
+                # 利用者はテンプレートを疑う（レビュー M-2）。スタックは
+                # error.log へ（frame のみ・記入値は含まない）
                 log.error("row_build_failed", page_id=page["page_id"],
                           error_code=type(e).__name__)
+                log.error_trace(type(e).__name__,
+                                "".join(traceback.format_tb(e.__traceback__)))
                 p["status"] = render_rows.STATUS_FORMAT_MISMATCH
                 rows.append(build_failure_row(template, p))
+                build_failures.append(page["page_id"])
                 continue
         else:
             if not p.get("status"):
@@ -422,6 +450,15 @@ def render(template_path: str | Path, cfg: Config,
     ts = timestamp or time.strftime("%Y%m%d_%H%M%S")
     xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows)
     _warn_risky(risky)
+    if build_failures:
+        # 全ページ破損＝コード／テンプレの問題で、1ページの破損とは意味が違う
+        # （レビュー M-1）。旧実装は件数をどこにも出さず exit 0 だった
+        done = [p for p in store.pages() if p["state"] == "done"]
+        log.error("row_build_failed_total", count=len(build_failures))
+        if done and len(build_failures) == len(done):
+            raise OperationRefused(
+                f"処理済みページ {len(done)} 件すべてで行の組み立てに失敗した。"
+                "テンプレートと中間データの整合を確認する（詳細は error.log）")
     store.close()
     return xlsx, csvp, rows
 

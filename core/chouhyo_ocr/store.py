@@ -133,6 +133,22 @@ class Store:
                          (state, time.time(), page_id))
         self.con.commit()
 
+    def page_id_of(self, source_file: str, page_no: int) -> str | None:
+        """既存行の page_id（レビュー H-A）。
+
+        同じ入力ファイル・同じページ番号の行が既にあるなら、その page_id を
+        使い続ける。新しい ID を採ると UNIQUE(source_file, page_no) と衝突し、
+        run が IntegrityError で恒久的に落ちる（同 stem・別拡張子の共存履歴＋
+        先勝ち側の削除で到達・実測）。
+        """
+        row = self.con.execute(
+            "SELECT page_id FROM page WHERE source_file=? AND page_no=?",
+            (source_file, page_no)).fetchone()
+        return row[0] if row else None
+
+    def all_page_ids(self) -> set[str]:
+        return {r[0] for r in self.con.execute("SELECT page_id FROM page")}
+
     def set_image_path(self, page_id: str, image_path: str) -> None:
         """state を触らずに展開画像のパスだけ更新する（issue #38）。"""
         self.con.execute(
@@ -298,6 +314,35 @@ class Store:
         row = self.con.execute(
             "SELECT name FROM source_file WHERE hash=?", (file_hash,)).fetchone()
         return row[0] if row else None
+
+    def hash_of_source(self, name: str) -> str | None:
+        """記録済みの内容ハッシュ（レビュー H-B）。
+
+        source_file は hash→name の一方向だったため「同じ中身・別の名前」
+        （送信を減らす最適化）は検出できるのに、**「同じ名前・別の中身」
+        （誤ったデータを出す事故）は検出できなかった**。危険なのは後者で、
+        差し替えても再送されず旧値が「正常」として出続けていた（実測）。
+        """
+        row = self.con.execute(
+            "SELECT hash FROM source_file WHERE name=? ORDER BY hash LIMIT 1",
+            (name,)).fetchone()
+        return row[0] if row else None
+
+    def forget_source(self, name: str) -> None:
+        """内容が変わったファイルの旧ハッシュを捨てる（H-B）。"""
+        self.con.execute("DELETE FROM source_file WHERE name=?", (name,))
+        self.con.commit()
+
+    def drop_pages_of(self, name: str) -> int:
+        """入力ファイルに紐づくページと派生データを消す（H-B の差し替え時）。"""
+        ids = [r[0] for r in self.con.execute(
+            "SELECT page_id FROM page WHERE source_file=?", (name,))]
+        for pid in ids:
+            for table in ("token", "cell", "alignment", "era_score"):
+                self.con.execute(f"DELETE FROM {table} WHERE page_id=?", (pid,))
+        self.con.execute("DELETE FROM page WHERE source_file=?", (name,))
+        self.con.commit()
+        return len(ids)
 
     def record_source(self, file_hash: str, name: str) -> None:
         self.con.execute(

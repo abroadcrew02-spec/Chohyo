@@ -11,7 +11,7 @@ import pytest
 
 from chouhyo_ocr.config import Config
 from chouhyo_ocr.paths import app_root
-from chouhyo_ocr.pipeline import remap, render, run
+from chouhyo_ocr.pipeline import OperationRefused, remap, render, run
 from chouhyo_ocr.vision_client import ReplayClient
 
 RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
@@ -67,7 +67,7 @@ def test_render_rejects_geometry_change(tmp_path):
     """幾何変更後の render は出力を作らず拒否する（#25 の実証シナリオ）。"""
     cfg = make_cfg(tmp_path)
     setup_done(tmp_path, cfg)
-    with pytest.raises(SystemExit, match="run"):
+    with pytest.raises(OperationRefused, match="run"):
         render(geo_changed(tmp_path), cfg, timestamp="g")
     assert not list((tmp_path / "out").glob("output_g.*"))  # 1バイトも書かない
 
@@ -77,7 +77,7 @@ def test_render_rejects_nongeometry_change_and_names_remap(tmp_path):
     cfg = make_cfg(tmp_path)
     setup_done(tmp_path, cfg)
     tpl2 = field_moved(tmp_path)
-    with pytest.raises(SystemExit, match="remap"):
+    with pytest.raises(OperationRefused, match="remap"):
         render(tpl2, cfg, timestamp="m")
     # remap → render で通る（正しい復旧経路）
     assert remap(tpl2, cfg) == 1
@@ -90,7 +90,7 @@ def test_run_preflight_stops_before_any_api_call(tmp_path):
     cfg = make_cfg(tmp_path)
     inp, resp = setup_done(tmp_path, cfg)
     client = CountingReplay(resp)
-    with pytest.raises(SystemExit, match="ページ"):
+    with pytest.raises(OperationRefused, match="ページ"):
         run(inp, geo_changed(tmp_path), cfg, client)
     assert client.calls == 0
 

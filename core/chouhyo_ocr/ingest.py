@@ -111,10 +111,18 @@ def expand(source: Path, dpi: int, out_dir: Path,
     # 永続するため、同名 PDF を差し替えて再実行すると旧展開分が混ざり、
     # **別の帳票のデータが新ファイル名で送信・出力される**（実測: 12頁→2頁の
     # 差し替えで14頁化。ゼロ埋め幅の差で順序も入り乱れる）
-    stale_pat = re.compile(rf"{re.escape(source.stem)}-\d+")
+    # page 指定時は該当番号だけを消す（レビュー M-4: 旧実装は全番号を消し、
+    # expand(page=2) が page 1 の PNG まで巻き添えにしていた）。
+    # 削除できない（ロック中など）ファイルは無視する——ここで落とすと
+    # IngestError でなく生の例外が run 全体を止める
+    stale_num = rf"0*{page}" if page is not None else r"\d+"
+    stale_pat = re.compile(rf"{re.escape(source.stem)}-{stale_num}")
     for old in out_dir.glob(f"{glob.escape(source.stem)}-*.png"):
         if stale_pat.fullmatch(old.stem):
-            old.unlink()
+            try:
+                old.unlink()
+            except OSError:
+                log.info("stale_page_unlink_failed", source_file=old.name)
 
     exe = pdftoppm_path()
     args = [str(exe), "-r", str(dpi), "-png"]

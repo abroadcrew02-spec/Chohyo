@@ -14,7 +14,7 @@ import pytest
 
 from chouhyo_ocr.config import Config
 from chouhyo_ocr.paths import app_root
-from chouhyo_ocr.pipeline import render, run
+from chouhyo_ocr.pipeline import OperationRefused, render, run
 from chouhyo_ocr.vision_client import ReplayClient
 
 RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
@@ -250,7 +250,7 @@ def test_second_run_on_same_workdir_is_refused(tmp_path):
     holder = RunLock(cfg.workdir)
     holder.acquire()
     try:
-        with pytest.raises(SystemExit, match="二重"):
+        with pytest.raises(OperationRefused, match="二重"):
             run(inp, TPL, cfg, CountingReplay(respd))
     finally:
         holder.release()
@@ -291,3 +291,53 @@ def test_unsupported_input_is_visible_not_silent(tmp_path):
     skipped = [e for e in events if e.get("event") == "skipped_unsupported"]
     assert skipped and skipped[0]["count"] == 1
     assert skipped[0]["files"] == ["memo.docx"]
+
+
+# ---------- H-A/H-B: 入力ファイルの入替・差し替え ----------
+
+def test_page_id_survives_sibling_deletion(tmp_path):
+    """同 stem・別拡張子の片方を消しても run が落ちない（レビュー H-A）。
+
+    実測（修正前）: a.png と a.jpg を処理 → a.jpg を削除して再実行 →
+    IntegrityError で以後ずっと落ち、purge 以外に復旧手段が無かった。
+    """
+    from PIL import Image
+    cfg = make_cfg(tmp_path)
+    inp = tmp_path / "input"; inp.mkdir()
+    respd = tmp_path / "resp"; respd.mkdir()
+    base = Image.open(PAGE_PNG)
+    base.save(inp / "a.png")
+    base.convert("RGB").save(inp / "a.jpg", quality=95)
+    for pid in ("a_p0001", "a_p0002"):
+        shutil.copy(RESP, respd / f"{pid}.json")
+    run(inp, TPL, cfg, ReplayClient(respd))
+
+    (inp / "a.jpg").unlink()          # 先勝ちしていた側を消す
+    run(inp, TPL, cfg, ReplayClient(respd))   # 例外を出さずに完走する
+    _x, _c, rows = render(TPL, cfg, timestamp="ha")
+    assert any(r.source_file == "a.png" for r in rows)
+
+
+def test_replaced_content_does_not_serve_stale_values(tmp_path):
+    """同名で中身を差し替えたら旧データを出さない（レビュー H-B）。
+
+    実測（修正前）: 別内容へ差し替えても再送されず、**旧値がそのまま
+    「正常」として出続けた**（進捗イベントにも警告ゼロ）。
+    """
+    cfg = make_cfg(tmp_path)
+    inp = tmp_path / "input"; inp.mkdir()
+    respd = tmp_path / "resp"; respd.mkdir()
+    shutil.copy(PAGE_PNG, inp / "a.png")
+    shutil.copy(RESP, respd / "a_p0001.json")
+    c1 = CountingReplay(respd)
+    run(inp, TPL, cfg, c1)
+    assert c1.calls == 1
+
+    # 同名・別内容へ差し替え（IEND 後に1バイト足して内容だけ変える）
+    (inp / "a.png").write_bytes(PAGE_PNG.read_bytes() + b"\x99")
+    events = []
+    c2 = CountingReplay(respd)
+    run(inp, TPL, cfg, c2, progress=events.append)
+    assert c2.calls == 1, "差し替えたのに再送していない（旧データが出る）"
+    replaced = [e for e in events if e.get("event") == "source_replaced"]
+    assert replaced and replaced[0]["file"] == "a.png"

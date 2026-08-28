@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 
 from chouhyo_ocr.config import Config
 from chouhyo_ocr.paths import app_root
-from chouhyo_ocr.pipeline import remap, render, run
+from chouhyo_ocr.pipeline import OperationRefused, remap, render, run
 from chouhyo_ocr.vision_client import ReplayClient
 
 RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
@@ -53,7 +53,7 @@ def test_tr_g1_remap_rejects_geometry_change(tmp_path):
     t["faces"][1]["source"]["rect"]["h"] -= 10
     tpl2.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(SystemExit, match="run"):
+    with pytest.raises(OperationRefused, match="run"):
         remap(tpl2, cfg)
 
     # 非幾何の変更（欄の矩形）は remap を通す

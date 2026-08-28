@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import cred_store, logging_safe as log
 from .config import Config, ConfigError, load_config, save_config
+from .pipeline_errors import OperationRefused
 from .paths import app_root
 
 
@@ -263,6 +264,15 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("INTERRUPTED", file=sys.stderr)
         return 130
+    except OperationRefused as e:
+        # 業務的な拒否は JSON Lines で伝える（レビュー H-C）。exit 0 なのは
+        # #21 と同じ契約——非ゼロだと GUI が「終了コード 1。再度押すと続きから
+        # 処理します」という**誤った案内**を出す（決定論的な拒否なので、押しても
+        # 永久に同じ結果になる）
+        _progress({"event": "refused", "ok": False, "error": str(e),
+                   **({"hint": e.hint} if e.hint else {})})
+        print(str(e), file=sys.stderr)
+        return 0
     except ConfigError as e:
         # 設定エラーはメッセージをそのまま出す（内容は設定キー名と設定値のみで
         # 帳票の記入値は含まれない）。固定文言に潰すと利用者が config.json の

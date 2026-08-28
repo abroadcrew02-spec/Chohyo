@@ -534,3 +534,53 @@ def test_two_choice_can_reach_undecided():
     assert era.decide({"A": 0.01, "B": 0.01}, 0.05) == era.UNSELECTED
     # 3候補では従来どおりフロアを引く（縦罫線の共通インクを相殺）
     assert era.decide({"A": 0.31, "B": 0.20, "C": 0.20}, 0.05) == "A"
+
+
+def test_date_cells_exclude_printed_labels():
+    """生年月日欄が印字ラベル「年」「月」「日」を巻き込まない（おかゆ指摘）。
+
+    実測（修正前）: person_生年月日_日 が p0001 で "20日"、p0002 で "月20日"。
+    矩形の幅較正が印字ラベルを避けきれず、日付列に非数値が混入していた。
+    印字ラベルは 年=[1986,2045] 月=[2157,2206] 日=[2324,2380]（面ローカル）。
+    """
+    import json as _json
+
+    from chouhyo_ocr.mapping import symbols_from_response, to_face_local
+    resp_dir = app_root() / "core" / "workdir" / "responses"
+    if not (resp_dir / "帳票抽出検証用2026-08-24_p0001.json").exists():
+        pytest.skip("保存済み応答が無い環境")
+    template = load_template(TPL)
+    face = template.face("front")
+    for rid in ("p0001", "p0002"):
+        resp = _json.loads(
+            (resp_dir / f"帳票抽出検証用2026-08-24_{rid}.json").read_text(encoding="utf-8"))
+        local = to_face_local(face, symbols_from_response(resp))
+        got = {}
+        for name in ("年", "月", "日"):
+            cell = next(c for c in template.cells
+                        if c.field_id == f"person_生年月日_{name}")
+            r = cell.rect
+            inside = sorted((s for s in local
+                             if r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h),
+                            key=lambda s: s.x)
+            got[name] = "".join(s.text for s in inside)
+        assert got == {"年": "7", "月": "7", "日": "20"}, f"{rid}: {got}"
+        assert all(v.isdigit() for v in got.values()), f"{rid}: 非数値の混入 {got}"
+
+
+def test_expand_page_scoped_stale_removal(tmp_path):
+    """page 指定の展開が他ページの PNG を巻き添えにしない（レビュー M-4）。"""
+    from PIL import Image
+
+    from chouhyo_ocr.ingest import expand
+    src = tmp_path / "doc.pdf"
+    frames = [Image.new("L", (100, 140), 250), Image.new("L", (100, 140), 249)]
+    frames[0].save(src, save_all=True, append_images=frames[1:])
+    out = tmp_path / "pages"; out.mkdir()
+
+    p1 = expand(src, dpi=36, out_dir=out, page=1)
+    assert len(p1) == 1
+    p2 = expand(src, dpi=36, out_dir=out, page=2)
+    assert len(p2) == 1
+    # 1ページ目の PNG が残っている（旧実装は page 指定を無視して全部消していた）
+    assert p1[0].exists(), "page=2 の展開が page=1 の PNG を消した"
