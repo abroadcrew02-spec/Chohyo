@@ -55,6 +55,8 @@ cd gui && npm install
 .venv\Scripts\python.exe scripts\run_all_tests.py
 
 # 配布物ビルド（PyInstaller onedir → core-dist/ → NSIS インストーラ）
+# schema/ や templates/ を変更したら必ず再実行する。core-dist/ 内の同梱コピーが
+# 古いままだと、GUI（同梱コアを呼ぶ）の検証と開発中コアの挙動が食い違う
 .venv\Scripts\python.exe scripts\build_dist.py
 cd gui && npm run tauri build
 ```

@@ -15,7 +15,11 @@ from .paths import project_root
 
 
 class ConfigError(ValueError):
-    """config.json の値が不正（キー名は表示してよい・記入値ではない）。"""
+    """config.json の値が不正。
+
+    メッセージには設定キー名と設定値を含める（どちらも利用者自身が書いた
+    設定であり、帳票の記入値ではないため表示してよい）。
+    """
 
 
 @dataclass(frozen=True)
@@ -37,9 +41,10 @@ def _validate(cfg: Config) -> Config:
         v = getattr(cfg, key)
         if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 < v <= 1:
             raise ConfigError(f"{key} は 0 より大きく 1 以下の数値にする（現在: {v!r}）")
+    # 0 は「送信しないドライラン」として正当（test_resume_cap が §8-6 の検証に使う）
     if isinstance(cfg.send_limit, bool) or not isinstance(cfg.send_limit, int) \
-            or cfg.send_limit < 1:
-        raise ConfigError(f"send_limit は 1 以上の整数にする（現在: {cfg.send_limit!r}）")
+            or cfg.send_limit < 0:
+        raise ConfigError(f"send_limit は 0 以上の整数にする（現在: {cfg.send_limit!r}）")
     for key in ("output_dir", "workdir", "log_dir"):
         v = getattr(cfg, key)
         if not isinstance(v, str) or not v.strip():

@@ -30,15 +30,31 @@ function Settings({ onClose }: { onClose: () => void }) {
     setCfg((c) => ({ ...c, [k]: v })); setSaved(false);
   };
   // 数値入力の全消去は +"" === 0 になる。0 の〓閾値は「低信頼値がすべて素通り」で
-  // 転記主義を無効化するため、空・NaN は前の値を維持する（issue #14）
-  const setNum = (k: keyof Cfg, raw: string, lo: number, hi: number, int = false) => {
+  // 転記主義を無効化するため、空・NaN は前の値を維持する（issue #14）。
+  // 入力途中の値へキーストローク毎にクランプを掛けると「0.9」と打つ途中の「0」が
+  // 補正されて意図しない値が確定するため、範囲補正は保存時に1回だけ行う（N-3）
+  const setNum = (k: keyof Cfg, raw: string, int = false) => {
     if (raw === "") return;
     const n = int ? Math.trunc(+raw) : +raw;
     if (Number.isNaN(n)) return;
-    set(k, Math.min(hi, Math.max(lo, n)));
+    set(k, n);
   };
+  const [err, setErr] = useState("");
   const save = async () => {
-    await invoke("write_config", { patch: cfg as unknown as Record<string, unknown> });
+    if ([cfg.output_dir, cfg.workdir, cfg.log_dir].some((d) => !d.trim())) {
+      setErr("保存先のパスが空欄です。すべて入力してください。");
+      return;
+    }
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    const fixed: Cfg = {
+      ...cfg,
+      unclear_threshold: clamp(cfg.unclear_threshold, 0.01, 1),
+      era_threshold: clamp(cfg.era_threshold, 0.01, 1),
+      send_limit: Math.max(0, Math.trunc(cfg.send_limit)),
+    };
+    setCfg(fixed);
+    setErr("");
+    await invoke("write_config", { patch: fixed as unknown as Record<string, unknown> });
     setSaved(true);
   };
   return (
@@ -50,15 +66,15 @@ function Settings({ onClose }: { onClose: () => void }) {
         </p>
         <label>〓と判定する基準値（0〜1）。大きいほど〓が増え、読み誤りの見落としが減ります
           <input type="number" min={0.01} max={1} step={0.01} value={cfg.unclear_threshold}
-            onChange={(e) => setNum("unclear_threshold", e.target.value, 0.01, 1)} />
+            onChange={(e) => setNum("unclear_threshold", e.target.value)} />
         </label>
         <label>丸印と判定する基準値（0〜1）
           <input type="number" min={0.01} max={1} step={0.01} value={cfg.era_threshold}
-            onChange={(e) => setNum("era_threshold", e.target.value, 0.01, 1)} />
+            onChange={(e) => setNum("era_threshold", e.target.value)} />
         </label>
         <label>1回の実行で送信する上限ページ数
-          <input type="number" min={1} step={1} value={cfg.send_limit}
-            onChange={(e) => setNum("send_limit", e.target.value, 1, 100000, true)} />
+          <input type="number" min={0} step={1} value={cfg.send_limit}
+            onChange={(e) => setNum("send_limit", e.target.value, true)} />
         </label>
         <label>Excel の保存先
           <input value={cfg.output_dir} onChange={(e) => set("output_dir", e.target.value)} />
@@ -73,6 +89,7 @@ function Settings({ onClose }: { onClose: () => void }) {
           <button className="btn primary" onClick={save}>保存</button>
           <button className="btn" onClick={onClose}>閉じる</button>
           {saved && <span style={{ color: "var(--ok-ink)", fontSize: 12.5 }}>保存しました。次回の読み取りから適用されます。</span>}
+          {err && <span style={{ color: "var(--err-ink)", fontSize: 12.5 }}>{err}</span>}
         </div>
       </div>
     </div>

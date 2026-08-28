@@ -76,10 +76,12 @@ class Store:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.con = sqlite3.connect(db_path)
         self.con.execute("PRAGMA journal_mode=WAL")
-        # WAL では NORMAL で十分な耐久性（チェックポイント前のクラッシュでも
-        # WAL から整合復元される）。FULL は commit 毎 fsync で、ページ毎に
-        # 十数回 commit する本ツールでは実測に響く（issue #16）。最悪ケースは
-        # 電源断で直近ページの状態が巻き戻るだけで、再開設計（§6.7）が吸収する
+        # WAL では NORMAL で十分な耐久性（アプリクラッシュ・プロセス強制終了では
+        # 何も失われず、DB も壊れない）。FULL は commit 毎 fsync で、ページ毎に
+        # 十数回 commit する本ツールでは実測に響く（issue #16）。失われうるのは
+        # 電源断・OS クラッシュ時の未チェックポイント分のみ（複数ページ分に及び
+        # うる）。巻き戻ったページは次回 run が未処理として再処理するため、実害は
+        # その分の API 再送（課金重複）にとどまる——再開設計（§6.7）が吸収する
         self.con.execute("PRAGMA synchronous=NORMAL")
         self.con.executescript(_SCHEMA)
         self.con.commit()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -75,8 +76,12 @@ def expand(source: Path, dpi: int, out_dir: Path) -> list[Path]:
         # stderr は記入値を含みうる経路ではないが、方針どおり固定コード化して捨てる
         raise IngestError("PDF_EXPAND_FAILED")
     # stem は glob エスケープ必須。scan[1].pdf（ブラウザの重複名）で [1] が
-    # 文字クラス解釈され、展開成功なのに 0 件マッチ→展開失敗になる（issue #13）
-    pages = sorted(out_dir.glob(f"{glob.escape(source.stem)}-*.png"))
+    # 文字クラス解釈され、展開成功なのに 0 件マッチ→展開失敗になる（issue #13）。
+    # さらに <stem>-<数字>.png に厳密一致させる: a.pdf と a-1.pdf が同居すると
+    # a-* が a-1-1.png まで拾い、ページ数と行数の対応が崩れる（レビュー N-13）
+    pat = re.compile(rf"{re.escape(source.stem)}-\d+$")
+    pages = sorted(p for p in out_dir.glob(f"{glob.escape(source.stem)}-*.png")
+                   if pat.fullmatch(p.stem))
     if not pages:
         raise IngestError("PDF_EXPAND_EMPTY")
     return pages

@@ -435,6 +435,13 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               <input placeholder="昭,平,令"
                 defaultValue={f.marks.map((m) => m.value).join(",")}
                 onBlur={(e) => genFieldMarks(f, e.target.value)} /></label>)}
+          {f.kind === "text" && (
+            <label>正規化（金額欄は「金額」を選ぶ。桁区切りを外して数値化します）
+              <select value={f.normalize ?? ""}
+                onChange={(e) => updateField(f.uid, { normalize: e.target.value || undefined })}>
+                <option value="">なし</option>
+                <option value="amount">金額</option>
+              </select></label>)}
           <div className="mono">x:{f.rect.x} y:{f.rect.y} w:{f.rect.w} h:{f.rect.h}</div>
           <button onClick={removeSel}>削除</button>
         </div>);
@@ -490,6 +497,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             <input className="w6" placeholder="subfields（年,月,日）" value={c.subfields}
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, subfields: e.target.value } : v) })} />
+            <select value={c.normalize ?? ""} title="正規化（金額列は「金額」を選ぶ）"
+              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                j === i ? { ...v, normalize: e.target.value || undefined } : v) })}>
+              <option value="">正規化なし</option><option value="amount">金額</option>
+            </select>
             <button onClick={() => updateTable(t.uid,
               { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
           </div>))}

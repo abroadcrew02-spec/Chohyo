@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from . import cred_store, logging_safe as log
-from .config import Config, load_config, save_config
+from .config import Config, ConfigError, load_config, save_config
 from .paths import app_root
 
 
@@ -201,6 +201,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("INTERRUPTED", file=sys.stderr)
         return 130
+    except ConfigError as e:
+        # 設定エラーはメッセージをそのまま出す（内容は設定キー名と設定値のみで
+        # 帳票の記入値は含まれない）。固定文言に潰すと利用者が config.json の
+        # どこを直せばよいか分からない（レビュー N-2）
+        print(f"ERROR ConfigError: {e}", file=sys.stderr)
+        return 1
     except Exception as e:  # noqa: BLE001
         # 記入値の漏出防止（issue #2）: 例外メッセージには帳票の値が乗りうる
         # （例: openpyxl IllegalCharacterError はセル値をメッセージへ含める）。

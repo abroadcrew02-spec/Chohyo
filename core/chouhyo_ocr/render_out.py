@@ -53,7 +53,7 @@ def _normalize_zip(path: Path) -> None:
 def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
     n_extract = len(columns) - len(META_COLUMNS)
     first = excel_column_letter(len(META_COLUMNS) + 1)          # G
-    last = excel_column_letter(len(columns))                    # HL
+    last = excel_column_letter(len(columns))                    # 218列なら HJ
 
     wb = Workbook(write_only=True)
     wb.properties.created = _FIXED_DT

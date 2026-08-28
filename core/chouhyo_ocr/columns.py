@@ -1,7 +1,7 @@
 """出力列の導出（設計 §4.3）。
 
 列リストをコードへ持たない。管理6列だけが固定で、抽出対象列はテンプレートの
-定義順から導出する。v1 は起動時に導出結果が 220 列であることを検証し、
+定義順から導出する。v1 は起動時に導出結果が 218 列であることを検証し、
 不一致ならテンプレートを拒否する（テンプレート編集ミスで列構成が黙って
 変わる事故の防止）。
 """
@@ -19,6 +19,7 @@ META_COLUMNS: tuple[str, ...] = (
 )
 
 V1_EXPECTED_TOTAL = 218  # 管理6＋本人12＋家族60＋明細140（要件 §5.6 v3.11・郵便番号は住所へ統合）
+V1_EXPECTED_AMOUNT = 28  # normalize:"amount" のセル数（明細28行×金額1列）
 
 
 def derive_columns(template: Template) -> list[str]:
@@ -44,11 +45,19 @@ def validate_v1(template: Template) -> list[str]:
         )
     if len(set(cols)) != len(cols):
         raise TemplateError("導出列名に重複がある")
+    # 金額正規化は normalize 属性で発火する（列名非依存・issue #11）。エディタで
+    # 表を作り直すと属性が落ちても列数は変わらないため、件数で明示的に検証する
+    n_amount = sum(1 for c in template.cells if c.normalize == "amount")
+    if n_amount != V1_EXPECTED_AMOUNT:
+        raise TemplateError(
+            f'normalize:"amount" のセルが {n_amount} 個（v1 の期待は '
+            f"{V1_EXPECTED_AMOUNT} 個）。金額列の normalize 宣言を確認する"
+        )
     return cols
 
 
 def excel_column_letter(n: int) -> str:
-    """1起点の列番号 → Excel 列文字（220 → 'HL'）。"""
+    """1起点の列番号 → Excel 列文字（218 → 'HJ'）。"""
     s = ""
     while n:
         n, r = divmod(n - 1, 26)

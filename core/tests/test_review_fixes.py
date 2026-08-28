@@ -70,6 +70,21 @@ def test_shipped_template_declares_amount_normalize():
     assert all(c.field_id.endswith("金額") for c in amount_cells)
 
 
+def test_validate_v1_rejects_missing_normalize(tmp_path):
+    """normalize が落ちたテンプレートは validate_v1 が拒否する（再レビュー N-1/N-4）。
+
+    エディタで表を作り直すと属性が落ちても列数 218 は変わらないため、
+    件数チェックがないと「保存＋コア検証 OK」の緑が出てしまう。
+    """
+    from chouhyo_ocr.columns import validate_v1
+    from chouhyo_ocr.template import TemplateError
+    ok = _template_with(tmp_path)
+    assert len(validate_v1(ok)) == 218
+    broken = _template_with(tmp_path, drop_normalize=True)
+    with pytest.raises(TemplateError, match="normalize"):
+        validate_v1(broken)
+
+
 # ---------- #13: glob メタ文字を含むファイル名 ----------
 
 def test_expand_handles_bracket_filename(tmp_path):
@@ -84,6 +99,21 @@ def test_expand_handles_bracket_filename(tmp_path):
     pages = expand(src, dpi=72, out_dir=out)
     assert len(pages) == 1
     assert pages[0].name.startswith("scan[1]-")
+
+
+def test_expand_does_not_pick_sibling_stem_pages(tmp_path):
+    """a.pdf の展開が a-1.pdf 由来の a-1-1.png を拾わない（再レビュー N-13）。"""
+    from PIL import Image
+
+    from chouhyo_ocr.ingest import expand
+    src = tmp_path / "a.pdf"
+    Image.new("L", (200, 280), 255).save(src)
+    out = tmp_path / "pages"
+    out.mkdir()
+    (out / "a-1-1.png").write_bytes(b"stale")   # a-1.pdf の展開分を装う
+    (out / "a-extra.png").write_bytes(b"stale")  # 数字でない接尾辞
+    pages = expand(src, dpi=72, out_dir=out)
+    assert [p.name for p in pages] == ["a-1.png"]
 
 
 # ---------- #14: config の検証 ----------
@@ -124,3 +154,9 @@ def test_valid_config_passes(tmp_path):
     assert cfg.unclear_threshold == 0.9
     assert cfg.send_limit == 50
     assert cfg.era_threshold == 0.05  # 未指定は既定値
+
+
+def test_send_limit_zero_is_valid(tmp_path):
+    """send_limit=0（送信しないドライラン）は従来どおり通る（再レビュー N-6）。"""
+    cfg = load_config(_write_cfg(tmp_path, {"send_limit": 0}))
+    assert cfg.send_limit == 0
