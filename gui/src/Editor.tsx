@@ -42,6 +42,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [genCols, setGenCols] = useState(4);
   const [genMode, setGenMode] = useState<"ruled" | "uniform">("ruled");
   const [imgPath, setImgPath] = useState("");
+  // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
+  const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
   const drag = useRef<{ mode: string; start: { x: number; y: number };
                         orig?: Rect; extra?: { x: number; y: number } } | null>(null);
   // 開いたテンプレートのメタ情報。faces 以外を編集画面は触らないが、保存時に
@@ -52,6 +54,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     template_id: "chouhyo-v1", render_dpi: 300, image: null, record: { pages: 1 } });
 
   const markDirty = useCallback((d: boolean) => { setDirtyState(d); onDirty(d); }, [onDirty]);
+  const nextTableId = () => {
+    const used = new Set(tables.map((t) => t.table_id));
+    let n = tables.length + 1;
+    while (used.has(`table${n}`)) n++;
+    return `table${n}`;
+  };
   const confirmDiscard = () =>
     !dirtyState || window.confirm("未保存の変更があります。破棄してよろしいですか？");
 
@@ -208,8 +216,20 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!confirmDiscard()) return;
     const p = await invoke<string | null>("pick_json", { save: false });
     if (!p) return;
-    const text = await invoke<string>("read_text", { path: p });
-    toEditorState(JSON.parse(text));
+    // JSON でないファイル・テンプレート以外の JSON を選ぶと、旧実装は
+    // unhandled rejection で**画面が無反応**になっていた（レビュー M-14）
+    let parsed: any;
+    try {
+      const text = await invoke<string>("read_text", { path: p });
+      parsed = JSON.parse(text);
+      if (!parsed || !Array.isArray(parsed.faces)) {
+        throw new Error("faces が無い（テンプレート JSON ではありません）");
+      }
+    } catch (e) {
+      setErrMsg(`テンプレートを読み込めませんでした: ${e}`);
+      return;
+    }
+    toEditorState(parsed);
     // 前のファイルの検証エラーを現在の状態と誤読させない（レビュー N-5）
     setErrMsg("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
@@ -234,7 +254,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
             value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
         tables: tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y)).map((t) => ({
-          table_id: t.table_id, row_pitch: Math.round(t.row_pitch),
+          table_id: t.table_id, row_pitch: t.row_pitch,
           row_height: t.row_height,
           blocks: t.blocks.map((b) => ({ origin: { x: b.x, y: b.y - y0 }, rows: b.rows })),
           columns: t.columns.map((c) => ({
@@ -294,8 +314,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         .find((e) => e && e.event === "detect_grid");
       if (!fit?.ok) { setMsg(`検出不成立 → 等分割生成へ切り替え可: ${fit?.error ?? ""}`); return; }
       const t: Table = {
-        uid: uid(), table_id: `table${tables.length + 1}`,
-        row_pitch: fit.row_pitch, row_height: fit.row_height,
+        uid: uid(), table_id: nextTableId(),
+        row_pitch: Math.max(1, Math.round(fit.row_pitch)),
+        row_height: fit.row_height,
         blocks: [{ x: fit.origin_x, y: fit.origin_y, rows: fit.rows }],
         columns: fit.columns.map((c: any, i: number) =>
           ({ name: `列${i + 1}`, x_offset: c.x_offset, width: c.width,
@@ -393,7 +414,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!d || !d.mode.startsWith("draw-") || !pending) return;
     if (pending.w < 8 || pending.h < 8) { setPending(null); return; }
     if (d.mode === "draw-field") {
-      const f: Field = { uid: uid(), field_id: `field_${fields.length + 1}`,
+      // 既存 ID と衝突しない番号を選ぶ（レビュー M-15: length+1 だと
+      // 削除後に重複し、保存時のコア検証まで気づけなかった）
+      const used = new Set(fields.map((x) => x.field_id));
+      let n = fields.length + 1;
+      while (used.has(`field_${n}`)) n++;
+      const f: Field = { uid: uid(), field_id: `field_${n}`,
                          kind: "text", rect: pending, marks: [] };
       setFields((fs) => [...fs, f]); setSel({ type: "field", uid: f.uid });
       setPending(null); markDirty(true);
@@ -479,10 +505,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               <option value="choice">選択式（昭・平・令などの丸囲み）</option>
             </select></label>
           {f.kind === "choice" && (
+            // 制御コンポーネントにする（レビュー M-13）。defaultValue は
+            // パネルの JSX 構造が同じだと React が DOM を再利用して更新されず、
+            // **別の欄を選んでも前の欄の選択肢が表示されたまま**になり、
+            // その状態で blur すると今の欄が前の値で上書きされていた
             <label>選択肢（カンマ区切り・縦方向に自動配置）
               <input placeholder="昭,平,令"
-                defaultValue={f.marks.map((m) => m.value).join(",")}
-                onBlur={(e) => genFieldMarks(f, e.target.value)} /></label>)}
+                value={choiceDraft ?? f.marks.map((m) => m.value).join(",")}
+                onChange={(e) => setChoiceDraft(e.target.value)}
+                onBlur={(e) => { genFieldMarks(f, e.target.value);
+                                 setChoiceDraft(null); }} /></label>)}
           {f.kind === "text" && (
             <label>正規化（金額欄は「金額」を選んでください。桁区切りを外して数値化します）
               <select value={f.normalize ?? ""}
@@ -514,8 +546,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         <h3>選択中の表</h3>
         <label>表の名前 <input value={t.table_id}
           onChange={(e) => updateTable(t.uid, { table_id: e.target.value })} /></label>
-        <label>行ピッチ <input type="number" value={t.row_pitch}
-          onChange={(e) => updateTable(t.uid, { row_pitch: +e.target.value })} /></label>
+        {/* 整数で保持する（レビュー M-22: 描画は float・保存時に round だと
+            プレビューと実際の行位置が最大 0.5×(行数-1) px ずれていた。
+            スキーマも integer なので入力時点で丸める） */}
+        <label>行ピッチ <input type="number" step={1} value={t.row_pitch}
+          onChange={(e) => updateTable(t.uid,
+            { row_pitch: Math.max(1, Math.round(+e.target.value)) })} /></label>
         <label>行の高さ <input type="number" value={t.row_height}
           onChange={(e) => updateTable(t.uid, { row_height: +e.target.value })} /></label>
         {t.blocks.map((b, i) => (

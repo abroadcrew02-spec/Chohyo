@@ -30,6 +30,10 @@ class Config:
     output_dir: str = "output"        # 出力先
     workdir: str = "workdir"          # 中間データ保持先
     log_dir: str = "logs"             # ログ出力先
+    # API 送信の月次上限（安全装置・ユーザー指示 2026-08-28）。無料枠 1,000 に
+    # 対し余裕を残す。設定6項目（要件 §5.8）には数えない——利用者が日常的に
+    # 触る設定ではなく、課金事故を止めるための歯止めだから
+    api_monthly_cap: int = 900
 
 
 def config_path() -> Path:
@@ -45,6 +49,11 @@ def _validate(cfg: Config) -> Config:
     if isinstance(cfg.send_limit, bool) or not isinstance(cfg.send_limit, int) \
             or cfg.send_limit < 0:
         raise ConfigError(f"send_limit は 0 以上の整数にする（現在: {cfg.send_limit!r}）")
+    if isinstance(cfg.api_monthly_cap, bool) \
+            or not isinstance(cfg.api_monthly_cap, int) \
+            or not 0 <= cfg.api_monthly_cap <= 1000000:
+        raise ConfigError(
+            f"api_monthly_cap は 0 以上の整数にする（現在: {cfg.api_monthly_cap!r}）")
     for key in ("output_dir", "workdir", "log_dir"):
         v = getattr(cfg, key)
         if not isinstance(v, str) or not v.strip():

@@ -100,6 +100,12 @@ class Store:
     def close(self) -> None:
         self.con.close()
 
+    def __enter__(self) -> "Store":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     # --- page ---
     def upsert_page(self, page_id: str, source_file: str, page_no: int,
                     state: str, image_path: str | None = None) -> None:
@@ -150,18 +156,24 @@ class Store:
             (below, other, time.time(), page_id))
         self.con.commit()
 
-    def pages(self) -> list[sqlite3.Row]:
+    def _rows(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        """Row 形式で取得する。例外時も row_factory を必ず戻す（レビュー M-21）。
+
+        戻し忘れると以降の全メソッドの戻り型が変わり、原因の分かりにくい
+        壊れ方をする。
+        """
         self.con.row_factory = sqlite3.Row
-        rows = self.con.execute(
-            "SELECT * FROM page ORDER BY source_file, page_no").fetchall()
-        self.con.row_factory = None
-        return rows
+        try:
+            return self.con.execute(sql, params).fetchall()
+        finally:
+            self.con.row_factory = None
+
+    def pages(self) -> list[sqlite3.Row]:
+        return self._rows("SELECT * FROM page ORDER BY source_file, page_no")
 
     def page(self, page_id: str) -> sqlite3.Row | None:
-        self.con.row_factory = sqlite3.Row
-        row = self.con.execute("SELECT * FROM page WHERE page_id=?", (page_id,)).fetchone()
-        self.con.row_factory = None
-        return row
+        rows = self._rows("SELECT * FROM page WHERE page_id=?", (page_id,))
+        return rows[0] if rows else None
 
     # --- token（symbol 単位・面ローカル中心点）---
     def replace_tokens(self, page_id: str, rows: list[tuple]) -> None:
@@ -225,12 +237,21 @@ class Store:
              algo_version))
         self.con.commit()
 
+    # 再利用検査の母集団は **出力に寄与する done ページのみ**（レビュー C-1）。
+    # 失敗ページの古い alignment 行まで数えると、1ページの位置合わせ失敗が
+    # バッチ全体を恒久的に封鎖する——送信済み（課金済み）の正常ページも
+    # purge 以外で取り出せなくなり、issue #39 で潰した故障が別経路で復活する。
+    # 特に ALGO_VERSION の初回アップグレード（'' → "2"）は全利用者が通る
     def geometry_hashes(self) -> set[str]:
-        return {h for (h,) in self.con.execute("SELECT DISTINCT geometry_hash FROM alignment")}
+        return {h for (h,) in self.con.execute(
+            """SELECT DISTINCT a.geometry_hash FROM alignment a
+               JOIN page p ON p.page_id = a.page_id WHERE p.state='done'""")}
 
     def algo_versions(self) -> set[str]:
         """位置合わせ方式の版（#25/#30: コード側の版違いも再利用拒否の対象）。"""
-        return {v for (v,) in self.con.execute("SELECT DISTINCT algo_version FROM alignment")}
+        return {v for (v,) in self.con.execute(
+            """SELECT DISTINCT a.algo_version FROM alignment a
+               JOIN page p ON p.page_id = a.page_id WHERE p.state='done'""")}
 
     def template_hashes(self) -> set[str]:
         """cell を割り付けたテンプレート全体のハッシュ（'' は旧版データ）。"""

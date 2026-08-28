@@ -12,7 +12,8 @@ type Summary = {
   risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
   xlsx?: string; csv?: string;
 };
-type Verify = { template: boolean; poppler: boolean; cred: string };
+type Verify = { template: boolean; poppler: boolean; cred: string; storage: boolean;
+                budgetUsed: number; budgetCap: number };
 type Failure = { page_id: string; status: string };
 
 // ステータス → 平易な言葉（エラー一覧用）
@@ -53,7 +54,8 @@ export default function RunScreen(
   const logRef = useRef<HTMLPreElement>(null);
 
   const parseVerify = (text: string): Verify => {
-    const v: Verify = { template: false, poppler: false, cred: "missing" };
+    const v: Verify = { template: false, poppler: false, cred: "missing", storage: true,
+                        budgetUsed: 0, budgetCap: 900 };
     for (const line of text.split("\n")) {
       try {
         const e = JSON.parse(line);
@@ -61,6 +63,10 @@ export default function RunScreen(
         if (e.check === "template") v.template = !!e.ok;
         if (e.check === "poppler") v.poppler = !!e.ok;
         if (e.check === "credentials") v.cred = e.state ?? (e.ok ? "env" : "missing");
+        if (e.check === "local_storage") v.storage = !!e.ok;
+        if (e.check === "api_budget") {
+          v.budgetUsed = e.used ?? 0; v.budgetCap = e.cap ?? 900;
+        }
       } catch { /* skip */ }
     }
     return v;
@@ -275,6 +281,45 @@ export default function RunScreen(
           </div>
         )}
 
+        {/* API 送信の残量（ユーザー指示 2026-08-28: 請求が立つ前に強制停止）。
+            残り0で開始ボタンを止める——押せてしまうとコア側で止まるだけで、
+            なぜ進まないのか画面から分からない */}
+        {!running && verify && verify.budgetCap > 0 && (
+          <div className={verify.budgetUsed >= verify.budgetCap
+            ? "card warnbox" : "card"} style={{ fontSize: 12.5 }}>
+            {verify.budgetUsed >= verify.budgetCap ? (
+              <>
+                <b>今月の送信上限に達しました</b>
+                <div>これ以上の読み取りは行いません（無料枠を超えて課金されるのを
+                  防ぐためです）。続けるには設定ファイルの api_monthly_cap を
+                  引き上げるか、翌月まで待ってください。</div>
+              </>
+            ) : (
+              <div>今月の読み取り可能枚数: 残り <b>{verify.budgetCap - verify.budgetUsed}</b> 枚
+                （使用 {verify.budgetUsed} / 上限 {verify.budgetCap}・無料枠 1,000）</div>
+            )}
+          </div>
+        )}
+
+        {/* 実行前の環境チェック（M-1: 旧実装は cred のみ表示で、Poppler 欠損や
+            クラウド同期先の警告が画面に出ず、実行して初めて全ページ失敗した） */}
+        {!running && verify && (!verify.template || !verify.poppler || !verify.storage) && (
+          <div className="card warnbox">
+            <b>実行前に確認してください</b>
+            {!verify.template && (
+              <div>テンプレートを読み込めません（列定義の不整合など）。
+                「テンプレート編集」タブで保存し直してください。</div>)}
+            {!verify.poppler && (
+              <div>PDF を画像化する部品（Poppler）が見つかりません。
+                このまま実行するとすべてのページが展開失敗になります。
+                インストールし直してください。</div>)}
+            {!verify.storage && (
+              <div>保存先がクラウド同期フォルダ（OneDrive・Dropbox など）や
+                ネットワーク共有の下にあります。中間データには個人情報が含まれるため、
+                設定でローカルのフォルダへ変更してください。</div>)}
+          </div>
+        )}
+
         {/* はじめの準備（資格情報が無いときだけ） */}
         {!running && verify && verify.cred === "missing" && (
           <div className="card" style={{ borderColor: "var(--warn-line)", background: "var(--warn-bg)" }}>
@@ -335,7 +380,9 @@ export default function RunScreen(
               <div className="no">3</div>
               <div className="body">
                 <button className="btn primary big" style={{ width: "fit-content" }}
-                  onClick={start} disabled={!inputDir || verify?.cred === "missing"}>
+                  onClick={start}
+                  disabled={!inputDir || verify?.cred === "missing"
+                    || (!!verify && verify.budgetUsed >= verify.budgetCap)}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="#ffffff">
                     <polygon points="6,4 20,12 6,20" /></svg>
                   読み取りを開始

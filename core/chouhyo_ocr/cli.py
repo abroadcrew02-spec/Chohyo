@@ -23,7 +23,8 @@ def _client(cfg: Config, replay_dir: str | None):
         return ReplayClient(replay_dir)
     from .vision_client import RealVisionClient
     info = cred_store.load_credentials_info(cfg.workdir)
-    return RealVisionClient(credentials_info=info)
+    return RealVisionClient(credentials_info=info,
+                            monthly_cap=cfg.api_monthly_cap)
 
 
 def cmd_run(args) -> int:
@@ -108,6 +109,13 @@ def cmd_verify(args) -> int:
     _progress({"event": "verify", "check": "local_storage", "ok": not synced,
                **({"synced_dirs": synced} if synced else {})})
     ok = ok and not synced
+    # API 送信の月次残量（安全装置の状態・ユーザー指示 2026-08-28）
+    from .api_budget import FREE_TIER_UNITS, remaining, used_this_month
+    left = remaining(cfg.api_monthly_cap)
+    _progress({"event": "verify", "check": "api_budget", "ok": left > 0,
+               "used": used_this_month(), "cap": cfg.api_monthly_cap,
+               "free_tier": FREE_TIER_UNITS})
+    ok = ok and left > 0
     # 資格情報（値は出さない）
     state = cred_store.credentials_state(cfg.workdir)
     _progress({"event": "verify", "check": "credentials", "ok": state != "missing",

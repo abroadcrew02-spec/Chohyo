@@ -265,13 +265,20 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     sends = 0
     for page in todo:
         pid = page["page_id"]
+        # 進捗イベントを出さずに continue すると、todo に数えたページの分だけ
+        # バーが埋まらず「4/5」で完了する（レビュー M-7）。失敗も1件として進める
         if page["state"] == "failed" and page["status"] == render_rows.STATUS_EXPAND_FAILED:
+            progress({"event": "page", "page_id": pid,
+                      "status": render_rows.STATUS_EXPAND_FAILED})
             continue
         try:
             img = Image.open(page["image_path"])
         except Exception:
             store.set_state(pid, "failed")
             store.set_status(pid, render_rows.STATUS_EXPAND_FAILED)
+            log.error("open_failed", page_id=pid)
+            progress({"event": "page", "page_id": pid,
+                      "status": render_rows.STATUS_EXPAND_FAILED})
             continue
 
         # --- F3/F4/F5: 切り出し・位置合わせ・再結合 ---
