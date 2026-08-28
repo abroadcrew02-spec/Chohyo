@@ -169,6 +169,31 @@ def test_expand_page_cli_returns_png(tmp_path):
     assert r2.returncode == 1
 
 
+def test_run_e2e_with_single_file_input(tmp_path):
+    """単一ファイル入力で run→render が完走し、通常の1行出力になる（issue #19）。"""
+    import shutil
+
+    from chouhyo_ocr.paths import app_root
+    from chouhyo_ocr.pipeline import render, run
+    from chouhyo_ocr.vision_client import ReplayClient
+    resp_src = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    if not (resp_src.exists() and page_png.exists()):
+        pytest.skip("保存済み応答が無い環境")
+    cfg = Config(unclear_threshold=0.4, output_dir=str(tmp_path / "out"),
+                 workdir=str(tmp_path / "wd"), log_dir=str(tmp_path / "logs"))
+    single = tmp_path / "scan_0001.png"
+    shutil.copy(page_png, single)
+    resp = tmp_path / "resp"; resp.mkdir()
+    shutil.copy(resp_src, resp / "scan_0001_p0001.json")
+
+    summary = run(single, TPL, cfg, ReplayClient(resp))  # フォルダでなくファイル
+    assert summary.pages == 1 and summary.rows == 1
+    _x, _c, rows = render(TPL, cfg, timestamp="sf")
+    assert rows[0].source_file == "scan_0001.png"
+    assert rows[0].status == "正常"
+
+
 def test_expand_does_not_pick_sibling_stem_pages(tmp_path):
     """a.pdf の展開が a-1.pdf 由来の a-1-1.png を拾わない（再レビュー N-13）。"""
     from PIL import Image
