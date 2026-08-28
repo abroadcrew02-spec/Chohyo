@@ -51,8 +51,8 @@ python -m venv .venv
 .venv\Scripts\pip install openpyxl jsonschema pillow numpy google-cloud-vision keyring pytest playwright pyinstaller
 cd gui && npm install
 
-# テスト（91件。GUI スモークは `npm run tauri dev` 起動中のみ実行される）
-cd core && ..\.venv\Scripts\python.exe -m pytest -q
+# テスト一括実行（pytest 106件 + cargo test 2件。GUI スモークは dev サーバー起動中のみ）
+.venv\Scripts\python.exe scripts\run_all_tests.py
 
 # 配布物ビルド（PyInstaller onedir → core-dist/ → NSIS インストーラ）
 .venv\Scripts\python.exe scripts\build_dist.py
