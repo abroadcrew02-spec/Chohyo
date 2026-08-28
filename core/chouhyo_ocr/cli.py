@@ -122,25 +122,33 @@ def cmd_expand_page(args) -> int:
     開けないと最初の一歩で詰まる（2026-08-28 ユーザー指摘）。dpi 既定 300 は
     run の展開・テンプレート座標系（render_dpi）と同じ。
     """
-    from .ingest import IngestError, expand
+    from .ingest import IngestError, expand, pdf_page_count
     cfg = load_config(args.config)
     out_dir = Path(cfg.workdir) / "editor_pages"
     out_dir.mkdir(parents=True, exist_ok=True)
+    src = Path(args.input)
+    # 総ページ数（pdfinfo・一瞬）。取れたら範囲外を展開前に弾く
+    total = pdf_page_count(src) if src.suffix.lower() == ".pdf" else 1
+    if total is not None and not 1 <= args.page <= total:
+        _progress({"event": "expand_page", "ok": False,
+                   "error": f"ページ {args.page} が無い（全 {total} ページ）"})
+        return 1
     try:
-        pages = expand(Path(args.input), dpi=args.dpi, out_dir=out_dir)
+        # 該当ページのみ展開（位置合わせ用途・全ページ展開の約1/3の時間）
+        pages = expand(src, dpi=args.dpi, out_dir=out_dir, page=args.page)
     except IngestError as e:
         _progress({"event": "expand_page", "ok": False, "error": str(e)})
         return 1
-    if not 1 <= args.page <= len(pages):
+    if not pages:
         _progress({"event": "expand_page", "ok": False,
-                   "error": f"ページ {args.page} が無い（全 {len(pages)} ページ）"})
+                   "error": f"ページ {args.page} を展開できない"})
         return 1
     # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
     # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
     # 編集画面が「展開中…」のまま止まった原因・2026-08-28）
     _progress({"event": "expand_page", "ok": True,
-               "page_path": str(pages[args.page - 1].resolve()),
-               "pages": len(pages)})
+               "page_path": str(pages[0].resolve()),
+               **({"pages": total} if total is not None else {})})
     return 0
 
 

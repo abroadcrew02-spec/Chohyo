@@ -30,12 +30,29 @@ class IngestError(RuntimeError):
 
 
 def pdftoppm_path() -> Path:
+    return _poppler_tool("pdftoppm.exe")
+
+
+def _poppler_tool(name: str) -> Path:
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "poppler" / "pdftoppm.exe"
-    hits = sorted((app_root() / "vendor" / "poppler").glob("**/pdftoppm.exe"))
+        return Path(sys.executable).resolve().parent / "poppler" / name
+    hits = sorted((app_root() / "vendor" / "poppler").glob(f"**/{name}"))
     if not hits:
         raise IngestError("POPPLER_NOT_FOUND")
     return hits[0]
+
+
+def pdf_page_count(source: Path) -> int | None:
+    """総ページ数（pdfinfo）。取得できなければ None（表示・範囲チェック用の補助）。"""
+    try:
+        proc = subprocess.run([str(_poppler_tool("pdfinfo.exe")), str(source)],
+                              capture_output=True, timeout=60)
+        for line in proc.stdout.decode("utf-8", errors="replace").splitlines():
+            if line.lower().startswith("pages:"):
+                return int(line.split(":", 1)[1].strip())
+    except (IngestError, subprocess.TimeoutExpired, ValueError, OSError):
+        pass
+    return None
 
 
 def list_inputs(input_dir: str | Path) -> list[Path]:
@@ -69,17 +86,26 @@ def page_id_for(source: Path, page_no: int, taken: set[str]) -> str:
     return f"{source.stem}_{digest}_p{page_no:04d}"
 
 
-def expand(source: Path, dpi: int, out_dir: Path) -> list[Path]:
-    """1入力ファイル → ページ画像のリスト（PDF は pdftoppm・画像はそのまま）。"""
+def expand(source: Path, dpi: int, out_dir: Path,
+           page: int | None = None) -> list[Path]:
+    """1入力ファイル → ページ画像のリスト（PDF は pdftoppm・画像はそのまま）。
+
+    page=N なら該当ページのみ展開する（pdftoppm -f/-l）。テンプレート編集は
+    位置合わせ用の1ページだけあればよく、全ページ展開（実測 約13秒/2頁）を
+    1ページ分（約5秒）に抑える（2026-08-28 ユーザー要望）。
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     if source.suffix.lower() != ".pdf":
         return [source]
 
     prefix = out_dir / source.stem
     exe = pdftoppm_path()
+    args = [str(exe), "-r", str(dpi), "-png"]
+    if page is not None:
+        args += ["-f", str(page), "-l", str(page)]
     try:
         proc = subprocess.run(
-            [str(exe), "-r", str(dpi), "-png", str(source), str(prefix)],
+            args + [str(source), str(prefix)],
             capture_output=True, timeout=300)
     except subprocess.TimeoutExpired as e:
         raise IngestError("PDF_EXPAND_TIMEOUT") from e
@@ -90,7 +116,10 @@ def expand(source: Path, dpi: int, out_dir: Path) -> list[Path]:
     # 文字クラス解釈され、展開成功なのに 0 件マッチ→展開失敗になる（issue #13）。
     # さらに <stem>-<数字>.png に厳密一致させる: a.pdf と a-1.pdf が同居すると
     # a-* が a-1-1.png まで拾い、ページ数と行数の対応が崩れる（レビュー N-13）
-    pat = re.compile(rf"{re.escape(source.stem)}-\d+")
+    # page 指定時は該当番号のみに絞る（過去の全ページ展開の残骸を拾わない）。
+    # pdftoppm はゼロ埋めすることがあるため 0* を許す
+    num = rf"0*{page}" if page is not None else r"\d+"
+    pat = re.compile(rf"{re.escape(source.stem)}-{num}")
     pages = sorted(p for p in out_dir.glob(f"{glob.escape(source.stem)}-*.png")
                    if pat.fullmatch(p.stem))
     if not pages:
