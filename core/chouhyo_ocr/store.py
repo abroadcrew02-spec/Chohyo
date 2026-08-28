@@ -76,7 +76,11 @@ class Store:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.con = sqlite3.connect(db_path)
         self.con.execute("PRAGMA journal_mode=WAL")
-        self.con.execute("PRAGMA synchronous=FULL")
+        # WAL では NORMAL で十分な耐久性（チェックポイント前のクラッシュでも
+        # WAL から整合復元される）。FULL は commit 毎 fsync で、ページ毎に
+        # 十数回 commit する本ツールでは実測に響く（issue #16）。最悪ケースは
+        # 電源断で直近ページの状態が巻き戻るだけで、再開設計（§6.7）が吸収する
+        self.con.execute("PRAGMA synchronous=NORMAL")
         self.con.executescript(_SCHEMA)
         self.con.commit()
 
@@ -182,11 +186,12 @@ class Store:
     def geometry_hashes(self) -> set[str]:
         return {h for (h,) in self.con.execute("SELECT DISTINCT geometry_hash FROM alignment")}
 
-    def upsert_era(self, page_id: str, field_id: str, scores: dict) -> None:
-        self.con.execute(
+    def upsert_eras(self, page_id: str, scores_by_field: dict[str, dict]) -> None:
+        """ページ内の choice セル全件を1トランザクションで書く（issue #16）。"""
+        self.con.executemany(
             """INSERT INTO era_score(page_id, field_id, scores) VALUES(?,?,?)
                ON CONFLICT(page_id, field_id) DO UPDATE SET scores=excluded.scores""",
-            (page_id, field_id, json.dumps(scores)))
+            [(page_id, fid, json.dumps(s)) for fid, s in scores_by_field.items()])
         self.con.commit()
 
     def era_scores(self, page_id: str) -> dict[str, dict]:

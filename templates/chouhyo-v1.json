@@ -391,7 +391,8 @@
               "name": "金額",
               "x_offset": 318,
               "width": 258,
-              "kind": "text"
+              "kind": "text",
+              "normalize": "amount"
             },
             {
               "name": "品目",

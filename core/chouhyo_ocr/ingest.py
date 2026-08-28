@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import subprocess
 import sys
@@ -73,7 +74,9 @@ def expand(source: Path, dpi: int, out_dir: Path) -> list[Path]:
     if proc.returncode != 0:
         # stderr は記入値を含みうる経路ではないが、方針どおり固定コード化して捨てる
         raise IngestError("PDF_EXPAND_FAILED")
-    pages = sorted(out_dir.glob(f"{source.stem}-*.png"))
+    # stem は glob エスケープ必須。scan[1].pdf（ブラウザの重複名）で [1] が
+    # 文字クラス解釈され、展開成功なのに 0 件マッチ→展開失敗になる（issue #13）
+    pages = sorted(out_dir.glob(f"{glob.escape(source.stem)}-*.png"))
     if not pages:
         raise IngestError("PDF_EXPAND_EMPTY")
     return pages

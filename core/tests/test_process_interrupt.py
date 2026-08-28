@@ -87,9 +87,19 @@ def test_kill_midway_then_resume_completes(env):
                    capture_output=True)
     proc.wait(timeout=15)
 
-    con = sqlite3.connect(db)
-    states = dict(con.execute("SELECT state, COUNT(*) FROM page GROUP BY state"))
-    con.close()
+    # kill 直後は AV スキャン等で disk I/O error になることがある（レビュー M-17 実測:
+    # pytest 実行下で 5 回中 2 回。製品欠陥ではなく検証側の読み取りタイミング）→ リトライ
+    states = None
+    for attempt in range(5):
+        try:
+            con = sqlite3.connect(db)
+            states = dict(
+                con.execute("SELECT state, COUNT(*) FROM page GROUP BY state"))
+            con.close()
+            break
+        except sqlite3.OperationalError:
+            time.sleep(1.0)
+    assert states is not None, "kill 後の DB 読み取りが5回とも失敗"
     assert states.get("done", 0) < N_PAGES, "kill 前に全部終わってしまった（窓が短い）"
 
     # 2回目: 続きから完走。処理済みは再送しない（§8-7）

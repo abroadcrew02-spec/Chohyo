@@ -26,7 +26,7 @@
 | L2 半自動 | スクリプトはあるが環境準備（dev サーバー・release exe）が要る | リリース前 |
 | L3 手動 | 人の操作・外部環境が必要 | 節目のみ（§6） |
 
-- L1: pytest 106 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip → その場合 101 件）＋ cargo test 2 件
+- L1: pytest 114 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip → その場合 109 件）＋ cargo test 2 件
 - L2: GUI スモーク（`npm run dev` 起動下で L1 に合流）／release exe の CDP 検証（issue #5/#6/#7 の実機確認・scripts 化はレビュー時に都度）
 - L3: §6 の残項目
 
@@ -48,6 +48,7 @@
 | core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
 | core/tests/test_leak_guards.py | 3 | 漏出防止の再発防止（issue #2/#3/#4） |
 | core/tests/test_local_storage_guard.py | 2 | 同期フォルダ検知（issue #8） |
+| core/tests/test_review_fixes.py | 8 | 品質レビュー HIGH の再発防止（issue #11/#13/#14: normalize 属性・glob エスケープ・config 検証） |
 | core/tests/test_gui_smoke.py | 5 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip） |
 | gui/src-tauri（cargo test） | 2 | サブコマンド白リスト（issue #7） |
 
@@ -97,6 +98,10 @@ D-01（金額）・D-06（below_table）・D-14（218列導出）・D-15（様�
 | #5/#6/#7 GUI 境界 | cargo test（#7）＋実機 CDP スモーク（#5/#6/#7・2026-08-28 PASS） |
 | #8 同期フォルダ | test_local_storage_guard |
 | #9/#10 | 仕組み（.gitignore）・運用（README）で対応。テストなし |
+| #11 金額正規化の列名依存 | test_review_fixes（normalize 属性で発火・列名非依存・同梱テンプレの宣言数） |
+| #13 glob メタ文字ファイル名 | test_review_fixes（scan[1].pdf の実 PDF 展開） |
+| #14 config 無検証 | test_review_fixes（閾値0・typo キー・型不正の拒否） |
+| #12/#15 エディタ（TS 側） | tsc 型検査＋実機確認（Python テスト対象外） |
 
 ## 5. 受入 Gap テスト（TR-G 系）の由来
 

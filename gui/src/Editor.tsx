@@ -7,10 +7,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type Rect = { x: number; y: number; w: number; h: number };
 type Mark = { value: string; rect: Rect };
-type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rect; marks: Mark[] };
+type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rect; marks: Mark[];
+               normalize?: string };
 type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
 type Column = { name: string; x_offset: number; width: number; kind: "text" | "choice";
-                subfields: string; marks: ColMark[] };
+                subfields: string; marks: ColMark[]; normalize?: string };
 type Block = { x: number; y: number; rows: number };
 type Table = { uid: string; table_id: string; row_pitch: number; row_height: number;
                blocks: Block[]; columns: Column[] };
@@ -42,6 +43,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [imgPath, setImgPath] = useState("");
   const drag = useRef<{ mode: string; start: { x: number; y: number };
                         orig?: Rect; extra?: { x: number; y: number } } | null>(null);
+  // 開いたテンプレートのメタ情報。faces 以外を編集画面は触らないが、保存時に
+  // 既定値で上書きすると render_dpi/image が壊れる（issue #15）ため往復保持する
+  const meta = useRef<{ template_id: string; render_dpi: number;
+                        image: { width: number; height: number } | null;
+                        record: Record<string, unknown> }>({
+    template_id: "chouhyo-v1", render_dpi: 300, image: null, record: { pages: 1 } });
 
   const markDirty = useCallback((d: boolean) => { setDirtyState(d); onDirty(d); }, [onDirty]);
   const confirmDiscard = () =>
@@ -127,6 +134,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
 
   const toEditorState = (t: any) => {
+    meta.current = {
+      template_id: t.template_id ?? "chouhyo-v1",
+      render_dpi: t.render_dpi ?? 300,
+      image: t.image ?? null,
+      record: t.record ?? { pages: 1 },
+    };
     const fs: Field[] = []; const ts: Table[] = []; const es: Excl[] = [];
     let sy = 0;
     for (const face of t.faces) {
@@ -136,7 +149,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         es.push({ uid: uid(), id: e.id, rect: { ...e.rect, y: e.rect.y + oy } });
       for (const f of face.fields ?? [])
         fs.push({ uid: uid(), field_id: f.field_id, kind: f.kind,
-                  rect: { ...f.rect, y: f.rect.y + oy },
+                  rect: { ...f.rect, y: f.rect.y + oy }, normalize: f.normalize,
                   marks: (f.choice_marks ?? []).map((m: any) =>
                     ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })) });
       for (const tb of face.tables ?? [])
@@ -147,6 +160,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                   columns: tb.columns.map((c: any) => ({
                     name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
                     subfields: (c.subfields ?? []).join(","),
+                    normalize: c.normalize,
                     marks: c.choice_marks ?? [] })) });
     }
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy || 1880);
@@ -162,7 +176,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
 
   const buildTemplate = () => {
-    const W = imgSize?.w ?? 2490; const H = imgSize?.h ?? 3510;
+    // 優先順: 実際に開いた画像の寸法 > 開いたテンプレートの image > 新規既定値
+    const W = imgSize?.w ?? meta.current.image?.width ?? 2490;
+    const H = imgSize?.h ?? meta.current.image?.height ?? 3510;
     const face = (id: "front" | "back") => {
       const [y0, y1] = id === "front" ? [0, splitY] : [splitY, H];
       const inFace = (y: number) => y >= y0 && y < y1;
@@ -174,6 +190,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         fields: fields.filter((f) => inFace(f.rect.y)).map((f) => ({
           field_id: f.field_id, kind: f.kind,
           rect: { ...f.rect, y: f.rect.y - y0 },
+          ...(f.normalize ? { normalize: f.normalize } : {}),
           ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
             value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
         tables: tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y)).map((t) => ({
@@ -184,12 +201,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
             ...(c.subfields.trim()
               ? { subfields: c.subfields.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
+            ...(c.normalize ? { normalize: c.normalize } : {}),
             ...(c.kind === "choice" ? { choice_marks: c.marks } : {}) })) })),
       };
     };
     return {
-      schema_version: 1, template_id: "chouhyo-v1", render_dpi: 300,
-      image: { width: W, height: H }, record: { pages: 1 },
+      schema_version: 1, template_id: meta.current.template_id,
+      render_dpi: meta.current.render_dpi,
+      image: { width: W, height: H }, record: meta.current.record,
       faces: [face("front"), face("back")],
     };
   };
@@ -258,13 +277,6 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     return null;
   };
-  const selRect = (): Rect | null => {
-    if (!sel) return null;
-    if (sel.type === "field") return fields.find((f) => f.uid === sel.uid)?.rect ?? null;
-    if (sel.type === "excl") return excls.find((e) => e.uid === sel.uid)?.rect ?? null;
-    return null;
-  };
-
   const onDown = (e: React.MouseEvent) => {
     const p = toPage(e);
     if (e.button === 1 || e.altKey) {
@@ -277,7 +289,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const h = hit(p);
       setSel(h);
       if (h) {
-        const r = selRect();
+        // setSel は非同期なので selRect()（閉包の sel）は前回選択を返す。
+        // 必ず今回ヒットした h から矩形を引く（issue #12: 別図形の座標が適用される）
+        const r = h.type === "field" ? fields.find((f) => f.uid === h.uid)?.rect ?? null
+                : h.type === "excl" ? excls.find((x) => x.uid === h.uid)?.rect ?? null
+                : null;
         if (r && h.type !== "table") {
           const nearBR = Math.abs(p.x - (r.x + r.w)) < 12 / zoom &&
                          Math.abs(p.y - (r.y + r.h)) < 12 / zoom;

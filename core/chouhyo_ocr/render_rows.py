@@ -63,10 +63,6 @@ def compose_status(page_status: str, below_table: int, processed: bool) -> str:
     return ";".join(parts)
 
 
-def _is_amount(col: str) -> bool:
-    return col.rsplit("_", 1)[-1] == "金額"
-
-
 def build_row(template: Template, page: dict, cells: dict[str, tuple],
               era_scores: dict[str, dict], cfg: Config) -> Row:
     """処理済みページの1行。cells: field_id → (raw, conf, kind, is_empty_row)。"""
@@ -101,7 +97,7 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
         if cell.subfields:
             parts = split_composite(raw, len(cell.subfields))
             values.extend(parts if parts else [UNCLEAR] * len(out_cols))
-        elif _is_amount(out_cols[0]):
+        elif cell.normalize == "amount":
             amount = normalize_amount(raw)
             values.append(amount if amount is not None else UNCLEAR)
         else:

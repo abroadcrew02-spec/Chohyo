@@ -77,13 +77,14 @@ def _map_and_score(store: Store, template: Template, page_id: str,
     store.upsert_cells(page_id, cell_rows)
 
     binaries = {f.face_id: f.binary for f in aligned_faces}
+    era_scores: dict[str, dict] = {}
     for cell in template.cells:
         if cell.kind != "choice":
             continue
         if (cell.table_id, cell.row_no) in result.empty_rows:
             continue  # 空行に丸印判定を走らせない（要件 §5.4）
-        scores = era.score_cell(binaries[cell.face_id], cell)
-        store.upsert_era(page_id, cell.field_id, scores)
+        era_scores[cell.field_id] = era.score_cell(binaries[cell.face_id], cell)
+    store.upsert_eras(page_id, era_scores)
 
     store.set_unassigned(page_id, result.unassigned_below_table, result.unassigned_other)
     return result.unassigned_below_table, result.unassigned_other, total_syms
@@ -272,6 +273,7 @@ def remap(template_path: str | Path, cfg: Config) -> int:
 
         # choice_marks の変更に追従: 保存済み位置合わせ画像から環状帯を再スコア
         import numpy as np
+        era_scores: dict[str, dict] = {}
         for cell in template.cells:
             if cell.kind != "choice":
                 continue
@@ -283,7 +285,8 @@ def remap(template_path: str | Path, cfg: Config) -> int:
             gray = np.asarray(Image.open(img_p).convert("L"))
             from .align import binarize_face
             binary = binarize_face(gray, template.face(cell.face_id))
-            store.upsert_era(pid, cell.field_id, era.score_cell(binary, cell))
+            era_scores[cell.field_id] = era.score_cell(binary, cell)
+        store.upsert_eras(pid, era_scores)
         store.set_unassigned(pid, result.unassigned_below_table, result.unassigned_other)
         n += 1
     store.close()

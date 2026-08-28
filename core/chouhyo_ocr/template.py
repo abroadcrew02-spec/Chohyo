@@ -45,6 +45,7 @@ class CellSpec:
     kind: str  # "text" | "choice"
     choice_marks: tuple[ChoiceMark, ...] = ()
     subfields: tuple[str, ...] = ()
+    normalize: str | None = None  # 値の正規化方式（"amount"）。列名には依存させない（§5.2）
     table_id: str | None = None  # 繰り返し欄のとき所属テーブル（空行判定・D-06）
     row_no: int | None = None    # 繰り返し欄のとき行連番（1起点・ブロック跨ぎ通し）
 
@@ -133,6 +134,7 @@ def _expand_table(face_id: str, t: dict) -> list[CellSpec]:
                         kind=c["kind"],
                         choice_marks=marks,
                         subfields=tuple(c.get("subfields", ())),
+                        normalize=c.get("normalize"),
                         table_id=t["table_id"],
                         row_no=row_no,
                     )
@@ -190,6 +192,7 @@ def load_template(path: str | Path) -> Template:
                     kind=fld["kind"],
                     choice_marks=marks,
                     subfields=tuple(fld.get("subfields", ())),
+                    normalize=fld.get("normalize"),
                 )
             )
         for t in f.get("tables", []):

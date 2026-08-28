@@ -29,6 +29,14 @@ function Settings({ onClose }: { onClose: () => void }) {
   const set = (k: keyof Cfg, v: string | number) => {
     setCfg((c) => ({ ...c, [k]: v })); setSaved(false);
   };
+  // 数値入力の全消去は +"" === 0 になる。0 の〓閾値は「低信頼値がすべて素通り」で
+  // 転記主義を無効化するため、空・NaN は前の値を維持する（issue #14）
+  const setNum = (k: keyof Cfg, raw: string, lo: number, hi: number, int = false) => {
+    if (raw === "") return;
+    const n = int ? Math.trunc(+raw) : +raw;
+    if (Number.isNaN(n)) return;
+    set(k, Math.min(hi, Math.max(lo, n)));
+  };
   const save = async () => {
     await invoke("write_config", { patch: cfg as unknown as Record<string, unknown> });
     setSaved(true);
@@ -41,16 +49,16 @@ function Settings({ onClose }: { onClose: () => void }) {
           通常は変更不要です。
         </p>
         <label>〓と判定する基準値（0〜1）。大きいほど〓が増え、読み誤りの見落としが減ります
-          <input type="number" min={0} max={1} step={0.01} value={cfg.unclear_threshold}
-            onChange={(e) => set("unclear_threshold", +e.target.value)} />
+          <input type="number" min={0.01} max={1} step={0.01} value={cfg.unclear_threshold}
+            onChange={(e) => setNum("unclear_threshold", e.target.value, 0.01, 1)} />
         </label>
         <label>丸印と判定する基準値（0〜1）
-          <input type="number" min={0} max={1} step={0.01} value={cfg.era_threshold}
-            onChange={(e) => set("era_threshold", +e.target.value)} />
+          <input type="number" min={0.01} max={1} step={0.01} value={cfg.era_threshold}
+            onChange={(e) => setNum("era_threshold", e.target.value, 0.01, 1)} />
         </label>
         <label>1回の実行で送信する上限ページ数
-          <input type="number" min={0} step={1} value={cfg.send_limit}
-            onChange={(e) => set("send_limit", Math.max(0, Math.trunc(+e.target.value)))} />
+          <input type="number" min={1} step={1} value={cfg.send_limit}
+            onChange={(e) => setNum("send_limit", e.target.value, 1, 100000, true)} />
         </label>
         <label>Excel の保存先
           <input value={cfg.output_dir} onChange={(e) => set("output_dir", e.target.value)} />
