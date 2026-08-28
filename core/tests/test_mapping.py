@@ -81,3 +81,40 @@ def test_empty_rows_ignore_choice_prints(result):
 def test_unassigned_labels_counted(result):
     """印字ラベル（TEL・氏名・郵便番号等）は枠外に落ち unassigned_other に載る。"""
     assert result.unassigned_other > 0
+
+
+def test_spatial_index_preserves_first_hit_order():
+    """空間インデックス化しても定義順 first-hit の契約が変わらない（issue #17）。
+
+    重なりのあるセルを人為的に作り、線形総当たりと同じセルへ落ちることを見る。
+    load_template は重なりを拒否するが、割付関数自体の契約は不変に保つ。
+    """
+    from chouhyo_ocr.mapping import Symbol, assign
+    from chouhyo_ocr.template import CellSpec, Face, Rect
+
+    face = Face(face_id="f", page_offset=0, source_rect=Rect(0, 0, 500, 500))
+    # 完全に重なる2セル。定義順で先のほうが勝つ
+    first = CellSpec("first", "f", Rect(100, 100, 200, 200), "text")
+    second = CellSpec("second", "f", Rect(100, 100, 200, 200), "text")
+    syms = [Symbol("A", 150, 150, 0.9)]
+    result = assign([first, second], {"f": syms}, [face])
+    assert "first" in result.cells and "second" not in result.cells
+
+    # 定義順を入れ替えれば結果も入れ替わる（順序が効いていることの確認）
+    result2 = assign([second, first], {"f": syms}, [face])
+    assert "second" in result2.cells and "first" not in result2.cells
+
+
+def test_spatial_index_handles_cells_spanning_buckets():
+    """バケツ境界をまたぐセルでも取りこぼさない（issue #17）。"""
+    from chouhyo_ocr.mapping import Symbol, assign
+    from chouhyo_ocr.template import CellSpec, Face, Rect
+
+    face = Face(face_id="f", page_offset=0, source_rect=Rect(0, 0, 2000, 2000))
+    wide = CellSpec("wide", "f", Rect(10, 10, 900, 900), "text")  # 128px 格子を跨ぐ
+    # セル内の各所に symbol を置く（境界付近を含む）
+    syms = [Symbol("x", x, y, 0.9)
+            for x in (11, 127, 128, 500, 908) for y in (11, 128, 500, 908)]
+    result = assign([wide], {"f": syms}, [face])
+    assert result.unassigned_other == 0, "バケツ境界で取りこぼした"
+    assert len(result.cells["wide"].text) == len(syms)

@@ -341,3 +341,67 @@ def test_replaced_content_does_not_serve_stale_values(tmp_path):
     assert c2.calls == 1, "差し替えたのに再送していない（旧データが出る）"
     replaced = [e for e in events if e.get("event") == "source_replaced"]
     assert replaced and replaced[0]["file"] == "a.png"
+
+
+def test_locked_csv_does_not_desync_outputs(tmp_path):
+    """csv だけロックされていても xlsx を先に更新しない（レビュー M-5）。
+
+    実測（修正前）: xlsx だけ新しくなり csv は旧のまま＝§8-12（xlsx↔csv の
+    値一致）が破れ、エラーは開かれていない側のファイル名を名指ししていた。
+    """
+    import csv as csvmod
+    import msvcrt
+
+    from openpyxl import load_workbook
+
+    from chouhyo_ocr.render_out import write_outputs
+    from chouhyo_ocr.render_rows import Row
+    cols = ["要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名",
+            "ページ番号", "ステータス", "a", "b"]
+    old_row = Row(page_id="p1", source_file="s.pdf", page_no=1, status="正常",
+                  values=["OLD", "x"], unclear_count=0, min_conf="0.9")
+    new_row = Row(page_id="p1", source_file="s.pdf", page_no=1, status="正常",
+                  values=["NEW", "x"], unclear_count=0, min_conf="0.9")
+    xlsx, csvp, _r = write_outputs(tmp_path, "sync", cols, [old_row])
+
+    fh = open(csvp, "r+b")
+    try:
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        with pytest.raises(PermissionError, match="開かれている"):
+            write_outputs(tmp_path, "sync", cols, [new_row])
+    finally:
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        fh.close()
+
+    # 両方とも旧のまま（片方だけ新しくなっていない）
+    assert load_workbook(xlsx)["output"].cell(row=2, column=7).value == "OLD"
+    with open(csvp, encoding="utf-8-sig", newline="") as f:
+        assert list(csvmod.reader(f))[1][6] == "OLD"
+
+
+def test_render_takes_lock_but_run_does_not_deadlock(tmp_path):
+    """render もロックを取るが、run の内部呼び出しで自己デッドロックしない。
+
+    レビュー L-5 の対応で render にロックを足した際、run がロック中に
+    render() を呼んで自分のロックに弾かれる不具合を作った（実測で検出）。
+    """
+    from chouhyo_ocr.pipeline import OperationRefused
+    from chouhyo_ocr.runlock import RunLock
+    cfg = make_cfg(tmp_path)
+    inp, respd = setup(tmp_path)
+    run(inp, TPL, cfg, ReplayClient(respd))      # 内部で render を呼ぶ
+
+    # 外から掴まれていれば render は断る
+    holder = RunLock(cfg.workdir)
+    holder.acquire()
+    try:
+        with pytest.raises(OperationRefused, match="二重"):
+            render(TPL, cfg, timestamp="locked")
+    finally:
+        holder.release()
+    # 解放後は通る
+    xlsx, _c, _rows = render(TPL, cfg, timestamp="after")
+    assert xlsx.exists()

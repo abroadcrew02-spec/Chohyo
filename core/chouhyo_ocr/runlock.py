@@ -83,12 +83,19 @@ class RunLock:
         return True
 
     def release(self) -> None:
-        if self.fd is not None:
-            try:
-                os.close(self.fd)
-            except OSError:
-                pass
-            self.fd = None
+        """自分が取得したロックだけを解放する。
+
+        所有権を見ずに unlink すると、POSIX では**他プロセスのロックを消す**
+        （Windows は開いているファイルを消せないため実測で無害だったが、
+        docstring が両対応を謳っている以上ここで閉じる・レビュー L-3）。
+        """
+        if self.fd is None:
+            return          # 取得していない／解放済み
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
+        self.fd = None
         try:
             self.path.unlink()
         except OSError:

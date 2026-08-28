@@ -312,7 +312,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const out = await invoke<string>("run_core_capture", { args });
       const fit = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.event === "detect_grid");
-      if (!fit?.ok) { setMsg(`検出不成立 → 等分割生成へ切り替え可: ${fit?.error ?? ""}`); return; }
+      if (!fit?.ok) {
+        // 失敗は赤枠で出す（レビュー N-4: 灰色 msg だと成功と見分けが付かない）
+        setMsg("");
+        setErrMsg(fit?.error
+          ? `枠を自動生成できませんでした: ${fit.error}`
+          : "枠を自動生成できませんでした。「等分割」に切り替えてください。");
+        return;
+      }
       const t: Table = {
         uid: uid(), table_id: nextTableId(),
         row_pitch: Math.max(1, Math.round(fit.row_pitch)),
@@ -609,7 +616,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           </div>))}
         <button onClick={removeSel}>テーブル削除</button>
         {/* 操作を左右する一次情報なので通常 note（--faint）より濃い色で出す（レビュー N-1） */}
-        <p className="note" style={{ color: "var(--sub)" }}>金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。</p>
+        <p className="note" style={{ color: "var(--sub)" }}>金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。
+          種類が「選択式」の列、分割を指定した列では正規化は使いません（入力が無効になります）。</p>
         <p className="note">選択式列のマーク位置の微調整は、保存した JSON の直接編集で行えます（v1 の範囲）</p>
       </div>);
   };

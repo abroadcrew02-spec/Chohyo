@@ -57,7 +57,8 @@ def validate_v1(template: Template) -> list[str]:
             else "明細表の金額列で「正規化」を「金額」に設定してください")
         raise TemplateError(
             f"正規化「金額」が設定されたセルが {n_amount} 個です"
-            f"（想定は {V1_EXPECTED_AMOUNT} 個＝明細28行×金額1列）。{direction}"
+            f"（想定は {V1_EXPECTED_AMOUNT} 個＝明細{V1_EXPECTED_AMOUNT}行×金額1列）。"
+            f"{direction}"
         )
     return cols
 

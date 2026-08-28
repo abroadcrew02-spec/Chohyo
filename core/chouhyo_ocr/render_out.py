@@ -154,16 +154,35 @@ def write_outputs(
     try:
         write_xlsx(tmp_x, columns, rows)
         write_csv(tmp_c, columns, rows)
+        # 既存を先に退避してから差し替える（レビュー M-5）。片方ずつ replace
+        # すると、csv だけ開かれている場合に **xlsx は新・csv は旧**となり
+        # §8-12（xlsx↔csv の値一致）が破れる。退避に失敗した時点で中断して
+        # 戻すので、「両方更新される」か「どちらも変わらない」かに限定される。
+        # 開かれているファイルは rename できない＝これが最も確実な事前確認
+        # （追記オープンでの判定は共有モードで通ってしまい役に立たなかった）
+        backups: list[tuple[Path, Path]] = []
         try:
-            os.replace(tmp_x, xlsx)
-            os.replace(tmp_c, csvp)
-        except PermissionError as e:
-            # Windows は開かれているファイルを置換できない。既存ファイルは
-            # 無傷のままなので、何が起きたかを利用者の言葉で伝える
+            for final in (xlsx, csvp):
+                if final.exists():
+                    bak = final.parent / (final.name + ".bak")
+                    if bak.exists():
+                        bak.unlink()
+                    os.replace(final, bak)
+                    backups.append((final, bak))
+        except OSError as e:
+            for final, bak in backups:          # 退避済みを元へ戻す
+                os.replace(bak, final)
             raise PermissionError(
-                f"出力ファイルを更新できない（{xlsx.name} が Excel などで"
-                "開かれている可能性）。閉じてからやり直す。"
+                f"出力ファイルを更新できない（{xlsx.name} または {csvp.name} が"
+                "Excel などで開かれている可能性）。閉じてからやり直す。"
                 "既存のファイルは壊れていない") from e
+        os.replace(tmp_x, xlsx)
+        os.replace(tmp_c, csvp)
+        for _final, bak in backups:
+            try:
+                bak.unlink()
+            except OSError:
+                pass
     finally:
         for t in (tmp_x, tmp_c):
             if t.exists():

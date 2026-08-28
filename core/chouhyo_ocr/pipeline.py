@@ -172,19 +172,21 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     # プリフライト（#25）: テンプレート・位置合わせ方式が変わっていたら、
     # API を1回も叩く前に止める。要配慮個人情報の再送は明示オプトインのみ
     # ——テンプレ編集の副作用で数百ページを黙って再開示・再課金しない
-    stale = store.stale_done_pages(geo_hash, tpl_hash, ALGO_VERSION)
-    if stale:
+    outdated_pages = store.stale_done_pages(geo_hash, tpl_hash, ALGO_VERSION)
+    if outdated_pages:
         if not resend_on_template_change:
             store.close()
             raise OperationRefused(
-                f"テンプレートまたは位置合わせ方式が変わっている（対象 {len(stale)} ページ）。"
+                f"テンプレートまたは位置合わせ方式が変わっている"
+                f"（対象 {len(outdated_pages)} ページ）。"
                 "再処理には API 送信（課金）が発生するため中止した。"
                 "旧テンプレートへ戻す／`purge --yes` で作り直す／"
                 "`run --resend-on-template-change` で対象ページのみ再送する のいずれかを選ぶ")
-        for pid in stale:
+        for pid in outdated_pages:
             store.set_state(pid, "pending")  # 降格して再処理（send_limit は従来どおり効く）
-        log.error("resend_on_template_change", count=len(stale))
-        progress({"event": "template_changed_resend", "count": len(stale)})
+        log.error("resend_on_template_change", count=len(outdated_pages))
+        progress({"event": "template_changed_resend",
+                  "count": len(outdated_pages)})
     pages_dir = Path(cfg.workdir) / "pages"
     aligned_dir = Path(cfg.workdir) / "aligned"
     aligned_dir.mkdir(parents=True, exist_ok=True)
@@ -268,20 +270,20 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     # Excel に残り続ける——検知だけでも見えるようにする（削除は purge のみ）
     all_pages = store.pages()
     input_names = {s.name for s in inputs}
-    stale = sorted({p["source_file"] for p in all_pages
-                    if p["source_file"] not in input_names})
-    if stale:
-        log.error("stale_pages", count=len(stale))
-        progress({"event": "stale_pages", "count": len(stale),
-                  "files": stale[:5]})
+    missing_inputs = sorted({p["source_file"] for p in all_pages
+                             if p["source_file"] not in input_names})
+    if missing_inputs:
+        log.error("stale_pages", count=len(missing_inputs))
+        progress({"event": "stale_pages", "count": len(missing_inputs),
+                  "files": missing_inputs[:5]})
 
     # skipped_duplicate は処理対象外（送信しない・行だけ出す。image_path も無い）
     todo = [p for p in all_pages
             if p["state"] not in ("done", "skipped_duplicate")]
-    total = len(all_pages)
-    progress({"event": "start", "total": total, "todo": len(todo)})
+    page_count = len(all_pages)
+    progress({"event": "start", "total": page_count, "todo": len(todo)})
 
-    summary = Summary(pages=total)
+    summary = Summary(pages=page_count)
     sends = 0
     for page in todo:
         pid = page["page_id"]
@@ -391,7 +393,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         progress({"event": "page", "page_id": pid, "status": "done"})
 
     # --- F9: 出力 ---
-    xlsx, csvp, rows = render(template_path, cfg)
+    # ロック内から呼ぶので内側（ロックを取らない側）を使う——render() を
+    # 呼ぶと自分が持っているロックに弾かれる
+    xlsx, csvp, rows = _render_locked(template_path, cfg, None)
     summary.rows = len(rows)
     summary.unclear_total = sum(r.unclear_count for r in rows)
     # 危険接頭セルの件数（D-28）。**サマリ6項目（§5.9 Must）には足さない**——
@@ -410,7 +414,25 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
 
 def render(template_path: str | Path, cfg: Config,
            timestamp: str | None = None) -> tuple[Path, Path, list[Row]]:
-    """cell / era_score から再出力する（API 送信なし・要件 §5.8）。"""
+    """cell / era_score から再出力する（API 送信なし・要件 §5.8）。
+
+    run と同じロックを取る（レビュー L-5）。一時ファイル名が固定なので、
+    同一秒に2つの render が走ると互いの tmp をすり替えうる。
+    """
+    from .runlock import RunLock, RunLockError
+    lock = RunLock(cfg.workdir)
+    try:
+        lock.acquire()
+    except RunLockError as e:
+        raise OperationRefused(str(e)) from None
+    try:
+        return _render_locked(template_path, cfg, timestamp)
+    finally:
+        lock.release()
+
+
+def _render_locked(template_path: str | Path, cfg: Config,
+                   timestamp: str | None) -> tuple[Path, Path, list[Row]]:
     template, raw, geo_hash = _load(template_path)
     from .align import template_hash as _tpl_hash
     columns = derive_columns(template)
@@ -448,7 +470,11 @@ def render(template_path: str | Path, cfg: Config,
                 p["status"] = render_rows.STATUS_INTERRUPTED
             rows.append(build_failure_row(template, p))
     ts = timestamp or time.strftime("%Y%m%d_%H%M%S")
-    xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows)
+    try:
+        xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows)
+    except Exception:
+        store.close()   # 出力に失敗しても接続を残さない（レビュー L-6）
+        raise
     _warn_risky(risky)
     if build_failures:
         # 全ページ破損＝コード／テンプレの問題で、1ページの破損とは意味が違う

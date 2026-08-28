@@ -89,30 +89,16 @@ def test_erased_rulings_fail_instead_of_passthrough():
 
 
 def test_rotated_input_is_realigned():
-    """±0.5° 回転した入力が deskew で戻り、無変換と同じ出力になる。
+    """±0.5° 回転した入力が deskew で戻り、無変換と**全列**同じ出力になる。
 
-    現状の実力を正確に固定する: +0.5° は 212 列完全一致。-0.5° はテキスト系
-    全列一致だが choice（元号）1セルが劣化する（丸印判定が負方向の回転残差に
-    弱い・実測 2026-08-28。較正は issue #23）。#23 解消後に choice も含めた
-    全列一致へ引き上げる。
+    以前は -0.5° で choice（元号）1セルが劣化するのを許容していたが、
+    issue #23（帯を境界またぎへ）で解消したので厳格化した（レビュー M-6）
+    ——緩いままだと丸印が再び壊れても -0.5° ケースが通ってしまう。
     """
-    from chouhyo_ocr.template import load_template
-    template = load_template(TPL)
-    # values のインデックスは output_columns 展開後。列→choice 判定を作る
-    is_choice = []
-    for cell in template.cells:
-        is_choice.extend([cell.kind == "choice"] * len(cell.output_columns()))
-
     base = _run(Image.open(PAGE), "base")
-    for ang, exact in ((0.5, True), (-0.5, False)):
+    for ang in (0.5, -0.5):
         rot = Image.open(PAGE).convert("RGB").rotate(
             ang, expand=False, fillcolor="white", resample=Image.BICUBIC)
         row = _run(rot, f"rot{ang}")
         assert row.status == base.status == "正常"
-        if exact:
-            assert list(row.values) == list(base.values), f"angle={ang} で不一致"
-        else:
-            text_pairs = [(b, v) for b, v, c in
-                          zip(base.values, row.values, is_choice) if not c]
-            assert all(b == v for b, v in text_pairs), \
-                f"angle={ang} でテキスト系が不一致"
+        assert list(row.values) == list(base.values), f"angle={ang} で不一致"

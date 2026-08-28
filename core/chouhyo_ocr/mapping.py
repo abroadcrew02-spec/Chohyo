@@ -127,6 +127,32 @@ def _cell_text(cell: CellSpec, syms: list[Symbol]) -> str:
     return "".join(s.text for s in out)
 
 
+_BUCKET = 128  # グリッドの一辺（px）。セル高（実測 90〜148px）と同程度
+
+
+def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
+    """セルをグリッドのバケツへ入れる（issue #17 の空間インデックス）。
+
+    1セルが複数バケツにまたがる場合は全てへ入れる。バケツ内の順序は
+    元の定義順を保つ（first-hit の契約を変えないため）。
+    """
+    buckets: dict[tuple[int, int], list] = {}
+    for i, c in enumerate(cells):
+        r = c.rect
+        for bx in range(r.x // _BUCKET, (r.x + r.w) // _BUCKET + 1):
+            for by in range(r.y // _BUCKET, (r.y + r.h) // _BUCKET + 1):
+                buckets.setdefault((bx, by), []).append((i, c))
+    return buckets
+
+
+def _candidates(buckets: dict, x: float, y: float):
+    """座標を含むバケツのセルを定義順で返す。"""
+    got = buckets.get((int(x) // _BUCKET, int(y) // _BUCKET))
+    if not got:
+        return ()
+    return [c for _i, c in got]
+
+
 def assign(
     cells: Sequence[CellSpec],
     symbols_by_face: Mapping[str, Sequence[Symbol]],
@@ -144,9 +170,15 @@ def assign(
     for face_id, syms in symbols_by_face.items():
         face_cells = cells_by_face.get(face_id, [])
         zones = face_by_id[face_id].table_zones if face_id in face_by_id else ()
+        # 空間インデックス（issue #17）。全 symbol × 全セルの線形照合は
+        # 記入密度 × 列数の掛け算で悪化する。セルをグリッドのバケツへ入れ、
+        # symbol の座標から候補だけを見る。**定義順の first-hit は保つ**
+        # ——重なりがあるテンプレートで結果が変わらないようにするため
+        # （矩形の重なりは load_template が拒否するが、割付の契約は不変）
+        buckets = _bucket_cells(face_cells)
         for s in syms:
             hit = None
-            for c in face_cells:
+            for c in _candidates(buckets, s.x, s.y):
                 r = c.rect
                 if r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h:
                     hit = c
