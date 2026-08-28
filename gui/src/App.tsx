@@ -29,12 +29,19 @@ function Settings({ onClose }: { onClose: () => void }) {
   const set = (k: keyof Cfg, v: string | number) => {
     setCfg((c) => ({ ...c, [k]: v })); setSaved(false);
   };
-  // 数値入力の全消去は +"" === 0 になる。0 の〓閾値は「低信頼値がすべて素通り」で
-  // 転記主義を無効化するため、空・NaN は前の値を維持する（issue #14）。
-  // 入力途中の値へキーストローク毎にクランプを掛けると「0.9」と打つ途中の「0」が
-  // 補正されて意図しない値が確定するため、範囲補正は保存時に1回だけ行う（N-3）
-  const setNum = (k: keyof Cfg, raw: string, int = false) => {
-    if (raw === "") return;
+  // 数値入力は「表示用の文字列」を別に持つ（M-5）。制御コンポーネントで
+  // 空文字を捨てると全選択→削除しても値が戻り、既存の数字を避けながら
+  // 編集する羽目になる。空のまま保存されても 0 が入らないよう、確定は
+  // blur と保存の2箇所で行う（issue #14: 〓閾値 0 は転記主義の無効化）。
+  // 範囲補正は保存時に1回だけ（N-3: 打鍵ごとのクランプは入力途中の値を壊す）
+  const [draft, setDraft] = useState<Partial<Record<keyof Cfg, string>>>({});
+  const numValue = (k: keyof Cfg) => draft[k] ?? String(cfg[k]);
+  const onNumChange = (k: keyof Cfg, raw: string) =>
+    setDraft((d) => ({ ...d, [k]: raw }));
+  const commitNum = (k: keyof Cfg, int = false) => {
+    const raw = draft[k];
+    setDraft((d) => { const n = { ...d }; delete n[k]; return n; });
+    if (raw === undefined || raw.trim() === "") return;  // 空欄は前の値を維持
     const n = int ? Math.trunc(+raw) : +raw;
     if (Number.isNaN(n)) return;
     set(k, n);
@@ -45,14 +52,22 @@ function Settings({ onClose }: { onClose: () => void }) {
       setErr("保存先のパスが空欄です。すべて入力してください。");
       return;
     }
+    // blur を経ずに保存を押された場合の未確定入力を取り込む
+    const num = (k: keyof Cfg, int = false): number => {
+      const raw = draft[k];
+      if (raw === undefined || raw.trim() === "") return cfg[k] as number;
+      const n = int ? Math.trunc(+raw) : +raw;
+      return Number.isNaN(n) ? (cfg[k] as number) : n;
+    };
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
     const fixed: Cfg = {
       ...cfg,
-      unclear_threshold: clamp(cfg.unclear_threshold, 0.01, 1),
-      era_threshold: clamp(cfg.era_threshold, 0.01, 1),
-      send_limit: Math.max(0, Math.trunc(cfg.send_limit)),
+      unclear_threshold: clamp(num("unclear_threshold"), 0.01, 1),
+      era_threshold: clamp(num("era_threshold"), 0.01, 1),
+      send_limit: Math.max(0, num("send_limit", true)),
     };
     setCfg(fixed);
+    setDraft({});
     setErr("");
     await invoke("write_config", { patch: fixed as unknown as Record<string, unknown> });
     setSaved(true);
@@ -65,16 +80,19 @@ function Settings({ onClose }: { onClose: () => void }) {
           通常は変更不要です。
         </p>
         <label>〓と判定する基準値（0〜1）。大きいほど〓が増え、読み誤りの見落としが減ります
-          <input type="number" min={0.01} max={1} step={0.01} value={cfg.unclear_threshold}
-            onChange={(e) => setNum("unclear_threshold", e.target.value)} />
+          <input type="number" min={0.01} max={1} step={0.01} value={numValue("unclear_threshold")}
+            onChange={(e) => onNumChange("unclear_threshold", e.target.value)}
+            onBlur={() => commitNum("unclear_threshold")} />
         </label>
         <label>丸印と判定する基準値（0〜1）
-          <input type="number" min={0.01} max={1} step={0.01} value={cfg.era_threshold}
-            onChange={(e) => setNum("era_threshold", e.target.value)} />
+          <input type="number" min={0.01} max={1} step={0.01} value={numValue("era_threshold")}
+            onChange={(e) => onNumChange("era_threshold", e.target.value)}
+            onBlur={() => commitNum("era_threshold")} />
         </label>
         <label>1回の実行で送信する上限ページ数
-          <input type="number" min={0} step={1} value={cfg.send_limit}
-            onChange={(e) => setNum("send_limit", e.target.value, true)} />
+          <input type="number" min={0} step={1} value={numValue("send_limit")}
+            onChange={(e) => onNumChange("send_limit", e.target.value)}
+            onBlur={() => commitNum("send_limit", true)} />
         </label>
         <label>Excel の保存先
           <input value={cfg.output_dir} onChange={(e) => set("output_dir", e.target.value)} />
@@ -99,6 +117,8 @@ function Settings({ onClose }: { onClose: () => void }) {
 export default function App() {
   const [tab, setTab] = useState<"run" | "editor">("run");
   const [showSettings, setShowSettings] = useState(false);
+  // 設定の保存回数。実行画面が出力先の表示を読み直す合図にする（M-3）
+  const [configRev, setConfigRev] = useState(0);
   const editorDirty = useRef(false);
 
   useEffect(() => {
@@ -151,12 +171,13 @@ export default function App() {
       </div>
       {/* 編集画面はマウントを維持し、タブ切替で状態を失わない */}
       <div style={{ display: tab === "run" ? "flex" : "none", flex: 1, minHeight: 0 }}>
-        <RunScreen />
+        <RunScreen active={tab === "run"} configRev={configRev} />
       </div>
       <div className="editor-wrap" style={{ display: tab === "editor" ? "flex" : "none" }}>
         <Editor onDirty={(d) => { editorDirty.current = d; }} />
       </div>
-      {showSettings && <Settings onClose={() => setShowSettings(false)} />}
+      {showSettings && <Settings onClose={() => { setShowSettings(false);
+                                                 setConfigRev((r) => r + 1); }} />}
     </div>
   );
 }

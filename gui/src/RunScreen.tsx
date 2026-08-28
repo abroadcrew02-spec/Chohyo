@@ -33,7 +33,9 @@ const FolderIcon = ({ c }: { c: string }) => (
   </svg>
 );
 
-export default function RunScreen() {
+export default function RunScreen(
+  { active = true, configRev = 0 }: { active?: boolean; configRev?: number },
+) {
   const [inputDir, setInputDir] = useState("");
   const [outputDir, setOutputDir] = useState("output");
   const [running, setRunning] = useState(false);
@@ -88,10 +90,12 @@ export default function RunScreen() {
   };
 
   useEffect(() => {
+    // 設定モーダルで保存されたら読み直す（M-3: 変更後も古いパスを表示し、
+    // 「出力フォルダを開く」が別の場所を開いていた）
     invoke<Record<string, unknown>>("read_config").then((c) => {
       if (typeof c.output_dir === "string") setOutputDir(c.output_dir);
     }).catch(() => {});
-  }, []);
+  }, [configRev]);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -141,15 +145,20 @@ export default function RunScreen() {
   //   ボタンを増やす代わりにドロップで両対応する・issue #19）。
   // コアの run --input はフォルダ・ファイルの両方を受ける
   const [dropping, setDropping] = useState(false);
+  const activeRef = useRef(active);
+  useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
     import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
       getCurrentWebview().onDragDropEvent((e) => {
-        if (e.payload.type === "over") setDropping(true);
+        if (e.payload.type === "over") setDropping(activeRef.current);
         else if (e.payload.type === "leave") setDropping(false);
         else if (e.payload.type === "drop") {
           setDropping(false);
+          // 実行画面が表示されていないときは受け取らない（M-1: 編集タブで
+          // ドロップすると、画面に何も出ないまま実行対象が書き換わっていた）
+          if (!activeRef.current) return;
           const p = e.payload.paths?.[0];
           if (p) setInputDir(p);
         }

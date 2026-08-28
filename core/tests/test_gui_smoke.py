@@ -83,6 +83,12 @@ def test_settings_modal_six_items(page):
     for label in ["〓と判定する基準値", "丸印と判定する基準値", "上限ページ数",
                   "Excel の保存先", "中間データの保存先", "ログの保存先"]:
         assert page.get_by_text(label, exact=False).first.is_visible(), label
+    # 数値入力は全選択→削除で打ち直せる（M-5: 旧実装は空文字を捨てて値が戻り、
+    # 既存の数字を避けながら編集する必要があった）
+    thr = page.locator("input[type=number]").first
+    thr.fill("")
+    assert thr.input_value() == "", "空にできない（打ち直しが阻害される）"
+    thr.fill("0.9")
     page.get_by_role("button", name="保存", exact=True).click()
     page.wait_for_selector("text=保存しました")
     page.get_by_role("button", name="閉じる").click()
