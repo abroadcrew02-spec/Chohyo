@@ -30,9 +30,10 @@ def test_same_content_different_name_is_skipped(tmp_path):
     events = []
     summary = run(inp, TPL, cfg, ReplayClient(resp), progress=events.append)
 
-    # 2つ目（同一内容・別名）は追加されない。出力は1ファイル分のみ
-    assert summary.pages == 1
-    assert summary.rows == 1
+    # 2つ目（同一内容・別名）は API へ送らないが、黙って消さず
+    # 「スキップ（重複）」の全〓行として出す（D-27・§3.4 の行数保存を優先）
+    assert summary.pages == 2
+    assert summary.rows == 2
     skips = [e for e in events if e.get("event") == "skip_duplicate"]
     assert len(skips) == 1
     assert skips[0]["file"] == "b.png"

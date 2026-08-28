@@ -29,6 +29,19 @@ class AlignedFace:
     angle: float
 
 
+# 位置合わせ方式の版。処理内容を変えたら上げる（#25: 旧方式で作った中間データを
+# 新方式のコードが黙って再利用しないための印。geometry_hash が守るのは
+# 「テンプレートの版」、これは「パイプラインの版」——役割が違うため別に持つ）
+ALGO_VERSION = "1"
+
+
+def template_hash(raw_template: dict) -> str:
+    """テンプレート全体の正規化ハッシュ（#25: 非幾何の変更も再利用拒否の対象）。"""
+    blob = json.dumps(raw_template, ensure_ascii=False,
+                      sort_keys=True).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
 def geometry_hash(raw_template: dict) -> str:
     """幾何セクション6要素の正規化ハッシュ（設計 §6.7）。"""
     geo = {

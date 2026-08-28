@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS page(
   image_path TEXT,
   unassigned_below_table INTEGER NOT NULL DEFAULT 0,
   unassigned_other INTEGER NOT NULL DEFAULT 0,
+  template_hash TEXT NOT NULL DEFAULT '',
   updated_at REAL NOT NULL,
   UNIQUE(source_file, page_no)
 );
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS alignment(
   transform TEXT NOT NULL,
   ok INTEGER NOT NULL,
   geometry_hash TEXT NOT NULL,
+  algo_version TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(page_id, face_id)
 );
 CREATE TABLE IF NOT EXISTS era_score(
@@ -84,7 +86,16 @@ class Store:
         # その分の API 再送（課金重複）にとどまる——再開設計（§6.7）が吸収する
         self.con.execute("PRAGMA synchronous=NORMAL")
         self.con.executescript(_SCHEMA)
+        # 既存 DB への列追加（CREATE TABLE IF NOT EXISTS は既存テーブルに効かない）。
+        # 追加列の既定 '' は「旧版が作った・出所を証明できない」印として扱う（#25）
+        self._ensure_column("page", "template_hash", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("alignment", "algo_version", "TEXT NOT NULL DEFAULT ''")
         self.con.commit()
+
+    def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        cols = {r[1] for r in self.con.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
     def close(self) -> None:
         self.con.close()
@@ -185,18 +196,48 @@ class Store:
 
     # --- alignment / era ---
     def upsert_alignment(self, page_id: str, face_id: str, transform: dict,
-                         ok: bool, geometry_hash: str) -> None:
+                         ok: bool, geometry_hash: str, algo_version: str) -> None:
         self.con.execute(
-            """INSERT INTO alignment(page_id, face_id, transform, ok, geometry_hash)
-               VALUES(?,?,?,?,?)
+            """INSERT INTO alignment(page_id, face_id, transform, ok, geometry_hash,
+                                     algo_version)
+               VALUES(?,?,?,?,?,?)
                ON CONFLICT(page_id, face_id) DO UPDATE SET
                  transform=excluded.transform, ok=excluded.ok,
-                 geometry_hash=excluded.geometry_hash""",
-            (page_id, face_id, json.dumps(transform), int(ok), geometry_hash))
+                 geometry_hash=excluded.geometry_hash,
+                 algo_version=excluded.algo_version""",
+            (page_id, face_id, json.dumps(transform), int(ok), geometry_hash,
+             algo_version))
         self.con.commit()
 
     def geometry_hashes(self) -> set[str]:
         return {h for (h,) in self.con.execute("SELECT DISTINCT geometry_hash FROM alignment")}
+
+    def algo_versions(self) -> set[str]:
+        """位置合わせ方式の版（#25/#30: コード側の版違いも再利用拒否の対象）。"""
+        return {v for (v,) in self.con.execute("SELECT DISTINCT algo_version FROM alignment")}
+
+    def template_hashes(self) -> set[str]:
+        """cell を割り付けたテンプレート全体のハッシュ（'' は旧版データ）。"""
+        return {h for (h,) in self.con.execute(
+            "SELECT DISTINCT template_hash FROM page WHERE state='done'")}
+
+    def set_template_hash(self, page_id: str, template_hash: str) -> None:
+        self.con.execute(
+            "UPDATE page SET template_hash=?, updated_at=? WHERE page_id=?",
+            (template_hash, time.time(), page_id))
+        self.con.commit()
+
+    def stale_done_pages(self, geometry_hash: str, template_hash: str,
+                         algo_version: str) -> list[str]:
+        """処理済みのうち、現テンプレート・現方式で作られていないページ（#25）。"""
+        rows = self.con.execute(
+            """SELECT DISTINCT p.page_id FROM page p
+               LEFT JOIN alignment a ON a.page_id = p.page_id
+               WHERE p.state='done'
+                 AND (p.template_hash != ? OR a.geometry_hash IS NULL
+                      OR a.geometry_hash != ? OR a.algo_version != ?)""",
+            (template_hash, geometry_hash, algo_version))
+        return [r[0] for r in rows]
 
     def upsert_eras(self, page_id: str, scores_by_field: dict[str, dict]) -> None:
         """ページ内の choice セル全件を1トランザクションで総入れ替え（issue #16/#28）。

@@ -52,6 +52,37 @@ def _load(template_path: str | Path) -> tuple[Template, dict, str]:
     return template, raw, geometry_hash(raw)
 
 
+def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
+                   *, check_template: bool) -> None:
+    """中間データが現テンプレート・現方式で作られたものかを検査する（#25）。
+
+    不変条件: 出力は、その出力を組み立てたテンプレートと同一のテンプレートで
+    作られた中間データからのみ生成する。remap は cell を作り直すので
+    template_hash 不一致は当然（check_template=False）。初回（空）は通す。
+    """
+    from .align import ALGO_VERSION
+    stored_geo = store.geometry_hashes()
+    if stored_geo and stored_geo != {geo_hash}:
+        store.close()
+        raise SystemExit(
+            "テンプレートの幾何セクション（render_dpi/image/record/faces.source/"
+            "face_id/exclusions）が変わっている。token 座標が無効のため"
+            "——`run` で再処理する（API 送信が発生する）")
+    stored_algo = store.algo_versions()
+    if stored_algo and stored_algo != {ALGO_VERSION}:
+        store.close()
+        raise SystemExit(
+            "位置合わせ方式が更新されている。旧方式で作った中間データは"
+            "再利用できない——`run` で再処理する（API 送信が発生する）")
+    if check_template:
+        stored_tpl = store.template_hashes() - {""}
+        if stored_tpl and stored_tpl != {tpl_hash}:
+            store.close()
+            raise SystemExit(
+                "テンプレートが変わっている（欄・列の定義の変更）。"
+                "割付が旧テンプレートのままのため——`remap` で割付をやり直す")
+
+
 def _map_and_score(store: Store, template: Template, page_id: str,
                    resp: dict, aligned_faces) -> tuple[int, int]:
     """応答 → token 保存 → 割付 → cell/era 保存。(below, other, total) を返す。"""
@@ -91,10 +122,30 @@ def _map_and_score(store: Store, template: Template, page_id: str,
 
 
 def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
-        client: OcrClient, progress: Progress = lambda e: None) -> Summary:
-    template, _raw, geo_hash = _load(template_path)
+        client: OcrClient, progress: Progress = lambda e: None,
+        resend_on_template_change: bool = False) -> Summary:
+    template, raw, geo_hash = _load(template_path)
+    from .align import ALGO_VERSION, template_hash as _template_hash
+    tpl_hash = _template_hash(raw)
     store = Store(_store_path(cfg))
     store.record_run(time.strftime("%Y%m%d_%H%M%S"), json.dumps(cfg.__dict__))
+
+    # プリフライト（#25）: テンプレート・位置合わせ方式が変わっていたら、
+    # API を1回も叩く前に止める。要配慮個人情報の再送は明示オプトインのみ
+    # ——テンプレ編集の副作用で数百ページを黙って再開示・再課金しない
+    stale = store.stale_done_pages(geo_hash, tpl_hash, ALGO_VERSION)
+    if stale:
+        if not resend_on_template_change:
+            store.close()
+            raise SystemExit(
+                f"テンプレートまたは位置合わせ方式が変わっている（対象 {len(stale)} ページ）。"
+                "再処理には API 送信（課金）が発生するため中止した。"
+                "旧テンプレートへ戻す／`purge --yes` で作り直す／"
+                "`run --resend-on-template-change` で対象ページのみ再送する のいずれかを選ぶ")
+        for pid in stale:
+            store.set_state(pid, "pending")  # 降格して再処理（send_limit は従来どおり効く）
+        log.error("resend_on_template_change", count=len(stale))
+        progress({"event": "template_changed_resend", "count": len(stale)})
     pages_dir = Path(cfg.workdir) / "pages"
     aligned_dir = Path(cfg.workdir) / "aligned"
     aligned_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +154,10 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
     taken: set[str] = set()
     inputs = ingest.list_inputs(input_dir)
     for source in inputs:
-        # 同一内容の二重投入検知（要件 §5.1 Could）: 別名で同じ中身なら追加しない
+        # 同一内容の二重投入検知（要件 §5.1 Could）: 別名で同じ中身なら送信しない。
+        # ただし黙って落とさず「スキップ（重複）」の全〓行を出す（#29 B-2・
+        # PM/architect 裁定 2026-08-28: 投入した紙が黙って消えると §3.4 の
+        # 行数保存が破れ、正本がソート順次第で落ちる）
         digest = hashlib.sha1(source.read_bytes()).hexdigest()
         seen_as = store.known_source(digest)
         if seen_as is not None and seen_as != source.name:
@@ -111,6 +165,15 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
                      duplicate_of=seen_as)
             progress({"event": "skip_duplicate", "file": source.name,
                       "same_as": seen_as})
+            # ページ数は正本の page 行から求める（内容同一なので等しい。
+            # pdftoppm を再実行しない）。正本が未展開なら最低1行は出す
+            n_pages = sum(1 for p in store.pages()
+                          if p["source_file"] == seen_as) or 1
+            for i in range(1, n_pages + 1):
+                pid = ingest.page_id_for(source, i, taken)
+                taken.add(pid)
+                store.upsert_page(pid, source.name, i, "skipped_duplicate")
+                store.set_status(pid, render_rows.STATUS_DUPLICATE)
             continue
         try:
             page_images = ingest.expand(source, template.render_dpi, pages_dir)
@@ -142,7 +205,9 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
         progress({"event": "stale_pages", "count": len(stale),
                   "files": stale[:5]})
 
-    todo = [p for p in all_pages if p["state"] != "done"]
+    # skipped_duplicate は処理対象外（送信しない・行だけ出す。image_path も無い）
+    todo = [p for p in all_pages
+            if p["state"] not in ("done", "skipped_duplicate")]
     total = len(all_pages)
     progress({"event": "start", "total": total, "todo": len(todo)})
 
@@ -170,7 +235,8 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
                       "status": render_rows.STATUS_ALIGN_FAILED})
             continue
         for f in faces:
-            store.upsert_alignment(pid, f.face_id, {"angle": f.angle}, True, geo_hash)
+            store.upsert_alignment(pid, f.face_id, {"angle": f.angle}, True,
+                                   geo_hash, ALGO_VERSION)
             f.image.save(aligned_dir / f"{pid}_{f.face_id}.png")
         store.set_state(pid, "aligned")
 
@@ -209,6 +275,7 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
             continue
 
         store.set_status(pid, "")  # 成功: 失敗系ステータスを剥がす（超過は render で合成）
+        store.set_template_hash(pid, tpl_hash)  # この cell を割り付けた版の印（#25）
         store.set_state(pid, "done")
         if below >= render_rows.OVERFLOW_MIN_SYMBOLS:
             summary.overflow += 1
@@ -229,9 +296,12 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
 def render(template_path: str | Path, cfg: Config,
            timestamp: str | None = None) -> tuple[Path, Path, list[Row]]:
     """cell / era_score から再出力する（API 送信なし・要件 §5.8）。"""
-    template, _raw, _gh = _load(template_path)
+    template, raw, geo_hash = _load(template_path)
+    from .align import template_hash as _tpl_hash
     columns = derive_columns(template)
     store = Store(_store_path(cfg))
+    # 出力を1バイトも書く前に、中間データが現テンプレートの産物かを検査（#25）
+    check_reusable(store, geo_hash, _tpl_hash(raw), check_template=True)
     rows: list[Row] = []
     for page in store.pages():
         p = dict(page)
@@ -254,15 +324,11 @@ def remap(template_path: str | Path, cfg: Config,
 
     幾何セクションが変わっていたら拒否して `run` を促す。
     """
-    template, _raw, geo_hash = _load(template_path)
+    template, raw, geo_hash = _load(template_path)
+    from .align import template_hash as _tpl_hash
+    tpl_hash = _tpl_hash(raw)
     store = Store(_store_path(cfg))
-    stored = store.geometry_hashes()
-    if stored and stored != {geo_hash}:
-        store.close()
-        raise SystemExit(
-            "テンプレートの幾何セクション（render_dpi/image/record/faces.source/"
-            "face_id/exclusions）が変わっている。token 座標が無効のため remap では"
-            "処理できない——`run` で再送信する")
+    check_reusable(store, geo_hash, tpl_hash, check_template=False)
 
     n = 0
     aligned_dir = Path(cfg.workdir) / "aligned"
@@ -306,6 +372,7 @@ def remap(template_path: str | Path, cfg: Config,
             binary = binarize_face(gray, template.face(cell.face_id))
             era_scores[cell.field_id] = era.score_cell(binary, cell)
         store.upsert_eras(pid, era_scores)
+        store.set_template_hash(pid, tpl_hash)  # 割付し直した版の印（#25）
         if missing_aligned:
             log.error("remap_missing_aligned", page_id=pid, count=missing_aligned)
             progress({"event": "remap_warning", "page_id": pid,

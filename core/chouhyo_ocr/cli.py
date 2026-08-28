@@ -31,7 +31,8 @@ def cmd_run(args) -> int:
     log.init(cfg.log_dir)
     log.info("run_start", path=args.input)
     from .pipeline import run
-    run(args.input, args.template, cfg, _client(cfg, args.replay), _progress)
+    run(args.input, args.template, cfg, _client(cfg, args.replay), _progress,
+        resend_on_template_change=args.resend_on_template_change)
     return 0
 
 
@@ -199,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--input", required=True)
     p.add_argument("--template", default=default_tpl)
     p.add_argument("--replay", default=None, help="開発用: 保存済み応答ディレクトリで再生")
+    p.add_argument("--resend-on-template-change", action="store_true",
+                   help="テンプレート変更で無効になった処理済みページを再送する"
+                        "（API 送信と課金が発生する。既定は中止）")
     p.set_defaults(fn=cmd_run)
 
     p = sub.add_parser("render", help="cell から再出力（API 送信なし）")

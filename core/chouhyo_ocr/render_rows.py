@@ -26,10 +26,15 @@ STATUS_FORMAT_MISMATCH = "様式不一致"
 STATUS_SEND_FAILED = "送信失敗"
 STATUS_CAP = "未処理（送信上限到達）"
 STATUS_INTERRUPTED = "未処理（中断）"
+# 「未処理」を名乗らせない（PM 裁定・2026-08-28）: §5.8 で「未処理」は再送対象の
+# 含意が確立しており、重複は再実行でも送信しない。名前は仕様である
+STATUS_DUPLICATE = "スキップ（重複）"
 STATUS_OVERFLOW = "超過あり"
 STATUS_OK = "正常"
-_ORDER = [STATUS_EXPAND_FAILED, STATUS_ALIGN_FAILED, STATUS_FORMAT_MISMATCH,
-          STATUS_SEND_FAILED, STATUS_CAP, STATUS_INTERRUPTED, STATUS_OVERFLOW]
+# 失敗系（全〓行になるステータス）。compose_status がページ status を通す集合
+_FAILURE_STATUSES = frozenset([
+    STATUS_EXPAND_FAILED, STATUS_ALIGN_FAILED, STATUS_FORMAT_MISMATCH,
+    STATUS_SEND_FAILED, STATUS_CAP, STATUS_INTERRUPTED, STATUS_DUPLICATE])
 
 OVERFLOW_MIN_SYMBOLS = 3  # D-06（定数・実物で調整）
 
@@ -55,7 +60,7 @@ class Row:
 
 
 def compose_status(page_status: str, below_table: int, processed: bool) -> str:
-    parts = [s for s in _ORDER[:6] if s == page_status]
+    parts = [page_status] if page_status in _FAILURE_STATUSES else []
     if processed and below_table >= OVERFLOW_MIN_SYMBOLS:
         parts.append(STATUS_OVERFLOW)
     if not parts:
