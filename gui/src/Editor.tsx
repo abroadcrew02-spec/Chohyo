@@ -148,7 +148,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         return;
       }
     }
-    const src = await invoke<string>("read_file_b64", { path: imagePath });
+    // 読み込み失敗を try の外に置くと、直前の「展開しています…」表示のまま
+    // 黙って止まる（実測・2026-08-28）。必ず catch してエラーを見せる
+    let src: string;
+    try {
+      src = await invoke<string>("read_file_b64", { path: imagePath });
+    } catch (e) {
+      setSaveErr(`画像を読み込めませんでした: ${e}`);
+      setMsg("");
+      return;
+    }
     const im = new Image();
     im.onload = () => {
       imgRef.current = im;
@@ -158,6 +167,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       draw();
     };
+    im.onerror = () => { setSaveErr("画像の表示に失敗しました"); setMsg(""); };
     im.src = src;
   };
 

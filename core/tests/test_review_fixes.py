@@ -159,6 +159,9 @@ def test_expand_page_cli_returns_png(tmp_path):
     assert ev["ok"] is True and ev["pages"] == 1
     from pathlib import Path as _P
     assert _P(ev["page_path"]).exists()
+    # 絶対パスであること。相対だと GUI 側の cwd で解決されて見つからない
+    #（dev 窓で「展開中…」のまま止まった実測原因・2026-08-28）
+    assert _P(ev["page_path"]).is_absolute()
     # 存在しないページ番号は明示エラー
     r2 = subprocess.run(
         [str(python), "-X", "utf8", "-m", "chouhyo_ocr.cli",

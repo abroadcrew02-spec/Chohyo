@@ -135,8 +135,12 @@ def cmd_expand_page(args) -> int:
         _progress({"event": "expand_page", "ok": False,
                    "error": f"ページ {args.page} が無い（全 {len(pages)} ページ）"})
         return 1
+    # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
+    # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
+    # 編集画面が「展開中…」のまま止まった原因・2026-08-28）
     _progress({"event": "expand_page", "ok": True,
-               "page_path": str(pages[args.page - 1]), "pages": len(pages)})
+               "page_path": str(pages[args.page - 1].resolve()),
+               "pages": len(pages)})
     return 0
 
 
