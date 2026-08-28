@@ -165,14 +165,19 @@ def test_expand_page_cli_returns_png(tmp_path):
     # 絶対パスであること。相対だと GUI 側の cwd で解決されて見つからない
     #（dev 窓で「展開中…」のまま止まった実測原因・2026-08-28）
     assert _P(ev["page_path"]).is_absolute()
-    # 存在しないページ番号は明示エラー
+    # 業務的な失敗（ページ範囲外）は exit 0 ＋ ok:false で伝える（issue #21）。
+    # 非ゼロで返すと Rust の run_core_capture が Err(stdout) を返し、フロントの
+    # ok:false 分岐が到達不能になって**生 JSON が画面に出る**（実測）
     r2 = subprocess.run(
         [str(python), "-X", "utf8", "-m", "chouhyo_ocr.cli",
          "--config", str(cfg_file), "expand-page", "--input", str(src),
          "--page", "5"],
         cwd=app_root() / "core", capture_output=True, text=True,
         encoding="utf-8", timeout=120)
-    assert r2.returncode == 1
+    assert r2.returncode == 0, "業務的失敗を非ゼロで返している"
+    ev2 = next(json.loads(l) for l in r2.stdout.splitlines()
+               if l.strip() and "expand_page" in l)
+    assert ev2["ok"] is False and "ページ 5 が無い" in ev2["error"]
 
 
 def test_choice_with_subfields_keeps_row_length(tmp_path):

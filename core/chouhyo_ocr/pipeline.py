@@ -283,7 +283,10 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 {"angle": f.angle, "dx": f.dx, "dy": f.dy,
                  "matched": f.shift_matched},
                 True, geo_hash, ALGO_VERSION)
-            f.image.save(aligned_dir / f"{pid}_{f.face_id}.png")
+            # 位置合わせ画像はローカル中間データ（remap の再スコア用）で
+            # 配布物ではない。圧縮率を下げてエンコード時間を優先する
+            # （実測: level 6 で 0.35s/枚 → level 1 で 0.22s/枚・容量は +1MB 程度）
+            f.image.save(aligned_dir / f"{pid}_{f.face_id}.png", compress_level=1)
         store.set_state(pid, "aligned")
 
         # --- F6: 送信（上限・1リクエスト=1画像）---

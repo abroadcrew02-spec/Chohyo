@@ -133,17 +133,17 @@ def cmd_expand_page(args) -> int:
     if total is not None and not 1 <= args.page <= total:
         _progress({"event": "expand_page", "ok": False,
                    "error": f"ページ {args.page} が無い（全 {total} ページ）"})
-        return 1
+        return 0  # 業務的失敗は ok:false で伝える（#21）
     try:
         # 該当ページのみ展開（位置合わせ用途・全ページ展開の約1/3の時間）
         pages = expand(src, dpi=args.dpi, out_dir=out_dir, page=args.page)
     except IngestError as e:
         _progress({"event": "expand_page", "ok": False, "error": str(e)})
-        return 1
+        return 0
     if not pages:
         _progress({"event": "expand_page", "ok": False,
                    "error": f"ページ {args.page} を展開できない"})
-        return 1
+        return 0
     # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
     # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
     # 編集画面が「展開中…」のまま止まった原因・2026-08-28）
@@ -167,7 +167,7 @@ def cmd_detect_grid(args) -> int:
         if fit is None:
             _progress({"event": "detect_grid", "ok": False,
                        "error": "罫線が検出できない。等分割生成（--mode uniform）へ切り替える"})
-            return 1
+            return 0
     _progress({"event": "detect_grid", "ok": True, **fit.to_json()})
     return 0
 
