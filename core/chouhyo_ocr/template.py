@@ -300,6 +300,24 @@ def load_template(path: str | Path) -> Template:
                 f"選択肢の値が重複している（{c.field_id}: {vals}）。"
                 "同じ値が2つ以上あると、その欄は丸印があっても常に〓になる")
 
+    # 同一面のセル矩形の重なりを拒否する（issue #24）。mapping は定義順の
+    # first-hit で解決するため、重なり帯へ落ちた symbol の行き先が
+    # 「テンプレートの記述順」という見えない要素で決まる。実サンプルでは
+    # 顕在化しなかったが、記入が欄をわずかにはみ出す実データで列ズレになる
+    by_face: dict[str, list] = {}
+    for c in cells:
+        by_face.setdefault(c.face_id, []).append(c)
+    for fid, cs in by_face.items():
+        for i, a in enumerate(cs):
+            for b in cs[i + 1:]:
+                ra, rb = a.rect, b.rect
+                if (ra.x < rb.x + rb.w and rb.x < ra.x + ra.w
+                        and ra.y < rb.y + rb.h and rb.y < ra.y + ra.h):
+                    raise TemplateError(
+                        f"欄の矩形が重なっている（{fid}: {a.field_id} と "
+                        f"{b.field_id}）。重なり部分の文字がどちらへ入るかが"
+                        "定義順で決まってしまうため、枠を分ける")
+
     # 面の切り出し矩形が重なると、同じ記入が両面のセルへ割り付いて二重転記に
     # なる（issue #32）。エディタの「表裏の境界」の誤操作で作れてしまう
     for i, a in enumerate(faces):

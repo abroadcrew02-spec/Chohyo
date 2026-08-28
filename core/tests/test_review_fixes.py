@@ -472,3 +472,25 @@ def test_overlapping_face_rects_rejected(tmp_path):
     p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
     with pytest.raises(TemplateError, match="重なっている"):
         load_template(p)
+
+
+def test_overlapping_cell_rects_rejected(tmp_path):
+    """同一面のセル矩形の重なりを拒否する（issue #24）。
+
+    mapping は定義順の first-hit で解決するため、重なり帯の文字の行き先が
+    「テンプレートの記述順」という見えない要素で決まってしまう。
+    """
+    from chouhyo_ocr.template import TemplateError
+    t = json.loads(TPL.read_text(encoding="utf-8"))
+    f0 = t["faces"][0]["fields"]
+    f0[1]["rect"] = dict(f0[0]["rect"])  # 2つの欄を完全に重ねる
+    p = tmp_path / "ov.json"
+    p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(TemplateError, match="欄の矩形が重なっている"):
+        load_template(p)
+
+
+def test_shipped_template_has_no_overlaps():
+    """同梱テンプレートに重なりが無い（issue #24 で6組を解消済み）。"""
+    template = load_template(TPL)  # 重なりがあれば load 時点で落ちる
+    assert len(template.cells) == 192

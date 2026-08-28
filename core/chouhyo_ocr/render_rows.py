@@ -64,7 +64,12 @@ def compose_status(page_status: str, below_table: int, processed: bool) -> str:
     if processed and below_table >= OVERFLOW_MIN_SYMBOLS:
         parts.append(STATUS_OVERFLOW)
     if not parts:
-        return STATUS_OK if processed else page_status or STATUS_OK
+        if page_status and page_status != STATUS_OK:
+            # 既知集合に無いステータスを「正常」へ倒さない（レビュー B-4）。
+            # 中間データは版をまたいで残るため、定数を1つ改名しただけで
+            # 旧 status を持つ既存ページが黙って正常になる事故を防ぐ
+            return page_status
+        return STATUS_OK if processed else STATUS_OK
     return ";".join(parts)
 
 
@@ -103,15 +108,26 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
             values.extend([UNCLEAR] * len(out_cols))
             continue
 
-        confs.append(conf)
+        # 最低信頼度は「**出力された値**のうちの最小」。分割失敗・正規化失敗で
+        # 〓になったセルの信頼度を混ぜない（レビュー B-1）——〓の優先確認に
+        # 使う列なのに、出ていない値の信頼度が最小として出ていた
         if cell.subfields:
             parts = split_composite(raw, len(cell.subfields))
-            values.extend(parts if parts else [UNCLEAR] * len(out_cols))
+            if parts:
+                values.extend(parts)
+                confs.append(conf)
+            else:
+                values.extend([UNCLEAR] * len(out_cols))
         elif cell.normalize == "amount":
             amount = normalize_amount(raw)
-            values.append(amount if amount is not None else UNCLEAR)
+            if amount is not None:
+                values.append(amount)
+                confs.append(conf)
+            else:
+                values.append(UNCLEAR)
         else:
             values.append(raw)
+            confs.append(conf)
 
     unclear_count = sum(1 for v in values if v == UNCLEAR)
     min_conf = f"{min(confs):.3f}" if confs else ""

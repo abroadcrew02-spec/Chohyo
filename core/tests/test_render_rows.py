@@ -129,3 +129,31 @@ def test_failure_row_all_unclear(template):
     assert set(row.values) == {UNCLEAR}
     assert row.unclear_count == 212
     assert row.min_conf == ""
+
+
+def test_min_conf_excludes_cells_that_became_unclear(template):
+    """最低信頼度は出力された値のうちの最小（レビュー B-1）。
+
+    分割失敗・金額正規化失敗で〓になったセルの信頼度を混ぜない——
+    〓の優先確認に使う列なのに、出ていない値の信頼度が出ていた。
+    """
+    cells = base_cells(template)
+    # 高信頼だが分割できない値（〓になる）と、低めだが出力される値
+    cells["family_01_生年月日"] = ("分割できない値", 0.30, "text", False)
+    cells["person_氏名"] = ("上西諒", 0.91, "text", False)
+    row = build_row(template, page(), cells, {}, CFG)
+    assert col_value(template, row, "family_01_生年月日_年") == UNCLEAR
+    assert col_value(template, row, "person_氏名") == "上西諒"
+    assert row.min_conf == "0.910", f"〓セルの信頼度が混ざっている: {row.min_conf}"
+
+
+def test_unknown_status_is_not_reported_as_normal():
+    """既知集合に無いステータスを「正常」へ倒さない（レビュー B-4 の fail-open）。
+
+    中間データは版をまたいで残る。定数を1つ改名しただけで、旧 status を
+    持つ既存ページが黙って正常になるのを防ぐ。
+    """
+    assert compose_status("旧版の未知ステータス", 0, processed=True) == "旧版の未知ステータス"
+    assert compose_status("", 0, processed=True) == STATUS_OK
+    assert compose_status(STATUS_OK, 0, processed=True) == STATUS_OK
+    assert compose_status(STATUS_ALIGN_FAILED, 0, processed=False) == STATUS_ALIGN_FAILED
