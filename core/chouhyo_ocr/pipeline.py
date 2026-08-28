@@ -54,9 +54,10 @@ def _load(template_path: str | Path) -> tuple[Template, dict, str]:
 
 def _map_and_score(store: Store, template: Template, page_id: str,
                    resp: dict, aligned_faces) -> tuple[int, int]:
-    """応答 → token 保存 → 割付 → cell/era 保存。(below, other) を返す。"""
+    """応答 → token 保存 → 割付 → cell/era 保存。(below, other, total) を返す。"""
     page_syms = symbols_from_response(resp)
     by_face = {f.face_id: to_face_local(f, page_syms) for f in template.faces}
+    total_syms = sum(len(v) for v in by_face.values())
 
     store.replace_tokens(page_id, [
         (seq, fid, s.text, s.conf, s.x, s.y)
@@ -85,7 +86,7 @@ def _map_and_score(store: Store, template: Template, page_id: str,
         store.upsert_era(page_id, cell.field_id, scores)
 
     store.set_unassigned(page_id, result.unassigned_below_table, result.unassigned_other)
-    return result.unassigned_below_table, result.unassigned_other
+    return result.unassigned_below_table, result.unassigned_other, total_syms
 
 
 def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
@@ -181,7 +182,18 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
         store.set_state(pid, "received")
 
         # --- F7/F8: 割付・丸印 ---
-        below, _other = _map_and_score(store, template, pid, resp, faces)
+        below, other, total = _map_and_score(store, template, pid, resp, faces)
+
+        # D-15: 枠外率が閾値超なら配置を信用できない → 様式不一致・全〓行へ
+        # （母集団は below_table を除く。設計 §6.4）
+        if total > 0 and other / total > render_rows.FORMAT_MISMATCH_RATIO:
+            store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
+            store.set_state(pid, "failed")
+            log.error("format_mismatch", page_id=pid, count=other)
+            progress({"event": "page", "page_id": pid,
+                      "status": render_rows.STATUS_FORMAT_MISMATCH})
+            continue
+
         store.set_status(pid, "")  # 成功: 失敗系ステータスを剥がす（超過は render で合成）
         store.set_state(pid, "done")
         if below >= render_rows.OVERFLOW_MIN_SYMBOLS:

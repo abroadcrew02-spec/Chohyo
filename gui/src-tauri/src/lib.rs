@@ -9,6 +9,22 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// 実行中のコアの PID（中断ボタン用・同時実行は1つの前提）
 pub struct CoreProc(pub Mutex<Option<u32>>);
 
+/// webview から起動できるサブコマンドの白リスト（issue #7）。
+/// purge（中間データ全削除）は要件 §6.3「削除は明示操作のみ」のため
+/// GUI 境界からは呼べない——必要なら CLI を直接使う。
+const ALLOWED_SUBCOMMANDS: &[&str] = &[
+    "run", "render", "remap", "status", "verify", "detect-grid",
+    "import-credentials",
+];
+
+fn check_args(args: &[String]) -> Result<(), String> {
+    match args.first() {
+        Some(c) if ALLOWED_SUBCOMMANDS.contains(&c.as_str()) => Ok(()),
+        Some(c) => Err(format!("許可されていないコマンド: {c}")),
+        None => Err("コマンドが指定されていない".into()),
+    }
+}
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
@@ -68,6 +84,7 @@ fn core_command(root: &PathBuf) -> Result<Command, String> {
 #[tauri::command]
 async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
                   args: Vec<String>) -> Result<i32, String> {
+    check_args(&args)?;
     let root = repo_root(&app)?;
     let mut cmd = core_command(&root)?;
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -113,6 +130,7 @@ fn kill_core(state: State<'_, CoreProc>) -> Result<(), String> {
 /// コアを起動し stdout を丸ごと返す（編集画面の detect-grid / verify 用）。
 #[tauri::command]
 async fn run_core_capture(app: AppHandle, args: Vec<String>) -> Result<String, String> {
+    check_args(&args)?;
     let root = repo_root(&app)?;
     let mut cmd = core_command(&root)?;
     cmd.args(&args);
@@ -161,6 +179,11 @@ fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     // CLI の相対パス設定（既定 "output"）は cwd=core 基準
     let abs = if p.is_absolute() { p } else { root.join("core").join(p) };
+    // explorer は引数が実行可能ファイルなら起動してしまう（LOLBin）。
+    // フォルダを開く用途しかないため、ディレクトリ以外は拒否する（issue #5）
+    if !abs.is_dir() {
+        return Err("フォルダではないため開けません".into());
+    }
     Command::new("explorer")
         .arg(abs)
         .spawn()
@@ -250,4 +273,28 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_args;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn allows_operational_subcommands() {
+        for c in ["run", "render", "remap", "status", "verify",
+                  "detect-grid", "import-credentials"] {
+            assert!(check_args(&v(&[c])).is_ok(), "{c}");
+        }
+    }
+
+    #[test]
+    fn denies_purge_and_unknown_and_empty() {
+        assert!(check_args(&v(&["purge", "--yes"])).is_err());
+        assert!(check_args(&v(&["--config", "x", "run"])).is_err());
+        assert!(check_args(&v(&[])).is_err());
+    }
 }

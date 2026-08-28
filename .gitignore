@@ -3,6 +3,13 @@
 /samples/real/
 /samples/**/real/
 *.pdf
+# 帳票のスキャン画像（ingest が受け付ける拡張子はすべて落とす・issue #9）
+/samples/**/*.png
+/samples/**/*.jpg
+/samples/**/*.jpeg
+/samples/*.png
+/samples/*.jpg
+/samples/*.jpeg
 
 # 中間データ（読取値・信頼度・展開画像を含む）
 workdir/

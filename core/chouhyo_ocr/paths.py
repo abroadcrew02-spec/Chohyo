@@ -30,3 +30,20 @@ def project_root() -> Path:
 
 def template_schema_path() -> Path:
     return app_root() / "schema" / "template.schema.json"
+
+
+_CLOUD_MARKERS = ("onedrive", "dropbox", "google drive", "googledrive",
+                  "ドロップボックス")
+
+
+def is_cloud_synced_path(p: str | Path) -> bool:
+    """クラウド同期フォルダ・ネットワーク共有配下とみられるパスか（issue #8）。
+
+    中間データは要配慮個人情報を含むため、同期対象パスへの配置を verify で
+    警告する。判定はパス文字列のヒューリスティック（OneDrive/Dropbox/
+    Google Drive の既定フォルダ名・UNC パス）で、完全ではない。
+    """
+    s = str(Path(p).resolve()).lower()
+    if s.startswith("\\\\"):
+        return True  # UNC（ネットワーク共有）
+    return any(m in s for m in _CLOUD_MARKERS)

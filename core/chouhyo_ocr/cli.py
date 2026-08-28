@@ -91,6 +91,14 @@ def cmd_verify(args) -> int:
     except Exception:
         ok = False
         _progress({"event": "verify", "check": "poppler", "ok": False})
+    # 保存先が同期フォルダ配下でないか（要配慮個人情報の同期防止・issue #8）
+    from .paths import is_cloud_synced_path
+    synced = [name for name, d in
+              [("workdir", cfg.workdir), ("output_dir", cfg.output_dir),
+               ("log_dir", cfg.log_dir)] if is_cloud_synced_path(d)]
+    _progress({"event": "verify", "check": "local_storage", "ok": not synced,
+               **({"synced_dirs": synced} if synced else {})})
+    ok = ok and not synced
     # 資格情報（値は出さない）
     state = cred_store.credentials_state(cfg.workdir)
     _progress({"event": "verify", "check": "credentials", "ok": state != "missing",

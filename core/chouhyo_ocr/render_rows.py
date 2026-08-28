@@ -33,6 +33,11 @@ _ORDER = [STATUS_EXPAND_FAILED, STATUS_ALIGN_FAILED, STATUS_FORMAT_MISMATCH,
 
 OVERFLOW_MIN_SYMBOLS = 3  # D-06（定数・実物で調整）
 
+# D-15: 枠外 symbol（below_table を除く）の率がこれを超えたら様式不一致。
+# 印字ラベル等で正常ページでも ~0.25 程度は枠外に落ちる（実測）ため高めに置く。
+# 実物データ到着後に較正する（設計 §4.6）
+FORMAT_MISMATCH_RATIO = 0.55
+
 
 @dataclass(frozen=True)
 class Row:
