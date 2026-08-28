@@ -188,7 +188,22 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_purge)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        print("INTERRUPTED", file=sys.stderr)
+        return 130
+    except Exception as e:  # noqa: BLE001
+        # 記入値の漏出防止（issue #2）: 例外メッセージには帳票の値が乗りうる
+        # （例: openpyxl IllegalCharacterError はセル値をメッセージへ含める）。
+        # stderr は GUI のログへ無フィルタで中継されるため、固定文言＋型名のみ出す。
+        # スタック（ファイル/行/関数のみ・メッセージ除外）は error.log へ残す。
+        import traceback
+        log.error("unhandled_exception", error_code=type(e).__name__)
+        log.error_trace(type(e).__name__, "".join(traceback.format_tb(e.__traceback__)))
+        print(f"ERROR {type(e).__name__}: 処理を中止しました。詳細は error.log を参照。",
+              file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

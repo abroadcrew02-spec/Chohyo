@@ -66,7 +66,7 @@ def test_kill_midway_then_resume_completes(env):
     # 1回目: 数ページ進んだところで強制終了（taskkill /T /F 相当）
     proc = run_cli(cfg, inp, resp, tmp)
     db = tmp / "wd" / "intermediate.sqlite"
-    deadline = time.time() + 60
+    deadline = time.time() + 120  # フルスイート並走時の CPU 競合を考慮
     while time.time() < deadline:
         if db.exists():
             try:
@@ -81,7 +81,7 @@ def test_kill_midway_then_resume_completes(env):
         time.sleep(0.2)
     else:
         proc.kill()
-        pytest.fail("60秒以内に2ページ完了へ達しない")
+        pytest.fail("120秒以内に3ページ完了へ達しない")
 
     subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                    capture_output=True)

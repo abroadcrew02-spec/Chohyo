@@ -85,6 +85,16 @@ def test_amount_normalized_to_int(template):
     assert col_value(template, row, "detail_02_金額") == UNCLEAR
 
 
+def test_control_chars_become_unclear(template):
+    """xlsx に書けない制御文字入りの読取値は〓（issue #2・値の例外漏出防止）。"""
+    cells = base_cells(template)
+    cells["person_氏名"] = ("上西諒" + chr(1), 0.95, "text", False)
+    cells["person_住所1"] = ("千葉県" + chr(0) + "千葉市", 0.99, "text", False)
+    row = build_row(template, page(), cells, {}, CFG)
+    assert col_value(template, row, "person_氏名") == UNCLEAR
+    assert col_value(template, row, "person_住所1") == UNCLEAR
+
+
 def test_era_decision_paths(template):
     cells = base_cells(template)
     scores = {

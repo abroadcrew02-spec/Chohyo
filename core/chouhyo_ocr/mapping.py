@@ -20,12 +20,20 @@ class Symbol:
     y: float
     conf: float
 
+    def __repr__(self) -> str:  # 記入値を repr へ出さない（設計 §8.1・付録 C7）
+        return f"<{type(self).__name__} redacted>"
+
+
 
 @dataclass(frozen=True)
 class CellContent:
     """1物理セルへ割り付いた読取内容。"""
     text: str
     conf_min: float | None  # symbol が無ければ None
+
+    def __repr__(self) -> str:  # 記入値を repr へ出さない（設計 §8.1・付録 C7）
+        return f"<{type(self).__name__} redacted>"
+
 
 
 @dataclass(frozen=True)

@@ -4,11 +4,11 @@
 import os
 import sys
 
-ROOT = r"C:\Users\user\Desktop\workspace20\chouhyo_tool"
-os.environ.setdefault(
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    os.path.join(ROOT, "intrepid-app-455112-q5-1cae98c51f1e.json"),
-)
+ROOT = os.environ.get("CHOUHYO_ROOT", os.getcwd())
+if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+    raise SystemExit(
+        "GOOGLE_APPLICATION_CREDENTIALS を設定してから実行する。\n"
+        "資格情報のパスをコードへ埋め込まないこと（issue #1）。")
 
 print("frozen:", getattr(sys, "frozen", False))
 import certifi

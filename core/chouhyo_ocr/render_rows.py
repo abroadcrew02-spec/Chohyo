@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from . import era
@@ -12,6 +13,11 @@ from .normalize import normalize_amount, split_composite
 from .template import Template
 
 UNCLEAR = "〓"
+
+# xlsx に書けない制御文字（openpyxl の ILLEGAL_CHARACTERS_RE と同範囲）。
+# Vision がこれを返した読取値は書き込み時に例外になるうえ内容も信頼できない
+# ため、〓へ倒して目検に回す（issue #2・値がそのまま例外メッセージへ乗るのを防ぐ）
+_ILLEGAL_XLSX = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 # ステータス連結順（§4.5・失敗系を先に）
 STATUS_EXPAND_FAILED = "展開失敗"
@@ -37,6 +43,10 @@ class Row:
     values: list          # 抽出対象列の値（str または int）。列順は columns の抽出部
     unclear_count: int
     min_conf: str         # "0.812" 形式または ""
+
+    def __repr__(self) -> str:  # 記入値を repr へ出さない（設計 §8.1・付録 C7）
+        return f"<{type(self).__name__} redacted>"
+
 
 
 def compose_status(page_status: str, below_table: int, processed: bool) -> str:
@@ -76,7 +86,8 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
         if is_empty:
             values.extend([""] * len(out_cols))
             continue
-        unclear = (raw == "") or (conf is None) or (conf < cfg.unclear_threshold)
+        unclear = ((raw == "") or (conf is None) or (conf < cfg.unclear_threshold)
+                   or bool(_ILLEGAL_XLSX.search(raw)))
         if unclear:
             values.extend([UNCLEAR] * len(out_cols))
             continue

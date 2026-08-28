@@ -53,6 +53,9 @@ class CellSpec:
             return tuple(f"{self.field_id}_{sf}" for sf in self.subfields)
         return (self.field_id,)
 
+    def __repr__(self) -> str:  # 座標・種別のみ（設計 §8.1・付録 C7 の方針に合わせ簡潔に）
+        return f"<CellSpec {self.field_id}>"
+
 
 @dataclass(frozen=True)
 class TableZone:

@@ -14,10 +14,10 @@ IMG = os.path.join(ROOT, "workdir", "pages", "sample-1.png")
 OUT = os.path.join(ROOT, "workdir", "s2")
 os.makedirs(OUT, exist_ok=True)
 
-os.environ.setdefault(
-    "GOOGLE_APPLICATION_CREDENTIALS",
-    os.path.join(ROOT, "intrepid-app-455112-q5-1cae98c51f1e.json"),
-)
+if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+    raise SystemExit(
+        "GOOGLE_APPLICATION_CREDENTIALS を設定してから実行する。\n"
+        "資格情報のパスをコードへ埋め込まないこと（issue #1）。")
 
 client = vision.ImageAnnotatorClient()
 with open(IMG, "rb") as f:

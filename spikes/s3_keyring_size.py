@@ -6,7 +6,10 @@ import os
 import keyring
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CRED = os.path.join(ROOT, "intrepid-app-455112-q5-1cae98c51f1e.json")
+# 資格情報のパスは環境変数から取る（コードへ埋め込まない・issue #1）
+CRED = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+if not CRED:
+    raise SystemExit("GOOGLE_APPLICATION_CREDENTIALS を設定してから実行する。")
 SVC, USER = "chouhyo-ocr-spike", "gcp-sa"
 
 print("backend:", keyring.get_keyring())

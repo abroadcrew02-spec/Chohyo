@@ -11,7 +11,7 @@ from pathlib import Path
 
 _ALLOWED_KEYS = {
     "source_file", "page_no", "page_id", "field_id", "step", "error_code",
-    "conf", "count", "value", "path", "state", "status", "attempt",
+    "conf", "count", "duplicate_of", "path", "state", "status", "attempt",
 }
 
 _app: logging.Logger | None = None
@@ -55,3 +55,13 @@ def error(event: str, **fields) -> None:
         _err.error(_fmt(event, fields))
     if _app:
         _app.error(_fmt(event, fields))
+
+
+def error_trace(error_code: str, stack: str) -> None:
+    """未捕捉例外のスタックを error.log へ残す（issue #2）。
+
+    stack は traceback.format_tb の出力（ファイル/行/関数とソース行のみ）を
+    想定する。例外メッセージ本文は帳票の値を含みうるため受け取らない。
+    """
+    if _err:
+        _err.error(f"unhandled_exception error_code={error_code}\n{stack.rstrip()}")

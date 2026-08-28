@@ -104,7 +104,8 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
         digest = hashlib.sha1(source.read_bytes()).hexdigest()
         seen_as = store.known_source(digest)
         if seen_as is not None and seen_as != source.name:
-            log.info("skip_duplicate_content", source_file=source.name, value=seen_as)
+            log.info("skip_duplicate_content", source_file=source.name,
+                     duplicate_of=seen_as)
             progress({"event": "skip_duplicate", "file": source.name,
                       "same_as": seen_as})
             continue
