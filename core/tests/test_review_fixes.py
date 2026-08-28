@@ -373,3 +373,65 @@ def test_send_limit_zero_is_valid(tmp_path):
     """send_limit=0（送信しないドライラン）は従来どおり通る（再レビュー N-6）。"""
     cfg = load_config(_write_cfg(tmp_path, {"send_limit": 0}))
     assert cfg.send_limit == 0
+
+
+# ---------- #34: xlsx の数式インジェクション ----------
+
+def test_xlsx_never_writes_formula_from_read_values(tmp_path):
+    """読取値が = で始まっても数式セルにならない（値は保持・issue #34）。
+
+    openpyxl は "=" 始まりを無条件に数式型へ昇格させ、number_format="@" は
+    効かない。実測では <f> タグが書かれ Excel で計算が走り、同じ行の COUNTIF
+    まで巻き込んで壊れた。data_type の明示固定で塞ぐ（値は書き換えない）。
+    """
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    from chouhyo_ocr.render_out import write_outputs
+    from chouhyo_ocr.render_rows import Row
+    cols = ["要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名",
+            "ページ番号", "ステータス", "備考", "氏名"]
+    row = Row(page_id="p1", source_file="s.pdf", page_no=1, status="正常",
+              values=["=SUM(A1:A9)", "+1+2"], unclear_count=0, min_conf="0.900")
+    xlsx, csvp, _risky = write_outputs(tmp_path, "inj", cols, [row])
+
+    xml = zipfile.ZipFile(xlsx).read("xl/worksheets/sheet1.xml").decode("utf-8")
+    # COUNTIF（管理列）は数式のまま。読取値由来の数式が増えていないこと
+    assert xml.count("<f>") == 1, "読取値が数式セルとして書かれた"
+    assert "SUM(A1:A9)" not in xml.replace("&gt;", ">").split("<f>")[1].split("</f>")[0]
+
+    ws = load_workbook(xlsx)["output"]
+    assert ws.cell(row=2, column=7).value == "=SUM(A1:A9)"  # 値は保持
+    assert ws.cell(row=2, column=7).data_type == "s"
+
+
+def test_risky_prefix_detection_has_no_side_effects(tmp_path):
+    """危険接頭の検出は出力を1バイトも変えない（D-28・A6）。
+
+    CSV は読取値をそのまま書く。値の書き換え・〓化は転記主義（§5.5）と
+    §8-12 の xlsx↔csv 一致に反するため行わない——検出は警告のみ。
+    """
+    import csv as csvmod
+
+    from chouhyo_ocr.render_out import scan_risky_prefixes, write_outputs
+    from chouhyo_ocr.render_rows import Row
+    cols = ["要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名",
+            "ページ番号", "ステータス", "備考", "氏名"]
+    risky_row = Row(page_id="p1", source_file="s.pdf", page_no=1, status="正常",
+                    values=["=SUM(A1:A9)", "山田"], unclear_count=0, min_conf="0.9")
+    safe_row = Row(page_id="p1", source_file="s.pdf", page_no=1, status="正常",
+                   values=["普通の備考", "山田"], unclear_count=0, min_conf="0.9")
+
+    _x1, c1, risky = write_outputs(tmp_path, "r1", cols, [risky_row])
+    _x2, c2, safe = write_outputs(tmp_path, "r2", cols, [safe_row])
+    assert risky == [("p1", "備考")]   # (page_id, 列名) のみ・値は返さない
+    assert safe == []
+
+    # CSV の値は読取値とバイト一致（接頭文字の付加・除去が無い）
+    with open(c1, encoding="utf-8-sig", newline="") as f:
+        got = list(csvmod.reader(f))[1][6]
+    assert got == "=SUM(A1:A9)"
+    # 検出は列名だけを見て値を持ち出さない
+    assert all(len(t) == 2 and isinstance(t[1], str) for t in
+               scan_risky_prefixes(cols, [risky_row]))

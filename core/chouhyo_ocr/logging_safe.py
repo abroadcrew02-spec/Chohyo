@@ -50,6 +50,12 @@ def info(event: str, **fields) -> None:
         _app.info(_fmt(event, fields))
 
 
+def warn(event: str, **fields) -> None:
+    """警告は app.log のみへ（設計 §8.1: error.log はエラー・失敗内容に限る）。"""
+    if _app:
+        _app.warning(_fmt(event, fields))
+
+
 def error(event: str, **fields) -> None:
     if _err:
         _err.error(_fmt(event, fields))

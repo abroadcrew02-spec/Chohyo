@@ -55,3 +55,23 @@ def test_fixed_repr_redacts_values():
     cell = t.cells[0]
     assert "redacted" in repr(CellContent("x", None)) or True  # 形式は固定文字列
     assert repr(cell).startswith("<CellSpec ")
+
+
+def test_risky_prefix_warning_does_not_log_values(tmp_path):
+    """危険接頭の警告に記入値が入らない（D-28・A5・設計 §8.1）。"""
+    from chouhyo_ocr import logging_safe as log
+    from chouhyo_ocr.pipeline import _warn_risky
+    log.init(str(tmp_path))
+    _warn_risky([("p_0001", "person_備考")])
+    text = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                     for p in tmp_path.glob("*.log"))
+    assert "csv_formula_risk" in text
+    assert "person_備考" in text and "p_0001" in text
+    # 出るキーは page_id・field_id・count のみ（記入値が乗る余地が無い）。
+    # _warn_risky はそもそも値を受け取らない——scan_risky_prefixes の戻りが
+    # (page_id, 列名) だけなので、値がログへ流れる経路が型の上で存在しない
+    for line in text.splitlines():
+        if "csv_formula_risk" not in line:
+            continue
+        keys = {kv.split("=")[0] for kv in line.split() if "=" in kv}
+        assert keys <= {"page_id", "field_id", "count"}, keys

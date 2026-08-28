@@ -30,7 +30,7 @@ def test_exotic_chars_survive_xlsx_and_csv(template, tmp_path):
             "status": "", "unassigned_below_table": 0}
     row = build_row(template, page, cells, {}, Config(unclear_threshold=0.5))
     cols = derive_columns(template)
-    xlsx, csvp = write_outputs(tmp_path, "t", cols, [row])
+    xlsx, csvp, _risky = write_outputs(tmp_path, "t", cols, [row])
 
     ws = load_workbook(xlsx)["output"]
     header = [c.value for c in ws[1]]

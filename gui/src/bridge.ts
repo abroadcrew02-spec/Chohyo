@@ -27,7 +27,7 @@ async function mockRun(): Promise<number> {
   }
   emit("core-line", JSON.stringify({
     event: "summary", pages: total, rows: total, align_failed: 1,
-    api_calls: total - 1, unclear_cells: 247, overflow: 0,
+    api_calls: total - 1, unclear_cells: 247, overflow: 0, risky_cells: 2,
     xlsx: "output\\output_demo.xlsx", csv: "output\\output_demo.csv" }));
   return 0;
 }

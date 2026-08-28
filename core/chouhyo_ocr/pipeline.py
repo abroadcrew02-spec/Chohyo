@@ -52,6 +52,18 @@ def _load(template_path: str | Path) -> tuple[Template, dict, str]:
     return template, raw, geometry_hash(raw)
 
 
+def _warn_risky(risky: list[tuple[str, str]]) -> None:
+    """危険接頭セルを app.log へ警告する（D-28）。値は書かない（§8.1）。
+
+    出力の内容は一切変えない——CSV を Excel で直接開いたときだけ現れる危険で、
+    値を書き換えるのは転記主義（§5.5）と §8-12 の xlsx↔csv 一致に反するため。
+    """
+    for page_id, field_id in risky:
+        log.warn("csv_formula_risk", page_id=page_id, field_id=field_id)
+    if risky:
+        log.warn("csv_formula_risk_total", count=len(risky))
+
+
 def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
                    *, check_template: bool) -> None:
     """中間データが現テンプレート・現方式で作られたものかを検査する（#25）。
@@ -288,9 +300,15 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
     xlsx, csvp, rows = render(template_path, cfg)
     summary.rows = len(rows)
     summary.unclear_total = sum(r.unclear_count for r in rows)
+    # 危険接頭セルの件数（D-28）。**サマリ6項目（§5.9 Must）には足さない**——
+    # 出荷ゲート（要確認セル数の合計0）にも載せない。載せると作業者が
+    # ゲートを閉じるために正しい値を書き換える圧力になる
+    from .render_out import scan_risky_prefixes
+    risky = scan_risky_prefixes(derive_columns(template), rows)
     progress({"event": "summary", "pages": summary.pages, "rows": summary.rows,
               "align_failed": summary.align_failed, "api_calls": summary.api_calls,
               "unclear_cells": summary.unclear_total, "overflow": summary.overflow,
+              "risky_cells": len(risky),
               "xlsx": str(xlsx), "csv": str(csvp)})
     store.close()
     return summary
@@ -316,7 +334,8 @@ def render(template_path: str | Path, cfg: Config,
                 p["status"] = render_rows.STATUS_INTERRUPTED
             rows.append(build_failure_row(template, p))
     ts = timestamp or time.strftime("%Y%m%d_%H%M%S")
-    xlsx, csvp = write_outputs(cfg.output_dir, ts, columns, rows)
+    xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows)
+    _warn_risky(risky)
     store.close()
     return xlsx, csvp, rows
 

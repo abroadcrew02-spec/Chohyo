@@ -66,6 +66,14 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
     def text(v):
         c = WriteOnlyCell(ws, value=v)
         c.number_format = "@"
+        if isinstance(v, str) and v:
+            # data_type を明示的に文字列へ固定する（issue #34・D-28）。openpyxl の
+            # _bind_value は "=" 始まりの値を無条件に数式型へ昇格させ、
+            # number_format="@" はこの判定に関与しない。結果、記入値 "=SUM(A1:A9)"
+            # が <f> タグとして書かれて Excel で実行され、さらに同じ行の COUNTIF
+            # （要確認セル数）を計算グラフへ巻き込んで無言で壊す（実測）。
+            # **値そのものは書き換えない**——型宣言を正すだけなので転記主義に反しない
+            c.data_type = "s"
         return c
 
     ws.append([text(c) for c in columns])
@@ -93,8 +101,37 @@ def write_csv(path: Path, columns: list[str], rows: list[Row]) -> None:
                        + [str(v) for v in r.values])
 
 
-def write_outputs(out_dir: str | Path, timestamp: str,
-                  columns: list[str], rows: list[Row]) -> tuple[Path, Path]:
+# Excel が数式として解釈しうる接頭文字（D-28）。@ とタブは実測で無害だったが、
+# 検出は無害化ではないので偽陽性コストが低く、Excel のバージョン差・LibreOffice・
+# 別の取り込み先まで含めて広く取る
+RISKY_PREFIXES = "=+-@\t\r\n"
+
+
+def scan_risky_prefixes(columns: list[str],
+                        rows: list[Row]) -> list[tuple[str, str]]:
+    """Excel が数式として解釈しうる接頭文字を持つセルを列挙する（D-28）。
+
+    返すのは (page_id, 列名) のみ——**値は返さない**（設計 §8.1: 記入値を
+    ログ・イベントへ出さない方針を、型で守る）。値の書き換えも〓化もしない
+    （要件 §5.5 転記主義）。CSV の内容はこの検出の有無で1バイトも変わらない。
+    """
+    extract_cols = columns[6:]
+    hits: list[tuple[str, str]] = []
+    for r in rows:
+        for name, v in zip(extract_cols, r.values):
+            if isinstance(v, str) and v and v[0] in RISKY_PREFIXES:
+                hits.append((r.page_id, name))
+    return hits
+
+
+def write_outputs(
+    out_dir: str | Path, timestamp: str, columns: list[str], rows: list[Row]
+) -> tuple[Path, Path, list[tuple[str, str]]]:
+    """xlsx/csv を書き、危険接頭セルの一覧（page_id, 列名）を併せて返す。
+
+    検出をここに置くのは呼び忘れを構造で防ぐため（issue #27 の行長検査と同じ
+    置き方）。検出は出力内容に一切影響しない（D-28）。
+    """
     # 行の値数＝抽出列数は出力の中核不変条件。assert（-O で消える）でなく
     # 明示例外で、xlsx/csv 両形式が必ず通るこの一箇所で検査する（issue #27）
     n_extract = len(columns) - 6
@@ -109,4 +146,4 @@ def write_outputs(out_dir: str | Path, timestamp: str,
     csvp = d / f"output_{timestamp}.csv"
     write_xlsx(xlsx, columns, rows)
     write_csv(csvp, columns, rows)
-    return xlsx, csvp
+    return xlsx, csvp, scan_risky_prefixes(columns, rows)

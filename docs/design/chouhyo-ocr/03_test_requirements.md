@@ -102,6 +102,8 @@ D-01（金額）・D-06（below_table）・D-14（218列導出）・D-15（様�
 | #13 glob メタ文字ファイル名 | test_review_fixes（scan[1].pdf の実 PDF 展開） |
 | #14 config 無検証 | test_review_fixes（閾値0・typo キー・型不正の拒否） |
 | #12/#15 エディタ（TS 側） | tsc 型検査＋実機確認（Python テスト対象外） |
+| #33 CSV の数式評価 | 運用（README・GUI 警告バナー）＋ test_review_fixes（検出が出力を変えないこと・CSV は読取値とバイト一致） |
+| #34 xlsx の数式昇格・COUNTIF 循環 | test_review_fixes（シート XML の `<f>` は COUNTIF の1個のみ・data_type='s'・値は保持） |
 
 ## 5. 受入 Gap テスト（TR-G 系）の由来
 

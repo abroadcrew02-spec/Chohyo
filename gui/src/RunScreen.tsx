@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 type Summary = {
   pages: number; rows: number; align_failed: number;
   api_calls: number; unclear_cells: number; overflow: number;
+  risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
   xlsx?: string; csv?: string;
 };
 type Verify = { template: boolean; poppler: boolean; cred: string };
@@ -372,6 +373,18 @@ export default function RunScreen() {
               <div className="row"><b>3.</b>
                 <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
             </div>
+            {(summary.risky_cells ?? 0) > 0 && (
+              // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
+              // 出ており、修正の必要はない——CSV の開き方だけの注意
+              <div className="card warnbox">
+                <b>CSV の開き方に注意</b>
+                <div>「=」「+」「-」で始まる値が {summary.risky_cells} セルあります。
+                  CSV を Excel でダブルクリックして開くと、これらが計算式として実行され、
+                  先頭ゼロも失われます。中身を見るときはテキストエディタか、Excel の
+                  「データ」→「テキストまたは CSV から」で全列を文字列として取り込んでください。
+                  目視確認と提出に使う Excel（.xlsx）側は影響を受けません。</div>
+              </div>
+            )}
             {summary.align_failed > 0 && (
               <div className="errbox">
                 位置合わせに失敗したページが {summary.align_failed} 件あります。該当行はすべて〓のため、原本を参照して直接入力してください。

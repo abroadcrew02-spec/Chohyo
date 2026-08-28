@@ -117,6 +117,10 @@ label { display: flex; flex-direction: column; gap: 5px; font-size: 12px;
   padding: 14px 18px; font-size: 12px; line-height: 1.8; color: #3c4657; }
 .errbox { background: var(--err-bg); border: 1px solid var(--err-line); border-radius: 12px;
   padding: 13px 17px; font-size: 12px; line-height: 1.8; color: var(--err-ink); }
+/* 注意喚起（失敗ではない）。errbox の赤より弱く、tipbox の青より強い */
+.warnbox { background: #fff8e6; border: 1px solid #f0d68a; border-radius: 12px;
+  padding: 13px 17px; font-size: 12px; line-height: 1.8; color: #6b5411; }
+.warnbox b { display: block; margin-bottom: 4px; }
 
 .nextsteps { display: flex; flex-direction: column; gap: 11px; }
 .nextsteps .row { display: flex; gap: 9px; font-size: 12.5px; line-height: 1.7; }
