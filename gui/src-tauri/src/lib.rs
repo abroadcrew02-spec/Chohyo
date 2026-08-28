@@ -14,7 +14,7 @@ pub struct CoreProc(pub Mutex<Option<u32>>);
 /// GUI 境界からは呼べない——必要なら CLI を直接使う。
 const ALLOWED_SUBCOMMANDS: &[&str] = &[
     "run", "render", "remap", "status", "verify", "detect-grid",
-    "import-credentials",
+    "expand-page", "import-credentials",
 ];
 
 fn check_args(args: &[String]) -> Result<(), String> {
@@ -160,11 +160,14 @@ fn pick_folder() -> Option<String> {
 
 #[tauri::command]
 fn pick_image() -> Option<String> {
+    // テンプレ作成の入力はスキャン PDF のことが多い。PDF はコアの expand-page で
+    // 1ページ目を PNG 展開してから表示する（フロント側 loadImage が分岐）
     rfd::FileDialog::new()
-        .add_filter("画像", &["png", "jpg", "jpeg"])
+        .add_filter("帳票（PDF・画像）", &["pdf", "png", "jpg", "jpeg"])
         .pick_file()
         .map(|p| p.to_string_lossy().to_string())
 }
+
 
 #[tauri::command]
 fn pick_json(save: bool) -> Option<String> {

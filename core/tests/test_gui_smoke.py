@@ -42,7 +42,9 @@ def page():
 
 def test_initial_state_guides_user(page):
     # 手順1〜3 と説明が出ている・開始は無効
-    assert page.get_by_text("読み取る帳票フォルダの選択").is_visible()
+    assert page.get_by_text("読み取る帳票の選択").is_visible()
+    # issue #19: ファイル単位はドラッグ＆ドロップで受ける（案内文の存在を確認）
+    assert page.get_by_text("ドラッグ＆ドロップでも選べます", exact=False).is_visible()
     start = page.get_by_role("button", name="読み取りを開始")
     assert start.is_disabled()
     assert page.get_by_text("未選択").is_visible()

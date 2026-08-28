@@ -26,7 +26,7 @@
 | L2 半自動 | スクリプトはあるが環境準備（dev サーバー・release exe）が要る | リリース前 |
 | L3 手動 | 人の操作・外部環境が必要 | 節目のみ（§6） |
 
-- L1: pytest 114 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip → その場合 109 件）＋ cargo test 2 件
+- L1: pytest 120 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip）＋ cargo test 2 件
 - L2: GUI スモーク（`npm run dev` 起動下で L1 に合流）／release exe の CDP 検証（issue #5/#6/#7 の実機確認・scripts 化はレビュー時に都度）
 - L3: §6 の残項目
 
@@ -48,7 +48,7 @@
 | core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
 | core/tests/test_leak_guards.py | 3 | 漏出防止の再発防止（issue #2/#3/#4） |
 | core/tests/test_local_storage_guard.py | 2 | 同期フォルダ検知（issue #8） |
-| core/tests/test_review_fixes.py | 8 | 品質レビュー HIGH の再発防止（issue #11/#13/#14: normalize 属性・glob エスケープ・config 検証） |
+| core/tests/test_review_fixes.py | 14 | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page） |
 | core/tests/test_gui_smoke.py | 5 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip） |
 | gui/src-tauri（cargo test） | 2 | サブコマンド白リスト（issue #7） |
 
@@ -69,7 +69,7 @@
 | 8-11 | GUI で実行→進捗→サマリ→フォルダを開く。CLI と出力一致 | test_gui_smoke（導線）・test_e2e_replay（CLI 側） | L2 |
 | 8-12 | xlsx/csv 同時生成・抽出対象列の一致・CSV 先頭ゼロをテキストで判定 | test_acceptance_gaps::TR-G4（212列全突合）・test_e2e_replay | L1 |
 | 8-13 | 最低信頼度列（文字ベースのみ・該当なしは空欄） | test_render_rows・test_e2e_replay | L1 |
-| 8-14 | エディタ書き出し JSON をコアがそのまま読める | test_template（スキーマ検証）・test_gui_smoke（編集タブ） | L1/L2（保存→run 貫通は L3 で1回実施済み・2026-08-27） |
+| 8-14 | エディタ書き出し JSON をコアがそのまま読める | test_template（スキーマ検証）・test_gui_smoke（編集タブ）・test_review_fixes（expand-page） | L1/L2（保存→run 貫通は L3 で1回実施済み・2026-08-27。**ただし「スキャン PDF からゼロにテンプレを作る」導線は 2026-08-28 のユーザー指摘まで未検証だった**——§5 の教訓2） |
 | 8-15 | GUI 指定の除外領域が抽出・二値化から除外 | test_mapping（除外領域）・test_e2e_replay | L1 |
 | 8-16 | 等分割生成のドリフトなし・クリックで対象外→列に出ない | test_grid（算術位置）・test_template（enabled=false） | L1 |
 | 8-17 | 罫線自動検出が候補を返す。不成立でも等分割で完走 | test_grid（検出・フォールバック） | L1 |
@@ -115,6 +115,12 @@ D-01（金額）・D-06（below_table）・D-14（218列導出）・D-15（様�
 | TR-G4 | xlsx↔csv 抽出212列の全突合 | §8-12 |
 | TR-G5 | purge が --yes なしで拒否 | §6.3 |
 | TR-G6 | 資格情報なしの verify が失敗コード | §8-9 |
+
+### 教訓2: 字面検証の罠（2026-08-28・issue #19）
+
+「テンプレ編集画面で PDF を開けない」「入力がフォルダ単位のみ」はユーザーの実機確認が検出した。自動テスト・3者レビューとも見逃した原因は、要件 §5.10 の字面が「画像を読み込み」・§5.1 が「入力フォルダ」であり、**検証がその字面の内側に閉じていた**こと。緑判定は「コアの処理」と「画面部品」の緑であって、「PDF だけを渡された利用者の最初の一歩」の緑ではなかった。
+
+対策: expand-page サブコマンド＋PDF 直接オープン＋単一ファイル入力（ドラッグ＆ドロップ）を実装しテスト化。以後、受入検証には「利用者が最初に持っている物（スキャン PDF）から始まる導線」を必ず1本含める。
 
 ## 6. 手動残（L3）
 

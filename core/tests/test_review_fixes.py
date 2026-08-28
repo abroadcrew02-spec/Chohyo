@@ -124,6 +124,51 @@ def test_expand_handles_bracket_filename(tmp_path):
     assert pages[0].name.startswith("scan[1]-")
 
 
+def test_run_accepts_single_file_input(tmp_path):
+    """run --input は単一ファイルも受ける（フォルダ縛りの解消・issue #19）。"""
+    from chouhyo_ocr.ingest import list_inputs
+    f = tmp_path / "scan_0001.png"
+    f.write_bytes(b"\x89PNG\r\n")
+    assert list_inputs(f) == [f]
+    bad = tmp_path / "memo.txt"
+    bad.write_text("x")
+    assert list_inputs(bad) == []
+
+
+def test_expand_page_cli_returns_png(tmp_path):
+    """expand-page が PDF の指定ページを PNG 展開してパスを返す（issue #19）。"""
+    import subprocess
+
+    from PIL import Image
+    src = tmp_path / "sample.pdf"
+    Image.new("L", (200, 280), 255).save(src)
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"workdir": str(tmp_path / "wd"),
+                                    "log_dir": str(tmp_path / "logs")}),
+                        encoding="utf-8")
+    from chouhyo_ocr.paths import app_root
+    python = app_root() / ".venv" / "Scripts" / "python.exe"
+    r = subprocess.run(
+        [str(python), "-X", "utf8", "-m", "chouhyo_ocr.cli",
+         "--config", str(cfg_file), "expand-page", "--input", str(src)],
+        cwd=app_root() / "core", capture_output=True, text=True,
+        encoding="utf-8", timeout=120)
+    assert r.returncode == 0, r.stderr
+    ev = next(json.loads(l) for l in r.stdout.splitlines()
+              if l.strip() and "expand_page" in l)
+    assert ev["ok"] is True and ev["pages"] == 1
+    from pathlib import Path as _P
+    assert _P(ev["page_path"]).exists()
+    # 存在しないページ番号は明示エラー
+    r2 = subprocess.run(
+        [str(python), "-X", "utf8", "-m", "chouhyo_ocr.cli",
+         "--config", str(cfg_file), "expand-page", "--input", str(src),
+         "--page", "5"],
+        cwd=app_root() / "core", capture_output=True, text=True,
+        encoding="utf-8", timeout=120)
+    assert r2.returncode == 1
+
+
 def test_expand_does_not_pick_sibling_stem_pages(tmp_path):
     """a.pdf の展開が a-1.pdf 由来の a-1-1.png を拾わない（再レビュー N-13）。"""
     from PIL import Image

@@ -123,12 +123,39 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!confirmDiscard()) return;
     const p = await invoke<string | null>("pick_image");
     if (!p) return;
-    const src = await invoke<string>("read_file_b64", { path: p });
+    let imagePath = p;
+    let note = "";
+    if (p.toLowerCase().endsWith(".pdf")) {
+      // スキャン PDF はコアで1ページ目を 300dpi 展開してから表示する
+      //（run と同じ dpi＝テンプレート座標系と一致・issue #19）
+      setMsg("PDF を展開しています…");
+      try {
+        const out = await invoke<string>("run_core_capture",
+          { args: ["expand-page", "--input", p] });
+        const ev = out.split("\n")
+          .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+          .find((e) => e && e.event === "expand_page");
+        if (!ev?.ok) {
+          setSaveErr(`PDF を開けませんでした: ${ev?.error ?? "不明"}`);
+          setMsg("");
+          return;
+        }
+        imagePath = ev.page_path;
+        note = ev.pages > 1 ? `（PDF の 1/${ev.pages} ページ目を表示）` : "（PDF を展開）";
+      } catch (e) {
+        setSaveErr(`PDF を開けませんでした: ${e}`);
+        setMsg("");
+        return;
+      }
+    }
+    const src = await invoke<string>("read_file_b64", { path: imagePath });
     const im = new Image();
     im.onload = () => {
       imgRef.current = im;
       setImgSize({ w: im.naturalWidth, h: im.naturalHeight });
-      setImgPath(p); setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}`);
+      setImgPath(imagePath);
+      setSaveErr("");
+      setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       draw();
     };
     im.src = src;
@@ -541,7 +568,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     <div className="editor">
       <div className="adminstrip">この画面では<b>帳票の読み取り位置（枠）を定義します</b>（管理者向け）。通常の読み取りは「実行」タブから行ってください。</div>
       <div className="toolbar">
-        <button className="btn" onClick={loadImage}>画像を開く</button>
+        <button className="btn" onClick={loadImage}>帳票を開く（PDF・画像）</button>
         <button className="btn" onClick={loadTemplate}>テンプレートを開く</button>
         <button className="btn primary" onClick={saveTemplate}>保存して検証</button>
         <span className="sep" />

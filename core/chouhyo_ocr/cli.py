@@ -115,6 +115,31 @@ def cmd_import_credentials(args) -> int:
     return 0
 
 
+def cmd_expand_page(args) -> int:
+    """PDF の1ページを PNG に展開して返す（テンプレート編集画面が呼ぶ）。
+
+    テンプレ作成の入力はスキャン PDF のことが多いのに、編集画面が画像しか
+    開けないと最初の一歩で詰まる（2026-08-28 ユーザー指摘）。dpi 既定 300 は
+    run の展開・テンプレート座標系（render_dpi）と同じ。
+    """
+    from .ingest import IngestError, expand
+    cfg = load_config(args.config)
+    out_dir = Path(cfg.workdir) / "editor_pages"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        pages = expand(Path(args.input), dpi=args.dpi, out_dir=out_dir)
+    except IngestError as e:
+        _progress({"event": "expand_page", "ok": False, "error": str(e)})
+        return 1
+    if not 1 <= args.page <= len(pages):
+        _progress({"event": "expand_page", "ok": False,
+                   "error": f"ページ {args.page} が無い（全 {len(pages)} ページ）"})
+        return 1
+    _progress({"event": "expand_page", "ok": True,
+               "page_path": str(pages[args.page - 1]), "pages": len(pages)})
+    return 0
+
+
 def cmd_detect_grid(args) -> int:
     """枠候補の生成（設計 §6.9）。テンプレート編集画面が呼ぶ・GUI なしでも検証可。"""
     import numpy as np
@@ -182,6 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("import-credentials", help="資格情報 JSON を DPAPI 暗号化で取り込む")
     p.add_argument("json_path")
     p.set_defaults(fn=cmd_import_credentials)
+
+    p = sub.add_parser("expand-page", help="PDF の1ページを PNG 展開（編集画面用）")
+    p.add_argument("--input", required=True)
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--dpi", type=int, default=300)
+    p.set_defaults(fn=cmd_expand_page)
 
     p = sub.add_parser("detect-grid", help="枠候補の生成（罫線検出 or 等分割）")
     p.add_argument("--image", help="面画像（--mode ruled で必須）")

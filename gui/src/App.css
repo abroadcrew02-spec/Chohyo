@@ -148,6 +148,10 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   background: var(--bg); border-radius: 7px; padding: 8px 11px; margin: 8px 0; }
 .panel .note { font-size: 11px; color: var(--faint); line-height: 1.7; }
 .panel button { min-height: 36px; }
+.dropzone-overlay { position: fixed; inset: 0; z-index: 50; display: flex;
+  align-items: center; justify-content: center; text-align: center; padding: 40px;
+  background: rgba(37, 99, 235, 0.08); border: 3px dashed #2563eb;
+  color: #1d4ed8; font-size: 16px; font-weight: 600; pointer-events: none; }
 .colrow { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; align-items: center;
           padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
 .colrow .lbl { font-size: 11px; color: var(--sub); }

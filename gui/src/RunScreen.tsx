@@ -1,7 +1,7 @@
 // 実行画面（設計 §7.1・最小構成の6機能）。処理ロジックを持たず、
 // コアの起動と JSON Lines 進捗（§7.3）の表示に徹する。
 // UI はデザインカンバス「帳票OCRツール GUI」準拠: 番号つき手順・平易な言葉。
-import { invoke } from "./bridge";
+import { invoke, isTauri } from "./bridge";
 import { listen } from "./bridge";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useRef, useState } from "react";
@@ -121,6 +121,27 @@ export default function RunScreen() {
     const p = await invoke<string | null>("pick_folder");
     if (p) setInputDir(p);
   };
+
+  // フォルダでも PDF ファイル1つでも、ドラッグ＆ドロップなら区別なく受ける
+  // （OS のダイアログは「ファイル」「フォルダ」を1つの画面で選べないため、
+  //   ボタンを増やす代わりにドロップで両対応する・issue #19）。
+  // コアの run --input はフォルダ・ファイルの両方を受ける
+  const [dropping, setDropping] = useState(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
+      getCurrentWebview().onDragDropEvent((e) => {
+        if (e.payload.type === "over") setDropping(true);
+        else if (e.payload.type === "leave") setDropping(false);
+        else if (e.payload.type === "drop") {
+          setDropping(false);
+          const p = e.payload.paths?.[0];
+          if (p) setInputDir(p);
+        }
+      })).then((u) => { unlisten = u; });
+    return () => unlisten?.();
+  }, []);
   const pickOutput = async () => {
     const p = await invoke<string | null>("pick_folder");
     if (!p) return;
@@ -156,6 +177,11 @@ export default function RunScreen() {
 
   return (
     <div className="run-screen">
+      {dropping && (
+        <div className="dropzone-overlay">
+          ここにドロップすると読み取り対象になります（フォルダ・PDF ファイルどちらでも）
+        </div>
+      )}
       <div className="run-main">
 
         {/* 完了バナー */}
@@ -257,9 +283,10 @@ export default function RunScreen() {
             <div className="card step on">
               <div className="no">1</div>
               <div className="body">
-                <div className="t">読み取る帳票フォルダの選択</div>
-                <div className="d">スキャン済み PDF が保存されているフォルダを指定してください。</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div className="t">読み取る帳票の選択</div>
+                <div className="d">スキャン済み PDF のフォルダを指定してください。
+                  PDF ファイル1つだけの場合は、この画面へドラッグ＆ドロップでも選べます。</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
                   <button className="btn outline" onClick={pickInput}>
                     <FolderIcon c="#2563eb" />フォルダを選ぶ
                   </button>
