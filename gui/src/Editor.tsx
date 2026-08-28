@@ -173,6 +173,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!p) return;
     const text = await invoke<string>("read_text", { path: p });
     toEditorState(JSON.parse(text));
+    // 前のファイルの検証エラーを現在の状態と誤読させない（レビュー N-5）
+    setSaveErr("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
   };
 
@@ -509,7 +511,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                         : v) })}>
               <option value="text">文字</option><option value="choice">選択式</option>
             </select>
-            <input className="w6" placeholder="分割（年,月,日）" value={c.subfields}
+            <span className="lbl">分割</span>
+            <input className="w6" placeholder="年,月,日" value={c.subfields}
+              title="複合セルの分割（例: 年,月,日）"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, subfields: e.target.value,
                             ...(e.target.value.trim() ? { normalize: undefined } : {}) } : v) })} />
@@ -527,7 +531,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
           </div>))}
         <button onClick={removeSel}>テーブル削除</button>
-        <p className="note">金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。</p>
+        {/* 操作を左右する一次情報なので通常 note（--faint）より濃い色で出す（レビュー N-1） */}
+        <p className="note" style={{ color: "var(--sub)" }}>金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。</p>
         <p className="note">選択式列のマーク位置の微調整は、保存した JSON の直接編集で行えます（v1 の範囲）</p>
       </div>);
   };
