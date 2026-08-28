@@ -31,9 +31,15 @@ def cmd_run(args) -> int:
     log.init(cfg.log_dir)
     log.info("run_start", path=args.input)
     from .pipeline import run
-    run(args.input, args.template, cfg, _client(cfg, args.replay), _progress,
-        resend_on_template_change=args.resend_on_template_change)
-    return 0
+    summary = run(args.input, args.template, cfg, _client(cfg, args.replay),
+                  _progress,
+                  resend_on_template_change=args.resend_on_template_change)
+    # 1ページも正常に処理できなかった場合は失敗として返す（レビュー M-11）。
+    # 常に 0 を返すとスクリプトから成否を判定できない。部分失敗（一部だけ
+    # 〓行）は 0 のまま——出力は作られており、判断は要確認セル数で行う
+    if summary.rows > 0 and summary.rows == summary.align_failed:
+        return 1
+    return 0 if summary.rows > 0 or summary.pages == 0 else 1
 
 
 def cmd_render(args) -> int:
@@ -58,6 +64,7 @@ def cmd_remap(args) -> int:
 
 def cmd_status(args) -> int:
     cfg = load_config(args.config)
+    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
     from .store import Store
     db = Path(cfg.workdir) / "intermediate.sqlite"
     if not db.exists():
@@ -73,6 +80,7 @@ def cmd_status(args) -> int:
 
 def cmd_verify(args) -> int:
     cfg = load_config(args.config)
+    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
     ok = True
     # テンプレート
     try:
@@ -110,6 +118,7 @@ def cmd_verify(args) -> int:
 
 def cmd_import_credentials(args) -> int:
     cfg = load_config(args.config)
+    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
     p = cred_store.import_credentials(args.json_path, cfg.workdir)
     _progress({"event": "credentials_imported", "path": str(p)})
     print("取り込み完了。元の平文 JSON は不要になったら削除すること。", file=sys.stderr)
@@ -125,6 +134,7 @@ def cmd_expand_page(args) -> int:
     """
     from .ingest import IngestError, expand, pdf_page_count
     cfg = load_config(args.config)
+    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
     out_dir = Path(cfg.workdir) / "editor_pages"
     out_dir.mkdir(parents=True, exist_ok=True)
     src = Path(args.input)
@@ -170,6 +180,7 @@ def cmd_detect_grid(args) -> int:
 
 def cmd_purge(args) -> int:
     cfg = load_config(args.config)
+    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
     if not args.yes:
         print("中間データ削除には --yes が必要（要件 §6.3: 削除は明示操作のみ）",
               file=sys.stderr)

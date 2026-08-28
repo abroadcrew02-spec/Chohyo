@@ -58,8 +58,12 @@ def decide(scores: dict[str, float], era_threshold: float,
     """
     if not scores:
         return UNSELECTED
-    # 共通フロア（左右の縦罫線など全選択肢に一様に乗るインク）を差し引く
-    floor = min(scores.values())
+    # 共通フロア（左右の縦罫線など全選択肢に一様に乗るインク）を差し引く。
+    # 3候補以上なら最小値がフロアの近似になるが、**2候補では最小値が
+    # 「選ばれなかった側」そのもの**で、引くと second が必ず 0 になり
+    # 判定不能へ到達できなくなる（レビュー M-4・実測: 乱数20万件で0件）。
+    # 2候補では下から2番目＝自分自身を引くことになるためフロアを引かない
+    floor = min(scores.values()) if len(scores) >= 3 else 0.0
     ranked = sorted(((k, v - floor) for k, v in scores.items()), key=lambda kv: -kv[1])
     top_val, top = ranked[0]
     second = ranked[1][1] if len(ranked) > 1 else 0.0

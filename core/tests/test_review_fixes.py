@@ -494,3 +494,43 @@ def test_shipped_template_has_no_overlaps():
     """同梱テンプレートに重なりが無い（issue #24 で6組を解消済み）。"""
     template = load_template(TPL)  # 重なりがあれば load 時点で落ちる
     assert len(template.cells) == 192
+
+
+def test_cloud_marker_does_not_false_positive():
+    """無関係なフォルダ名を同期フォルダと誤検知しない（レビュー M-10）。"""
+    from chouhyo_ocr.paths import is_cloud_synced_path
+    sep = chr(92)  # バックスラッシュ（ソース中のエスケープ事故を避ける）
+    join = lambda *p: sep.join(p)  # noqa: E731
+    assert not is_cloud_synced_path(join("C:", "work", "dropbox_backup"))
+    assert not is_cloud_synced_path(join("C:", "data", "my_onedrive_notes"))
+    assert is_cloud_synced_path(join("C:", "Users", "u", "Dropbox", "d"))
+    assert is_cloud_synced_path(join("C:", "Users", "u", "OneDrive - 会社名", "d"))
+    assert is_cloud_synced_path(sep * 2 + join("fileserver", "share", "wd"))  # UNC
+
+
+def test_out_of_face_rect_rejected(tmp_path):
+    """面の範囲外へはみ出した欄を拒否する（レビュー M-20）。
+
+    範囲外の欄は文字が来ず常に〓になるのに、原因が表示されなかった。
+    """
+    from chouhyo_ocr.template import TemplateError
+    t = json.loads(TPL.read_text(encoding="utf-8"))
+    t["faces"][0]["fields"][0]["rect"]["y"] = 99999  # 面の下端より遥か下
+    p = tmp_path / "oob.json"
+    p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
+    with pytest.raises(TemplateError, match="はみ出している"):
+        load_template(p)
+
+
+def test_two_choice_can_reach_undecided():
+    """2択でも判定不能に到達できる（レビュー M-4）。
+
+    旧実装は共通フロア減算で second が必ず 0 になり、拮抗しても常に
+    どちらかを選んでいた（実測: 乱数20万件で判定不能0件）。
+    """
+    from chouhyo_ocr import era
+    assert era.decide({"A": 0.20, "B": 0.19}, 0.05) == era.UNDECIDED
+    assert era.decide({"A": 0.30, "B": 0.05}, 0.05) == "A"     # 明確な差は選ぶ
+    assert era.decide({"A": 0.01, "B": 0.01}, 0.05) == era.UNSELECTED
+    # 3候補では従来どおりフロアを引く（縦罫線の共通インクを相殺）
+    assert era.decide({"A": 0.31, "B": 0.20, "C": 0.20}, 0.05) == "A"

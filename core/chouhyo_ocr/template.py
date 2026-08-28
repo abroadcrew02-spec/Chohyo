@@ -300,6 +300,20 @@ def load_template(path: str | Path) -> Template:
                 f"選択肢の値が重複している（{c.field_id}: {vals}）。"
                 "同じ値が2つ以上あると、その欄は丸印があっても常に〓になる")
 
+    # 欄・マークが面の範囲内にあるかを検証する（レビュー M-20）。範囲外の欄は
+    # symbol が来ず永久に〓になり、原因表示も無い。era も面外を含む矩形で
+    # area を過大評価してスコアが不当に下がる
+    face_size = {f.face_id: (f.source_rect.w, f.source_rect.h) for f in faces}
+    for c in cells:
+        fw, fh = face_size[c.face_id]
+        for label, r in [("欄", c.rect)] + [(f"選択肢 '{m.value}'", m.rect)
+                                            for m in c.choice_marks]:
+            if r.x < 0 or r.y < 0 or r.x + r.w > fw or r.y + r.h > fh:
+                raise TemplateError(
+                    f"{label}が面 '{c.face_id}'（{fw}×{fh}）の外にはみ出している"
+                    f"（{c.field_id}: x={r.x} y={r.y} w={r.w} h={r.h}）。"
+                    "範囲外の欄は文字が来ず常に〓になる")
+
     # 同一面のセル矩形の重なりを拒否する（issue #24）。mapping は定義順の
     # first-hit で解決するため、重なり帯へ落ちた symbol の行き先が
     # 「テンプレートの記述順」という見えない要素で決まる。実サンプルでは

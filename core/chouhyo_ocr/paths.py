@@ -43,7 +43,17 @@ def is_cloud_synced_path(p: str | Path) -> bool:
     警告する。判定はパス文字列のヒューリスティック（OneDrive/Dropbox/
     Google Drive の既定フォルダ名・UNC パス）で、完全ではない。
     """
-    s = str(Path(p).resolve()).lower()
-    if s.startswith("\\\\"):
+    resolved = Path(p).resolve()
+    if str(resolved).startswith("\\\\"):
         return True  # UNC（ネットワーク共有）
-    return any(m in s for m in _CLOUD_MARKERS)
+    # パス成分の完全一致で見る（レビュー M-10: 部分文字列一致だと
+    # C:\work\dropbox_backup のような無関係なフォルダ名でも検知していた）。
+    # 「OneDrive - 会社名」形式は実在するため接頭辞一致も許す
+    parts = [part.lower() for part in resolved.parts]
+    for part in parts:
+        if part in _CLOUD_MARKERS:
+            return True
+        if any(part.startswith(m + " -") or part.startswith(m + "-")
+               for m in _CLOUD_MARKERS):
+            return True
+    return False
