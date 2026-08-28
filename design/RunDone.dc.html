@@ -21,7 +21,7 @@
     </div>
     <div style="display: flex; flex-direction: column;">
       <div style="font-size: 17px; font-weight: 700;">帳票OCRツール</div>
-      <div style="font-size: 12px; color: #5a6577;">紙の帳票を読み取って Excel にするツール</div>
+      <div style="font-size: 12px; color: #5a6577;">スキャンした帳票を Excel データへ変換します</div>
     </div>
     <div style="margin-left: auto; display: flex; gap: 6px;">
       <div style="padding: 9px 22px; border-radius: 8px; background: #2563eb; color: #fff; font-size: 14px; font-weight: 500;">実行</div>
@@ -36,7 +36,7 @@
       <div style="background: #ecf9f0; border: 1px solid #bfe8cd; border-radius: 12px; padding: 18px 24px; display: flex; align-items: center; gap: 14px;">
         <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M8 12.5l3 3 5-6"></path></svg>
         <div style="display: flex; flex-direction: column; gap: 2px;">
-          <div style="font-size: 18px; font-weight: 700; color: #14532d;">読み取りが終わりました</div>
+          <div style="font-size: 18px; font-weight: 700; color: #14532d;">読み取りが完了しました</div>
           <div style="font-size: 13px; color: #3f6a50;">Excel と CSV を保存しました（output_20260827_1804.xlsx）</div>
         </div>
       </div>
@@ -46,32 +46,32 @@
         <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px;">
           <div style="font-size: 12px; color: #5a6577;">処理枚数</div>
           <div style="font-size: 26px; font-weight: 700;">120</div>
-          <div style="font-size: 11px; color: #99a2b1;">読み取った紙の枚数</div>
+          <div style="font-size: 11px; color: #99a2b1;">読み取ったページ数</div>
         </div>
         <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px;">
           <div style="font-size: 12px; color: #5a6577;">出力行数</div>
           <div style="font-size: 26px; font-weight: 700;">120</div>
-          <div style="font-size: 11px; color: #99a2b1;">Excel にできた行の数</div>
+          <div style="font-size: 11px; color: #99a2b1;">Excel に出力した行数</div>
         </div>
         <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px;">
           <div style="font-size: 12px; color: #5a6577;">API送信回数</div>
           <div style="font-size: 26px; font-weight: 700;">118</div>
-          <div style="font-size: 11px; color: #99a2b1;">クラウドで読み取った回数</div>
+          <div style="font-size: 11px; color: #99a2b1;">クラウド OCR の送信回数</div>
         </div>
         <div style="background: #fff8ef; border: 1.5px solid #f0c98d; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px;">
           <div style="font-size: 12px; color: #8a5a13; font-weight: 700;">要確認セル数総計</div>
           <div style="font-size: 26px; font-weight: 700; color: #8a5a13;">417</div>
-          <div style="font-size: 11px; color: #a97b3a;">〓の数＝あとで直す箇所</div>
+          <div style="font-size: 11px; color: #a97b3a;">〓の個数（要修正箇所）</div>
         </div>
         <div style="background: #fdeeee; border: 1.5px solid #efb3b3; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px;">
           <div style="font-size: 12px; color: #8f1d1d; font-weight: 700;">位置合わせ失敗</div>
           <div style="font-size: 26px; font-weight: 700; color: #8f1d1d;">2</div>
-          <div style="font-size: 11px; color: #b05252;">読み取れなかった紙（行ごと〓）</div>
+          <div style="font-size: 11px; color: #b05252;">読み取れなかったページ数（行ごと〓）</div>
         </div>
         <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 2px;">
           <div style="font-size: 12px; color: #5a6577;">行数超過件数</div>
           <div style="font-size: 26px; font-weight: 700;">0</div>
-          <div style="font-size: 11px; color: #99a2b1;">欄からはみ出た紙の数</div>
+          <div style="font-size: 11px; color: #99a2b1;">行数を超過したページ数</div>
         </div>
       </div>
 
@@ -80,17 +80,17 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path></svg>
           出力フォルダを開く
         </div>
-        <div style="display: flex; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 10px; border: 1px solid #cdd6e4; color: #3c4657; font-size: 14px;">もう一度読み取る</div>
+        <div style="display: flex; align-items: center; gap: 8px; padding: 14px 22px; border-radius: 10px; border: 1px solid #cdd6e4; color: #3c4657; font-size: 14px;">再度読み取る</div>
       </div>
     </div>
 
-    <!-- 右: 次にやること -->
+    <!-- 右: 次の作業 -->
     <div style="width: 420px; display: flex; flex-direction: column; gap: 16px;">
       <div style="background: #ffffff; border: 1px solid #dde3ec; border-radius: 12px; padding: 20px 22px; display: flex; flex-direction: column; gap: 14px;">
-        <div style="font-size: 14px; font-weight: 700; color: #3c4657;">次にやること（目検）</div>
-        <div style="display: flex; gap: 10px; font-size: 13px; line-height: 1.7;"><b style="color: #2563eb;">1.</b><div>Excel を開き、いちばん左の<b>「要確認セル数」</b>を大きい順に並べ替える</div></div>
-        <div style="display: flex; gap: 10px; font-size: 13px; line-height: 1.7;"><b style="color: #2563eb;">2.</b><div>色つきの <b style="background: #fff3c4; padding: 0 4px; border-radius: 3px;">〓</b> のセルを、紙の原本と見比べて手で直す</div></div>
-        <div style="display: flex; gap: 10px; font-size: 13px; line-height: 1.7;"><b style="color: #2563eb;">3.</b><div>直すたびに「要確認セル数」が自動で減る。<b>合計が 0</b> になったら完成</div></div>
+        <div style="font-size: 14px; font-weight: 700; color: #3c4657;">次の作業（目視確認）</div>
+        <div style="display: flex; gap: 10px; font-size: 13px; line-height: 1.7;"><b style="color: #2563eb;">1.</b><div>Excel を開き、先頭列の<b>「要確認セル数」</b>を降順に並べ替えます</div></div>
+        <div style="display: flex; gap: 10px; font-size: 13px; line-height: 1.7;"><b style="color: #2563eb;">2.</b><div>背景色付きの <b style="background: #fff3c4; padding: 0 4px; border-radius: 3px;">〓</b> セルを、原本と照合して修正します</div></div>
+        <div style="display: flex; gap: 10px; font-size: 13px; line-height: 1.7;"><b style="color: #2563eb;">3.</b><div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
 
         <!-- Excel ミニプレビュー -->
         <div style="border: 1px solid #dde3ec; border-radius: 8px; overflow: hidden; font-size: 11px;">
@@ -115,7 +115,7 @@
         </div>
       </div>
       <div style="background: #fdeeee; border: 1px solid #efb3b3; border-radius: 12px; padding: 14px 18px; font-size: 12px; line-height: 1.8; color: #8f1d1d;">
-        「位置合わせ失敗」が 1 以上のときは、その行がぜんぶ〓になっています。紙を見ながらその行を入力してください。
+        「位置合わせ失敗」が 1 以上のときは、その行はすべて〓になっています。紙を見ながらその行を入力してください。
       </div>
     </div>
   </div>

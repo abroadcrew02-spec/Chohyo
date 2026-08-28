@@ -38,33 +38,33 @@ function Settings({ onClose }: { onClose: () => void }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>設定</h3>
         <p className="note" style={{ marginTop: -6 }}>
-          ここを変えるのはまれです。ふだんはそのままで使えます。
+          通常は変更不要です。
         </p>
-        <label>〓にする基準（0〜1）。大きくするほど〓が増え、見落としは減ります
+        <label>〓と判定する基準値（0〜1）。大きいほど〓が増え、読み誤りの見落としが減ります
           <input type="number" min={0} max={1} step={0.01} value={cfg.unclear_threshold}
             onChange={(e) => set("unclear_threshold", +e.target.value)} />
         </label>
-        <label>丸印と判定する基準（0〜1）
+        <label>丸印と判定する基準値（0〜1）
           <input type="number" min={0} max={1} step={0.01} value={cfg.era_threshold}
             onChange={(e) => set("era_threshold", +e.target.value)} />
         </label>
-        <label>1回の実行で読み取る上限枚数
+        <label>1回の実行で送信する上限ページ数
           <input type="number" min={0} step={1} value={cfg.send_limit}
             onChange={(e) => set("send_limit", Math.max(0, Math.trunc(+e.target.value)))} />
         </label>
         <label>Excel の保存先
           <input value={cfg.output_dir} onChange={(e) => set("output_dir", e.target.value)} />
         </label>
-        <label>途中データの保存先（個人情報を含みます・クラウド同期しない場所に）
+        <label>中間データの保存先（個人情報を含むため、クラウド同期されない場所を指定してください）
           <input value={cfg.workdir} onChange={(e) => set("workdir", e.target.value)} />
         </label>
-        <label>記録（ログ）の保存先
+        <label>ログの保存先
           <input value={cfg.log_dir} onChange={(e) => set("log_dir", e.target.value)} />
         </label>
         <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
-          <button className="btn primary" onClick={save}>保存する</button>
+          <button className="btn primary" onClick={save}>保存</button>
           <button className="btn" onClick={onClose}>閉じる</button>
-          {saved && <span style={{ color: "var(--ok-ink)", fontSize: 12.5 }}>保存しました。次の読み取りから使われます。</span>}
+          {saved && <span style={{ color: "var(--ok-ink)", fontSize: 12.5 }}>保存しました。次回の読み取りから適用されます。</span>}
         </div>
       </div>
     </div>
@@ -80,7 +80,7 @@ export default function App() {
     if (!isTauri) return;
     const un = getCurrentWindow().onCloseRequested((e) => {
       if (editorDirty.current &&
-          !window.confirm("テンプレートに未保存の編集があります。破棄して終了しますか？")) {
+          !window.confirm("テンプレートに未保存の変更があります。破棄して終了しますか？")) {
         e.preventDefault();
       }
     });
@@ -89,7 +89,7 @@ export default function App() {
 
   const switchTo = (t: "run" | "editor") => {
     if (tab === "editor" && t !== "editor" && editorDirty.current &&
-        !window.confirm("テンプレートに未保存の編集があります。破棄してよいですか？")) {
+        !window.confirm("テンプレートに未保存の変更があります。破棄してよろしいですか？")) {
       return;
     }
     setTab(t);
@@ -107,7 +107,7 @@ export default function App() {
         </div>
         <div className="titles">
           <b>帳票OCRツール</b>
-          <span>紙の帳票を読み取って Excel にするツール</span>
+          <span>スキャンした帳票を Excel データへ変換します</span>
         </div>
         <nav className="tabs">
           <button className={tab === "run" ? "active" : ""}

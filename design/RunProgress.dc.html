@@ -22,7 +22,7 @@
     </div>
     <div style="display: flex; flex-direction: column;">
       <div style="font-size: 17px; font-weight: 700;">帳票OCRツール</div>
-      <div style="font-size: 12px; color: #5a6577;">紙の帳票を読み取って Excel にするツール</div>
+      <div style="font-size: 12px; color: #5a6577;">スキャンした帳票を Excel データへ変換します</div>
     </div>
     <div style="margin-left: auto; display: flex; gap: 6px;">
       <div style="padding: 9px 22px; border-radius: 8px; background: #2563eb; color: #fff; font-size: 14px; font-weight: 500;">実行</div>
@@ -37,14 +37,14 @@
         <div style="display: flex; align-items: center; gap: 16px;">
           <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" style="animation: spin 1.2s linear infinite;"><path d="M21 12a9 9 0 1 1-6.2-8.56"></path></svg>
           <div style="display: flex; flex-direction: column; gap: 3px;">
-            <div style="font-size: 19px; font-weight: 700;">読み取っています…</div>
-            <div style="font-size: 13px; color: #5a6577;">このままお待ちください。パソコンを操作してもかまいません。</div>
+            <div style="font-size: 19px; font-weight: 700;">読み取り中…</div>
+            <div style="font-size: 13px; color: #5a6577;">完了までお待ちください。他の作業を続けていただいて構いません。</div>
           </div>
         </div>
 
         <div style="display: flex; flex-direction: column; gap: 10px;">
           <div style="display: flex; justify-content: space-between; align-items: baseline;">
-            <div style="font-size: 14px; color: #3c4657;">いま <b style="font-size: 20px;">37</b> 枚目 / 全 <b>120</b> 枚</div>
+            <div style="font-size: 14px; color: #3c4657;">処理中: <b style="font-size: 20px;">37</b> / <b>120</b> 枚</div>
             <div style="font-size: 13px; color: #5a6577;">およそ 12 分ほどかかります</div>
           </div>
           <div style="height: 14px; background: #e6ebf2; border-radius: 7px; overflow: hidden;">
@@ -54,7 +54,7 @@
 
         <div style="display: flex; gap: 10px; align-items: center; background: #f4f6f9; border-radius: 8px; padding: 10px 14px;">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5a6577" stroke-width="2" stroke-linecap="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z"></path></svg>
-          <div style="font-size: 12px; color: #5a6577;">とちゅうで閉じても大丈夫。次に開いたとき、残りの紙だけを読み取ります。</div>
+          <div style="font-size: 12px; color: #5a6577;">途中で終了しても問題ありません。次回起動時は未処理分から再開します。</div>
         </div>
       </div>
 
