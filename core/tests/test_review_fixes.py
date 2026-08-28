@@ -584,3 +584,52 @@ def test_expand_page_scoped_stale_removal(tmp_path):
     assert len(p2) == 1
     # 1ページ目の PNG が残っている（旧実装は page 指定を無視して全部消していた）
     assert p1[0].exists(), "page=2 の展開が page=1 の PNG を消した"
+
+
+# --- detect-grid の防御（レビュー M-9・画像なし／読めない） -------------------
+
+def test_detect_grid_without_image_reports_instead_of_crashing(capsys, tmp_path):
+    """--mode ruled で画像を渡さないと、素の例外でなく日本語の指示が出る。"""
+    from chouhyo_ocr.cli import main
+    assert main(["detect-grid", "--region", "0,0,100,100", "--mode", "ruled"]) == 0
+    ev = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert ev["event"] == "detect_grid" and ev["ok"] is False
+    assert "画像" in ev["error"]
+
+
+def test_detect_grid_with_unreadable_image_reports_instead_of_crashing(capsys):
+    from chouhyo_ocr.cli import main
+    assert main(["detect-grid", "--region", "0,0,100,100", "--mode", "ruled",
+                 "--image", "no_such_file.png"]) == 0
+    ev = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert ev["ok"] is False and "読み込め" in ev["error"]
+
+
+# --- 試験ランナーの集計（レビュー LOW: 失敗メッセージの数字を拾わない） ------
+
+def test_run_all_tests_counts_only_summary_lines():
+    import re
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from run_all_tests import SUMMARY_LINE
+
+    def agg(out):
+        got = {}
+        for line in out.splitlines():
+            s = line.strip().strip("=").strip()
+            if not (SUMMARY_LINE.match(s) or "test result:" in line):
+                continue
+            for n, k in re.findall(r"(\d+) (passed|failed|skipped|error)", line):
+                got[k] = got.get(k, 0) + int(n)
+        return got
+
+    # pytest -q は = の罫線を付けない（実測 2026-08-28）
+    assert agg("...  [100%]\n7 passed in 0.32s\n") == {"passed": 7}
+    assert agg("==== 5 passed, 1 failed in 2.0s ====") == {"passed": 5, "failed": 1}
+    assert agg("test result: ok. 2 passed; 0 failed; 0 ignored")["passed"] == 2
+    # 失敗メッセージ中の "7 passed" は数えない
+    assert agg("FAILED t.py::x - AssertionError: expected 7 passed\n"
+               "3 passed in 1.0s") == {"passed": 3}
+    # 1件も走らなかったときは 0 件と分かる（呼び出し側が FAIL にできる）
+    assert agg("no tests ran in 0.10s") == {}

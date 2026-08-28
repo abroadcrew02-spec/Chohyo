@@ -69,7 +69,11 @@ def compose_status(page_status: str, below_table: int, processed: bool) -> str:
             # 中間データは版をまたいで残るため、定数を1つ改名しただけで
             # 旧 status を持つ既存ページが黙って正常になる事故を防ぐ
             return page_status
-        return STATUS_OK if processed else STATUS_OK
+        # processed=False は build_failure_row（全〓行）専用。そこへ「正常」を
+        # 返すと、値が1つも無い行が正常を名乗る。旧実装は両方の枝が STATUS_OK
+        # で、呼び出し側のガードだけが事故を防いでいた（レビュー LOW の
+        # 「同値2分岐」）。ガードを関数側にも置く
+        return STATUS_OK if processed else STATUS_INTERRUPTED
     return ";".join(parts)
 
 

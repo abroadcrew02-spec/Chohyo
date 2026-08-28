@@ -9,7 +9,10 @@ import unicodedata
 
 _GROUPED = re.compile(r"\d{1,3}([,.]\d{3})+")
 _PLAIN = re.compile(r"\d+")
-_SEPARATORS = re.compile(r"[.・/,\-]")  # . ・ / , -（NFKC 後なので半角のみ）
+# . ・ / , - 。「NFKC 後なので半角のみ」は誤りだった（レビュー LOW）: NFKC は
+# ．／，－ を半角へ寄せるが **・（U+30FB）は全角のまま残る**（半角 ･ U+FF65 は
+# 逆に全角 ・ へ正規化される）。日付の区切りとして実際に来るのでこの1字だけ全角
+_SEPARATORS = re.compile(r"[.・/,\-]")
 
 
 def normalize_amount(raw: str) -> int | None:

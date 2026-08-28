@@ -14,7 +14,9 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[1]  # 他の scripts と同じ書き方に揃える
+# 集計行だけを拾うための形。件数で始まり "in <秒>" で終わるものに限る
+SUMMARY_LINE = re.compile(r"^\d+ (passed|failed|skipped|error)\b.*\bin \d")
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
 
 
@@ -52,12 +54,27 @@ def main():
         if code is None:
             lines.append(f"{name}: SKIP")
             continue
-        # "N passed" 等を種別ごとに合算（cargo はテストバイナリごとに行が出る）
+        # "N passed" 等を種別ごとに合算（cargo はテストバイナリごとに行が出る）。
+        # 出力全体を舐めると、失敗メッセージやテスト名に含まれる "3 passed" まで
+        # 拾って件数が水増しされる（レビュー LOW）。集計行だけを母集団にする:
+        #   pytest -q → "7 passed in 0.32s"（= の罫線は付かない・実測）
+        #   pytest 通常 → "==== 5 passed, 1 failed in 2.0s ===="
+        #   cargo      → "test result: ok. 2 passed; 0 failed; ..."
         agg = {}
-        for n, k in re.findall(r"(\d+) (passed|failed|skipped|error)", out):
-            agg[k] = agg.get(k, 0) + int(n)
+        for line in out.splitlines():
+            s = line.strip().strip("=").strip()
+            if not (SUMMARY_LINE.match(s) or "test result:" in line):
+                continue
+            for n, k in re.findall(r"(\d+) (passed|failed|skipped|error)", line):
+                agg[k] = agg.get(k, 0) + int(n)
         counts = ", ".join(f"{v} {k}" for k, v in agg.items() if v) or f"exit={code}"
         status = "PASS" if code == 0 else "FAIL"
+        # 1件も実行していないのに PASS と出すと「通った」と誤読される。
+        # 収集ゼロ・集計行を読めなかった場合は失敗として扱う
+        if status == "PASS" and not agg.get("passed"):
+            status = "FAIL"
+            fail = True
+            counts += "（実行された試験が0件）"
         if code != 0:
             fail = True
             # 失敗したテスト名だけは必ずサマリへ載せる（全文はその後）

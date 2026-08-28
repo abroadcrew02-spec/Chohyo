@@ -104,8 +104,20 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
     let root = repo_root(&app)?;
     let mut cmd = core_command(&root)?;
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("コア起動に失敗: {e}"))?;
-    *state.0.lock().unwrap() = Some(child.id());
+    // 2本目を断る（レビュー M-2）。以前は PID を上書きしていたため、2本目が
+    // 終わった時点で 1本目の PID を見失い「中断」ボタンが効かなくなった。
+    // コア側の実行ロックは同一保存先への二重送信を防ぐが、こちらの取り違えは
+    // 防げない。判定〜登録の間に割り込まれないよう spawn までロックを持つ。
+    let (mut child, pid) = {
+        let mut slot = state.0.lock().unwrap();
+        if slot.is_some() {
+            return Err("すでに読み取りを実行中です。完了するか中断してください".into());
+        }
+        let c = cmd.spawn().map_err(|e| format!("コア起動に失敗: {e}"))?;
+        let pid = c.id();
+        *slot = Some(pid);
+        (c, pid)
+    };
 
     let stdout = child.stdout.take().ok_or("stdout を取得できない")?;
     let app_out = app.clone();
@@ -126,7 +138,12 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    *state.0.lock().unwrap() = None;
+    // 自分の PID のときだけ消す。中断ボタンが take() した後に上書きで復活させない
+    let mut slot = state.0.lock().unwrap();
+    if *slot == Some(pid) {
+        *slot = None;
+    }
+    drop(slot);
     Ok(status.code().unwrap_or(-1))
 }
 

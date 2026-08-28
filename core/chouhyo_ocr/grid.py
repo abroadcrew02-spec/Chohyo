@@ -73,8 +73,11 @@ def make_uniform(region: tuple[int, int, int, int], rows: int, cols: int) -> Gri
     """外枠＋行数・列数の等分割。Q-03 に依存せず常に成立する退避先。"""
     x, y, w, h = region
     pitch = h / rows
-    width = w // cols
-    columns = [{"x_offset": i * width, "width": width} for i in range(cols)]
+    # 端数を捨てると最終列が枠から最大 cols-1 px 手前で終わり、右端の文字を
+    # 取りこぼす。境界を実数で刻んでから整数へ丸め、幅を差で決める（レビュー LOW）
+    edges = [round(w * i / cols) for i in range(cols + 1)]
+    columns = [{"x_offset": edges[i], "width": max(1, edges[i + 1] - edges[i])}
+               for i in range(cols)]
     return GridFit(
         mode="uniform",
         origin_x=x,

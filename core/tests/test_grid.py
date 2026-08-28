@@ -47,3 +47,21 @@ def test_ruled_detects_detail_table():
 def test_ruled_fails_gracefully_on_blank():
     blank = np.full((500, 500), 255, dtype=np.uint8)
     assert detect_ruled(blank, (0, 0, 500, 500)) is None  # 退避先へ誘導（§8-17）
+
+
+def test_uniform_columns_cover_the_whole_region():
+    """等分割の列が枠の右端まで届く（端数を捨てない・レビュー LOW）。
+
+    旧実装は width = w // cols で、幅が列数で割り切れないと最終列が最大
+    cols-1 px 手前で終わり、右端の文字を取りこぼしていた。
+    """
+    for w, cols in [(1000, 7), (999, 4), (101, 5), (7, 3), (500, 1)]:
+        fit = make_uniform((0, 0, w, 300), rows=3, cols=cols)
+        c = fit.columns
+        assert len(c) == cols
+        assert c[0]["x_offset"] == 0
+        assert c[-1]["x_offset"] + c[-1]["width"] == w, f"w={w} cols={cols} で右端不一致"
+        # 隙間も重なりも作らない
+        for a, b in zip(c, c[1:]):
+            assert a["x_offset"] + a["width"] == b["x_offset"]
+        assert all(x["width"] >= 1 for x in c)

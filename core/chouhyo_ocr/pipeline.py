@@ -229,8 +229,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                       "same_as": seen_as})
             # ページ数は正本の page 行から求める（内容同一なので等しい。
             # pdftoppm を再実行しない）。正本が未展開なら最低1行は出す
-            n_pages = sum(1 for p in store.pages()
-                          if p["source_file"] == seen_as) or 1
+            n_pages = store.page_count_of(seen_as) or 1
             for i in range(1, n_pages + 1):
                 pid = (store.page_id_of(source.name, i)
                        or ingest.page_id_for(source, i, taken))

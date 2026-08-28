@@ -44,6 +44,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [imgPath, setImgPath] = useState("");
   // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
   const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
+  // パネルで触っている列（canvas ハイライト用・レビュー D-3）
+  const [hlCol, setHlCol] = useState<number | null>(null);
   const drag = useRef<{ mode: string; start: { x: number; y: number };
                         orig?: Rect; extra?: { x: number; y: number } } | null>(null);
   // 開いたテンプレートのメタ情報。faces 以外を編集画面は触らないが、保存時に
@@ -69,7 +71,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!cv) return;
     const ctx = cv.getContext("2d")!;
     const { width, height } = cv.getBoundingClientRect();
-    cv.width = width; cv.height = height;
+    // 高精細ディスプレイでは CSS px と物理 px が 1:1 でない。バッファを
+    // devicePixelRatio 倍で取り、以降を CSS px 座標系へ戻す（レビュー LOW）。
+    // 座標を1px単位で詰める画面なので、罫線のにじみはそのまま作業精度に響く
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(width * dpr); cv.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = "#1c1f26"; ctx.fillRect(0, 0, width, height);
     ctx.save();
     ctx.translate(pan.x, pan.y); ctx.scale(zoom, zoom);
@@ -108,6 +115,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           for (const c of t.columns)
             ctx.strokeRect(b.x + c.x_offset, top, c.width, t.row_height);
         }
+        // パネルで触っている列を画面上で示す（レビュー D-3: どれが金額列か
+        // 数値を読んで突き合わせるしかなかった）
+        if (sel?.uid === t.uid && hlCol !== null && t.columns[hlCol]) {
+          const c = t.columns[hlCol];
+          ctx.fillStyle = "rgba(255,213,74,0.28)";
+          ctx.fillRect(b.x + c.x_offset, b.y, c.width, bh);
+          ctx.strokeStyle = "#ffd54a"; ctx.lineWidth = 3 * px;
+          ctx.strokeRect(b.x + c.x_offset, b.y, c.width, bh);
+          ctx.lineWidth = 2 * px;
+        }
         ctx.lineWidth = 2 * px;
       }
       if (t.blocks[0]) {
@@ -117,13 +134,24 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     if (pending) rect(pending, "#ff9f43");
     ctx.restore();
-  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize]);
+  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol]);
 
   useEffect(() => { draw(); }, [draw]);
   useEffect(() => {
     const onResize = () => draw();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    // タブが display:none の間に初回描画が走ると、getBoundingClientRect が
+    // 0×0 を返して canvas バッファが 0 のまま固まる。実測（2026-08-28・実窓
+    // CDP）で、編集画面へ切り替えても bufW=0 / cssW=960 のまま白紙で、
+    // ウィンドウをリサイズして初めて描かれていた。表示サイズの変化を
+    // 監視して描き直す——タブ切替も「0→実寸」の変化として拾える
+    const cv = canvasRef.current;
+    const ro = cv ? new ResizeObserver(() => draw()) : null;
+    if (cv && ro) ro.observe(cv);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      ro?.disconnect();
+    };
   }, [draw]);
 
   // ---------- 入出力 ----------
@@ -187,7 +215,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       record: t.record ?? { pages: 1 },
     };
     const fs: Field[] = []; const ts: Table[] = []; const es: Excl[] = [];
-    let sy = 0;
+    // 見つからなかったことを 0 で表すと、裏面の原点が本当に 0 のときと
+    // 区別できない（レビュー LOW: falsy-zero）。null を番兵にする
+    let sy: number | null = null;
     for (const face of t.faces) {
       const oy = face.source.rect.y;
       if (face.face_id === "back") sy = oy;
@@ -209,7 +239,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                     normalize: c.normalize,
                     marks: c.choice_marks ?? [] })) });
     }
-    setFields(fs); setTables(ts); setExcls(es); setSplitY(sy || 1880);
+    setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
   };
 
   const loadTemplate = async () => {
@@ -323,7 +353,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const t: Table = {
         uid: uid(), table_id: nextTableId(),
         row_pitch: Math.max(1, Math.round(fit.row_pitch)),
-        row_height: fit.row_height,
+        // スキーマは integer 必須。描画は float で見えるのに保存で丸められると
+        // 画面と JSON がずれる（レビュー M-22）ので、持つ時点で整数にする
+        row_height: Math.max(1, Math.round(fit.row_height)),
         blocks: [{ x: fit.origin_x, y: fit.origin_y, rows: fit.rows }],
         columns: fit.columns.map((c: any, i: number) =>
           ({ name: `列${i + 1}`, x_offset: c.x_offset, width: c.width,
@@ -431,7 +463,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       setFields((fs) => [...fs, f]); setSel({ type: "field", uid: f.uid });
       setPending(null); markDirty(true);
     } else if (d.mode === "draw-excl") {
-      const x: Excl = { uid: uid(), id: `excl_${excls.length + 1}`, rect: pending };
+      const usedE = new Set(excls.map((e) => e.id));   // 欄と同じく衝突回避（M-15）
+      let m = excls.length + 1;
+      while (usedE.has(`excl_${m}`)) m++;
+      const x: Excl = { uid: uid(), id: `excl_${m}`, rect: pending };
       setExcls((es) => [...es, x]); setSel({ type: "excl", uid: x.uid });
       setPending(null); markDirty(true);
     }
@@ -559,8 +594,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         <label>行ピッチ <input type="number" step={1} value={t.row_pitch}
           onChange={(e) => updateTable(t.uid,
             { row_pitch: Math.max(1, Math.round(+e.target.value)) })} /></label>
-        <label>行の高さ <input type="number" value={t.row_height}
-          onChange={(e) => updateTable(t.uid, { row_height: +e.target.value })} /></label>
+        <label>行の高さ <input type="number" step={1} value={t.row_height}
+          onChange={(e) => updateTable(t.uid,
+            { row_height: Math.max(1, Math.round(+e.target.value)) })} /></label>
         {t.blocks.map((b, i) => (
           <label key={i}>ブロック{i + 1} 行数 <input type="number" value={b.rows}
             onChange={(e) => updateTable(t.uid, { blocks: t.blocks.map((v, j) =>
@@ -572,7 +608,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         {t.columns.length === 0 &&
           <p className="note">列がありません。「表を作成」で外枠を描くと生成されます。</p>}
         {t.columns.map((c, i) => (
-          <div className="colrow" key={i}>
+          <div className="colrow" key={i}
+            onMouseEnter={() => setHlCol(i)} onMouseLeave={() => setHlCol(null)}
+            onFocus={() => setHlCol(i)} onBlur={() => setHlCol(null)}>
             <input className="w8" value={c.name} title="列名"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, name: e.target.value } : v) })} />

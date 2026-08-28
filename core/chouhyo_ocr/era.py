@@ -65,10 +65,12 @@ def decide(scores: dict[str, float], era_threshold: float,
     # 2候補では下から2番目＝自分自身を引くことになるためフロアを引かない
     floor = min(scores.values()) if len(scores) >= 3 else 0.0
     ranked = sorted(((k, v - floor) for k, v in scores.items()), key=lambda kv: -kv[1])
-    top_val, top = ranked[0]
-    second = ranked[1][1] if len(ranked) > 1 else 0.0
-    if top < era_threshold:
+    # ranked の要素は (選択肢, スコア)。以前は top_val が選択肢・top がスコアと
+    # 名前が逆で、読む側が毎回 unpack を確かめる必要があった（レビュー LOW）
+    top_choice, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    if top_score < era_threshold:
         return UNSELECTED          # 帳票の事実（丸が無い）
-    if top - second < gap:
+    if top_score - second_score < gap:
         return UNDECIDED           # ツールの能力限界（2候補が拮抗）
-    return top_val
+    return top_choice

@@ -31,7 +31,14 @@ def _crypt(data: bytes, protect: bool) -> bytes:
     blob_out = _DATA_BLOB()
     fn = crypt32.CryptProtectData if protect else crypt32.CryptUnprotectData
     if not fn(ctypes.byref(blob_in), None, None, None, None, 0, ctypes.byref(blob_out)):
-        raise OSError("DPAPI 呼び出しに失敗した")
+        # 失敗理由を捨てると「別ユーザーで暗号化したものを復号しようとした」
+        # （復号は暗号化した Windows アカウントでしかできない）のか、
+        # ファイルが壊れているのかを切り分けられない（レビュー LOW）
+        err = kernel32.GetLastError()   # fn の直後に読む（間に他の呼び出しを挟まない）
+        raise OSError(
+            f"DPAPI 呼び出しに失敗した（Windows エラー {err}）。"
+            "資格情報は暗号化した Windows アカウントでしか復号できないため、"
+            "別のアカウントで実行していないか確認する")
     try:
         return ctypes.string_at(blob_out.pbData, blob_out.cbData)
     finally:

@@ -11,7 +11,11 @@ import sqlite3
 import time
 from pathlib import Path
 
-# state: pending → expanded → aligned → sending → received → mapped → done / failed
+# state: pending → expanded → aligned → sending → received → done
+#        枝分かれ: failed（処理不能）／skipped_duplicate（同一内容の再投入）
+# ※ 旧コメントにあった "mapped" は実在しない値だった（レビュー LOW）。
+#   コードが書く値は pipeline.py の set_state 呼び出しがすべて。
+#   出力に寄与するのは done のみ（geometry_hashes 等の母集団もこれに揃える）
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS page(
   page_id TEXT PRIMARY KEY,
@@ -186,6 +190,16 @@ class Store:
 
     def pages(self) -> list[sqlite3.Row]:
         return self._rows("SELECT * FROM page ORDER BY source_file, page_no")
+
+    def page_count_of(self, source_file: str) -> int:
+        """その入力ファイルのページ数。
+
+        呼び出し側は全 page 行を取って Python 側で数えていた（レビュー LOW:
+        重複ファイル1件ごとに総ページを走査＝O(N×M)）。件数だけなら SQL で足りる。
+        """
+        return self.con.execute(
+            "SELECT COUNT(*) FROM page WHERE source_file=?",
+            (source_file,)).fetchone()[0]
 
     def page(self, page_id: str) -> sqlite3.Row | None:
         rows = self._rows("SELECT * FROM page WHERE page_id=?", (page_id,))

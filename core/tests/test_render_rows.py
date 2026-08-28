@@ -3,7 +3,8 @@ import pytest
 
 from chouhyo_ocr.config import Config
 from chouhyo_ocr.paths import app_root
-from chouhyo_ocr.render_rows import (STATUS_ALIGN_FAILED, STATUS_OK, STATUS_OVERFLOW,
+from chouhyo_ocr.render_rows import (STATUS_ALIGN_FAILED, STATUS_INTERRUPTED,
+                                     STATUS_OK, STATUS_OVERFLOW,
                                      UNCLEAR, build_failure_row, build_row,
                                      compose_status)
 from chouhyo_ocr.template import load_template
@@ -157,3 +158,16 @@ def test_unknown_status_is_not_reported_as_normal():
     assert compose_status("", 0, processed=True) == STATUS_OK
     assert compose_status(STATUS_OK, 0, processed=True) == STATUS_OK
     assert compose_status(STATUS_ALIGN_FAILED, 0, processed=False) == STATUS_ALIGN_FAILED
+
+
+def test_unprocessed_row_never_claims_ok():
+    """全〓の失敗行が「正常」を名乗らない（レビュー LOW の同値2分岐）。
+
+    旧実装は processed の真偽にかかわらず STATUS_OK を返し、事故を防いでいたのは
+    呼び出し側のガードだけだった。ガードが1つ外れれば、値が1つも無い行が
+    「正常」として出荷される。
+    """
+    assert compose_status("", 0, processed=False) != STATUS_OK
+    assert compose_status("", 0, processed=False) == STATUS_INTERRUPTED
+    # 正常系は変わらない
+    assert compose_status("", 0, processed=True) == STATUS_OK

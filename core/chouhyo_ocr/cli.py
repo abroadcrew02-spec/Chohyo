@@ -1,4 +1,11 @@
-"""CLI（設計 §3.2）。進捗は stdout へ JSON Lines（§7.3・記入値を含めない）。"""
+"""CLI（設計 §3.2）。進捗は stdout へ JSON Lines（§7.3・記入値を含めない）。
+
+各コマンドの中で import しているのは意図的（レビュー LOW への回答）。モジュール
+先頭へ集めると、そのコマンドが使わない依存まで毎回読むことになる。実測
+（2026-08-28・.venv/Scripts/python.exe -X utf8 -c で計測）: openpyxl 0.471s /
+numpy 0.271s / PIL.Image 0.062s。openpyxl が要るのは render だけなので、編集画面が
+連打する detect-grid（実測 1回 0.44s）にそのまま 0.5s 上乗せされる。
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +16,7 @@ import sys
 from pathlib import Path
 
 from . import cred_store, logging_safe as log
-from .config import Config, ConfigError, load_config, save_config
+from .config import Config, ConfigError, load_config
 from .pipeline_errors import OperationRefused
 from .paths import app_root
 
@@ -170,14 +177,26 @@ def cmd_expand_page(args) -> int:
 
 def cmd_detect_grid(args) -> int:
     """枠候補の生成（設計 §6.9）。テンプレート編集画面が呼ぶ・GUI なしでも検証可。"""
-    import numpy as np
-    from PIL import Image
     from .grid import detect_ruled, make_uniform
+    log.init(load_config(getattr(args, "config", None)).log_dir)  # M-9
     region = tuple(int(v) for v in args.region.split(","))
     if args.mode == "uniform":
-        fit = make_uniform(region, args.rows, args.cols)
+        fit = make_uniform(region, args.rows, args.cols)   # 画像を読まない
     else:
-        gray = np.asarray(Image.open(args.image).convert("L"))
+        import numpy as np                                  # ruled のときだけ
+        from PIL import Image
+        if not args.image:
+            _progress({"event": "detect_grid", "ok": False,
+                       "error": "罫線検出には帳票の画像が必要。先に帳票を開く"})
+            return 0
+        try:
+            gray = np.asarray(Image.open(args.image).convert("L"))
+        except (OSError, ValueError):
+            # 例外文字列をそのまま出さない（設計 §8.1: パスは記入値ではないが、
+            # 画面には日本語の指示だけを出す方針で統一する）
+            _progress({"event": "detect_grid", "ok": False,
+                       "error": "画像を読み込めない。帳票を開き直す"})
+            return 0
         fit = detect_ruled(gray, region)
         if fit is None:
             _progress({"event": "detect_grid", "ok": False,

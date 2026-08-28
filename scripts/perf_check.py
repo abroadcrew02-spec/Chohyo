@@ -8,7 +8,6 @@
 import json
 import shutil
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -22,6 +21,17 @@ RESP = ROOT / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 
 
 def main() -> int:
+    # 前提の成果物が無いと base = PAGE.read_bytes() が素の FileNotFoundError で
+    # 落ち、purge 直後に「壊れた」と誤読される（レビュー M-19）。何を用意すれば
+    # よいかを先に言う
+    missing = [p for p in (PAGE, RESP) if not p.exists()]
+    if missing:
+        print("性能計測に必要な素材がありません:", flush=True)
+        for p in missing:
+            print(f"  - {p}", flush=True)
+        print("先に replay 用の 1 ページ分（サンプル画像と保存済み応答）を"
+              "用意してから実行する。purge 後は素材ごと消えている", flush=True)
+        return 2
     if BASE.exists():
         shutil.rmtree(BASE)
     inp = BASE / "input"; inp.mkdir(parents=True)
@@ -69,10 +79,20 @@ def main() -> int:
         print("NG: 終了コード", proc.returncode)
         print((BASE / "run.err").read_text("utf-8", "replace")[-800:])
         return 1
-    summary = next(json.loads(l) for l in
-                   (BASE / "run.out").read_text("utf-8").splitlines()
-                   if '"summary"' in l)
-    xlsx = sorted((BASE / "out").glob("*.xlsx"))[-1]
+    # summary 行が無い（コアが途中で落ちた等）と next() が素の StopIteration で
+    # 落ちる。何が起きたかを言ってから終わる（レビュー LOW）
+    summary = next((json.loads(l) for l in
+                    (BASE / "run.out").read_text("utf-8").splitlines()
+                    if '"summary"' in l), None)
+    if summary is None:
+        print("NG: コアが summary を出していない。run.out / run.err を確認する")
+        print((BASE / "run.err").read_text("utf-8", "replace")[-800:])
+        return 1
+    outs = sorted((BASE / "out").glob("*.xlsx"))
+    if not outs:
+        print("NG: 出力 xlsx が生成されていない")
+        return 1
+    xlsx = outs[-1]
     db = BASE / "wd" / "intermediate.sqlite"
     mb = 1024 * 1024
     print(f"pages={summary['pages']} rows={summary['rows']} "
