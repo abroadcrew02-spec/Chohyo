@@ -134,7 +134,12 @@ def _expand_table(face_id: str, t: dict) -> list[CellSpec]:
                         kind=c["kind"],
                         choice_marks=marks,
                         subfields=tuple(c.get("subfields", ())),
-                        normalize=c.get("normalize"),
+                        # choice・subfields 付きでは正規化は無視する（スキーマの明文）。
+                        # 読み込み時に落とすことで、描画の発火条件と validate_v1 の
+                        # 件数母集団が一致する（エディタで隠れた値が残っても無害）
+                        normalize=(c.get("normalize")
+                                   if c["kind"] == "text" and not c.get("subfields")
+                                   else None),
                         table_id=t["table_id"],
                         row_no=row_no,
                     )
@@ -192,7 +197,9 @@ def load_template(path: str | Path) -> Template:
                     kind=fld["kind"],
                     choice_marks=marks,
                     subfields=tuple(fld.get("subfields", ())),
-                    normalize=fld.get("normalize"),
+                    normalize=(fld.get("normalize")
+                               if fld["kind"] == "text" and not fld.get("subfields")
+                               else None),
                 )
             )
         for t in f.get("tables", []):

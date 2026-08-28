@@ -49,9 +49,15 @@ def validate_v1(template: Template) -> list[str]:
     # 表を作り直すと属性が落ちても列数は変わらないため、件数で明示的に検証する
     n_amount = sum(1 for c in template.cells if c.normalize == "amount")
     if n_amount != V1_EXPECTED_AMOUNT:
+        # 文言はエディタ画面の語彙（正規化／金額／列）で書く。JSON の生の記法を
+        # 出しても管理者は画面のコントロールに結び付けられない（レビュー D-7）
+        direction = (
+            "金額以外の列で「金額」を選んでいないか確認してください"
+            if n_amount > V1_EXPECTED_AMOUNT
+            else "明細表の金額列で「正規化」を「金額」に設定してください")
         raise TemplateError(
-            f'normalize:"amount" のセルが {n_amount} 個（v1 の期待は '
-            f"{V1_EXPECTED_AMOUNT} 個）。金額列の normalize 宣言を確認する"
+            f"正規化「金額」が設定されたセルが {n_amount} 個です"
+            f"（想定は {V1_EXPECTED_AMOUNT} 個＝明細28行×金額1列）。{direction}"
         )
     return cols
 

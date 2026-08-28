@@ -38,13 +38,38 @@ const VERIFY_OK = [
   { event: "verify", check: "credentials", ok: true, state: "dpapi" },
 ].map((e) => JSON.stringify(e)).join("\n");
 
+// デモモードで編集画面を触れるようにする最小テンプレート（GUI スモーク用。
+// 列数は v1 の 218 に満たないため、コア検証の代役にはならない）
+const DEMO_TEMPLATE = {
+  schema_version: 1, template_id: "demo", render_dpi: 300,
+  image: { width: 2490, height: 3510 }, record: { pages: 1 },
+  faces: [
+    { face_id: "front", source: { page_offset: 0, rect: { x: 0, y: 0, w: 2490, h: 1880 } },
+      fields: [{ field_id: "person_氏名", kind: "text",
+                 rect: { x: 400, y: 300, w: 600, h: 90 } }],
+      tables: [{ table_id: "family", row_pitch: 100, row_height: 90,
+                 blocks: [{ origin: { x: 200, y: 600 }, rows: 3 }],
+                 columns: [
+                   { name: "続柄", x_offset: 0, width: 200, kind: "text" },
+                   { name: "金額", x_offset: 200, width: 240, kind: "text",
+                     normalize: "amount" },
+                   { name: "元号", x_offset: 440, width: 180, kind: "choice",
+                     choice_marks: [{ value: "昭", x_offset: 0, width: 60 },
+                                    { value: "平", x_offset: 60, width: 60 },
+                                    { value: "令", x_offset: 120, width: 60 }] }] }] },
+    { face_id: "back", source: { page_offset: 0, rect: { x: 0, y: 1880, w: 2490, h: 1630 } },
+      fields: [], tables: [] },
+  ],
+};
+
 async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
   switch (cmd) {
     case "read_config": return {};
     case "write_config": return null;
     case "pick_folder": return "C:\\デモ\\帳票スキャン";
     case "pick_image": return null;
-    case "pick_json": return null;
+    case "pick_json": return "C:\\デモ\\template.json";
+    case "read_text": return JSON.stringify(DEMO_TEMPLATE);
     case "open_folder": return null;
     case "run_core": {
       const a = (args?.args ?? []) as string[];

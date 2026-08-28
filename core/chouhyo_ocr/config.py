@@ -48,7 +48,7 @@ def _validate(cfg: Config) -> Config:
     for key in ("output_dir", "workdir", "log_dir"):
         v = getattr(cfg, key)
         if not isinstance(v, str) or not v.strip():
-            raise ConfigError(f"{key} は空でないパス文字列にする（現在: {v!r})")
+            raise ConfigError(f"{key} は空でないパス文字列にする（現在: {v!r}）")
     return cfg
 
 

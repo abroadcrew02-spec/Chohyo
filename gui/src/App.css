@@ -148,7 +148,9 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   background: var(--bg); border-radius: 7px; padding: 8px 11px; margin: 8px 0; }
 .panel .note { font-size: 11px; color: var(--faint); line-height: 1.7; }
 .panel button { min-height: 36px; }
-.colrow { display: flex; gap: 4px; margin-bottom: 6px; align-items: center; }
+.colrow { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; align-items: center;
+          padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
+.colrow .lbl { font-size: 11px; color: var(--sub); }
 .colrow .w8 { width: 84px; } .colrow .w6 { width: 104px; } .colrow .w4 { width: 52px; }
 .colrow select { padding: 5px; }
 .colrow button { padding: 4px 8px; min-height: 30px; }

@@ -79,7 +79,7 @@ def expand(source: Path, dpi: int, out_dir: Path) -> list[Path]:
     # 文字クラス解釈され、展開成功なのに 0 件マッチ→展開失敗になる（issue #13）。
     # さらに <stem>-<数字>.png に厳密一致させる: a.pdf と a-1.pdf が同居すると
     # a-* が a-1-1.png まで拾い、ページ数と行数の対応が崩れる（レビュー N-13）
-    pat = re.compile(rf"{re.escape(source.stem)}-\d+$")
+    pat = re.compile(rf"{re.escape(source.stem)}-\d+")
     pages = sorted(p for p in out_dir.glob(f"{glob.escape(source.stem)}-*.png")
                    if pat.fullmatch(p.stem))
     if not pages:

@@ -70,6 +70,28 @@ def test_shipped_template_declares_amount_normalize():
     assert all(c.field_id.endswith("金額") for c in amount_cells)
 
 
+def test_normalize_ignored_on_choice_and_subfields(tmp_path):
+    """choice・subfields 付きセルの normalize は読み込み時に落とす（再レビュー D-5）。
+
+    エディタで種類を切り替えると隠れた normalize が JSON に残りうる。残っていても
+    無害（CellSpec に載らない）で、validate_v1 の件数 28 も汚染されないこと。
+    """
+    from chouhyo_ocr.columns import validate_v1
+    t = json.loads(TPL.read_text(encoding="utf-8"))
+    for face in t["faces"]:
+        for tb in face.get("tables", []):
+            for c in tb["columns"]:
+                if c["kind"] == "choice" or c.get("subfields"):
+                    c["normalize"] = "amount"  # エディタの隠れ値を装う
+    p = tmp_path / "t.json"
+    p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
+    template = load_template(p)
+    polluted = [c for c in template.cells
+                if c.normalize and (c.kind == "choice" or c.subfields)]
+    assert polluted == []
+    assert len(validate_v1(template)) == 218  # 28 件カウントが汚染されない
+
+
 def test_validate_v1_rejects_missing_normalize(tmp_path):
     """normalize が落ちたテンプレートは validate_v1 が拒否する（再レビュー N-1/N-4）。
 
@@ -81,7 +103,8 @@ def test_validate_v1_rejects_missing_normalize(tmp_path):
     ok = _template_with(tmp_path)
     assert len(validate_v1(ok)) == 218
     broken = _template_with(tmp_path, drop_normalize=True)
-    with pytest.raises(TemplateError, match="normalize"):
+    # 文言は管理者向けに画面の語彙（正規化／金額）で出す（レビュー D-7）
+    with pytest.raises(TemplateError, match="正規化「金額」"):
         validate_v1(broken)
 
 

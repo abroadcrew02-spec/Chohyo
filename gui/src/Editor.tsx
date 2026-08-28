@@ -36,6 +36,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [pan, setPan] = useState({ x: 10, y: 10 });
   const [dirtyState, setDirtyState] = useState(false);
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
+  const [saveErr, setSaveErr] = useState("");
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   const [genRows, setGenRows] = useState(5);
   const [genCols, setGenCols] = useState(4);
@@ -190,7 +191,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         fields: fields.filter((f) => inFace(f.rect.y)).map((f) => ({
           field_id: f.field_id, kind: f.kind,
           rect: { ...f.rect, y: f.rect.y - y0 },
-          ...(f.normalize ? { normalize: f.normalize } : {}),
+          ...(f.normalize && f.kind === "text" ? { normalize: f.normalize } : {}),
           ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
             value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
         tables: tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y)).map((t) => ({
@@ -201,7 +202,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
             ...(c.subfields.trim()
               ? { subfields: c.subfields.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
-            ...(c.normalize ? { normalize: c.normalize } : {}),
+            ...(c.normalize && c.kind === "text" && !c.subfields.trim()
+              ? { normalize: c.normalize } : {}),
             ...(c.kind === "choice" ? { choice_marks: c.marks } : {}) })) })),
       };
     };
@@ -224,9 +226,15 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         { args: ["verify", "--template", p] });
       const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.check === "template");
-      setMsg(tpl?.ok ? `保存＋コア検証 OK（${tpl.columns} 列）: ${p}`
-                     : `保存したがコア検証 NG: ${tpl?.error ?? "不明"}`);
-    } catch (e) { setMsg(`保存したがコア検証 NG: ${e}`); }
+      if (tpl?.ok) {
+        setSaveErr("");
+        setMsg(`保存＋コア検証 OK（${tpl.columns} 列）: ${p}`);
+      } else {
+        // 検証 NG を成功と同じ灰色の小さい文字で出すと気づかれない（レビュー D-7）
+        setMsg(`保存先: ${p}`);
+        setSaveErr(`保存しましたが、コアの検証で問題が見つかりました: ${tpl?.error ?? "不明"}`);
+      }
+    } catch (e) { setMsg(""); setSaveErr(`保存しましたが、コアの検証で問題が見つかりました: ${e}`); }
   };
 
   // ---------- 枠候補の生成（detect-grid）----------
@@ -426,7 +434,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
           <label>欄の種類
             <select value={f.kind}
-              onChange={(e) => updateField(f.uid, { kind: e.target.value as any })}>
+              onChange={(e) => updateField(f.uid, { kind: e.target.value as any,
+                ...(e.target.value === "choice" ? { normalize: undefined } : {}) })}>
               <option value="text">文字（手書き文字を読み取る）</option>
               <option value="choice">選択式（昭・平・令などの丸囲み）</option>
             </select></label>
@@ -436,10 +445,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                 defaultValue={f.marks.map((m) => m.value).join(",")}
                 onBlur={(e) => genFieldMarks(f, e.target.value)} /></label>)}
           {f.kind === "text" && (
-            <label>正規化（金額欄は「金額」を選ぶ。桁区切りを外して数値化します）
+            <label>正規化（金額欄は「金額」を選んでください。桁区切りを外して数値化します）
               <select value={f.normalize ?? ""}
                 onChange={(e) => updateField(f.uid, { normalize: e.target.value || undefined })}>
-                <option value="">なし</option>
+                <option value="">正規化なし</option>
                 <option value="amount">金額</option>
               </select></label>)}
           <div className="mono">x:{f.rect.x} y:{f.rect.y} w:{f.rect.w} h:{f.rect.h}</div>
@@ -478,6 +487,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           { ...t.blocks[t.blocks.length - 1],
             x: t.blocks[t.blocks.length - 1].x + 1020 }] })}>右ブロックを追加（複製）</button>
         <h4>列</h4>
+        {t.columns.length === 0 &&
+          <p className="note">列がありません。「表を作成」で外枠を描くと生成されます。</p>}
         {t.columns.map((c, i) => (
           <div className="colrow" key={i}>
             <input className="w8" value={c.name} title="列名"
@@ -489,15 +500,25 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             <input className="w4" type="number" value={c.width} title="width"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, width: +e.target.value } : v) })} />
-            <select value={c.kind}
+            <select value={c.kind} title="列の種類"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
-                j === i ? { ...v, kind: e.target.value as any } : v) })}>
-              <option value="text">text</option><option value="choice">choice</option>
+                // 選択式へ切り替えたら正規化は値ごと落とす。残すと select が
+                // 無効表示でも「隠れた値が保存され続ける」状態になる（レビュー D-5）
+                j === i ? { ...v, kind: e.target.value as any,
+                            ...(e.target.value === "choice" ? { normalize: undefined } : {}) }
+                        : v) })}>
+              <option value="text">文字</option><option value="choice">選択式</option>
             </select>
-            <input className="w6" placeholder="subfields（年,月,日）" value={c.subfields}
+            <input className="w6" placeholder="分割（年,月,日）" value={c.subfields}
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
-                j === i ? { ...v, subfields: e.target.value } : v) })} />
-            <select value={c.normalize ?? ""} title="正規化（金額列は「金額」を選ぶ）"
+                j === i ? { ...v, subfields: e.target.value,
+                            ...(e.target.value.trim() ? { normalize: undefined } : {}) } : v) })} />
+            <span className="lbl">正規化</span>
+            <select value={c.normalize ?? ""}
+              disabled={c.kind === "choice" || !!c.subfields.trim()}
+              title={c.kind === "choice" || c.subfields.trim()
+                ? "選択式・分割指定の列では使いません"
+                : "金額列は「金額」を選んでください"}
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, normalize: e.target.value || undefined } : v) })}>
               <option value="">正規化なし</option><option value="amount">金額</option>
@@ -506,6 +527,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
           </div>))}
         <button onClick={removeSel}>テーブル削除</button>
+        <p className="note">金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。</p>
         <p className="note">選択式列のマーク位置の微調整は、保存した JSON の直接編集で行えます（v1 の範囲）</p>
       </div>);
   };
@@ -525,6 +547,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           </button>))}
         <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
+      {saveErr && <div className="errbox" style={{ margin: "8px 18px" }}>{saveErr}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
