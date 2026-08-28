@@ -14,9 +14,8 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-H_COVERAGE = 0.50   # 水平線: 行射影の被覆率下限
-V_COVERAGE = 0.35   # 垂直線: 列射影の被覆率下限（かすれ・交差切れに寛容）
-LINE_GAP = 6        # 同一線とみなす画素間隔
+from .projection import H_COVERAGE, V_COVERAGE, line_positions
+
 ROW_INSET = 4       # 行高 = ピッチ − 罫線ぶんの控え（候補値・編集画面で調整）
 
 
@@ -36,29 +35,16 @@ class GridFit:
         return asdict(self)
 
 
-def _lines(profile: "np.ndarray", threshold: float) -> list[int]:
-    idx = np.where(profile > threshold)[0]
-    if len(idx) == 0:
-        return []
-    groups: list[list[int]] = [[int(idx[0])]]
-    for i in idx[1:]:
-        if i - groups[-1][-1] <= LINE_GAP:
-            groups[-1].append(int(i))
-        else:
-            groups.append([int(i)])
-    return [int(np.mean(g)) for g in groups]
-
-
 def detect_ruled(gray: "np.ndarray", region: tuple[int, int, int, int]) -> GridFit | None:
     """罫線からテーブル定義を当てはめる。線が足りなければ None。"""
     x, y, w, h = region
     seg = gray[y:y + h, x:x + w] < 128
 
-    h_lines = _lines(seg.sum(axis=1), w * H_COVERAGE)
+    h_lines = line_positions(seg.sum(axis=1), w * H_COVERAGE)
     if len(h_lines) < 3:          # 行を1つ作るにも上下の線＋もう1本要る
         return None
-    v_lines = _lines(seg[h_lines[0]:h_lines[-1], :].sum(axis=0),
-                     (h_lines[-1] - h_lines[0]) * V_COVERAGE)
+    v_lines = line_positions(seg[h_lines[0]:h_lines[-1], :].sum(axis=0),
+                             (h_lines[-1] - h_lines[0]) * V_COVERAGE)
     if len(v_lines) < 2:
         return None
 

@@ -235,8 +235,11 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
                       "status": render_rows.STATUS_ALIGN_FAILED})
             continue
         for f in faces:
-            store.upsert_alignment(pid, f.face_id, {"angle": f.angle}, True,
-                                   geo_hash, ALGO_VERSION)
+            store.upsert_alignment(
+                pid, f.face_id,
+                {"angle": f.angle, "dx": f.dx, "dy": f.dy,
+                 "matched": f.shift_matched},
+                True, geo_hash, ALGO_VERSION)
             f.image.save(aligned_dir / f"{pid}_{f.face_id}.png")
         store.set_state(pid, "aligned")
 

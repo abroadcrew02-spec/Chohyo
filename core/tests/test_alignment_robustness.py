@@ -4,9 +4,10 @@
 （ユーザー指摘）。ここでは入力を意図的に回転させ、deskew が補正して
 無変換ベースラインと同一の出力になることを固定する。
 
-平行移動は現状補正機構が無く、±12px で choice の誤選択・±18px で大規模
-混入が「正常」ステータスのまま出る（issue #30・実測 2026-08-28）。
-補正/検出の実装後にここへ耐性テストを追加する。
+平行移動は罫線射影による常時補正＋信頼不能時の位置合わせ失敗（D-25・#30）。
+不変条件: status=正常 で出た行は、無変換ベースラインと値が一致する。
+ズレは補正されるか失敗になるかのどちらかで、その中間（正常顔の誤値）は
+存在しない。
 """
 import json
 import tempfile
@@ -41,6 +42,50 @@ def _run(img: Image.Image, tag: str):
         run(inp, TPL, cfg, ReplayClient(rd))
         _x, _c, rows = render(TPL, cfg, timestamp=tag)
         return rows[0]
+
+
+def _shift(img: Image.Image, dx: int, dy: int) -> Image.Image:
+    canvas = Image.new("RGB", img.size, "white")
+    canvas.paste(img.convert("RGB"), (dx, dy))
+    return canvas
+
+
+def test_shifted_input_is_realigned():
+    """探索範囲内の平行移動は補正され、ベースラインと同一の出力になる（D-25）。
+
+    補正が成功すれば送信画像は無変換時と一致するため、元の Vision 応答が
+    そのまま有効——値の全列一致が補正成功の実証になる。
+    """
+    base = _run(Image.open(PAGE), "sbase")
+    for dx, dy in [(2, 2), (5, 5), (12, 12), (18, 18), (-8, -8), (0, 10)]:
+        row = _run(_shift(Image.open(PAGE), dx, dy), f"s{dx}_{dy}")
+        assert row.status == "正常", f"shift=({dx},{dy}) {row.status}"
+        assert list(row.values) == list(base.values), f"shift=({dx},{dy}) で不一致"
+
+
+def test_large_shift_fails_instead_of_wrong_values():
+    """探索範囲を超えるズレは「位置合わせ失敗」の全〓行になる（正常顔の誤値ゼロ）。"""
+    base = _run(Image.open(PAGE), "lbase")
+    for dx, dy in [(40, 40), (0, 104), (0, 113)]:  # 104/113 は行ピッチ（1行ズレ解）
+        row = _run(_shift(Image.open(PAGE), dx, dy), f"l{dx}_{dy}")
+        if row.status == "正常":
+            # 本質的な受入条件: 「正常なのに値が違う」だけは絶対に出さない
+            assert list(row.values) == list(base.values), \
+                f"shift=({dx},{dy}) が正常顔で誤値を出した"
+        else:
+            assert "位置合わせ失敗" in row.status
+            assert all(v == "〓" for v in row.values)
+
+
+def test_erased_rulings_fail_instead_of_passthrough():
+    """罫線を消した画像は 0 補正で素通しせず「位置合わせ失敗」へ倒れる。"""
+    from PIL import ImageDraw
+    img = Image.open(PAGE).convert("RGB")
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, img.width, img.height), fill="white")  # 全消し＝線ゼロ
+    row = _run(img, "erased")
+    assert "位置合わせ失敗" in row.status
+    assert all(v == "〓" for v in row.values)
 
 
 def test_rotated_input_is_realigned():

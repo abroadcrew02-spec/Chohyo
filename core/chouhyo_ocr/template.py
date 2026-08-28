@@ -68,12 +68,28 @@ class TableZone:
 
 
 @dataclass(frozen=True)
+class TableGeom:
+    """テーブルの罫線期待位置（面ローカル）。平行移動推定のアンカー（D-25）。"""
+    x_min: int
+    x_max: int
+    y_min: int
+    y_max: int
+    h_lines: tuple[int, ...]  # 期待横線の y
+    v_lines: tuple[int, ...]  # 期待縦線の x
+
+
+@dataclass(frozen=True)
 class Face:
     face_id: str
     page_offset: int
     source_rect: Rect  # 入力ページ座標
     exclusions: tuple[Rect, ...] = ()
     table_zones: tuple[TableZone, ...] = ()
+    table_geoms: tuple[TableGeom, ...] = ()
+    # 平行移動の探索上限 (n_x, n_y)。テンプレから導出する——探索が行ピッチ／
+    # 列間隔の半分を超えると1行（列）ズレた解が正解と同点になり、行ズレを
+    # 「補正」してしまう（D-25: N は許容範囲でなくエイリアシング境界）
+    shift_limits: tuple[int, int] = (0, 0)
 
 
 @dataclass(frozen=True)
@@ -152,6 +168,37 @@ def _expand_table(face_id: str, t: dict) -> list[CellSpec]:
     return cells
 
 
+def _table_geoms(t: dict) -> list[TableGeom]:
+    """罫線の期待位置（D-25）。横線は origin.y + i*row_pitch（行境界）、
+    縦線は origin.x + 列境界。ブロックごとに1つ作る。"""
+    right = max(c["x_offset"] + c["width"] for c in t["columns"])
+    v_offsets = sorted({c["x_offset"] for c in t["columns"]} | {right})
+    geoms = []
+    for blk in t["blocks"]:
+        ox, oy = blk["origin"]["x"], blk["origin"]["y"]
+        h = [round(oy + t["row_pitch"] * i) for i in range(blk["rows"] + 1)]
+        geoms.append(TableGeom(
+            x_min=ox, x_max=ox + right,
+            y_min=oy, y_max=h[-1],
+            h_lines=tuple(h),
+            v_lines=tuple(ox + v for v in v_offsets),
+        ))
+    return geoms
+
+
+def _shift_limits(geoms: list[TableGeom]) -> tuple[int, int]:
+    """探索上限 (n_x, n_y)。最小ピッチ・最小列間隔の半分から余裕2pxを引く。"""
+    pitches = []
+    gaps = []
+    for g in geoms:
+        hs, vs = sorted(g.h_lines), sorted(g.v_lines)
+        pitches += [b - a for a, b in zip(hs, hs[1:])]
+        gaps += [b - a for a, b in zip(vs, vs[1:])]
+    if not pitches or not gaps:
+        return (0, 0)
+    return (max(0, min(gaps) // 2 - 2), max(0, min(pitches) // 2 - 2))
+
+
 def _table_zones(t: dict) -> list[TableZone]:
     right = max(c["x_offset"] + c["width"] for c in t["columns"])
     zones = []
@@ -190,6 +237,7 @@ def load_template(path: str | Path) -> Template:
         if f["source"]["page_offset"] != 0:
             raise TemplateError(f"v1 は page_offset=0 のみ受理（face {fid}: {f['source']['page_offset']}）")
         zones: list[TableZone] = []
+        geoms: list[TableGeom] = []
         for fld in f.get("fields", []):
             marks = tuple(
                 ChoiceMark(m["value"], _rect(m["rect"])) for m in fld.get("choice_marks", [])
@@ -215,6 +263,13 @@ def load_template(path: str | Path) -> Template:
                 )
             cells.extend(_expand_table(fid, t))
             zones.extend(_table_zones(t))
+            geoms.extend(_table_geoms(t))
+        if not geoms:
+            # 平行移動推定は罫線をアンカーにする。table の無い面はアンカー不能で
+            # 毎ページ静かに失敗するため、読み込み時に1回だけ大声で落とす（D-25）
+            raise TemplateError(
+                f"face '{fid}' に tables が無い。位置合わせのアンカーとして"
+                "各面に1つ以上のテーブル定義が必要（v1 の受け入れ範囲）")
         faces.append(
             Face(
                 face_id=fid,
@@ -222,6 +277,8 @@ def load_template(path: str | Path) -> Template:
                 source_rect=_rect(f["source"]["rect"]),
                 exclusions=tuple(_rect(e["rect"]) for e in f.get("exclusions", [])),
                 table_zones=tuple(zones),
+                table_geoms=tuple(geoms),
+                shift_limits=_shift_limits(geoms),
             )
         )
 
