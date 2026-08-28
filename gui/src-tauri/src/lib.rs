@@ -45,7 +45,23 @@ fn repo_root(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(res) = app.path().resource_dir() {
         starts.push(res);
     }
-    for start in starts {
+    // 開発環境ではリポルート（.git を持つ祖先）を最優先する。
+    // tauri dev は resources（templates/core-dist 等）を target/debug へコピーする
+    // ため、templates マーカーだけだと exe 親の target/debug が先にヒットし、
+    // 「起動時スナップショットの旧コア・別 config」の世界で動いてしまう
+    // （実測: 編集画面の PDF 展開が旧コアの相対パスで失敗・2026-08-28）
+    for start in &starts {
+        let mut dir = Some(start.as_path());
+        while let Some(d) = dir {
+            if d.join(".git").exists()
+                && d.join("templates").join("chouhyo-v1.json").exists()
+            {
+                return Ok(d.to_path_buf());
+            }
+            dir = d.parent();
+        }
+    }
+    for start in &starts {
         let mut dir = Some(start.as_path());
         while let Some(d) = dir {
             if d.join("templates").join("chouhyo-v1.json").exists() {
