@@ -18,6 +18,8 @@ type Table = { uid: string; table_id: string; row_pitch: number; row_height: num
 type Excl = { uid: string; id: string; rect: Rect };
 type Sel = { type: "field" | "table" | "excl"; uid: string } | null;
 type Tool = "select" | "field" | "excl" | "table" | "split";
+// 元に戻す／やり直しの1コマ。編集対象の4状態をまとめて差し替える
+type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number };
 
 let seq = 0;
 const uid = () => `u${++seq}`;
@@ -89,6 +91,15 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [tool, setTool] = useState<Tool>("select");
   const [zoom, setZoom] = useState(0.35);
   const [pan, setPan] = useState({ x: 10, y: 10 });
+  // Space 押下中はドラッグが常にパンになる（画像アプリの手のひらツール相当）。
+  // ref は onDown での判定用、state はカーソル表示用
+  const spaceRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  // 元に戻す／やり直し。ドラッグ中の連続更新を1コマにするため、状態が
+  // 400ms 静止したときだけ履歴に積む（下の useEffect）
+  const history = useRef<{ past: Snap[]; future: Snap[] }>({ past: [], future: [] });
+  const snapRef = useRef<Snap | null>(null);
+  const restoring = useRef(false);
   const [dirtyState, setDirtyState] = useState(false);
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
   const [errMsg, setErrMsg] = useState("");
@@ -340,6 +351,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         const parsed = JSON.parse(text);
         if (!parsed || !Array.isArray(parsed.faces)) throw new Error("faces が無い");
         toEditorState(parsed);
+        resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
         setMsg("出荷テンプレート（chouhyo-v1・218列）を読み込みました。帳票を開いて位置を確認してください");
       } catch {
@@ -369,6 +381,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return;
     }
     toEditorState(parsed);
+    resetHistory();   // 別テンプレートをまたぐ Undo は誤操作のもと
     // 前のファイルの検証エラーを現在の状態と誤読させない（レビュー N-5）
     setErrMsg("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
@@ -495,7 +508,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
   const onDown = (e: React.MouseEvent) => {
     const p = toPage(e);
-    if (e.button === 1 || e.altKey) {
+    if (e.button === 1 || e.altKey || spaceRef.current) {
       drag.current = { mode: "pan", start: { x: e.clientX, y: e.clientY },
                        extra: { ...pan } };
       return;
@@ -590,6 +603,134 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     setZoom((z) => Math.min(3, Math.max(0.05, z * factor)));
   };
 
+  // ---------- キーボードショートカット（画像アプリ標準の流用） ----------
+  const zoomBy = (factor: number) => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const { width, height } = cv.getBoundingClientRect();
+    const cx = width / 2, cy = height / 2;   // 画面中央を基準に拡縮
+    setPan((p) => ({ x: cx - (cx - p.x) * factor, y: cy - (cy - p.y) * factor }));
+    setZoom((z) => Math.min(3, Math.max(0.05, z * factor)));
+  };
+  const fitView = () => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+    const { width, height } = cv.getBoundingClientRect();
+    const W = imgSize?.w ?? meta.current.image?.width ?? 2490;
+    const H = imgSize?.h ?? meta.current.image?.height ?? 3510;
+    const z = Math.min(3, Math.max(0.05, Math.min((width - 40) / W, (height - 40) / H)));
+    setZoom(z);
+    setPan({ x: (width - W * z) / 2, y: (height - H * z) / 2 });
+  };
+  const nudge = (dx: number, dy: number) => {
+    if (!sel) return;
+    if (sel.type === "field")
+      // マークも一緒に動かす（issue #48 と同じ経路）
+      setFields((fs) => fs.map((f) => f.uid === sel.uid
+        ? applyRectToField(f, { ...f.rect, x: f.rect.x + dx, y: f.rect.y + dy }) : f));
+    if (sel.type === "excl")
+      setExcls((es) => es.map((x) => x.uid === sel.uid
+        ? { ...x, rect: { ...x.rect, x: x.rect.x + dx, y: x.rect.y + dy } } : x));
+    if (sel.type === "table")
+      setTables((ts) => ts.map((t) => t.uid === sel.uid
+        ? { ...t, blocks: t.blocks.map((b) => ({ ...b, x: b.x + dx, y: b.y + dy })) } : t));
+    markDirty(true);
+  };
+
+  // 履歴: 編集状態が 400ms 静止したら1コマとして積む（ドラッグ1回=1コマ）。
+  // 復元直後の変化は積まない（restoring フラグ）
+  useEffect(() => {
+    if (restoring.current) { restoring.current = false; return; }
+    const t = setTimeout(() => {
+      const cur: Snap = { fields, tables, excls, splitY };
+      const prev = snapRef.current;
+      if (prev === null) { snapRef.current = cur; return; }   // 基準の初期化
+      if (prev.fields !== cur.fields || prev.tables !== cur.tables
+          || prev.excls !== cur.excls || prev.splitY !== cur.splitY) {
+        history.current.past.push(prev);
+        if (history.current.past.length > 100) history.current.past.shift();
+        history.current.future = [];
+        snapRef.current = cur;
+      }
+    }, 400);
+    return () => clearTimeout(t);
+  }, [fields, tables, excls, splitY]);
+
+  const resetHistory = () => {
+    history.current = { past: [], future: [] };
+    snapRef.current = null;   // 次の静止時点が新しい基準になる
+  };
+  const restoreSnap = (snap: Snap) => {
+    restoring.current = true;
+    snapRef.current = snap;
+    setFields(snap.fields); setTables(snap.tables);
+    setExcls(snap.excls); setSplitY(snap.splitY);
+    setSel(null); setPending(null); markDirty(true);
+  };
+  const undoEdit = () => {
+    const prev = history.current.past.pop();
+    if (!prev || !snapRef.current) return;
+    history.current.future.push(snapRef.current);
+    restoreSnap(prev);
+  };
+  const redoEdit = () => {
+    const next = history.current.future.pop();
+    if (!next || !snapRef.current) return;
+    history.current.past.push(snapRef.current);
+    restoreSnap(next);
+  };
+
+  // ハンドラは毎レンダー作り直されるため、リスナーは1回だけ張って
+  // ref 経由で最新版を呼ぶ（依存配列で張り直すとキー押下中に外れる）
+  const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  keyRef.current = (e: KeyboardEvent) => {
+    const tag = (document.activeElement?.tagName ?? "").toLowerCase();
+    const typing = tag === "input" || tag === "textarea" || tag === "select";
+    if (e.code === "Space" && !typing) {
+      // ページスクロールとボタンの再押下を防ぐ。押しっぱなしのリピートは無視
+      e.preventDefault();
+      if (!spaceRef.current) { spaceRef.current = true; setSpaceHeld(true); }
+      return;
+    }
+    if (typing) return;   // 入力欄では通常のテキスト編集を優先する
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && e.key.toLowerCase() === "z") {
+      e.preventDefault(); (e.shiftKey ? redoEdit : undoEdit)(); return;
+    }
+    if (ctrl && e.key.toLowerCase() === "y") { e.preventDefault(); redoEdit(); return; }
+    if (ctrl && e.key === "0") { e.preventDefault(); fitView(); return; }
+    if (ctrl && e.key === "1") { e.preventDefault(); zoomBy(1 / zoom); return; }
+    if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); zoomBy(1.15); return; }
+    if (ctrl && e.key === "-") { e.preventDefault(); zoomBy(1 / 1.15); return; }
+    if (e.key === "Escape") { setSel(null); setPending(null); drag.current = null; return; }
+    if ((e.key === "Delete" || e.key === "Backspace") && sel) {
+      e.preventDefault(); removeSel(); return;
+    }
+    if (e.key.startsWith("Arrow") && sel) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      nudge(e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0,
+            e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0);
+    }
+  };
+  useEffect(() => {
+    const kd = (ev: KeyboardEvent) => keyRef.current(ev);
+    const ku = (ev: KeyboardEvent) => {
+      if (ev.code === "Space") { spaceRef.current = false; setSpaceHeld(false); }
+    };
+    // ウィンドウからフォーカスが外れたまま keyup を取りこぼすと Space が
+    // 押しっぱなし扱いで固まる。blur で必ず解除する
+    const blur = () => { spaceRef.current = false; setSpaceHeld(false); };
+    window.addEventListener("keydown", kd);
+    window.addEventListener("keyup", ku);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", kd);
+      window.removeEventListener("keyup", ku);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+
   // ---------- 選択対象の更新 ----------
   const applySelRect = (r: Rect) => {
     if (!sel) return;
@@ -637,7 +778,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         <button className="btn" onClick={() => setPending(null)}>キャンセル</button>
       </div>);
     if (!sel) return <div className="panel"><h3>要素が選択されていません</h3>
-      <p className="note">ツールを選択し、帳票上をドラッグしてください。<br />ホイール: 拡大縮小 ／ Alt＋ドラッグ: 画面移動</p></div>;
+      <p className="note">ツールを選択し、帳票上をドラッグしてください。</p>
+      <p className="note">ホイール: 拡大縮小 ／ Space・Alt・中ボタン＋ドラッグ: 画面移動<br />
+        Ctrl+0: 全体表示 ／ Ctrl+1: 原寸 ／ Ctrl+「+」「-」: 拡大縮小<br />
+        矢印キー: 選択した枠を1px移動（Shift で10px）／ Delete: 削除<br />
+        Ctrl+Z: 元に戻す ／ Ctrl+Y: やり直し ／ Esc: 選択解除</p></div>;
     if (sel.type === "field") {
       const f = fields.find((x) => x.uid === sel.uid);
       if (!f) return null;
@@ -791,6 +936,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
+          style={spaceHeld ? { cursor: "grab" } : undefined}
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
           onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
         {panel()}
