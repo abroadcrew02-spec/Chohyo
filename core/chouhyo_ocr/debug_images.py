@@ -18,7 +18,7 @@
 mapping.locate_symbol（assign() と同じ索引）で調べ直すことで、参照先で
 「採用された文字」と「破棄された文字」を区別して塗り分ける（従来は破棄分も
 緑=採用扱いになっていた）。M-1 の①（check_reusable）④（count:0固定）は
-第2段の範囲外（#60 で扱う）。
+第3〜4段で cli.cmd_debug_images 側に実装済み（このモジュール自体の変更ではない）。
 """
 from __future__ import annotations
 

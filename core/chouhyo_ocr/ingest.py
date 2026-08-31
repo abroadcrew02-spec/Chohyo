@@ -162,8 +162,15 @@ def expand(source: Path, dpi: int, out_dir: Path,
     # IngestError でなく生の例外が run 全体を止める
     stale_num = rf"0*{page}" if page is not None else r"\d+"
     stale_pat = re.compile(rf"{re.escape(source.stem)}-{stale_num}")
+    # テンプレート編集画面（cli.cmd_expand_page）が作る位置合わせ済みの下地
+    # 「<stem>-p{page:04d}-aligned.png」も同じ stem の残骸として扱う（#60 M-7）。
+    # 固定名で上書きされるため同じページを開き直しても増えないが、別ページ
+    # 番号を開くたびに新しい -aligned.png が増え、従来の <stem>-<数字> 完全一致
+    # の対象外だったため purge するまで帳票原本の複製（個人情報）が滞留していた
+    aligned_num = rf"p0*{page}" if page is not None else r"p\d+"
+    aligned_pat = re.compile(rf"{re.escape(source.stem)}-{aligned_num}-aligned")
     for old in out_dir.glob(f"{glob.escape(source.stem)}-*.png"):
-        if stale_pat.fullmatch(old.stem):
+        if stale_pat.fullmatch(old.stem) or aligned_pat.fullmatch(old.stem):
             try:
                 old.unlink()
             except OSError:

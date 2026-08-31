@@ -134,13 +134,25 @@ export type CarveVerdict =
 /// 選択式・完全に覆われる欄（carveField が null を返す）も skip に含める。
 /// エディタ＝置く前に止める（面積という静的な情報で判断できる）役割で、
 /// 実行時に穴へ落ちた文字を捕まえるコア側（U-07）とは別の防御層。
-export function evaluateCarve(f: Field, claim: Rect, minSize = 6): CarveVerdict {
+///
+/// splitY を渡すと、切り抜きで主 rect が表裏の面をまたいで移動する場合も
+/// skip にする（issue #59 H-2）。carveField は最大断片を主 rect に据える
+/// だけで面を意識しないため、splitY 直上の欄を切り抜くと残った下側の断片が
+/// 主になり front→back へ黙って移動しうる。CSV の列は face_id の並び
+/// （front→back）で決まるため、これは列位置がずれる変更で人の確認が要る。
+export function evaluateCarve(
+  f: Field, claim: Rect, splitY?: number, minSize = 6): CarveVerdict {
   if (f.kind !== "text")
     return { tier: "skip", reason: `${f.field_id}: 選択式のため自動調整できません` };
   const before = _totalArea(f);
   const next = carveField(f, claim, minSize);
   if (!next)
     return { tier: "skip", reason: `${f.field_id}: 完全に覆われるため自動調整できません` };
+  if (splitY != null && (f.rect.y < splitY) !== (next.rect.y < splitY)) {
+    return { tier: "skip",
+      reason: `${f.field_id}: 切り抜くと表裏の面をまたぐため自動調整しません`
+        + "（CSV の列位置が変わります）。枠の配置を見直してください" };
+  }
   const after = _totalArea(next);
   const reductionPct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
   const tooSmall = next.rect.w < MIN_CARVED_W || next.rect.h < MIN_CARVED_H;
@@ -186,7 +198,7 @@ export function carveWarningNotice(
 /// （呼び出し側が警告色で表示する）。切り抜けないもの（選択式・完全に覆われた
 /// 欄・減少率30%以上・切り抜き後が最小サイズ未満）は理由付きの文言で skipped
 /// に返し、呼び出し側が赤帯で警告する（保存自体は続け、コア検証が最終判定する）。
-export function resolveOverlaps(fields: Field[]): {
+export function resolveOverlaps(fields: Field[], splitY?: number): {
   fields: Field[]; carved: string[]; warned: { id: string; reductionPct: number }[];
   skipped: string[];
 } {
@@ -205,7 +217,7 @@ export function resolveOverlaps(fields: Field[]): {
         const touches = [f.rect, ...(f.extras ?? [])]
           .some((r) => _rectsTouch(r, rect));
         if (!touches) return f;
-        const verdict = evaluateCarve(f, rect);
+        const verdict = evaluateCarve(f, rect, splitY);
         if (verdict.tier === "skip") { skipped.push(verdict.reason); return f; }
         carved.add(f.field_id);
         if (verdict.tier === "warn") warned.set(f.field_id, verdict.reductionPct);
@@ -276,6 +288,121 @@ export function exclusionChangeNotice(
       + "）。減らした・ズラした覚えがなければキャンセルしてください。";
   }
   return null;
+}
+
+/// 保存成功時に「読み込み時点」と比べる基準値（issue #59 H-9・最後の検知網）。
+/// 欄数・金額列数・除外数の増減を見せないと、静かに欄が減っても数字が
+/// 変わるだけで気づけない（列数決め打ち廃止の代替として掲げた「拒否では
+/// なく見える化」に、比較対象が無かった）。
+export type CountSnapshot = { fields: number; amountCells: number; exclusions: number };
+
+/// normalize=amount の欄・表の列（分割指定が無いもの）を数える。verify 応答の
+/// tpl.amount_cells と同じ対象を、読み込み直後（verify を呼ぶ前）にも
+/// 同じ考え方で数えられるようにする——比較の基準が要るため（issue #59 H-9）。
+export function countAmountCells(
+  fields: { kind: string; normalize?: string }[],
+  tables: { columns: { kind: string; normalize?: string; subfields: string }[] }[]): number {
+  const fromFields = fields.filter((f) => f.kind === "text" && f.normalize === "amount").length;
+  const fromTables = tables.reduce((sum, t) =>
+    sum + t.columns.filter((c) =>
+      c.kind === "text" && c.normalize === "amount" && !c.subfields.trim()).length, 0);
+  return fromFields + fromTables;
+}
+
+/// 読み込み時点との差分を表示用の文言にする（issue #59 H-9）。増減が無い
+/// 項目は現行どおり単一の数値で表示してよい（呼び出し側の判断で省略しても
+/// 破綻しない設計）。decreasedLabels は減少した項目名——呼び出し側が
+/// warnbox で強調するために使う（灰色の msg に混ぜると気づかれない・D-7）。
+export function saveDiffNote(loaded: CountSnapshot, current: CountSnapshot): {
+  text: string; decreasedLabels: string[];
+} {
+  const decreasedLabels: string[] = [];
+  const part = (label: string, from: number, to: number) => {
+    if (from === to) return `${label} ${to}`;
+    if (to < from) decreasedLabels.push(label);
+    const diff = to - from;
+    return `${label} ${from} → ${to}（${diff > 0 ? "+" : ""}${diff}）`;
+  };
+  const text = [
+    part("欄", loaded.fields, current.fields),
+    part("金額", loaded.amountCells, current.amountCells),
+    part("除外", loaded.exclusions, current.exclusions),
+  ].join("・");
+  return { text, decreasedLabels };
+}
+
+/// 表の choice 列の marks（列に対する相対 x_offset/width）を、列の width が
+/// 変わったときに比率で追従させる（issue #60 M-8・#48 の単発欄向け
+/// remapMarks と同じ考え方）。x_offset（列の位置）は marks が列に対する
+/// 相対値のため影響を受けない——width（列の幅）が変わったときだけ、
+/// marks の相対配置が崩れないよう比率でスケールする。
+export function remapColumnMarks(
+  marks: ColMark[], oldWidth: number, newWidth: number): ColMark[] {
+  if (marks.length === 0 || oldWidth === newWidth || oldWidth <= 0) return marks;
+  const sx = newWidth / oldWidth;
+  return marks.map((m) => ({
+    ...m,
+    x_offset: Math.round(m.x_offset * sx),
+    width: Math.max(1, Math.round(m.width * sx)),
+  }));
+}
+
+/// 添字が現在の extras 配列の範囲内かを確認する（issue #60 M-4）。
+/// carve（evaluateCarve/carveField）は欄の extras を丸ごと再構築するため、
+/// 選択中の part（"extra:<n>"）が古いままだと存在しない/別の領域を指しうる。
+/// 添字が無効なまま applySelRect/nudge/removeSel を動かすと、
+/// 「何も変わっていないのに markDirty だけ立つ」（無効なら何も変えない）
+/// または「別の領域が動く/消える」（有効に見えても中身が別物）という
+/// 2種類の事故になる——後者は carve 直後に選択をクリアする対策
+/// （Editor コンポーネント側）と合わせて防ぐ。
+export function extraIndexValid(
+  f: { extras?: Rect[] } | undefined, i: number): boolean {
+  return !!f && Number.isInteger(i) && i >= 0 && i < (f.extras?.length ?? 0);
+}
+
+/// expand-page が返す位置合わせ失敗の理由（ぺこら担当・core 側で追加中）。
+/// 欠落時は旧コア互換で "align" 扱いにフォールバックする。
+export type ExpandAlignReason = "template" | "align" | "image" | "other";
+
+/// PDF/画像を開いた直後の位置合わせ結果から、案内文言を出し分ける
+/// （5巡目レビュー・いろは指摘）。従来は aligned:false を一律「位置合わせ
+/// できませんでした…読み取り時に自動補正されるため枠は動かさないでください」
+/// と案内していたが、これはテンプレート破損由来の失敗にも出てしまい、
+/// 「動かさず待てば直る」という誤った案内になっていた——実際にはテンプレを
+/// 直さない限り読み取りも失敗し続ける。reason で原因を区別し、
+/// テンプレ由来のときだけ赤帯（isError）で「自動補正される」と言わない
+/// 文言に切り替える。align 由来（または reason 欠落＝旧コア互換）は
+/// 現行文言を維持する。
+export function expandAlignNotice(
+  aligned: boolean, reason: ExpandAlignReason | undefined, pageNote: string):
+  { text: string; isError: boolean } {
+  if (aligned) {
+    return { text: `（${pageNote}位置合わせ済み・枠が記入欄に重なって表示されます）`,
+             isError: false };
+  }
+  const r = reason ?? "align";
+  if (r === "template") {
+    return {
+      text: `（${pageNote}テンプレートを読み込めないため位置合わせできませんでした。`
+        + "テンプレートが壊れている可能性があります。編集を続ける前にテンプレートの検証"
+        + "（保存して検証）を行ってください）",
+      isError: true,
+    };
+  }
+  if (r === "align") {
+    return {
+      text: `（${pageNote}位置合わせできませんでした。枠が少しズレて見えても、` +
+        "読み取り時に自動補正されるため枠は動かさないでください）",
+      isError: false,
+    };
+  }
+  // image / other: 原因を「テンプレのせい」とも「自動補正される」とも
+  // 言い切らない中立文言（reason 拡張時に安全側へ倒す）
+  return {
+    text: `（${pageNote}位置合わせできませんでした。原因は特定できていません。` +
+      "画像やテンプレートの内容を確認してください）",
+    isError: false,
+  };
 }
 
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
@@ -406,6 +533,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // 減っていないか・座標やサイズが変わっていないかを確認する
   // （issue #55・#59 QA再判定条件④）。保存成功のたびに新しい基準へ更新する
   const [loadedExcls, setLoadedExcls] = useState<ExclSnapshot[]>([]);
+  // 読み込み時点の欄数・金額列数（issue #59 H-9・最後の検知網）。除外数は
+  // 上の loadedExcls.length で足りるためここには持たない
+  const [loadedCounts, setLoadedCounts] = useState({ fields: 0, amountCells: 0 });
   // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
   const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
   // パネルで触っている列（canvas ハイライト用・レビュー D-3）
@@ -577,7 +707,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     ctx.restore();
   }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol]);
 
-  useEffect(() => { draw(); }, [draw]);
+  // draw() は全欄のラベルをループで measureText トリムするため、ドラッグ中の
+  // mousemove のたびに毎回同期実行すると重い（issue #60 M-3・実測で back面
+  // 140セル中84セル以上がトリム必至）。requestAnimationFrame へ間引くことで、
+  // 同じ描画フレーム内に複数回 fields 等が更新されても実際の描画は1回で済む
+  // ——ラベル単位のメモ化（zoom×field_idキャッシュ）も検討したが、
+  // 参照先ラベルなど text がfield_idそのものでない呼び出しがあり
+  // キー設計が複雑になるため、より単純なこちらを選んだ（過剰設計回避）
+  useEffect(() => {
+    const raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, [draw]);
   useEffect(() => {
     const onResize = () => draw();
     window.addEventListener("resize", onResize);
@@ -602,6 +742,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!p) return;
     let imagePath = p;
     let note = "";
+    // テンプレ破損由来の位置合わせ失敗は赤帯で出す（いろは5巡目指摘）。
+    // im.onload が setErrMsg("") を無条件に呼ぶため、そこで上書きされない
+    // よう変数で持ち回り、onload 側で反映する
+    let alignErr = "";
     if (p.toLowerCase().endsWith(".pdf")) {
       // スキャン PDF はコアで1ページ目を 300dpi 展開してから表示する
       //（run と同じ dpi＝テンプレート座標系と一致・issue #19）
@@ -627,14 +771,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         }
         imagePath = ev.page_path;
         // 位置合わせ済みの画像なら、テンプレートの枠が最初から記入欄の上に
-        // 乗る。合わせられなかった紙は生画像なので、枠のズレを手で直さない
-        // よう注意を出す（run は位置ズレを自動補正する——手直しはテンプレ
-        // 変更扱いになり再割付・再送信の確認まで誘発する）
+        // 乗る。合わせられなかった紙は生画像なので、原因（reason）に応じて
+        // 案内を出し分ける（いろは5巡目指摘。expandAlignNotice 参照）
         const pageNote = ev.pages > 1 ? `PDF の 1/${ev.pages} ページ目・` : "";
-        note = ev.aligned
-          ? `（${pageNote}位置合わせ済み・枠が記入欄に重なって表示されます）`
-          : `（${pageNote}位置合わせできませんでした。枠が少しズレて見えても、` +
-            "読み取り時に自動補正されるため枠は動かさないでください）";
+        const align = expandAlignNotice(ev.aligned, ev.reason, pageNote);
+        if (align.isError) alignErr = align.text; else note = align.text;
       } catch (e) {
         setErrMsg(`PDF を開けませんでした: ${e}`);
         setMsg("");
@@ -656,7 +797,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       imgRef.current = im;
       setImgSize({ w: im.naturalWidth, h: im.naturalHeight });
       setImgPath(imagePath);
-      setErrMsg("");
+      // テンプレ破損由来の位置合わせ失敗（alignErr）があれば赤帯を残す。
+      // 無ければ従来どおりクリアする
+      setErrMsg(alignErr);
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       draw();
     };
@@ -702,6 +845,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
     setLoadedExcls(es.map((e) => ({ id: e.id, rect: e.rect })));
+    // 読み込み時点の欄数・金額列数を控える（issue #59 H-9）。保存時に
+    // これより減っていれば静かに数字が変わるだけでなく警告を出せる
+    setLoadedCounts({ fields: fs.length, amountCells: countAmountCells(fs, ts) });
   };
 
   // 起動時に出荷テンプレート（run が既定で使う templates/chouhyo-v1.json）を
@@ -842,7 +988,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     // 保存直前に重なりを一括解消する。ドロップ時の自動切り抜きは
     // 「置いた瞬間」にしか効かないため、開き直した下書きなど**以前から
     // 重なったままの状態**はここで拾う（ユーザー報告 2026-08-31）
-    const resolved = resolveOverlaps(fields);
+    const resolved = resolveOverlaps(fields, splitY);
     if (resolved.carved.length) {
       setFields(resolved.fields);
       setSel(null);
@@ -905,6 +1051,18 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         // 数で代える
         const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
         const exclCount = tpl.exclusions ?? currentExclCount;
+        // 読み込み時点との差分（issue #59 H-9・最後の検知網）。列数決め打ち
+        // 廃止の代替「見える化」に比較対象が無く、欄が減っても数字が
+        // 変わるだけで気づけなかった。金額列数は verify の tpl.amount_cells
+        // （無ければ現在の状態から同じ数え方で代える）と、読み込み時点の
+        // buildTemplate 由来の数を比べる
+        const currentFieldCount = tpl.cells ?? resolved.fields.length;
+        const currentAmountCells = tpl.amount_cells ?? countAmountCells(resolved.fields, tables);
+        const diff = saveDiffNote(
+          { fields: loadedCounts.fields, amountCells: loadedCounts.amountCells,
+            exclusions: loadedExcls.length },
+          { fields: currentFieldCount, amountCells: currentAmountCells, exclusions: exclCount });
+        setLoadedCounts({ fields: currentFieldCount, amountCells: currentAmountCells });
         setMsg(carveNote + `保存＋コア検証 OK（`
           + (tpl.cells != null
              ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
@@ -912,17 +1070,20 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
              : `${tpl.columns} 列`)
           + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
           + `・除外 ${exclCount}`
-          + `）: ${p}`);
+          + `）: ${p} ／ 読み込み時から: ${diff.text}`);
         // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
         // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
         // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）
         const coreWarnings: string[] = tpl.warnings ?? [];
-        if (coreWarnings.length) {
-          const shown = coreWarnings.slice(0, 3).join("／");
-          const more = coreWarnings.length > 3 ? `（ほか ${coreWarnings.length - 3} 件）` : "";
-          const coreWarnNote = `コアからの警告: ${shown}${more}`;
-          setWarnMsg([carveWarnNote, coreWarnNote].filter(Boolean).join(" ／ "));
-        }
+        const coreWarnNote = coreWarnings.length
+          ? `コアからの警告: ${coreWarnings.slice(0, 3).join("／")}`
+            + (coreWarnings.length > 3 ? `（ほか ${coreWarnings.length - 3} 件）` : "")
+          : null;
+        const decreaseWarnNote = diff.decreasedLabels.length
+          ? `読み込み時点より減った項目があります: ${diff.decreasedLabels.join("、")}。`
+            + "意図した変更か確認してください。"
+          : null;
+        setWarnMsg([carveWarnNote, coreWarnNote, decreaseWarnNote].filter(Boolean).join(" ／ "));
       } else {
         // NG のときは元ファイルを無傷のまま保つ。検証NGを成功と同じ灰色の
         // 小さい文字で出すと気づかれない（レビュー D-7）ため赤帯へ出し、
@@ -1007,14 +1168,34 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const touches = [f.rect, ...(f.extras ?? [])]
         .some((r) => _rectsTouch(r, claim));
       if (!touches) continue;
-      const verdict = evaluateCarve(f, claim);
+      const verdict = evaluateCarve(f, claim, splitY);
       if (verdict.tier === "skip") { skipped.push(verdict.reason); continue; }
       carved.set(f.uid, verdict.field);
       carvedNames.push(f.field_id);
       if (verdict.tier === "warn") warned.push({ id: f.field_id, reductionPct: verdict.reductionPct });
     }
-    if (carved.size)
-      setFields((fs) => fs.map((f) => carved.get(f.uid) ?? f));
+    if (carved.size) {
+      // Ctrl+Z の履歴は通常 400ms 静止後にしか積まれない（下の履歴 useEffect）。
+      // carve 直後（400ms 以内）に押すと history.past が空で無反応だった
+      // のに、トーストは「Ctrl+Z で戻せます」と案内していた（issue #61 L-5）。
+      // carve 適用の直前に今のスナップショットを即時に履歴へ積んでおく。
+      // carvedFields と同じ参照を snapRef にも入れておくことで、後で
+      // デバウンス側の useEffect が動いても「差分なし」と判定され
+      // 二重には積まれない
+      if (snapRef.current) {
+        history.current.past.push(snapRef.current);
+        if (history.current.past.length > 100) history.current.past.shift();
+        history.current.future = [];
+      }
+      const carvedFields = fields.map((f) => carved.get(f.uid) ?? f);
+      snapRef.current = { fields: carvedFields, tables, excls, splitY };
+      setFields(carvedFields);
+      // carve で extras が総入れ替えになった欄を選択中だと、part の添字が
+      // 存在しない/別の領域を指すようになる（issue #60 M-4）。安全側へ倒し、
+      // carve された当人を選択中のときだけ選択を外す（無関係な選択までは
+      // 消さない）
+      if (sel && sel.type === "field" && carved.has(sel.uid)) setSel(null);
+    }
     if (carvedNames.length) {
       setMsg(`重なった欄を自動で切り抜きました: ${carvedNames.join("、")}（Ctrl+Z で戻せます）`);
       markDirty(true);
@@ -1282,6 +1463,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                                 x: f.fallback.x + dx, y: f.fallback.y + dy } } : f));
       else if (sel.part?.startsWith("extra:")) {
         const i = Number(sel.part.slice(6));
+        // 添字が古いまま（carve で extras が再構築された後）だと存在しない/
+        // 別の領域を指す。無効なら何もしない（issue #60 M-4）
+        if (!extraIndexValid(fields.find((f) => f.uid === sel.uid), i)) return;
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? { ...f, extras: (f.extras ?? []).map((ex, j) =>
               j === i ? { ...ex, x: ex.x + dx, y: ex.y + dy } : ex) } : f));
@@ -1405,6 +1589,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           ? { ...f, fallback: r } : f));
       else if (sel.part?.startsWith("extra:")) {
         const i = Number(sel.part.slice(6));
+        // 添字が古いまま（carve 後）だと存在しない/別の領域を指す。
+        // 無効なら何もしない（issue #60 M-4）
+        if (!extraIndexValid(fields.find((f) => f.uid === sel.uid), i)) return;
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? { ...f, extras: (f.extras ?? []).map((ex, j) => j === i ? r : ex) } : f));
       } else
@@ -1429,6 +1616,13 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           ? { ...f, fallback: undefined } : f));
       else if (sel.part?.startsWith("extra:")) {
         const i = Number(sel.part.slice(6));
+        // 添字が古いまま（carve 後）だと、無検査の filter は何も消さない
+        // まま markDirty だけ立てていた（issue #60 M-4）。選択自体は
+        // 古いので外すが、データは変更しない
+        if (!extraIndexValid(fields.find((f) => f.uid === sel.uid), i)) {
+          setSel(null);
+          return;
+        }
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? { ...f, extras: (f.extras ?? []).filter((_ex, j) => j !== i) } : f));
       } else
@@ -1605,8 +1799,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, x_offset: +e.target.value } : v) })} />
             <input className="w4" type="number" value={c.width} title="width"
-              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
-                j === i ? { ...v, width: +e.target.value } : v) })} />
+              onChange={(e) => {
+                const newWidth = +e.target.value;
+                // 選択式列は width を狭める/広げるとマークが列に対して
+                // ずれる。#48 の単発欄と同じ考え方で比率追従させる
+                // （issue #60 M-8・GUI で作れて GUI で直せない状態を防ぐ）
+                updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                  j === i ? { ...v, width: newWidth,
+                    marks: v.kind === "choice"
+                      ? remapColumnMarks(v.marks, v.width, newWidth) : v.marks } : v) });
+              }} />
             <select value={c.kind} title="列の種類"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 // 選択式へ切り替えたら正規化・分割は値ごと落とす。残すと画面に

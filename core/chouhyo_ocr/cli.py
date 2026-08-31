@@ -195,11 +195,12 @@ def cmd_expand_page(args) -> int:
     # 退避し aligned:false で伝える。編集を止めるほどの失敗ではない。
     page_path = pages[0].resolve()
     aligned = False
+    fail_reason: str | None = None
     try:
         from PIL import Image
 
         from .align import AlignError, align_page
-        from .template import load_template
+        from .template import TemplateError, load_template
         template = load_template(args.template)
         with Image.open(page_path) as img:
             img.load()
@@ -209,22 +210,34 @@ def cmd_expand_page(args) -> int:
             # 到達しない——expand-page からしか呼ばれない分岐
             _faces, composite = align_page(img, template, mask=not args.no_mask)
         # 名前は決め打ちで毎回上書き（同じ紙を開き直すたびに増やさない）。
-        # expand() の stale 掃除は「<stem>-<数字>」の完全一致だけを消すため、
-        # この名前が巻き添えになることはない
+        # 別ページを開き直すと旧ページの -aligned.png は上書きされず残るため、
+        # expand() の stale 掃除（<stem>-<数字> 完全一致）に -aligned.png 用の
+        # 分岐を足して一緒に消している（#60 M-7・帳票原本の複製が滞留する問題）
         out = out_dir / f"{src.stem}-p{args.page:04d}-aligned.png"
         composite.save(out, format="PNG", compress_level=3)
         page_path = out.resolve()
         aligned = True
+    # テンプレート破損・位置合わせ失敗・画像不正のいずれも生画像で続行する
+    # （契約は変えない・GUI は aligned:false のまま編集を続けられる）。以前は
+    # bare except Exception 一本で全部を同じ aligned:false に潰していたため、
+    # テンプレート破損（設定ミス・要修正）と位置合わせ失敗（紙の品質）を
+    # GUI 側で区別できなかった。reason に**種別のみ**を載せる——例外メッセージ
+    # 本文は出さない（パスに入力ファイル名が乗りうる・既存方針どおり）
+    except TemplateError:
+        fail_reason = "template"
+    except AlignError:
+        fail_reason = "align"
+    except (OSError, ValueError):
+        fail_reason = "image"
     except Exception:  # noqa: BLE001
-        # テンプレート破損・位置合わせ失敗・画像不正のいずれも生画像で続行。
-        # 例外メッセージは出さない（パスに入力ファイル名が乗りうる）
-        pass
+        fail_reason = "other"
     # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
     # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
     # 編集画面が「展開中…」のまま止まった原因・2026-08-28）
     _progress({"event": "expand_page", "ok": True,
                "page_path": str(page_path),
                "aligned": aligned,
+               **({"reason": fail_reason} if fail_reason else {}),
                **({"pages": total} if total is not None else {})})
     return 0
 
@@ -234,17 +247,60 @@ def cmd_debug_images(args) -> int:
 
     どの文字がどの欄に入ったか／なぜ〓になったかを1ページ1枚の PNG で示す。
     出力は既定で workdir/debug/（読取値が画像に描かれるため中間データ扱い）。
+
+    2026-08-31（5巡目 第3〜4段・#59 H-5・#60 M-1①④）:
+    - --out に同期フォルダ検査を適用する（H-5）。読取値・信頼度を焼き込んだ
+      画像は中間データより濃い個人情報で、既定の workdir/debug/ は purge・
+      verify の同期検査の対象だが --out は検査の外を通っていた
+    - render/remap と同じテンプレート整合ゲート（check_reusable）を通す
+      （M-1①）。通さないと、テンプレート変更後に「現テンプレの枠」×「旧
+      テンプレ割付の〓判定」を1枚に重ねた嘘の可視化を返してしまう
+    - 生成0件を ok:true, count:0 で固定せず、理由付きの ok:false で返す
+      （M-1④）。存在しないページ ID 指定は該当なしと明示する
     """
+    from .align import geometry_hash, template_hash as _tpl_hash
+    from .columns import validate_v1
     from .config import load_config
     from .debug_images import write_debug_images
+    from .paths import is_cloud_synced_path
+    from .pipeline import check_reusable
     from .store import Store
     from .template import load_template
     cfg = load_config(args.config)
     log.init(cfg.log_dir)
-    template = load_template(args.template)
     wd = Path(cfg.workdir)
     out_dir = Path(args.out) if args.out else wd / "debug"
+    # --out の同期フォルダ検査（#59 H-5）。既定（workdir/debug）は従来どおり
+    # 検査しない——workdir 自体が同期フォルダ配下かは verify が別途見ている
+    if args.out and is_cloud_synced_path(out_dir):
+        _progress({"event": "debug_images", "ok": False, "reason": "synced_path",
+                   "error": "--out が同期フォルダ配下を指している。読取値を焼き込んだ"
+                            "画像は要配慮個人情報を含むため、同期対象外の場所を指定する",
+                   "synced_dir": str(out_dir)})
+        return 1
+    template = load_template(args.template)
+    validate_v1(template)
+    raw = json.loads(Path(args.template).read_text(encoding="utf-8"))
     store = Store(wd / "intermediate.sqlite")
+    # テンプレート変更後の「旧割付×新枠」の嘘可視化を拒否する（#60 M-1①）。
+    # render と同じ整合ゲート——check_template=True で cell の割付内容も
+    # テンプレート由来かを見る。不一致なら OperationRefused（main() が拒否
+    # として処理し、store は check_reusable 内で閉じられる）
+    check_reusable(store, geometry_hash(raw), _tpl_hash(raw), check_template=True)
+    all_pages = store.pages()
+    all_ids = {p["page_id"] for p in all_pages}
+    if args.page and args.page not in all_ids:
+        store.close()
+        _progress({"event": "debug_images", "ok": False, "reason": "page_not_found",
+                   "error": f"ページ '{args.page}' が中間データに無い", "count": 0,
+                   "dir": str(out_dir.resolve())})
+        return 0
+    if not all_pages:
+        store.close()
+        _progress({"event": "debug_images", "ok": False, "reason": "no_pages",
+                   "error": "中間データにページが無い（run で処理してから実行する）",
+                   "count": 0, "dir": str(out_dir.resolve())})
+        return 0
     try:
         made = write_debug_images(
             store, template, wd / "aligned", out_dir,
@@ -252,6 +308,12 @@ def cmd_debug_images(args) -> int:
             page_ids=[args.page] if args.page else None)
     finally:
         store.close()
+    if not made:
+        _progress({"event": "debug_images", "ok": False, "reason": "no_aligned_images",
+                   "error": "位置合わせ済み画像が無い（未処理、または位置合わせ失敗の"
+                            "ページのみ）ため、可視化画像を1枚も作れなかった",
+                   "count": 0, "dir": str(out_dir.resolve())})
+        return 0
     _progress({"event": "debug_images", "ok": True,
                "count": len(made), "dir": str(out_dir.resolve())})
     for m in made:

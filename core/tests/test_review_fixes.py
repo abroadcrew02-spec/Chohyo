@@ -104,6 +104,10 @@ def test_amount_count_is_reported_not_rejected(tmp_path):
     まで拒否してしまうため。代わりに verify と編集画面の保存結果が
     「金額 N 列」を必ず表示し、N=0 を見た管理者が気づける（N-1/N-4 の
     検知経路をエラーから表示へ移した）。
+
+    このテストは「拒否されないこと」だけを固定する。読み込み時点との差分を
+    見て N=0 を能動的に検知するのは GUI 側の前後差分表示の役目（#59 H-9・
+    フブキが実装中）——コア側は N を計算して見える化するところまでが責務。
     """
     from chouhyo_ocr.columns import amount_cell_count, validate_v1
     ok = _template_with(tmp_path)
@@ -180,6 +184,62 @@ def test_expand_page_cli_returns_png(tmp_path):
     ev2 = next(json.loads(l) for l in r2.stdout.splitlines()
                if l.strip() and "expand_page" in l)
     assert ev2["ok"] is False and "ページ 5 が無い" in ev2["error"]
+
+
+def _expand_page_cfg(tmp_path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"workdir": str(tmp_path / "wd"),
+                                    "log_dir": str(tmp_path / "logs")}),
+                        encoding="utf-8")
+    return cfg_path
+
+
+def test_expand_page_reason_is_align_on_alignment_failure(tmp_path, capsys):
+    """位置合わせ失敗（罫線アンカーが取れない白紙画像）は reason:"align"（起票漏れ分）。
+
+    以前は TemplateError・AlignError・画像不正を全て同じ aligned:false に潰す
+    bare except で、GUI 側が失敗種別を区別できなかった。
+    """
+    from PIL import Image
+
+    from chouhyo_ocr import cli
+    src = tmp_path / "sample.pdf"
+    Image.new("L", (200, 280), 255).save(src)  # 罫線が無く align_page が失敗する
+    cfg_path = _expand_page_cfg(tmp_path)
+    r = cli.main(["--config", str(cfg_path), "expand-page", "--input", str(src)])
+    assert r == 0
+    ev = next(json.loads(l) for l in capsys.readouterr().out.splitlines()
+              if l.strip() and "expand_page" in l)
+    assert ev["ok"] is True and ev["aligned"] is False
+    assert ev["reason"] == "align"
+    # 例外メッセージ本文は出さない（パスに入力ファイル名が乗りうる・既存方針）
+    assert "error" not in ev
+
+
+def test_expand_page_reason_is_template_on_broken_template(tmp_path, capsys):
+    """テンプレート破損（schema_version 不正）は reason:"template"（align とは区別）。"""
+    from PIL import Image
+
+    from chouhyo_ocr import cli
+    from chouhyo_ocr.paths import app_root
+    src = tmp_path / "sample.pdf"
+    Image.new("L", (200, 280), 255).save(src)
+    cfg_path = _expand_page_cfg(tmp_path)
+
+    raw = json.loads((app_root() / "templates" / "chouhyo-v1.json")
+                     .read_text(encoding="utf-8"))
+    raw["schema_version"] = 2
+    bad_tpl = tmp_path / "bad.json"
+    bad_tpl.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    r = cli.main(["--config", str(cfg_path), "expand-page", "--input", str(src),
+                  "--template", str(bad_tpl)])
+    assert r == 0
+    ev = next(json.loads(l) for l in capsys.readouterr().out.splitlines()
+              if l.strip() and "expand_page" in l)
+    assert ev["ok"] is True and ev["aligned"] is False
+    assert ev["reason"] == "template"
+    assert "error" not in ev
 
 
 def test_choice_with_subfields_keeps_row_length(tmp_path):
@@ -598,6 +658,34 @@ def test_expand_page_scoped_stale_removal(tmp_path):
     assert len(p2) == 1
     # 1ページ目の PNG が残っている（旧実装は page 指定を無視して全部消していた）
     assert p1[0].exists(), "page=2 の展開が page=1 の PNG を消した"
+
+
+def test_expand_page_stale_removal_includes_aligned_png(tmp_path):
+    """page 指定の展開が同じページの -aligned.png も stale として消す（#60 M-7）。
+
+    テンプレート編集画面（cli.cmd_expand_page）が editor_pages/ に作る位置
+    合わせ済み下地「<stem>-p{page:04d}-aligned.png」は、従来の stale 掃除
+    （<stem>-<数字> 完全一致）の対象外で purge するまで永久に残っていた。
+    帳票原本の複製（個人情報）が滞留する問題への対応。
+    """
+    from PIL import Image
+
+    from chouhyo_ocr.ingest import expand
+    src = tmp_path / "doc.pdf"
+    Image.new("L", (100, 140), 255).save(src)  # 1ページの最小 PDF
+    out = tmp_path / "editor_pages"
+    out.mkdir()
+    # cli.cmd_expand_page が作る名前を模す（page=1 用の固定名）
+    stale_aligned = out / f"{src.stem}-p0001-aligned.png"
+    stale_aligned.write_bytes(b"stale-aligned")
+    other_page_aligned = out / f"{src.stem}-p0002-aligned.png"
+    other_page_aligned.write_bytes(b"other-page-aligned")
+
+    expand(src, dpi=36, out_dir=out, page=1)
+    assert not stale_aligned.exists(), "旧 -aligned.png が掃除対象外のまま残った"
+    # page=1 の展開が page=2 の -aligned.png を巻き添えにしない
+    # （レビュー M-4 と同じページ指定スコープの原則）
+    assert other_page_aligned.exists(), "page=1 の展開が page=2 の -aligned.png を消した"
 
 
 # --- detect-grid の防御（レビュー M-9・画像なし／読めない） -------------------

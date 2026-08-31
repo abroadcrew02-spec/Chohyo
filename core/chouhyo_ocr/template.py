@@ -294,6 +294,76 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
     return warnings
 
 
+# 受け皿間の死角検出（W-3・#61 L-4・2026-08-31）。出荷テンプレートの実測で、
+# 隣接する2つの受け皿（欄の主/追加領域・参照先の枠）の間にわずかな隙間が
+# 残っている箇所が見つかった（例: person_郵便番号1 の右端 x=648 と
+# person_住所1 の左端 x=649 の間の1px列）。この隙間に文字が落ちると
+# unassigned_other へ消え、どの欄の値にもならない。テンプレート座標そのものは
+# 変えない（geometry_hash が変わり全ページ再送信になるため・データ修正は
+# 管理者判断）——ここでは見える化のみ行う。拒否はしない（W-1/W-2 と同じ方針）。
+#
+# 誤検知の氾濫を避けるため:
+# - 比較対象は受け皿どうしに限定し、除外領域は含めない。除外領域はページ端の
+#   余白マスクなど「受け皿が存在しない領域」を大量に含み、比較すると無関係な
+#   欄すべてに警告が出てしまう。除外領域と受け皿の重なりは既存の W-1/W-2 が
+#   別途カバーする
+# - 同じ欄自身の主/追加領域/参照先どうしは比較しない。L字・コの字の欄
+#   （extra_rects）は物理的に離れた矩形を意図的に1つの欄として束ねる機能で、
+#   その間に隙間があるのは design 上ふつう——ここを警告すると当のL字機能が
+#   使いものにならなくなる
+# - 「同じ y 帯で隣接する」ペアだけを見る。隣接の定義: 2つの受け皿の y 範囲が
+#   重なり（同じ帯にある）、一方が他方の右にあり（x が重ならない）、かつ
+#   その間（重なる y 帯の中）に割り込む第三の受け皿が無いこと。この定義に
+#   より、離れた無関係な欄どうしを誤って「隣接」と判定することはない
+#   （面全体の総当たりではなく、実際に隣り合うペアだけを警告する）
+GAP_MIN_PX = 1  # 0px（接触）は死角ではない。1px 以上を隙間とみなす
+
+
+def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
+    by_face: dict[str, list[tuple[str, str, Rect]]] = {}
+    for c in cells:
+        for r in c.all_rects():
+            by_face.setdefault(c.face_id, []).append((c.field_id, "欄", r))
+        if c.fallback_rect is not None:
+            by_face.setdefault(c.face_id, []).append(
+                (c.field_id, "参照先の枠", c.fallback_rect))
+
+    warnings: list[str] = []
+    for face_id, receptors in by_face.items():
+        n = len(receptors)
+        for i in range(n):
+            id_a, label_a, ra = receptors[i]
+            a_right = ra.x + ra.w
+            for j in range(n):
+                if i == j:
+                    continue
+                id_b, label_b, rb = receptors[j]
+                if id_a == id_b:
+                    continue  # 同じ欄の受け皿どうしは対象外（L字・コの字の設計上の隙間）
+                if rb.x < a_right:
+                    continue  # 右側にある受け皿だけを見る（左方向は逆側から検出される）
+                band_lo, band_hi = max(ra.y, rb.y), min(ra.y + ra.h, rb.y + rb.h)
+                if band_hi - band_lo <= 0:
+                    continue  # 同じ y 帯でない
+                gap = rb.x - a_right
+                if gap < GAP_MIN_PX:
+                    continue
+                blocked = any(
+                    rc.x < rb.x and rc.x + rc.w > a_right
+                    and min(rc.y + rc.h, band_hi) - max(rc.y, band_lo) > 0
+                    for k, (_id_c, _label_c, rc) in enumerate(receptors)
+                    if k != i and k != j)
+                if blocked:
+                    continue  # 間に別の受け皿が挟まっている＝隣接ではない
+                warnings.append(
+                    f"[W-3] {id_a}（{label_a}）と {id_b}（{label_b}）の間に"
+                    f"{gap}px の隙間がある（面 '{face_id}'）。この隙間に書かれた"
+                    "文字はどの欄にも入らず読み取られない")
+                log.warn("adjacent_gap_w3", face_id=face_id, field_a=id_a,
+                         field_b=id_b, gap_px=gap)
+    return warnings
+
+
 def load_template(path: str | Path) -> Template:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -340,11 +410,16 @@ def load_template(path: str | Path) -> Template:
                     rect=_rect(fld["rect"]),
                     kind=fld["kind"],
                     choice_marks=marks,
-                    subfields=(tuple(fld.get("subfields", ()))
-                               if fld["kind"] == "text" else ()),
+                    # 単発欄（fields）に subfields は存在しない——schema の field
+                    # 定義（schema/template.schema.json）は additionalProperties:
+                    # false で subfields プロパティを許可しておらず、スキーマ検証
+                    # （load_template 冒頭）を通過した時点で fld に subfields は
+                    # 絶対に無い。以前はここで fld.get("subfields") を読んでいたが
+                    # 到達不能な分岐だった（#61 L-1）。table 列（_expand_table）の
+                    # subfields は物理と出力の粒度が違うときの正規の装置で、これとは別物
+                    subfields=(),
                     normalize=(fld.get("normalize")
-                               if fld["kind"] == "text" and not fld.get("subfields")
-                               else None),
+                               if fld["kind"] == "text" else None),
                     fallback_rect=(_rect(fld["fallback_rect"])
                                    if fld.get("fallback_rect") is not None else None),
                     extra_rects=tuple(_rect(r)
@@ -507,6 +582,17 @@ def load_template(path: str | Path) -> Template:
                             f"欄の矩形が重なっている（{fid}: {a.field_id} と "
                             f"{b.field_id}）。重なり部分の文字がどちらへ入るかが"
                             "定義順で決まってしまうため、枠を分ける")
+                    if la == lb == "参照先の枠":
+                        # 両方が参照先どうしの重なり（#61 L-3）。以前は下の
+                        # else 分岐へ落ち、実際には重なっていない相手の「欄」を
+                        # 指す文言（「{b} の欄と重なっている」）を出していた——
+                        # 案内どおり欄を動かしても直らない。実際に重なっている
+                        # 対象（互いの参照先）を指す専用の文言にする
+                        raise TemplateError(
+                            f"{a.field_id} と {b.field_id} の参照先の枠どうしが"
+                            f"重なっている（{fid}）。重なった場所の文字は定義順で"
+                            "決まるどちらか一方の参照先にしか入らず、他方の参照先は"
+                            "機能しない。参照先はどの欄・参照先とも重ならない場所に置く")
                     fb_owner, other = (a, b) if la == "参照先の枠" else (b, a)
                     raise TemplateError(
                         f"{fb_owner.field_id} の参照先の枠が {other.field_id} の欄と"
@@ -535,5 +621,6 @@ def load_template(path: str | Path) -> Template:
         record_pages=raw["record"]["pages"],
         faces=tuple(faces),
         cells=tuple(cells),
-        warnings=tuple(_exclusion_overlap_warnings(faces, cells)),
+        warnings=tuple(_exclusion_overlap_warnings(faces, cells)
+                       + _adjacent_gap_warnings(cells)),
     )

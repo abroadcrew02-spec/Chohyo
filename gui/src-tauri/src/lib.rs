@@ -443,9 +443,11 @@ fn read_file_b64(app: AppHandle, picked: State<'_, PickedPaths>,
 #[tauri::command]
 fn read_default_template(app: AppHandle) -> Result<String, String> {
     let p = repo_root(&app)?.join("templates").join("chouhyo-v1.json");
-    std::fs::read_to_string(&p).map_err(|e| {
-        format!("出荷テンプレートを読み込めません（{}）: {}", p.display(), e)
-    })
+    // 絶対パスは webview へ返さない。既存の read_text/write_text と同じ
+    // 粒度（固定文言＋OS エラーの Display 表現のみ）に揃える（issue #61 L-2）。
+    // 実害は情報開示のみ（CSP で外部送出は塞がれている）だが、他コマンドと
+    // 不揃いだった
+    std::fs::read_to_string(&p).map_err(|e| format!("出荷テンプレートを読み込めません: {e}"))
 }
 
 /// テンプレート JSON の読み出し。**ダイアログで選ばれたパスだけ**に限る。

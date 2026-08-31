@@ -59,6 +59,16 @@ export function noticeFor(ev: Record<string, any>): string | null {
     case "remap_warning":
       return `${ev.page_id}: 位置合わせ済みの画像が見つからないセルが `
         + `${ev.missing_aligned_cells} 件あります。該当セルは〓になります。`;
+    // #46 で追加されたファイル改名イベント（pipeline.py）。#52 M-3 の修正で
+    // 3件足したが、この2件が default 節に落ちて捨てられていた（issue #60 M-2）
+    case "source_renamed":
+      return `${ev.was} は ${ev.file} に改名されたとみなし、`
+        + `${ev.pages} 件のページを引き継ぎました（再送信はしません）。`;
+    case "rename_fallback":
+      // コア側コメント「送信（課金）が動く分岐なので黙らない」と明言して
+      // 出しているイベント（pipeline.py:373）。文言も再送信・課金に触れる
+      return `${ev.was} と同じ内容の ${ev.file} を改名として引き継げなかったため、`
+        + `新規入力として送信します（API 送信＝課金が発生します）。`;
     default:
       return null;
   }

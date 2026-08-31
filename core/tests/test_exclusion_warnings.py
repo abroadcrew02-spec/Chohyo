@@ -114,10 +114,18 @@ def test_cli_verify_reports_warnings_as_string_list(tmp_path, capsys):
     assert tpl_ev["ok"] is True
     assert isinstance(tpl_ev["warnings"], list)
     assert all(isinstance(w, str) for w in tpl_ev["warnings"])
-    assert len(tpl_ev["warnings"]) == 3
+    # W-1（除外×受け皿の重なり）3件 + W-3（受け皿間の死角・#61 L-4）12件。
+    # 内訳は他のテスト（本ファイルの test_shipped_template_has_three_w1_and_no_w2・
+    # test_template.py 側の W-3 個別テスト）が別途固定する
+    assert len(tpl_ev["warnings"]) == 15
 
 
 def test_cli_verify_warnings_empty_for_overlap_free_template(tmp_path, raw, capsys):
+    """除外領域を全て外すと W-1/W-2（除外×受け皿の重なり）は出ない。
+
+    W-3（受け皿間の隙間・#61 L-4）は除外領域に依存しない別カテゴリの警告
+    なので、この操作の影響を受けず残る（全 warnings が空になるわけではない）。
+    """
     for face in raw["faces"]:
         face["exclusions"] = []
     p = tmp_path / "clean.json"
@@ -126,7 +134,8 @@ def test_cli_verify_warnings_empty_for_overlap_free_template(tmp_path, raw, caps
     cli.main(["--config", str(cfg_path), "verify", "--template", str(p)])
     events = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
     tpl_ev = next(e for e in events if e.get("check") == "template")
-    assert tpl_ev["warnings"] == []
+    assert not any(w.startswith("[W-1]") or w.startswith("[W-2]")
+                   for w in tpl_ev["warnings"])
 
 
 def test_w1_only_when_extra_rect_overlaps_without_fallback(tmp_path, raw):

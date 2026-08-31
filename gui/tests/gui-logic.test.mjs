@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -227,6 +227,24 @@ test("#52 STATUS_JA に重複スキップの日本語がある", () => {
   const ja = STATUS_JA["スキップ（重複）"];
   assert.ok(ja, "STATUS_JA に「スキップ（重複）」が無い");
   assert.ok(ja.includes("〓"), ja);
+});
+
+// ---------------------------------------------------------------- issue #60 M-2
+// #46 で追加された source_renamed / rename_fallback（pipeline.py）が
+// #52 M-3 の3件と一緒に拾われず default 節で捨てられていた（拾い漏れ）
+test("#60 source_renamed が「実行時のお知らせ」になる（再送信はしない旨）", () => {
+  const t = noticeFor({ event: "source_renamed", file: "b.pdf", was: "a.pdf", pages: 3 });
+  assert.ok(t, "null が返っている（イベントを捨てている）");
+  assert.ok(t.includes("a.pdf") && t.includes("b.pdf") && t.includes("3"), t);
+});
+
+test("#60 rename_fallback が「実行時のお知らせ」になる（課金に触れる）", () => {
+  // コア側コメント「送信（課金）が動く分岐なので黙らない」と明言して
+  // 出しているイベント。文言にも再送信・課金の趣旨が要る
+  const t = noticeFor({ event: "rename_fallback", file: "b.pdf", was: "a.pdf" });
+  assert.ok(t, "null が返っている（イベントを捨てている）");
+  assert.ok(t.includes("a.pdf") && t.includes("b.pdf"), t);
+  assert.ok(t.includes("課金"), "課金に触れていない: " + t);
 });
 
 // ---------------------------------------------------------------- issue #47
@@ -563,6 +581,124 @@ test("resolve-T25: 切り抜きの3段が resolveOverlaps でも同じ閾値で�
   assert.ok(r.skipped[0].includes("V40") && r.skipped[0].includes("30%"), r.skipped[0]);
 });
 
+// ---------------------------------------------------------------- issue #59 H-2
+// evaluateCarve: splitY をまたぐ切り抜き（表裏の面移動）は自動調整しない
+test("evaluateCarve: splitY 直上の欄が切り抜きで下断片主体になると面またぎで skip", () => {
+  const splitY = 200;
+  // front面（y<200）に属する欄。上側を削ると残る断片が y>=200（back面）に
+  // 落ちる——carveField は面を意識せず最大断片を主 rect にするだけなので、
+  // 面が黙って front→back へ移る（issue #59 H-2）
+  const F = { uid: "f", field_id: "境界欄", kind: "text",
+              rect: { x: 0, y: 190, w: 100, h: 100 }, marks: [] };
+  const claim = { x: -10, y: 150, w: 120, h: 55 };  // y:150〜205 を削る
+  const withoutSplit = evaluateCarve(F, claim);
+  assert.notEqual(withoutSplit.tier, "skip",
+    "splitY を渡さない場合は面判定をしない（減少率15%相当で本来は warn）");
+  const withSplit = evaluateCarve(F, claim, splitY);
+  assert.equal(withSplit.tier, "skip", "面をまたぐなら減少率に関わらず skip のはず");
+  assert.ok(withSplit.reason.includes("境界欄") && withSplit.reason.includes("面をまたぐ"),
+    withSplit.reason);
+  assert.ok(withSplit.reason.includes("CSV"), withSplit.reason);
+});
+
+test("evaluateCarve: splitY を渡しても面が変わらない切り抜きはそのまま", () => {
+  const splitY = 200;
+  const F = { uid: "f", field_id: "同面欄", kind: "text",
+              rect: { x: 0, y: 0, w: 100, h: 100 }, marks: [] };  // front のまま
+  const v = evaluateCarve(F, { x: -10, y: -10, w: 15, h: 120 }, splitY);
+  assert.equal(v.tier, "auto");
+});
+
+test("resolve: splitY を渡すと保存時の一括解消でも面またぎ切り抜きを止める", () => {
+  const splitY = 200;
+  const X = { uid: "x", field_id: "X", kind: "text",
+              rect: { x: 500, y: 500, w: 10, h: 10 }, marks: [],
+              fallback: { x: -10, y: 150, w: 120, h: 55 } };
+  const F = { uid: "f", field_id: "境界欄", kind: "text",
+              rect: { x: 0, y: 190, w: 100, h: 100 }, marks: [] };
+  const r = resolveOverlaps([X, F], splitY);
+  assert.deepEqual(r.carved, []);
+  assert.equal(r.skipped.length, 1);
+  assert.ok(r.skipped[0].includes("境界欄") && r.skipped[0].includes("面をまたぐ"), r.skipped[0]);
+  const f2 = r.fields.find((v) => v.uid === "f");
+  assert.deepEqual(f2.rect, F.rect, "skip されたので欄は無傷のはず");
+});
+
+// ---------------------------------------------------------------- issue #59 H-9
+test("countAmountCells: normalize=amount の欄・表の列（分割指定なし）を数える", () => {
+  const fields = [
+    { kind: "text", normalize: "amount" },
+    { kind: "text", normalize: "amount" },
+    { kind: "text" },
+    { kind: "choice", normalize: "amount" },  // choice は対象外
+  ];
+  const tables = [
+    { columns: [
+      { kind: "text", normalize: "amount", subfields: "" },
+      { kind: "text", normalize: "amount", subfields: "年,月,日" },  // 分割指定は対象外
+      { kind: "choice", normalize: "amount", subfields: "" },        // choice は対象外
+      { kind: "text", subfields: "" },
+    ] },
+  ];
+  assert.equal(countAmountCells(fields, tables), 3);  // 欄2 + 表列1
+  assert.equal(countAmountCells([], []), 0);
+});
+
+test("saveDiffNote: 減少を検知し、不変なら静か（増減なしは単一の数値のまま）", () => {
+  const loaded = { fields: 194, amountCells: 28, exclusions: 9 };
+  const decreased = saveDiffNote(loaded, { fields: 193, amountCells: 28, exclusions: 9 });
+  assert.ok(decreased.text.includes("欄 194 → 193（-1）"), decreased.text);
+  assert.ok(decreased.text.includes("金額 28"), decreased.text);
+  assert.ok(!decreased.text.includes("金額 28 →"), "不変の項目には矢印を付けない: " + decreased.text);
+  assert.deepEqual(decreased.decreasedLabels, ["欄"]);
+
+  const quiet = saveDiffNote(loaded, loaded);
+  assert.equal(quiet.text, "欄 194・金額 28・除外 9");
+  assert.deepEqual(quiet.decreasedLabels, [], "不変時は静か（警告対象なし）");
+
+  const increased = saveDiffNote(loaded, { fields: 195, amountCells: 28, exclusions: 9 });
+  assert.ok(increased.text.includes("欄 194 → 195（+1）"), increased.text);
+  assert.deepEqual(increased.decreasedLabels, [], "増加は減少扱いしない");
+});
+
+// ---------------------------------------------------------------- issue #60 M-8
+test("remapColumnMarks: width 変更で choice 列のマークが比率追従し、境界を超えない", () => {
+  const CHOICE_MARK_MARGIN_PX = 4;  // template.py の許容マージン
+  const marks = [
+    { value: "昭", x_offset: 0, width: 33 },
+    { value: "平", x_offset: 33, width: 33 },
+    { value: "令", x_offset: 66, width: 33 },
+  ];
+  const oldWidth = 100;
+  for (const newWidth of [60, 150, 27]) {
+    const got = remapColumnMarks(marks, oldWidth, newWidth);
+    const maxEdge = Math.max(...got.map((m) => m.x_offset + m.width));
+    assert.ok(maxEdge <= newWidth + CHOICE_MARK_MARGIN_PX,
+      `newWidth=${newWidth}: マークが列の外へ${maxEdge - newWidth}pxはみ出た`);
+    assert.equal(got.length, 3);
+    got.forEach((m, i) => assert.equal(m.value, marks[i].value, "value は変えない"));
+  }
+});
+
+test("remapColumnMarks: x_offset（列の位置）だけの変化・幅0のマークは対象外", () => {
+  const marks = [{ value: "昭", x_offset: 10, width: 20 }];
+  // widthが変わらなければ元の参照のまま返す
+  assert.equal(remapColumnMarks(marks, 100, 100), marks);
+  assert.deepEqual(remapColumnMarks([], 100, 50), []);
+});
+
+// ---------------------------------------------------------------- issue #60 M-4
+test("extraIndexValid: 範囲内のみ true・存在しない/負の添字は false", () => {
+  const f = { extras: [{ x: 0, y: 0, w: 1, h: 1 }, { x: 1, y: 1, w: 1, h: 1 }] };
+  assert.equal(extraIndexValid(f, 0), true);
+  assert.equal(extraIndexValid(f, 1), true);
+  assert.equal(extraIndexValid(f, 2), false, "carve で extras が減った後の古い添字");
+  assert.equal(extraIndexValid(f, -1), false);
+  assert.equal(extraIndexValid(f, 1.5), false, "整数でない添字");
+  assert.equal(extraIndexValid({ extras: [] }, 0), false);
+  assert.equal(extraIndexValid(undefined, 0), false, "欄自体が見つからない（結合等で消えた）");
+});
+
 // ---------------------------------------------------------------- issue #55
 test("exclusionRegressionNotice: 除外数が減っていれば確認文言・減っていなければ null", () => {
   assert.equal(exclusionRegressionNotice(7, 7), null, "同数は確認不要");
@@ -617,6 +753,40 @@ test("exclusionChangeNotice: 4件以上の座標変化は「ほかN件」に集�
   const notice = exclusionChangeNotice(loaded, current);
   assert.ok(notice.includes("ほか 2 件"),
     "3件表示＋『ほか2件』の集約になっているはず: " + notice);
+});
+
+// ---------------------------------------------------------------- いろは5巡目指摘
+// expand-page の aligned:false 案内を reason で出し分ける
+test("expandAlignNotice: aligned:true は従来どおりの成功文言", () => {
+  const r = expandAlignNotice(true, undefined, "");
+  assert.equal(r.isError, false);
+  assert.ok(r.text.includes("位置合わせ済み"), r.text);
+});
+
+test("expandAlignNotice: reason=template はテンプレ破損を疑う赤帯文言（自動補正とは言わない）", () => {
+  const r = expandAlignNotice(false, "template", "");
+  assert.equal(r.isError, true, "赤帯（errMsg）に出すべき");
+  assert.ok(r.text.includes("テンプレート") && r.text.includes("保存して検証"), r.text);
+  assert.ok(!r.text.includes("自動補正"),
+    "テンプレ破損なのに『待てば自動補正される』と誤案内している: " + r.text);
+});
+
+test("expandAlignNotice: reason=align・reason欠落（旧コア互換）は現行文言を維持", () => {
+  const withReason = expandAlignNotice(false, "align", "PDF の 1/2 ページ目・");
+  const withoutReason = expandAlignNotice(false, undefined, "PDF の 1/2 ページ目・");
+  assert.deepEqual(withReason, withoutReason, "reason 欠落は align 相当にフォールバックするはず");
+  assert.equal(withReason.isError, false);
+  assert.ok(withReason.text.includes("自動補正されるため枠は動かさないでください"), withReason.text);
+  assert.ok(withReason.text.includes("PDF の 1/2 ページ目・"), withReason.text);
+});
+
+test("expandAlignNotice: reason=image/other は中立文言で自動補正を主張しない・赤帯にもしない", () => {
+  for (const reason of ["image", "other"]) {
+    const r = expandAlignNotice(false, reason, "");
+    assert.equal(r.isError, false, reason);
+    assert.ok(!r.text.includes("自動補正"), `${reason}: ` + r.text);
+    assert.ok(!r.text.includes("テンプレートが壊れている"), `${reason}: ` + r.text);
+  }
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

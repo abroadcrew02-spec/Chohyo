@@ -88,6 +88,26 @@ def test_rejects_fallback_overlapping_other_cell(tmp_path, raw):
         load_template(write(tmp_path, raw))
 
 
+def test_fallback_overlap_message_names_both_fallbacks(tmp_path, raw):
+    """両方が参照先どうしの重なりでは、実際に重なっている対象（参照先）を
+    指す文言になる（#61 L-3）。
+
+    従来は else 分岐へ落ち、実際には重なっていない相手側の「欄」を指す文言
+    （『{b} の欄と重なっている』）を出していた。拒否自体は正しく効くが、
+    案内どおり欄を動かしても直らない。
+    """
+    fields = [f for f in raw["faces"][0]["fields"] if f["kind"] == "text"]
+    assert len(fields) >= 2, "検証には text 欄が2つ要る"
+    a, b = fields[0], fields[1]
+    spot = _free_spot(raw)
+    a["fallback_rect"] = dict(spot)
+    b["fallback_rect"] = {"x": spot["x"] + 2, "y": spot["y"] + 2,
+                          "w": spot["w"], "h": spot["h"]}
+    with pytest.raises(TemplateError, match="参照先の枠どうしが") as exc:
+        load_template(write(tmp_path, raw))
+    assert "の欄と重なっている" not in str(exc.value)
+
+
 def test_rejects_fallback_outside_face(tmp_path, raw):
     fld = _first_text_field(raw)
     face_h = raw["faces"][0]["source"]["rect"]["h"]

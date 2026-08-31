@@ -77,6 +77,116 @@ def test_page_filter(worked, tmp_path):
     assert none == []
 
 
+# ---------- cli debug-images（5巡目 第3〜4段・#59 H-5・#60 M-1①④） ----------
+
+def _cli_cfg_path(cfg, tmp_path, name="cli_config.json"):
+    from chouhyo_ocr.config import save_config
+    p = tmp_path / name
+    save_config(cfg, p)
+    return p
+
+
+def test_out_rejects_cloud_synced_path(worked, tmp_path):
+    """--out が同期フォルダ配下だと拒否する（#59 H-5）。
+
+    読取値・信頼度を焼き込んだ画像は中間データより濃い個人情報で、既定の
+    workdir/debug/ は purge・verify の同期検査の対象だが --out は検査の外を
+    通っていた。
+    """
+    from chouhyo_ocr import cli
+    cfg, _ = worked
+    cfg_path = _cli_cfg_path(cfg, tmp_path)
+    synced_out = tmp_path / "OneDrive" / "debug"
+    r = cli.main(["--config", str(cfg_path), "debug-images",
+                  "--template", str(TPL), "--out", str(synced_out)])
+    assert r == 1
+    assert not synced_out.exists(), "拒否されたのに出力先が作られている"
+
+
+def test_out_default_is_not_checked(worked, tmp_path):
+    """既定（--out 省略・workdir/debug）は同期フォルダ検査の対象外（従来どおり）。"""
+    from chouhyo_ocr import cli
+    cfg, _ = worked
+    cfg_path = _cli_cfg_path(cfg, tmp_path)
+    r = cli.main(["--config", str(cfg_path), "debug-images", "--template", str(TPL)])
+    assert r == 0
+
+
+def test_debug_images_refuses_after_template_change(worked, tmp_path, capsys):
+    """テンプレート変更後は check_reusable が拒否する（#60 M-1①）。
+
+    通さないと、変わった枠に旧テンプレ割付の〓判定を重ねた嘘の可視化を
+    出してしまう（render/remap と同じ整合ゲート）。
+    """
+    import json
+
+    from chouhyo_ocr import cli
+    cfg, _ = worked
+    cfg_path = _cli_cfg_path(cfg, tmp_path)
+    raw = json.loads(TPL.read_text(encoding="utf-8"))
+    fld = next(f for f in raw["faces"][0]["fields"] if f["kind"] == "text")
+    fld["rect"]["x"] += 1  # geometry_hash（faces.source/exclusions等）は不変だが
+                           # template_hash（全体）は変わる——#25 の検査対象
+    changed = tmp_path / "changed.json"
+    changed.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    r = cli.main(["--config", str(cfg_path), "debug-images", "--template", str(changed)])
+    assert r == 0  # 業務的な拒否は exit 0（他コマンドの OperationRefused と同じ契約）
+    events = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
+    refused = [e for e in events if e.get("event") == "refused"]
+    assert refused and "テンプレートが変わっている" in refused[0]["error"]
+
+
+def test_debug_images_no_pages_reports_reason(tmp_path, capsys):
+    """中間データが空のとき ok:false・reason:no_pages（#60 M-1④）。
+
+    従来は ok:true, count:0 固定で、業務的失敗と「元々0件」の区別がつかなかった。
+    """
+    import json
+
+    from chouhyo_ocr.config import Config
+    from chouhyo_ocr import cli
+    cfg = Config(output_dir=str(tmp_path / "o"), workdir=str(tmp_path / "w"),
+                 log_dir=str(tmp_path / "l"))
+    cfg_path = _cli_cfg_path(cfg, tmp_path)
+    r = cli.main(["--config", str(cfg_path), "debug-images", "--template", str(TPL)])
+    assert r == 0
+    events = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
+    ev = next(e for e in events if e.get("event") == "debug_images")
+    assert ev["ok"] is False and ev["reason"] == "no_pages" and ev["count"] == 0
+
+
+def test_debug_images_page_not_found_reports_reason(worked, tmp_path, capsys):
+    """存在しないページ ID を指定すると、該当なしと明示する（#60 M-1④）。"""
+    import json
+
+    from chouhyo_ocr import cli
+    cfg, _ = worked
+    cfg_path = _cli_cfg_path(cfg, tmp_path)
+    r = cli.main(["--config", str(cfg_path), "debug-images",
+                  "--template", str(TPL), "--page", "存在しないID"])
+    assert r == 0
+    events = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
+    ev = next(e for e in events if e.get("event") == "debug_images")
+    assert ev["ok"] is False and ev["reason"] == "page_not_found" and ev["count"] == 0
+
+
+def test_debug_images_no_aligned_images_reports_reason(worked, tmp_path, capsys):
+    """ページはあるが位置合わせ済み画像が無いとき ok:false・reason:no_aligned_images。"""
+    import json
+    import shutil
+    from pathlib import Path
+
+    from chouhyo_ocr import cli
+    cfg, _ = worked
+    cfg_path = _cli_cfg_path(cfg, tmp_path)
+    shutil.rmtree(Path(cfg.workdir) / "aligned")  # 位置合わせ済み画像を消す
+    r = cli.main(["--config", str(cfg_path), "debug-images", "--template", str(TPL)])
+    assert r == 0
+    events = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
+    ev = next(e for e in events if e.get("event") == "debug_images")
+    assert ev["ok"] is False and ev["reason"] == "no_aligned_images" and ev["count"] == 0
+
+
 def test_field_origins_matches_assign_on_real_sample(worked, tmp_path):
     """#60 M-1③: debug_images._field_origins が mapping.assign() と同じ結論に
     達すること（実データ経路）。person_郵便番号1 は主が空・参照先採用（実測・
