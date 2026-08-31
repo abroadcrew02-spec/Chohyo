@@ -54,7 +54,7 @@ def test_accepts_fallback_on_text_field(tmp_path, raw):
 
 
 def test_fallback_does_not_change_output_columns(tmp_path, raw):
-    """参照先は出力列を増やさない（218列の契約は不変）。"""
+    """参照先は出力列を増やさない（列数はテンプレート由来のまま不変）。"""
     before = load_template(TPL)
     n_before = sum(len(c.output_columns()) for c in before.cells)
     fld = _first_text_field(raw)

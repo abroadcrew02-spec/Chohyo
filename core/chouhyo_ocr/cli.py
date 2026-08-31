@@ -93,10 +93,16 @@ def cmd_verify(args) -> int:
     ok = True
     # テンプレート
     try:
-        from .columns import validate_v1
+        from .columns import amount_cell_count, validate_v1
         from .template import load_template
-        cols = validate_v1(load_template(args.template))
-        _progress({"event": "verify", "check": "template", "ok": True, "columns": len(cols)})
+        t = load_template(args.template)
+        cols = validate_v1(t)
+        # cells は物理的な欄の数。columns との差は「分割（1欄→複数列）＋管理6列」
+        # で、編集画面がこの内訳を表示する（欄数と列数の対応を見えるようにする・
+        # ユーザー指摘 2026-08-31）
+        _progress({"event": "verify", "check": "template", "ok": True,
+                   "columns": len(cols), "cells": len(t.cells),
+                   "amount_cells": amount_cell_count(t)})
     except Exception as e:
         ok = False
         _progress({"event": "verify", "check": "template", "ok": False, "error": str(e)})

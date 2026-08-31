@@ -92,23 +92,25 @@ def test_normalize_ignored_on_choice_and_subfields(tmp_path):
     polluted = [c for c in template.cells
                 if c.normalize and (c.kind == "choice" or c.subfields)]
     assert polluted == []
-    assert len(validate_v1(template)) == 218  # 28 件カウントが汚染されない
+    assert len(validate_v1(template)) == 220  # 列数が汚染されない
+    from chouhyo_ocr.columns import amount_cell_count
+    assert amount_cell_count(template) == 28  # 金額カウントも汚染されない
 
 
-def test_validate_v1_rejects_missing_normalize(tmp_path):
-    """normalize が落ちたテンプレートは validate_v1 が拒否する（再レビュー N-1/N-4）。
+def test_amount_count_is_reported_not_rejected(tmp_path):
+    """normalize の喪失は拒否ではなく件数の**見える化**で捕まえる（2026-08-31）。
 
-    エディタで表を作り直すと属性が落ちても列数 218 は変わらないため、
-    件数チェックがないと「保存＋コア検証 OK」の緑が出てしまう。
+    固定数（28）での拒否は決め打ち廃止で外した——表の行数を変える正当な編集
+    まで拒否してしまうため。代わりに verify と編集画面の保存結果が
+    「金額 N 列」を必ず表示し、N=0 を見た管理者が気づける（N-1/N-4 の
+    検知経路をエラーから表示へ移した）。
     """
-    from chouhyo_ocr.columns import validate_v1
-    from chouhyo_ocr.template import TemplateError
+    from chouhyo_ocr.columns import amount_cell_count, validate_v1
     ok = _template_with(tmp_path)
-    assert len(validate_v1(ok)) == 218
+    assert amount_cell_count(ok) == 28
     broken = _template_with(tmp_path, drop_normalize=True)
-    # 文言は管理者向けに画面の語彙（正規化／金額）で出す（レビュー D-7）
-    with pytest.raises(TemplateError, match="正規化「金額」"):
-        validate_v1(broken)
+    validate_v1(broken)                       # 拒否はしない
+    assert amount_cell_count(broken) == 0     # が、表示で 0 と分かる
 
 
 # ---------- #13: glob メタ文字を含むファイル名 ----------
@@ -505,7 +507,7 @@ def test_overlapping_cell_rects_rejected(tmp_path):
 def test_shipped_template_has_no_overlaps():
     """同梱テンプレートに重なりが無い（issue #24 で6組を解消済み）。"""
     template = load_template(TPL)  # 重なりがあれば load 時点で落ちる
-    assert len(template.cells) == 192
+    assert len(template.cells) == 194  # 郵便番号1/2 の分離で 192→194（2026-08-31）
 
 
 def test_cloud_marker_does_not_false_positive():

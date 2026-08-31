@@ -1,9 +1,15 @@
 """出力列の導出（設計 §4.3）。
 
 列リストをコードへ持たない。管理6列だけが固定で、抽出対象列はテンプレートの
-定義順から導出する。v1 は起動時に導出結果が 218 列であることを検証し、
-不一致ならテンプレートを拒否する（テンプレート編集ミスで列構成が黙って
-変わる事故の防止）。
+定義順から導出する。
+
+固定列数（218）による拒否は 2026-08-31 に廃止した（ユーザー指示:
+「決め打ちはやめよう」）。テンプレートに欄を足せば列は増える。編集ミスで
+列構成が黙って変わる事故への防御は、拒否ではなく**見える化**で行う——
+verify と編集画面の保存結果が列数・金額列数を必ず表示する。拒否として残す
+検証は「列名の重複」のみ（重複すると xlsx/csv の対応が壊れる真の不変条件）。
+既存データとの整合は列数ではなく template_hash・geometry_hash のガード
+（issue #25）が守る。
 """
 from __future__ import annotations
 
@@ -18,8 +24,6 @@ META_COLUMNS: tuple[str, ...] = (
     "ステータス",
 )
 
-V1_EXPECTED_TOTAL = 218  # 管理6＋本人12＋家族60＋明細140（要件 §5.6 v3.11・郵便番号は住所へ統合）
-V1_EXPECTED_AMOUNT = 28  # normalize:"amount" のセル数（明細28行×金額1列）
 
 
 def derive_columns(template: Template) -> list[str]:
@@ -36,32 +40,28 @@ def extract_columns(template: Template) -> list[str]:
 
 
 def validate_v1(template: Template) -> list[str]:
-    """v1 の列数検証。通れば列リストを返し、不一致なら TemplateError。"""
+    """列導出と不変条件の検証。通れば列リストを返す。
+
+    拒否するのは**列名の重複**のみ（重複すると xlsx と csv の列対応が壊れ、
+    どちらの値か判別できなくなる）。列数・金額列数は拒否せず、呼び出し側
+    （verify・編集画面）が表示して人が確認する（2026-08-31・決め打ち廃止）。
+    """
     cols = derive_columns(template)
-    if len(cols) != V1_EXPECTED_TOTAL:
-        raise TemplateError(
-            f"導出列数が {len(cols)} 列（v1 の期待は {V1_EXPECTED_TOTAL} 列）。"
-            "テンプレートの行数・列定義を確認する"
-        )
     if len(set(cols)) != len(cols):
-        raise TemplateError("導出列名に重複がある")
-    # 金額正規化は normalize 属性で発火する（列名非依存・issue #11）。エディタで
-    # 表を作り直すと属性が落ちても列数は変わらないため、件数で明示的に検証する
-    n_amount = sum(1 for c in template.cells if c.normalize == "amount")
-    if n_amount != V1_EXPECTED_AMOUNT:
-        # 文言はエディタ画面の語彙（正規化／金額／列）で書く。JSON の生の記法を
-        # 出しても管理者は画面のコントロールに結び付けられない（レビュー D-7）
-        direction = (
-            "金額以外の列で「金額」を選んでいないか確認してください"
-            if n_amount > V1_EXPECTED_AMOUNT
-            else "明細表の金額列で「正規化」を「金額」に設定してください")
+        dup = sorted({c for c in cols if cols.count(c) > 1})
         raise TemplateError(
-            f"正規化「金額」が設定されたセルが {n_amount} 個です"
-            f"（想定は {V1_EXPECTED_AMOUNT} 個＝明細{V1_EXPECTED_AMOUNT}行×金額1列）。"
-            f"{direction}"
-        )
+            f"導出列名に重複がある: {dup[:5]}。欄の名前・表の列名を見直す")
     return cols
 
+
+def amount_cell_count(template: Template) -> int:
+    """normalize:"amount" のセル数。
+
+    金額正規化は normalize 属性で発火する（列名非依存・issue #11）。エディタで
+    表を作り直すと属性が黙って落ちることがあるため、verify と編集画面が
+    この数を表示して人が確認する（固定数での拒否は廃止・2026-08-31）。
+    """
+    return sum(1 for c in template.cells if c.normalize == "amount")
 
 def excel_column_letter(n: int) -> str:
     """1起点の列番号 → Excel 列文字（218 → 'HJ'）。"""

@@ -84,8 +84,8 @@ def test_tr_g2_failure_rows_preserved(tmp_path):
     assert by_file["ok.png"].status == "正常"
     assert by_file["noresp.png"].status == "送信失敗"
     assert by_file["broken.pdf"].status == "展開失敗"
-    assert by_file["noresp.png"].unclear_count == 212   # 全〓
-    assert by_file["broken.pdf"].unclear_count == 212
+    assert by_file["noresp.png"].unclear_count == 214   # 全〓
+    assert by_file["broken.pdf"].unclear_count == 214
 
 
 def test_tr_g3_format_mismatch_all_unclear(tmp_path):
@@ -110,11 +110,11 @@ def test_tr_g3_format_mismatch_all_unclear(tmp_path):
     run(inp, TPL, cfg, ReplayClient(resp))
     _x, _c, rows = render(TPL, cfg, timestamp="g3")
     assert rows[0].status == "様式不一致"
-    assert rows[0].unclear_count == 212
+    assert rows[0].unclear_count == 214
 
 
 def test_tr_g4_xlsx_csv_extract_columns_identical(tmp_path):
-    """§8-12: 抽出対象212列のセル値が .xlsx と .csv で全列一致する。"""
+    """§8-12: 抽出対象の全列（現行 214）のセル値が .xlsx と .csv で全列一致する。"""
     import csv as csvmod
     cfg = make_cfg(tmp_path)
     run_one_page(tmp_path, cfg)
@@ -124,7 +124,7 @@ def test_tr_g4_xlsx_csv_extract_columns_identical(tmp_path):
     xrow = [c.value for c in list(ws.iter_rows(min_row=2))[0]][6:]
     with open(csvp, encoding="utf-8-sig", newline="") as f:
         crow = list(csvmod.reader(f))[1][6:]
-    assert len(xrow) == len(crow) == 212
+    assert len(xrow) == len(crow) == 214
     for i, (xv, cv) in enumerate(zip(xrow, crow)):
         # xlsx の空セルは None・数値は int で読める。CSV 文字列へ正規化して比較
         norm = "" if xv is None else str(xv)

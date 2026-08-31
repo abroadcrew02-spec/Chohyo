@@ -100,7 +100,12 @@ def test_empty_rows_are_empty_strings(outputs):
 
 def test_countif_formula_and_csv_static_agree(outputs):
     header, data = sheet(outputs)
-    assert data[0] == '=COUNTIF(G2:HJ2,"〓")'
+    # 範囲の終端はテンプレート由来の列数から導出する（決め打ち廃止・2026-08-31。
+    # 現行 220列なら HL）。リテラルで固定すると列の増減のたびにここが割れる
+    from chouhyo_ocr.columns import derive_columns, excel_column_letter
+    from chouhyo_ocr.template import load_template
+    last = excel_column_letter(len(derive_columns(load_template(TPL))))
+    assert data[0] == f'=COUNTIF(G2:{last}2,"〓")'
     lines = outputs["csv"].read_text(encoding="utf-8-sig").splitlines()
     csv_row = next(csv_line for csv_line in lines[1:] if csv_line)
     static = int(csv_row.split('","')[0].strip('"'))

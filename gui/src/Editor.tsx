@@ -462,7 +462,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         toEditorState(parsed);
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
-        setMsg("出荷テンプレート（chouhyo-v1・218列）を読み込みました。帳票を開いて位置を確認してください");
+        setMsg("出荷テンプレート（chouhyo-v1）を読み込みました。帳票を開いて位置を確認してください");
       } catch {
         // 配布物欠損・開発中の白紙スタートでは従来どおり空で始める
         // （初期メッセージが「読み込んで開始」の案内を出す）
@@ -550,7 +550,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         .find((e) => e && e.check === "template");
       if (tpl?.ok) {
         setErrMsg("");
-        setMsg(`保存＋コア検証 OK（${tpl.columns} 列）: ${p}`);
+        // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
+        // 一目で分かるように・ユーザー指摘 2026-08-31）
+        const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
+        setMsg(`保存＋コア検証 OK（`
+          + (tpl.cells != null
+             ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
+               + (split ? `＋分割+${split}` : "") + `＋管理6`
+             : `${tpl.columns} 列`)
+          + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
+          + `）: ${p}`);
       } else {
         // 検証 NG を成功と同じ灰色の小さい文字で出すと気づかれない（レビュー D-7）
         setMsg(`保存先: ${p}`);

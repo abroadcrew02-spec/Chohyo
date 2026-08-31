@@ -126,9 +126,9 @@ def test_status_composition():
 
 def test_failure_row_all_unclear(template):
     row = build_failure_row(template, page(status=STATUS_ALIGN_FAILED))
-    assert len(row.values) == 212
+    assert len(row.values) == 214
     assert set(row.values) == {UNCLEAR}
-    assert row.unclear_count == 212
+    assert row.unclear_count == 214
     assert row.min_conf == ""
 
 
