@@ -130,27 +130,39 @@ def _cell_text(cell: CellSpec, syms: list[Symbol]) -> str:
 _BUCKET = 128  # グリッドの一辺（px）。セル高（実測 90〜148px）と同程度
 
 
+# 参照先の受け皿を per_cell 上で区別する内部キーの接尾辞。field_id は
+# スキーマ上 NUL を含まないため衝突しない
+_FB = "\x00fallback"
+
+
 def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
     """セルをグリッドのバケツへ入れる（issue #17 の空間インデックス）。
 
     1セルが複数バケツにまたがる場合は全てへ入れる。バケツ内の順序は
-    元の定義順を保つ（first-hit の契約を変えないため）。
+    元の定義順を保つ（first-hit の契約を変えないため）。参照先の枠は
+    独立した受け皿（key=field_id+_FB）として主の後ろに並べる——
+    重なりは load_template が拒否するので順序が結果を変えることはない。
     """
     buckets: dict[tuple[int, int], list] = {}
-    for i, c in enumerate(cells):
-        r = c.rect
+    targets: list[tuple[str, "Rect"]] = []
+    for c in cells:
+        targets.append((c.field_id, c.rect))
+    for c in cells:
+        if c.fallback_rect is not None:
+            targets.append((c.field_id + _FB, c.fallback_rect))
+    for i, (key, r) in enumerate(targets):
         for bx in range(r.x // _BUCKET, (r.x + r.w) // _BUCKET + 1):
             for by in range(r.y // _BUCKET, (r.y + r.h) // _BUCKET + 1):
-                buckets.setdefault((bx, by), []).append((i, c))
+                buckets.setdefault((bx, by), []).append((i, key, r))
     return buckets
 
 
 def _candidates(buckets: dict, x: float, y: float):
-    """座標を含むバケツのセルを定義順で返す。"""
+    """座標を含むバケツの受け皿（key, rect）を定義順で返す。"""
     got = buckets.get((int(x) // _BUCKET, int(y) // _BUCKET))
     if not got:
         return ()
-    return [c for _i, c in got]
+    return [(k, r) for _i, k, r in got]
 
 
 def assign(
@@ -178,13 +190,12 @@ def assign(
         buckets = _bucket_cells(face_cells)
         for s in syms:
             hit = None
-            for c in _candidates(buckets, s.x, s.y):
-                r = c.rect
+            for key, r in _candidates(buckets, s.x, s.y):
                 if r.x <= s.x < r.x + r.w and r.y <= s.y < r.y + r.h:
-                    hit = c
+                    hit = key
                     break
             if hit is not None:
-                per_cell.setdefault(hit.field_id, []).append(s)
+                per_cell.setdefault(hit, []).append(s)
             elif any(z.x_min <= s.x < z.x_max and s.y >= z.bottom for z in zones):
                 below += 1  # テーブル最終行より下＝行数超過の候補（D-06）
             else:
@@ -198,6 +209,19 @@ def assign(
         key = (c.table_id, c.row_no)
         rows[key] = rows.get(key, False) or bool(per_cell.get(c.field_id))
     empty = frozenset(k for k, has in rows.items() if not has)
+
+    # 参照先の合流（2026-08-31）: 主の枠が**完全に空**（symbol が1つも無い）
+    # ときに限り、参照先の読取値を主の値として採用する。主にインクがあって
+    # 読めない場合は〓のまま——答えは主に書かれているのに別の場所の値を出すと
+    # 誤転記になる（転記主義）。主に値があるとき参照先の内容は捨てる
+    # （枠外扱いにはしない。参照先として定義された領域の文字だから）
+    for c in cells:
+        if c.fallback_rect is None:
+            continue
+        fb = per_cell.pop(c.field_id + _FB, None)
+        if fb and c.field_id not in per_cell:
+            per_cell[c.field_id] = fb
+            log.info("fallback_used", field_id=c.field_id)
 
     index = {c.field_id: c for c in cells}
     contents = {

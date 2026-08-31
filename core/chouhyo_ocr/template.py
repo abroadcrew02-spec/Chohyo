@@ -51,6 +51,11 @@ class CellSpec:
     normalize: str | None = None  # 値の正規化方式（"amount"）。列名には依存させない（§5.2）
     table_id: str | None = None  # 繰り返し欄のとき所属テーブル（空行判定・D-06）
     row_no: int | None = None    # 繰り返し欄のとき行連番（1起点・ブロック跨ぎ通し）
+    # 参照先の枠（text の単独欄のみ・任意）。主の rect に文字が1つも来なかった
+    # ときに限り、この枠の読取値を採用する（mapping.assign が合流させる）。
+    # 主にインクがあるが読めない（〓）場合は参照しない——答えは主に書かれて
+    # いるのに別の場所の値を出すと誤転記になるため（転記主義・2026-08-31）
+    fallback_rect: Rect | None = None
 
     def output_columns(self) -> tuple[str, ...]:
         if self.subfields:
@@ -245,6 +250,11 @@ def load_template(path: str | Path) -> Template:
             marks = tuple(
                 ChoiceMark(m["value"], _rect(m["rect"])) for m in fld.get("choice_marks", [])
             )
+            if fld.get("fallback_rect") is not None and fld["kind"] != "text":
+                raise TemplateError(
+                    f"参照先（fallback_rect）は文字欄（text）のみ指定できる"
+                    f"（{fld['field_id']} は {fld['kind']}）。丸印は帯スコアで"
+                    "判定するため、別枠への参照は定義できない")
             cells.append(
                 CellSpec(
                     field_id=fld["field_id"],
@@ -257,6 +267,8 @@ def load_template(path: str | Path) -> Template:
                     normalize=(fld.get("normalize")
                                if fld["kind"] == "text" and not fld.get("subfields")
                                else None),
+                    fallback_rect=(_rect(fld["fallback_rect"])
+                                   if fld.get("fallback_rect") is not None else None),
                 )
             )
         for t in f.get("tables", []):
@@ -309,8 +321,11 @@ def load_template(path: str | Path) -> Template:
     face_size = {f.face_id: (f.source_rect.w, f.source_rect.h) for f in faces}
     for c in cells:
         fw, fh = face_size[c.face_id]
-        for label, r in [("欄", c.rect)] + [(f"選択肢 '{m.value}'", m.rect)
-                                            for m in c.choice_marks]:
+        targets = [("欄", c.rect)] + [(f"選択肢 '{m.value}'", m.rect)
+                                       for m in c.choice_marks]
+        if c.fallback_rect is not None:
+            targets.append(("参照先の枠", c.fallback_rect))
+        for label, r in targets:
             if r.x < 0 or r.y < 0 or r.x + r.w > fw or r.y + r.h > fh:
                 raise TemplateError(
                     f"{label}が面 '{c.face_id}'（{fw}×{fh}）の外にはみ出している"
@@ -368,17 +383,36 @@ def load_template(path: str | Path) -> Template:
     # first-hit で解決するため、重なり帯へ落ちた symbol の行き先が
     # 「テンプレートの記述順」という見えない要素で決まる。実サンプルでは
     # 顕在化しなかったが、記入が欄をわずかにはみ出す実データで列ズレになる
+    # 参照先も割付の受け皿（symbol の行き先）なので、重なり検査の母集団に
+    # 含める。主と自分の参照先の重なりは「空のとき参照」の意味が壊れるため
+    # 先に専用メッセージで拒否する
+    def _overlap(ra: Rect, rb: Rect) -> bool:
+        return (ra.x < rb.x + rb.w and rb.x < ra.x + ra.w
+                and ra.y < rb.y + rb.h and rb.y < ra.y + ra.h)
+
+    for c in cells:
+        if c.fallback_rect is not None and _overlap(c.rect, c.fallback_rect):
+            raise TemplateError(
+                f"参照先の枠が主の枠と重なっている（{c.field_id}）。"
+                "参照先は「主が空のときに読む別の場所」なので、離れた位置に置く")
+
     by_face: dict[str, list] = {}
     for c in cells:
-        by_face.setdefault(c.face_id, []).append(c)
+        by_face.setdefault(c.face_id, []).append((c, c.rect, "欄"))
+        if c.fallback_rect is not None:
+            by_face[c.face_id].append((c, c.fallback_rect, "参照先の枠"))
     for fid, cs in by_face.items():
-        for i, a in enumerate(cs):
-            for b in cs[i + 1:]:
-                ra, rb = a.rect, b.rect
-                if (ra.x < rb.x + rb.w and rb.x < ra.x + ra.w
-                        and ra.y < rb.y + rb.h and rb.y < ra.y + ra.h):
+        for i, (a, ra, la) in enumerate(cs):
+            for b, rb, lb in cs[i + 1:]:
+                if a.field_id == b.field_id:
+                    continue  # 主と自分の参照先は上で検査済み
+                if _overlap(ra, rb):
+                    # 主同士は従来の文言を保つ（#24 当時からのメッセージ）。
+                    # 参照先が絡むときだけ、どちらの枠かが分かる形にする
+                    what = ("欄の矩形が" if la == lb == "欄"
+                            else f"{a.field_id} の{la}と {b.field_id} の{lb}が")
                     raise TemplateError(
-                        f"欄の矩形が重なっている（{fid}: {a.field_id} と "
+                        f"{what}重なっている（{fid}: {a.field_id} と "
                         f"{b.field_id}）。重なり部分の文字がどちらへ入るかが"
                         "定義順で決まってしまうため、枠を分ける")
 

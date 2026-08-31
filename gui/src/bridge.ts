@@ -46,7 +46,8 @@ const DEMO_TEMPLATE = {
   faces: [
     { face_id: "front", source: { page_offset: 0, rect: { x: 0, y: 0, w: 2490, h: 1880 } },
       fields: [{ field_id: "person_氏名", kind: "text",
-                 rect: { x: 400, y: 300, w: 600, h: 90 } }],
+                 rect: { x: 400, y: 300, w: 600, h: 90 },
+                 fallback_rect: { x: 1500, y: 300, w: 600, h: 90 } }],
       tables: [{ table_id: "family", row_pitch: 100, row_height: 90,
                  blocks: [{ origin: { x: 200, y: 600 }, rows: 3 }],
                  columns: [

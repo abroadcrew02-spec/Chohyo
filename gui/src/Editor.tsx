@@ -8,7 +8,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Mark = { value: string; rect: Rect };
 type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rect; marks: Mark[];
-               normalize?: string };
+               normalize?: string;
+               // 参照先の枠（文字欄のみ・任意）。主の枠が完全に空のときだけ
+               // ここの読取値を採用する（読めない〓のときは参照しない）
+               fallback?: Rect };
 type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
 type Column = { name: string; x_offset: number; width: number; kind: "text" | "choice";
                 subfields: string; marks: ColMark[]; normalize?: string };
@@ -16,7 +19,8 @@ type Block = { x: number; y: number; rows: number };
 type Table = { uid: string; table_id: string; row_pitch: number; row_height: number;
                blocks: Block[]; columns: Column[] };
 type Excl = { uid: string; id: string; rect: Rect };
-type Sel = { type: "field" | "table" | "excl"; uid: string } | null;
+type Sel = { type: "field" | "table" | "excl"; uid: string;
+             part?: "fallback" } | null;
 type Tool = "select" | "field" | "excl" | "table" | "split";
 // 元に戻す／やり直しの1コマ。編集対象の4状態をまとめて差し替える
 type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number };
@@ -104,6 +108,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
   const [errMsg, setErrMsg] = useState("");
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
+  // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
+  const [fbTarget, setFbTarget] = useState<string | null>(null);
   const [genRows, setGenRows] = useState(5);
   const [genCols, setGenCols] = useState(4);
   const [genMode, setGenMode] = useState<"ruled" | "uniform">("ruled");
@@ -183,11 +189,29 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       rect(e.rect, sel?.uid === e.uid ? "#ffd54a" : "#888",
            "rgba(120,120,120,0.35)");
     for (const f of fields) {
-      rect(f.rect, sel?.uid === f.uid ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+      rect(f.rect, sel?.uid === f.uid && sel?.part !== "fallback"
+        ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
       for (const m of f.marks) rect(m.rect, "#c586ff");
       ctx.fillStyle = "#9fd8ff";
       label(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px,
             f.rect.w - 8 * px, f.rect.h);
+      if (f.fallback) {
+        // 参照先は破線＋主の枠との接続線。実線の欄と見分けが付き、
+        // どの欄の参照先かが線で追える
+        const fb = f.fallback;
+        ctx.setLineDash([8 * px, 5 * px]);
+        rect(fb, sel?.uid === f.uid && sel?.part === "fallback" ? "#ffd54a" : "#4fc3f7");
+        ctx.strokeStyle = "rgba(79,195,247,0.5)"; ctx.lineWidth = px;
+        ctx.beginPath();
+        ctx.moveTo(f.rect.x + f.rect.w / 2, f.rect.y + f.rect.h / 2);
+        ctx.lineTo(fb.x + fb.w / 2, fb.y + fb.h / 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineWidth = 2 * px;
+        ctx.fillStyle = "#9fd8ff";
+        label(`${f.field_id} の参照先`, fb.x + 4 * px, fb.y + 26 * px,
+              fb.w - 8 * px, fb.h);
+      }
     }
     for (const t of tables) {
       const totalW = t.columns.length
@@ -324,6 +348,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       for (const f of face.fields ?? [])
         fs.push({ uid: uid(), field_id: f.field_id, kind: f.kind,
                   rect: { ...f.rect, y: f.rect.y + oy }, normalize: f.normalize,
+                  fallback: f.fallback_rect
+                    ? { ...f.fallback_rect, y: f.fallback_rect.y + oy } : undefined,
                   marks: (f.choice_marks ?? []).map((m: any) =>
                     ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })) });
       for (const tb of face.tables ?? [])
@@ -402,6 +428,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         fields: fields.filter((f) => inFace(f.rect.y)).map((f) => ({
           field_id: f.field_id, kind: f.kind,
           rect: { ...f.rect, y: f.rect.y - y0 },
+          ...(f.kind === "text" && f.fallback
+            ? { fallback_rect: { ...f.fallback, y: f.fallback.y - y0 } } : {}),
           ...(f.normalize && f.kind === "text" ? { normalize: f.normalize } : {}),
           ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
             value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
@@ -497,6 +525,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const hit = (p: { x: number; y: number }): Sel => {
     const inR = (r: Rect) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
     for (const f of fields) if (inR(f.rect)) return { type: "field", uid: f.uid };
+    for (const f of fields)
+      if (f.fallback && inR(f.fallback))
+        return { type: "field", uid: f.uid, part: "fallback" };
     for (const e of excls) if (inR(e.rect)) return { type: "excl", uid: e.uid };
     for (const t of tables) {
       const w = t.columns.length ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
@@ -513,6 +544,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                        extra: { ...pan } };
       return;
     }
+    if (fbTarget) {
+      // 「参照先の枠を描く」の待ち受け中: 次のドラッグを参照先として描く
+      drag.current = { mode: "draw-fallback", start: p };
+      return;
+    }
     if (tool === "split") { setSplitY(Math.round(p.y)); markDirty(true); return; }
     if (tool === "select") {
       const h = hit(p);
@@ -520,7 +556,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       if (h) {
         // setSel は非同期なので selRect()（閉包の sel）は前回選択を返す。
         // 必ず今回ヒットした h から矩形を引く（issue #12: 別図形の座標が適用される）
-        const r = h.type === "field" ? fields.find((f) => f.uid === h.uid)?.rect ?? null
+        const r = h.type === "field"
+                ? (h.part === "fallback"
+                   ? fields.find((f) => f.uid === h.uid)?.fallback ?? null
+                   : fields.find((f) => f.uid === h.uid)?.rect ?? null)
                 : h.type === "excl" ? excls.find((x) => x.uid === h.uid)?.rect ?? null
                 : null;
         if (r && h.type !== "table") {
@@ -574,6 +613,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     drag.current = null;
     if (!d || !d.mode.startsWith("draw-") || !pending) return;
     if (pending.w < 8 || pending.h < 8) { setPending(null); return; }
+    if (d.mode === "draw-fallback") {
+      if (fbTarget) {
+        const uid0 = fbTarget;
+        setFields((fs) => fs.map((f) => f.uid === uid0
+          ? { ...f, fallback: pending } : f));
+        setSel({ type: "field", uid: uid0, part: "fallback" });
+        setFbTarget(null); setPending(null); markDirty(true);
+        setMsg("参照先の枠を追加しました（主の枠が空のときだけ読まれます）");
+      }
+      return;
+    }
     if (d.mode === "draw-field") {
       // 既存 ID と衝突しない番号を選ぶ（レビュー M-15: length+1 だと
       // 削除後に重複し、保存時のコア検証まで気づけなかった）
@@ -624,10 +674,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
   const nudge = (dx: number, dy: number) => {
     if (!sel) return;
-    if (sel.type === "field")
-      // マークも一緒に動かす（issue #48 と同じ経路）
-      setFields((fs) => fs.map((f) => f.uid === sel.uid
-        ? applyRectToField(f, { ...f.rect, x: f.rect.x + dx, y: f.rect.y + dy }) : f));
+    if (sel.type === "field") {
+      if (sel.part === "fallback")
+        setFields((fs) => fs.map((f) => f.uid === sel.uid && f.fallback
+          ? { ...f, fallback: { ...f.fallback,
+                                x: f.fallback.x + dx, y: f.fallback.y + dy } } : f));
+      else
+        // マークも一緒に動かす（issue #48 と同じ経路）
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? applyRectToField(f, { ...f.rect, x: f.rect.x + dx, y: f.rect.y + dy }) : f));
+    }
     if (sel.type === "excl")
       setExcls((es) => es.map((x) => x.uid === sel.uid
         ? { ...x, rect: { ...x.rect, x: x.rect.x + dx, y: x.rect.y + dy } } : x));
@@ -702,7 +758,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (ctrl && e.key === "1") { e.preventDefault(); zoomBy(1 / zoom); return; }
     if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); zoomBy(1.15); return; }
     if (ctrl && e.key === "-") { e.preventDefault(); zoomBy(1 / 1.15); return; }
-    if (e.key === "Escape") { setSel(null); setPending(null); drag.current = null; return; }
+    if (e.key === "Escape") {
+      setSel(null); setPending(null); setFbTarget(null); drag.current = null; return;
+    }
     if ((e.key === "Delete" || e.key === "Backspace") && sel) {
       e.preventDefault(); removeSel(); return;
     }
@@ -734,9 +792,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // ---------- 選択対象の更新 ----------
   const applySelRect = (r: Rect) => {
     if (!sel) return;
-    if (sel.type === "field")
-      setFields((fs) => fs.map((f) => f.uid === sel.uid
-        ? applyRectToField(f, r) : f));
+    if (sel.type === "field") {
+      if (sel.part === "fallback")
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? { ...f, fallback: r } : f));
+      else
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? applyRectToField(f, r) : f));
+    }
     if (sel.type === "excl")
       setExcls((es) => es.map((x) => x.uid === sel.uid ? { ...x, rect: r } : x));
     markDirty(true);
@@ -749,7 +812,13 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
   const removeSel = () => {
     if (!sel) return;
-    if (sel.type === "field") setFields((fs) => fs.filter((f) => f.uid !== sel.uid));
+    if (sel.type === "field") {
+      if (sel.part === "fallback")
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? { ...f, fallback: undefined } : f));
+      else
+        setFields((fs) => fs.filter((f) => f.uid !== sel.uid));
+    }
     if (sel.type === "excl") setExcls((es) => es.filter((e) => e.uid !== sel.uid));
     if (sel.type === "table") setTables((ts) => ts.filter((t) => t.uid !== sel.uid));
     setSel(null); markDirty(true);
@@ -819,7 +888,35 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                 <option value="amount">金額</option>
               </select></label>)}
           <div className="mono">x:{f.rect.x} y:{f.rect.y} w:{f.rect.w} h:{f.rect.h}</div>
-          <button onClick={removeSel}>削除</button>
+          {f.kind === "text" && (
+            <>
+              <h4>参照先（この枠が空のとき読む場所）</h4>
+              {f.fallback ? (
+                <>
+                  <p className="note">主の枠に文字が1つも無いときだけ、
+                    参照先の読取値を使います。読めない（〓）ときは参照しません</p>
+                  <div className="mono">x:{f.fallback.x} y:{f.fallback.y} w:
+                    {f.fallback.w} h:{f.fallback.h}</div>
+                  <button onClick={() => {
+                    setFields((fs) => fs.map((v) => v.uid === f.uid
+                      ? { ...v, fallback: undefined } : v));
+                    setSel({ type: "field", uid: f.uid });
+                    markDirty(true);
+                  }}>参照先を削除</button>
+                </>
+              ) : (
+                <button onClick={() => {
+                  setFbTarget(f.uid);
+                  setMsg("参照先の枠を帳票上でドラッグして描いてください（Esc で中止）");
+                }}>参照先の枠を描く</button>
+              )}
+            </>
+          )}
+          {/* 「参照先を削除」と並ぶため、対象を明示する（誤クリック防止） */}
+          <button onClick={() => {
+            // 参照先を選択中でも「この欄を削除」は欄ごと消す（部位に依らない）
+            setFields((fs) => fs.filter((v) => v.uid !== f.uid));
+            setSel(null); markDirty(true); }}>この欄を削除</button>
         </div>);
     }
     if (sel.type === "excl") {

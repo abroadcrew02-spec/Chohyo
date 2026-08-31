@@ -97,7 +97,8 @@ def test_settings_modal_six_items(page):
 def test_editor_tab_admin_guardrails(page):
     page.locator(".tabs button", has_text="テンプレート編集").click()
     page.wait_for_selector("text=管理者向け")
-    for tool in ["選択", "欄を追加", "除外範囲", "表を作成", "表裏の境界"]:
+    for tool in ["選択", "欄を追加", "除外範囲",
+                 "くり返し行（家族・明細）", "表裏の境界"]:
         assert page.get_by_role("button", name=tool).is_visible(), tool
     # 実行タブへ戻れる（未保存なしなので確認は出ない）
     page.locator(".tabs button", has_text="実行").click()
