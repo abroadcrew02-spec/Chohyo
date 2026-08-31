@@ -283,10 +283,19 @@ fn pick_image(picked: State<'_, PickedPaths>) -> Option<String> {
 
 
 #[tauri::command]
-fn pick_json(picked: State<'_, PickedPaths>, save: bool,
+fn pick_json(app: AppHandle, picked: State<'_, PickedPaths>, save: bool,
              remember_pick: Option<bool>) -> Option<String> {
     let d = rfd::FileDialog::new().add_filter("テンプレート", &["json"]);
-    let p = if save { d.set_file_name("template.json").save_file() } else { d.pick_file() }?;
+    let p = if save {
+        // 保存の既定は出荷テンプレートの上書き。エディタは起動時に
+        // chouhyo-v1 を読み込むので、「直して保存」の着地点も同じ場所が自然。
+        // 上書き確認は OS の保存ダイアログが出す（別名保存もここで選べる）
+        let d = match repo_root(&app) {
+            Ok(root) => d.set_directory(root.join("templates")),
+            Err(_) => d,
+        };
+        d.set_file_name("chouhyo-v1.json").save_file()
+    } else { d.pick_file() }?;
     // 認証キーの取り込みは remember_pick=false で呼ぶ。白リストへ入れると
     // GCP サービスアカウント鍵（平文 JSON）がセッション中ずっと read_text で
     // 読める状態になる——鍵を DPAPI へ退避させる操作が、その鍵を読める窓を
@@ -373,6 +382,21 @@ fn read_file_b64(app: AppHandle, picked: State<'_, PickedPaths>,
                base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
+/// 出荷テンプレート（templates/chouhyo-v1.json）を読む。
+///
+/// パスは固定で webview から受け取らない。read_text は #49 でダイアログ選択
+/// パスのみに締めたため、エディタ起動時の自動読み込みはこの専用コマンドで
+/// 行う（緩めると responses/ の記入値 JSON が読める穴が戻る）。run が既定で
+/// 使うテンプレートと同じファイルなので、エディタは「1から作る画面」でなく
+/// 「読み取りが実際に使っている欄を直す画面」として開ける。
+#[tauri::command]
+fn read_default_template(app: AppHandle) -> Result<String, String> {
+    let p = repo_root(&app)?.join("templates").join("chouhyo-v1.json");
+    std::fs::read_to_string(&p).map_err(|e| {
+        format!("出荷テンプレートを読み込めません（{}）: {}", p.display(), e)
+    })
+}
+
 /// テンプレート JSON の読み出し。**ダイアログで選ばれたパスだけ**に限る。
 ///
 /// アプリ管理下（repo_root・workdir）を無条件に許すと、`workdir/responses/*.json`
@@ -413,6 +437,7 @@ pub fn run() {
             pick_folder,
             pick_image,
             pick_json,
+            read_default_template,
             open_folder,
             read_config,
             write_config,

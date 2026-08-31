@@ -297,6 +297,28 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
   };
 
+  // 起動時に出荷テンプレート（run が既定で使う templates/chouhyo-v1.json）を
+  // 読み込む。エディタは「1から作る画面」ではなく「読み取りが実際に使っている
+  // 欄を直す画面」——白紙で始めると、テンプレ編集なしの読み取りがどう仕分けて
+  // いるのか見えず、全欄を手作業で作るものと誤解される（ユーザー指摘・2026-08-31）
+  useEffect(() => {
+    (async () => {
+      try {
+        const text = await invoke<string>("read_default_template");
+        const parsed = JSON.parse(text);
+        if (!parsed || !Array.isArray(parsed.faces)) throw new Error("faces が無い");
+        toEditorState(parsed);
+        markDirty(false);
+        setMsg("出荷テンプレート（chouhyo-v1・218列）を読み込みました。帳票を開いて位置を確認してください");
+      } catch {
+        // 配布物欠損・開発中の白紙スタートでは従来どおり空で始める
+        // （初期メッセージが「読み込んで開始」の案内を出す）
+      }
+    })();
+    // マウント時に1回だけ実行する（toEditorState は再生成されるが挙動は不変）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const loadTemplate = async () => {
     if (!confirmDiscard()) return;
     const p = await invoke<string | null>("pick_json", { save: false });

@@ -70,6 +70,7 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
     case "pick_image": return null;
     case "pick_json": return "C:\\デモ\\template.json";
     case "read_text": return JSON.stringify(DEMO_TEMPLATE);
+    case "read_default_template": return JSON.stringify(DEMO_TEMPLATE);
     case "open_folder": return null;
     case "run_core": {
       const a = (args?.args ?? []) as string[];
