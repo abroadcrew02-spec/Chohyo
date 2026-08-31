@@ -2,7 +2,7 @@
 
 | 項目 | 内容 |
 |---|---|
-| 版 | v1.0（2026-08-28） |
+| 版 | v1.1（2026-08-31・列数の決め打ち廃止と D-24 差し戻し `2e8f882` へ追従。v1.0=2026-08-28） |
 | 正本 | 本書（テスト要件・トレーサビリティ）。要件は 01_requirements.md、設計は 02_design.md |
 | 実行方法 | `python scripts/run_all_tests.py`（pytest 全体＋cargo test＋集計） |
 
@@ -34,8 +34,8 @@
 
 | ファイル | 件数 | 対象 |
 |---|---|---|
-| core/tests/test_template.py | 12 | テンプレート読込・v1 受入範囲・格子展開（218列導出の前提） |
-| core/tests/test_columns.py | 7 | 列導出（設計 §4.3 の検証3点: 218列・内訳・field_id 一意） |
+| core/tests/test_template.py | 12 | テンプレート読込・v1 受入範囲・格子展開（列導出の前提。現行テンプレートの導出結果は220列） |
+| core/tests/test_columns.py | 7 | 列導出（出荷テンプレの現在値220列・内訳・field_id 一意）。固定列数での拒否は撤去され、拒否は列名重複のみ（2026-08-31・`2e8f882`） |
 | core/tests/test_mapping.py | 6 | symbol 割付・行クラスタ・除外領域（実応答回帰） |
 | core/tests/test_normalize.py | 4 | 金額 D-01・複合セル分割 D-23 |
 | core/tests/test_render_rows.py | 11 | セル3状態・〓判定・ステータス合成・制御文字〓化 |
@@ -71,7 +71,7 @@
 | 8-9 | ログ・一時ファイルに記入値なし・資格情報平文なし | test_leak_guards・test_acceptance_gaps::TR-G6 | L1 |
 | 8-10 | 要確認セル数合計0の運用成立 | test_e2e_replay（COUNTIF 数式検証）＋運用手順（README） | L1＋L3 |
 | 8-11 | GUI で実行→進捗→サマリ→フォルダを開く。CLI と出力一致 | test_gui_smoke（導線）・test_e2e_replay（CLI 側） | L2 |
-| 8-12 | xlsx/csv 同時生成・抽出対象列の一致・CSV 先頭ゼロをテキストで判定 | test_acceptance_gaps::TR-G4（212列全突合）・test_e2e_replay | L1 |
+| 8-12 | xlsx/csv 同時生成・抽出対象列の一致・CSV 先頭ゼロをテキストで判定 | test_acceptance_gaps::TR-G4（抽出214列の全突合）・test_e2e_replay | L1 |
 | 8-13 | 最低信頼度列（文字ベースのみ・該当なしは空欄） | test_render_rows・test_e2e_replay | L1 |
 | 8-14 | エディタ書き出し JSON をコアがそのまま読める | test_template（スキーマ検証）・test_gui_smoke（編集タブ）・test_review_fixes（expand-page） | L1/L2（保存→run 貫通は L3 で1回実施済み・2026-08-27。**ただし「スキャン PDF からゼロにテンプレを作る」導線は 2026-08-28 のユーザー指摘まで未検証だった**——§5 の教訓2） |
 | 8-15 | GUI 指定の除外領域が抽出・二値化から除外 | test_mapping（除外領域）・test_e2e_replay | L1 |
@@ -90,7 +90,7 @@
 
 ### 設計決定（D-xx）のうちテストで固定しているもの
 
-D-01（金額）・D-06（below_table）・D-14（218列導出）・D-15（様式不一致 0.55・TR-G3）・D-21（最低信頼度）・D-23（subfields）・geometry_hash（§6.7・TR-G1）・再現性（render バイト一致）
+D-01（金額）・D-06（below_table）・D-14（列導出＝テンプレート由来。固定列数での拒否は撤去済み・2026-08-31・`2e8f882`）・D-15（様式不一致 0.55・TR-G3）・D-21（最低信頼度）・D-23（subfields）・geometry_hash（§6.7・TR-G1）・再現性（render バイト一致）
 
 ### issue ⇔ 再発防止テスト
 
@@ -118,7 +118,7 @@ D-01（金額）・D-06（below_table）・D-14（218列導出）・D-15（様�
 | TR-G1 | remap が幾何変更を拒否し run を促す（非幾何は通す） | §6.7 |
 | TR-G2 | 失敗3種混在でも行数維持＋ステータス書き分け | §8-2 |
 | TR-G3 | 枠外率>0.55 → 様式不一致・全〓行 | D-15 |
-| TR-G4 | xlsx↔csv 抽出212列の全突合 | §8-12 |
+| TR-G4 | xlsx↔csv 抽出214列の全突合 | §8-12 |
 | TR-G5 | purge が --yes なしで拒否 | §6.3 |
 | TR-G6 | 資格情報なしの verify が失敗コード | §8-9 |
 
