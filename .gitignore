@@ -2,14 +2,25 @@
 # 実運用の帳票は指定端末のみで扱い、検証後に削除する。リポジトリへ入れない。
 /samples/real/
 /samples/**/real/
+# 帳票のスキャン画像。samples/ 限定だと notes/帳票.png・docs/screenshot.png・
+# samples/scan001.tif が素通りする（実測・issue #52 M-9）。拡張子を全階層で落として、
+# 正当な同梱アセットだけを戻す。ingest が受け付ける拡張子はすべて対象（issue #9）。
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
+# 戻すのは png だけにする。ディレクトリごと `!gui/public/**` で戻すと、後続の
+# ルールより前に書かれた行がすべて無効化される——実際 `*.pdf` をこの上に置いていた
+# 間は gui/public/scan001.pdf が ignore されなかった（実測: check-ignore が
+# `.gitignore:16:!gui/public/**` を返した）。この2ディレクトリで追跡中のファイルは
+# png 14件・svg 2件・icns/ico 各1件で、svg/icns/ico はどのルールにも当たらないため
+# 戻す必要がない（git ls-files で確認）。
+!gui/src-tauri/icons/**/*.png
+!gui/public/**/*.png
+# PDF は否定行より後ろに置く。gitignore は後勝ちで、前に置くと上の否定に負ける。
 *.pdf
-# 帳票のスキャン画像（ingest が受け付ける拡張子はすべて落とす・issue #9）
-/samples/**/*.png
-/samples/**/*.jpg
-/samples/**/*.jpeg
-/samples/*.png
-/samples/*.jpg
-/samples/*.jpeg
 
 # 中間データ（読取値・信頼度・展開画像を含む）
 workdir/
@@ -32,14 +43,23 @@ error.log
 
 # --- 資格情報 -------------------------------------------------------
 # GCP のサービスアカウント鍵は <project-id>-<hash>.json という名前で降ってくる。
-# service-account*.json のような名前ベースの列挙では取りこぼすため、
-# リポジトリ直下の .json をまとめて除外する（schema/ 配下は対象外）。
-/*.json
+# 名前ベースの列挙（service-account*.json 等）も、直下限定の /*.json も取りこぼす——
+# core/gcp-key.json・gui/auth.json・docs/key.json・core/chouhyo_ocr/creds.json は
+# いずれも素通りしていた（実測・issue #52 M-8）。全階層の .json を落として、
+# 追跡中の正当な .json だけを個別に戻す。
+# .json を新しく追加するときは、鍵でないことを確かめてからここへ1行足す。
+*.json
+!/templates/**/*.json
+!/schema/**/*.json
+!/design/canvas.json
+!/gui/package.json
+!/gui/package-lock.json
+!/gui/tsconfig.json
+!/gui/tsconfig.node.json
+!/gui/src-tauri/tauri.conf.json
+!/gui/src-tauri/capabilities/*.json
 *.key
 *.pem
-service-account*.json
-credentials*.json
-*-????????????.json
 .env
 .env.*
 

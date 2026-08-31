@@ -23,12 +23,29 @@ import os
 import time
 from pathlib import Path
 
+from .pipeline_errors import OperationRefused
+
 FREE_TIER_UNITS = 1000   # 公式: 月 1,000 ユニットまで無料
 DEFAULT_CAP = 900        # 無料枠に余裕を残した強制停止ライン（ユーザー指示）
 
+_HINT = ("config.json の api_monthly_cap を引き上げるか、翌月（無料枠がリセット）"
+         "まで待つ。実際の使用量は GCP の課金ダッシュボードで確認する")
 
-class BudgetExceededError(RuntimeError):
-    """月次の送信上限に達した。送信は行われていない。"""
+
+class BudgetExceededError(OperationRefused):
+    """月次の送信上限に達した。送信は行われていない。
+
+    OperationRefused の派生にしているのは、これがバグではなく**業務的な拒否**
+    だから（issue #47）。RuntimeError 直系だった頃は cli.main の
+    `except OperationRefused` を素通りして最終 `except Exception` に落ち、
+    `ERROR BudgetExceededError: 処理を中止しました` ＋ exit 1 になっていた。
+    GUI はそれを見て「終了コード 1。再度『読み取りを開始』を押すと続きから
+    処理します」と案内するが、上限は押しても下がらないので決定論的に同じ
+    結果になる＝**誤案内**だった。refused 契約（exit 0 ＋ JSON Lines）に乗せる。
+    """
+
+    def __init__(self, message: str, hint: str = _HINT):
+        super().__init__(message, hint)
 
 
 def usage_path() -> Path:

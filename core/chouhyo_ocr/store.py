@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS alignment(
   ok INTEGER NOT NULL,
   geometry_hash TEXT NOT NULL,
   algo_version TEXT NOT NULL DEFAULT '',
+  template_hash TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(page_id, face_id)
 );
 CREATE TABLE IF NOT EXISTS era_score(
@@ -94,6 +95,10 @@ class Store:
         # 追加列の既定 '' は「旧版が作った・出所を証明できない」印として扱う（#25）
         self._ensure_column("page", "template_hash", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("alignment", "algo_version", "TEXT NOT NULL DEFAULT ''")
+        # 位置合わせのアンカーは tables（罫線定義）から作るが geometry_hash は
+        # tables を含まない。位置合わせ結果の再利用可否（#45）はテンプレート
+        # 全体のハッシュで判定する（レビュー4巡目 HIGH）。既定 '' は旧版データ
+        self._ensure_column("alignment", "template_hash", "TEXT NOT NULL DEFAULT ''")
         self.con.commit()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -201,6 +206,16 @@ class Store:
             "SELECT COUNT(*) FROM page WHERE source_file=?",
             (source_file,)).fetchone()[0]
 
+    def states_of_source(self, source_file: str) -> set[str]:
+        """その入力ファイルのページが取っている state 集合（#46 の改名判定）。
+
+        改名先の名前に「スキップ（重複）」の空行しか無いのか、実データを
+        持つページがあるのかを区別するために使う。前者なら捨ててから
+        付け替えられる——捨てないと再送＝再課金になる。
+        """
+        return {st for (st,) in self.con.execute(
+            "SELECT DISTINCT state FROM page WHERE source_file=?", (source_file,))}
+
     def page(self, page_id: str) -> sqlite3.Row | None:
         rows = self._rows("SELECT * FROM page WHERE page_id=?", (page_id,))
         return rows[0] if rows else None
@@ -254,18 +269,42 @@ class Store:
 
     # --- alignment / era ---
     def upsert_alignment(self, page_id: str, face_id: str, transform: dict,
-                         ok: bool, geometry_hash: str, algo_version: str) -> None:
+                         ok: bool, geometry_hash: str, algo_version: str,
+                         template_hash: str = "") -> None:
         self.con.execute(
             """INSERT INTO alignment(page_id, face_id, transform, ok, geometry_hash,
-                                     algo_version)
-               VALUES(?,?,?,?,?,?)
+                                     algo_version, template_hash)
+               VALUES(?,?,?,?,?,?,?)
                ON CONFLICT(page_id, face_id) DO UPDATE SET
                  transform=excluded.transform, ok=excluded.ok,
                  geometry_hash=excluded.geometry_hash,
-                 algo_version=excluded.algo_version""",
+                 algo_version=excluded.algo_version,
+                 template_hash=excluded.template_hash""",
             (page_id, face_id, json.dumps(transform), int(ok), geometry_hash,
-             algo_version))
+             algo_version, template_hash))
         self.con.commit()
+
+    def alignments(self, page_id: str) -> dict[str, tuple[dict, bool, str, str, str]]:
+        """保存済みの位置合わせ結果（#45 の再利用判定用）。
+
+        face_id → (transform, ok, geometry_hash, algo_version, template_hash)。
+        transform が壊れている行は落とす——面が1つでも欠ければ呼び出し側は
+        再整列へ倒すので、既定値で埋めて使い回すより安全。TEXT NOT NULL の列
+        でも外部ツールが BLOB を書けば json.loads は TypeError を投げるため、
+        ValueError だけでなくまとめて捕まえる（run 全体を落とさない）。
+        """
+        out: dict[str, tuple[dict, bool, str, str, str]] = {}
+        for face_id, transform, ok, geo, algo, tpl in self.con.execute(
+                """SELECT face_id, transform, ok, geometry_hash, algo_version,
+                          template_hash
+                   FROM alignment WHERE page_id=?""", (page_id,)):
+            try:
+                t = json.loads(transform)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(t, dict):
+                out[face_id] = (t, bool(ok), geo, algo, tpl)
+        return out
 
     # 再利用検査の母集団は **出力に寄与する done ページのみ**（レビュー C-1）。
     # 失敗ページの古い alignment 行まで数えると、1ページの位置合わせ失敗が
@@ -357,6 +396,30 @@ class Store:
         self.con.execute("DELETE FROM page WHERE source_file=?", (name,))
         self.con.commit()
         return len(ids)
+
+    def rename_source(self, old_name: str, new_name: str) -> int:
+        """入力ファイルの改名に中間データを追随させる（#46）。付け替えた行数を返す。
+
+        page 行の source_file を書き換えるだけで page_id は据え置く。token /
+        cell / alignment / era_score は page_id で紐づくためそのまま引き継がれ、
+        再送信（＝課金）は発生しない。source_file 表の名前も同時に直す——
+        消してしまうと、展開に失敗した次の run が「未知のファイル」と判断して
+        送り直してしまう。
+        UNIQUE(source_file, page_no) 違反は呼び出し側が防ぐ（新しい名前の
+        ページが既にある場合は改名として扱わない）。source_file 表の同名重複は
+        呼び出し側では防げないので、ここで新しい名前の行を先に捨てる——
+        PK は hash なので同名2行はスキーマ上は通ってしまい、そうなると
+        hash_of_source の LIMIT 1 がどちらを返すか決まらず、次の run が
+        source_replaced と誤判定して drop_pages_of（データ消失＋再送）に至る。
+        """
+        self.con.execute("DELETE FROM source_file WHERE name=?", (new_name,))
+        cur = self.con.execute(
+            "UPDATE page SET source_file=?, updated_at=? WHERE source_file=?",
+            (new_name, time.time(), old_name))
+        self.con.execute("UPDATE source_file SET name=? WHERE name=?",
+                         (new_name, old_name))
+        self.con.commit()
+        return cur.rowcount
 
     def record_source(self, file_hash: str, name: str) -> None:
         self.con.execute(

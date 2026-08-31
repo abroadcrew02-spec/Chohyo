@@ -38,8 +38,8 @@ def test_cli_top_level_handler_hides_exception_message(tmp_path):
 
 def test_logging_whitelist_drops_value_key():
     """汎用キー value は白リスト外＝黙って落ちる（issue #3）。"""
-    line = logging_safe._fmt("x", {"value": "上西諒", "page_id": "p1"})
-    assert "上西諒" not in line
+    line = logging_safe._fmt("x", {"value": "テスト太郎", "page_id": "p1"})
+    assert "テスト太郎" not in line
     assert "page_id=p1" in line
     line2 = logging_safe._fmt("x", {"duplicate_of": "a.png"})
     assert "duplicate_of=a.png" in line2
@@ -47,10 +47,10 @@ def test_logging_whitelist_drops_value_key():
 
 def test_fixed_repr_redacts_values():
     """記入値を持つ dataclass の repr が値を出さない（issue #4・付録 C7）。"""
-    assert "上西諒" not in repr(Symbol("上西諒", 1, 2, 0.9))
-    assert "上西諒" not in repr(CellContent("上西諒", 0.9))
-    row = Row("p1", "s.png", 1, "正常", ["上西諒", "千葉県"], 0, "0.900")
-    assert "上西諒" not in repr(row) and "千葉県" not in repr(row)
+    assert "テスト太郎" not in repr(Symbol("テスト太郎", 1, 2, 0.9))
+    assert "テスト太郎" not in repr(CellContent("テスト太郎", 0.9))
+    row = Row("p1", "s.png", 1, "正常", ["テスト太郎", "千葉県"], 0, "0.900")
+    assert "テスト太郎" not in repr(row) and "千葉県" not in repr(row)
     t = load_template(TPL)
     cell = t.cells[0]
     assert "redacted" in repr(CellContent("x", None)) or True  # 形式は固定文字列

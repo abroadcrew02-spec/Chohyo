@@ -5,8 +5,8 @@
 import { invoke } from "./bridge";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-type Rect = { x: number; y: number; w: number; h: number };
-type Mark = { value: string; rect: Rect };
+export type Rect = { x: number; y: number; w: number; h: number };
+export type Mark = { value: string; rect: Rect };
 type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rect; marks: Mark[];
                normalize?: string };
 type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
@@ -21,6 +21,61 @@ type Tool = "select" | "field" | "excl" | "table" | "split";
 
 let seq = 0;
 const uid = () => `u${++seq}`;
+
+/** 選択肢マークを欄の矩形の中へ縦に等分配置する。
+ *  選択肢テキストの入力（genFieldMarks）と、欄のリサイズ追従（issue #48）で
+ *  同じ配置規則を使う必要があるため関数に切り出してある。 */
+export function layoutMarks(rect: Rect, values: string[]): Mark[] {
+  const h = Math.floor(rect.h / Math.max(values.length, 1));
+  return values.map((v, i) => ({
+    value: v,
+    rect: { x: rect.x + 4, y: rect.y + i * h + 2,
+            w: Math.max(8, rect.w - 8), h: Math.max(8, h - 4) } }));
+}
+
+/** 欄の矩形が変わったときに選択肢マークを追従させる（issue #48）。
+ *
+ *  旧実装は rect だけ差し替えていたため、選択式の欄を動かすとマークの帯が
+ *  旧位置に取り残された。保存しても検証は通ってしまい、以後の読み取りが
+ *  **誤った選択値**（元号など）を出す——〓に倒れないので転記主義に反する。
+ *
+ *  追従は「欄の変化をそのままマークへ写す」相似変換で行う。移動は平行移動、
+ *  リサイズは比率でスケールする。layoutMarks で作り直さないのは、手で詰めた
+ *  較正値を捨てないため——出荷テンプレートの person_生年月日_元号 は
+ *  layoutMarks の算出値から x:+4 / y:+2〜+4 / w:-5 / h:+2 ずらして較正されており、
+ *  丸印判定の余裕（1位2位差 0.0647）はこの較正に乗っている（issue #23）。
+ *  欄を 1px 縮めただけで較正が消えるのは、利用者から見て予測できない。 */
+export function remapMarks(
+  f: { kind: "text" | "choice"; rect: Rect; marks: Mark[] }, next: Rect): Mark[] {
+  if (f.kind !== "choice" || f.marks.length === 0) return f.marks;
+  const cur = f.rect;
+  if (next.x === cur.x && next.y === cur.y
+      && next.w === cur.w && next.h === cur.h) return f.marks;
+  // 元の欄が潰れていると比率を取れない。作り直しへ退避する
+  if (cur.w <= 0 || cur.h <= 0) return layoutMarks(next, f.marks.map((m) => m.value));
+  const sx = next.w / cur.w, sy = next.h / cur.h;
+  return f.marks.map((m) => {
+    const w = Math.max(1, Math.min(next.w, Math.round(m.rect.w * sx)));
+    const h = Math.max(1, Math.min(next.h, Math.round(m.rect.h * sy)));
+    // 丸めで欄から出ないように収める。欄外のマークはコア側の検証が
+    // テンプレートごと拒否するため、ここで必ず内側に留める（#48 のコア側検証）
+    const x = Math.min(Math.max(next.x + Math.round((m.rect.x - cur.x) * sx), next.x),
+                       next.x + next.w - w);
+    const y = Math.min(Math.max(next.y + Math.round((m.rect.y - cur.y) * sy), next.y),
+                       next.y + next.h - h);
+    return { ...m, rect: { x, y, w, h } };
+  });
+}
+
+/// 欄に新しい矩形を適用する（移動・リサイズの唯一の入口）。
+///
+/// 選択肢マークも一緒に動かす（issue #48）。rect だけ差し替えると帯が旧位置に
+/// 残り、〓ではなく**誤った選択値**を出す原因になる。この配線自体をテストで
+/// 守るために純関数として分けている——remapMarks の単体テストだけでは
+/// 「呼び忘れ」を検出できない（レビュー4巡目）。
+export function applyRectToField(f: Field, r: Rect): Field {
+  return { ...f, rect: r, marks: remapMarks(f, r) };
+}
 
 export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -485,7 +540,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const applySelRect = (r: Rect) => {
     if (!sel) return;
     if (sel.type === "field")
-      setFields((fs) => fs.map((f) => f.uid === sel.uid ? { ...f, rect: r } : f));
+      setFields((fs) => fs.map((f) => f.uid === sel.uid
+        ? applyRectToField(f, r) : f));
     if (sel.type === "excl")
       setExcls((es) => es.map((x) => x.uid === sel.uid ? { ...x, rect: r } : x));
     markDirty(true);
@@ -505,10 +561,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
   const genFieldMarks = (f: Field, values: string) => {
     const vs = values.split(",").map((s) => s.trim()).filter(Boolean);
-    const h = Math.floor(f.rect.h / Math.max(vs.length, 1));
-    updateField(f.uid, { marks: vs.map((v, i) => ({
-      value: v, rect: { x: f.rect.x + 4, y: f.rect.y + i * h + 2,
-                        w: Math.max(8, f.rect.w - 8), h: Math.max(8, h - 4) } })) });
+    updateField(f.uid, { marks: layoutMarks(f.rect, vs) });
   };
 
   // ---------- サイドパネル ----------

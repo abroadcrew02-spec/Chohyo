@@ -2,6 +2,8 @@
 import json
 import subprocess
 
+import pytest
+
 from chouhyo_ocr.paths import app_root, is_cloud_synced_path
 
 PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
@@ -35,3 +37,36 @@ def test_verify_flags_synced_workdir(tmp_path):
     assert ls["ok"] is False
     assert "workdir" in ls["synced_dirs"]
     assert r.returncode == 1  # verify 全体も NG
+
+
+# ---------- レビュー4巡目 M-12: 検知するクライアントを広げる ----------
+
+@pytest.mark.parametrize("folder", [
+    "OneDrive", "Dropbox", "Google Drive", "Box", "Box Sync",
+    "Nextcloud", "ownCloud", "iCloudDrive", "Egnyte", "pCloud", "Seafile",
+])
+def test_detects_known_sync_clients(tmp_path, folder):
+    """業務で使われる同期クライアントの既定フォルダを検知する。"""
+    from chouhyo_ocr.paths import is_cloud_synced_path
+    d = tmp_path / folder / "chouhyo" / "workdir"
+    d.mkdir(parents=True)
+    assert is_cloud_synced_path(d), f"{folder} を検知できていない"
+
+
+@pytest.mark.parametrize("folder", [
+    "dropbox_backup", "toolbox", "sandbox", "boxes", "work",
+])
+def test_does_not_flag_unrelated_folder_names(tmp_path, folder):
+    """部分一致で無関係なフォルダを誤検知しない（成分の完全一致で見る）。"""
+    from chouhyo_ocr.paths import is_cloud_synced_path
+    d = tmp_path / folder / "workdir"
+    d.mkdir(parents=True)
+    assert not is_cloud_synced_path(d), f"{folder} を誤検知している"
+
+
+def test_detects_company_suffixed_onedrive(tmp_path):
+    """「OneDrive - 会社名」形式も検知する。"""
+    from chouhyo_ocr.paths import is_cloud_synced_path
+    d = tmp_path / "OneDrive - Contoso" / "workdir"
+    d.mkdir(parents=True)
+    assert is_cloud_synced_path(d)

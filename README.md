@@ -51,6 +51,9 @@ python -m venv .venv
 .venv\Scripts\pip install openpyxl jsonschema pillow numpy google-cloud-vision keyring pytest playwright pyinstaller
 cd gui && npm install
 
+# コミット前チェックの配線（clone ごとに1度だけ。帳票画像・鍵の commit を止める）
+git config core.hooksPath .githooks
+
 # テスト一括実行（pytest 106件 + cargo test 2件。GUI スモークは dev サーバー起動中のみ）
 .venv\Scripts\python.exe scripts\run_all_tests.py
 
@@ -71,7 +74,21 @@ cd gui && npm run tauri build
 - **`.csv` を Excel でダブルクリックして開かない。** 先頭ゼロが落ちるうえ、`=` `+` `-` で始まる値が計算式として実行される（実機確認済み）。中身を見るときはテキストエディタか、Excel の「データ」→「テキストまたは CSV から」で全列を文字列として取り込む。目視確認と提出には `.xlsx` を使う（こちらは文字列型を固定しており影響を受けない）
 - 実運用の帳票データは指定端末のみで扱い、検証後に削除する（要件 §6.5）
 - `workdir/`（読取値・展開画像）・`output/`・鍵ファイルは `.gitignore` 済み。リポジトリへ入れない
+- コミット前チェックを有効にする: `git config core.hooksPath .githooks`。`.githooks/pre-commit` が帳票画像（png/jpg/jpeg/tif/tiff/bmp）・`workdir/`・`*.dpapi`・`*.sqlite`/`*.sqlite3`/`*.db`・`*.pem`/`*.key`・PDF と、差分に GCP サービスアカウント鍵の判別キー（type が service_account のもの・private_key フィールド）や PEM 秘密鍵のヘッダ行を含むファイルを止める。アプリ同梱の `gui/src-tauri/icons/`・`gui/public/` は画像ルールだけ免除で、そこに置いた `*.sqlite` や PDF は他と同じく止まる。`.gitignore` は `git add -f` とルール追加前に add された分を止められない——実際に add だけされた帳票画像6枚と Vision 応答2件が到達不能 blob として 9.9MB 残っていた（issue #44）ので、これが最後の関門になる。検出パターンの正本は `.githooks/pre-commit` の `scan_content` 呼び出し——ここに逐語で書くと README 自身がフックに引っかかる（実測）
 - Vision へ送る画像は除外領域（綴じ穴・黒塗り・印字ラベル）をマスクしてから送信する
+
+### 鍵の残余リスク（DPAPI で守れる範囲）
+
+`import-credentials` が保存する `cred.dpapi` は Windows DPAPI の CurrentUser スコープで暗号化している。追加エントロピーは使っていないため、**同じ Windows アカウントで動く任意のプロセスが復号できる**（別プロセスからの復号成功を確認済み・issue #52 M-13）。他ユーザー・他端末からは読めないが、そのユーザーとして動くマルウェアは止められない。これ以上絞ると起動のたびにパスフレーズ入力を求めることになり、オペレーターの運用が回らない。守りは運用側で足す。
+
+- **IAM を Vision の呼び出しだけに絞る。** サービスアカウントには Vision API の利用に必要な権限だけを付け、Storage・BigQuery・IAM 管理の権限は付けない。こうしておくと鍵が漏れたときの被害が「勝手に OCR を叩かれて課金される」で止まる。課金側の歯止めは `api_monthly_cap`（既定 900 ユニット）と GCP 側の予算アラートの二重
+- **鍵をローテーションする周期を決める。** 目安は 90 日。復号が同一 PC 上のプロセスから可能である以上、鍵の寿命が被害の上限を決める。手順は「GCP コンソールで新しい鍵を発行 → `import-credentials <json>` で取り込む → 旧鍵を削除 → 元の JSON ファイルを消す」。オペレーター端末が複数あるなら全台を同じ日に回す
+- **端末のマルウェア対策が最後の防衛線。** DPAPI は端末が乗っ取られた後を守らない
+- **`workdir` を置くフォルダの ACL を当該ユーザーだけに絞る。** 中間データには読取値がそのまま入るので、鍵と同じ扱いにする。PowerShell で継承を切って当該ユーザーのフルコントロールだけ残す:
+
+```powershell
+icacls C:\ChouhyoWork /inheritance:r /grant:r "${env:USERNAME}:(OI)(CI)F"
+```
 
 ## API の課金と安全装置
 

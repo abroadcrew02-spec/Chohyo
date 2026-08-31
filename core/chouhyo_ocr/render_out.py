@@ -125,6 +125,37 @@ def scan_risky_prefixes(columns: list[str],
     return hits
 
 
+def _rollback(backups: list[tuple[Path, Path]], replaced: list[Path]) -> list[Path]:
+    """差し替え途中の失敗を「どちらも変わらない」状態へ戻す（issue #51）。
+
+    退避（.bak）があるものは書き戻す（差し替え済みなら新しい方を捨てる）。
+    退避が無いのに差し替わったもの＝元は存在しなかったファイルなので消す。
+    戻せなかった分をここで例外にすると元の失敗原因が消えるため、呼び出し元が
+    元の例外を __cause__ に付けて投げる形にしてある。
+
+    **戻せなかったパスの一覧を返す**。呼び出し元はこれを見て文言を変える——
+    巻き戻しに失敗しているのに「元の内容に戻した」と断言すると、xlsx=新・
+    csv=旧という不整合な組み合わせが残っているのに利用者が安心してしまう
+    （レビュー4巡目）。
+    """
+    failed: list[Path] = []
+    had_backup: set[Path] = set()
+    for final, bak in backups:
+        had_backup.add(final)
+        if bak.exists():
+            try:
+                os.replace(bak, final)
+            except OSError:
+                failed.append(final)
+    for final in replaced:
+        if final not in had_backup and final.exists():
+            try:
+                final.unlink()
+            except OSError:
+                failed.append(final)
+    return failed
+
+
 def write_outputs(
     out_dir: str | Path, timestamp: str, columns: list[str], rows: list[Row]
 ) -> tuple[Path, Path, list[tuple[str, str]]]:
@@ -176,8 +207,31 @@ def write_outputs(
                 f"出力ファイルを更新できない（{xlsx.name} または {csvp.name} が"
                 "Excel などで開かれている可能性）。閉じてからやり直す。"
                 "既存のファイルは壊れていない") from e
-        os.replace(tmp_x, xlsx)
-        os.replace(tmp_c, csvp)
+        # 差し替え本体も try で守る（issue #51）。裸で置くと、ここでの失敗
+        # （xlsx を Excel で開いたままの PermissionError 等）で finally が tmp を
+        # 消す一方、退避した .bak は戻らず削除もされない——手元に残るのは .bak
+        # だけで **正規名のファイルが両方消える**。上のコメントが約束する
+        # 「両方更新される／どちらも変わらない」は、差し替え中の失敗まで
+        # 巻き戻して初めて成立する
+        replaced: list[Path] = []
+        try:
+            os.replace(tmp_x, xlsx)
+            replaced.append(xlsx)
+            os.replace(tmp_c, csvp)
+            replaced.append(csvp)
+        except OSError as e:
+            not_restored = _rollback(backups, replaced)
+            if not_restored:
+                names = "・".join(sorted(p.name for p in not_restored))
+                tail = (f"巻き戻しにも失敗した（{names}）。"
+                        "xlsx と csv で内容が食い違っている可能性があるため、"
+                        "同フォルダの .bak と突き合わせて確認する")
+            else:
+                tail = "既存のファイルは元の内容に戻した"
+            raise PermissionError(
+                f"出力ファイルを更新できない（{xlsx.name} または {csvp.name} の"
+                "差し替えに失敗した。Excel などで開かれている可能性）。"
+                f"閉じてからやり直す。{tail}") from e
         for _final, bak in backups:
             try:
                 bak.unlink()

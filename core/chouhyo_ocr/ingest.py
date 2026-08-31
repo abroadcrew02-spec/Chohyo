@@ -12,15 +12,37 @@ from __future__ import annotations
 
 import glob
 import hashlib
+import io
+import itertools
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 from . import logging_safe as log
 from .paths import app_root
 
 SUPPORTED = {".pdf", ".jpg", ".jpeg", ".png"}
+
+# ページ画像の PNG 圧縮レベル（issue #50）。
+# poppler 内蔵の PNG エンコーダが遅く、`pdftoppm -png` は同じ PDF・同じ解像度の
+# ppm 出力に比べ約 7〜10 倍の時間を使う（実測 2026-08-31・2ページ 300dpi:
+# -png 14.73s / -ppm 1.40s）。展開は 1 ページごとに必ず通る経路で、月 6,000 画像なら
+# ここだけで概算 8 時間を使う。
+#
+# そこで ppm で受け取って Pillow で PNG 化する。ppm も PNG も可逆形式なので、
+# **画素は現行の -png 出力と完全一致する**（全ページ・全画素で差分 0 を実測確認）。
+# 入力が同一なら OCR 結果も同一で、精度への影響は無い（API 送信による検証は不要）。
+#
+# レベルの選定（実測・2490x3510・現行 -png を基準）:
+#   level 0: 4.61x 速い / 容量 10.89x   level 1: 4.17x / 1.47x
+#   level 3: 3.91x 速い / 容量  1.04x   level 6: 3.46x / 1.00x
+# level 3 が「容量を現行水準に保ったまま最大の速度」。align.py が整列画像で
+# level 1 を選んだのは中間データで容量を許容できるためで、ここは永続する
+# ページ画像なので容量側に寄せる。
+PNG_COMPRESS_LEVEL = 3
 
 
 class IngestError(RuntimeError):
@@ -94,19 +116,42 @@ def page_id_for(source: Path, page_no: int, taken: set[str]) -> str:
     return f"{source.stem}_{digest}_p{page_no:04d}"
 
 
+def _render_page_ppm(source: Path, dpi: int, page_no: int) -> bytes | None:
+    """PDF の 1 ページを ppm（無圧縮）で受け取る。ページが無ければ None。
+
+    出力プレフィックスを渡さないと pdftoppm は stdout へ書く。中間の ppm を
+    ディスクに置かずに済む（ppm は約 25MB/頁で、置くとページ数ぶん積み上がる）。
+    """
+    exe = pdftoppm_path()
+    args = [str(exe), "-r", str(dpi), "-f", str(page_no), "-l", str(page_no),
+            str(source)]
+    try:
+        proc = subprocess.run(args, capture_output=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        raise IngestError("PDF_EXPAND_TIMEOUT") from e
+    if proc.returncode != 0:
+        # stderr は記入値を含みうる経路ではないが、方針どおり固定コード化して捨てる
+        raise IngestError("PDF_EXPAND_FAILED")
+    return proc.stdout or None
+
+
 def expand(source: Path, dpi: int, out_dir: Path,
            page: int | None = None) -> list[Path]:
     """1入力ファイル → ページ画像のリスト（PDF は pdftoppm・画像はそのまま）。
 
     page=N なら該当ページのみ展開する（pdftoppm -f/-l）。テンプレート編集は
-    位置合わせ用の1ページだけあればよく、全ページ展開（実測 約13秒/2頁）を
-    1ページ分（約5秒）に抑える（2026-08-28 ユーザー要望）。
+    位置合わせ用の1ページだけあればよく、全ページ展開を1ページ分に抑える
+    （2026-08-28 ユーザー要望）。
+
+    ページ画像は ppm で受け取って Pillow で PNG 化する（issue #50・
+    PNG_COMPRESS_LEVEL の項を参照）。1ページごとに pdftoppm を起動するため
+    ページ数の多い PDF では起動コストが積むが、それを含めても現行より速い
+    （実測 2026-08-31・2ページ 300dpi: 現行 -png 20.11s → 本方式 4.47s）。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     if source.suffix.lower() != ".pdf":
         return [source]
 
-    prefix = out_dir / source.stem
     # 展開前に同一 stem の残骸を必ず消す（issue #20）。out_dir は実行をまたいで
     # 永続するため、同名 PDF を差し替えて再実行すると旧展開分が混ざり、
     # **別の帳票のデータが新ファイル名で送信・出力される**（実測: 12頁→2頁の
@@ -124,35 +169,39 @@ def expand(source: Path, dpi: int, out_dir: Path,
             except OSError:
                 log.info("stale_page_unlink_failed", source_file=old.name)
 
-    exe = pdftoppm_path()
-    args = [str(exe), "-r", str(dpi), "-png"]
+    total = pdf_page_count(source)
+    # pdftoppm はゼロ埋め幅を総ページ数で決める。同じ名前になるよう合わせる
+    # （既存の展開結果と混在しても stale 掃除・番号パースが従来どおり効く）
+    width = len(str(total)) if total else 1
     if page is not None:
-        args += ["-f", str(page), "-l", str(page)]
-    try:
-        proc = subprocess.run(
-            args + [str(source), str(prefix)],
-            capture_output=True, timeout=300)
-    except subprocess.TimeoutExpired as e:
-        raise IngestError("PDF_EXPAND_TIMEOUT") from e
-    if proc.returncode != 0:
-        # stderr は記入値を含みうる経路ではないが、方針どおり固定コード化して捨てる
-        raise IngestError("PDF_EXPAND_FAILED")
-    # stem は glob エスケープ必須。scan[1].pdf（ブラウザの重複名）で [1] が
-    # 文字クラス解釈され、展開成功なのに 0 件マッチ→展開失敗になる（issue #13）。
-    # さらに <stem>-<数字>.png に厳密一致させる: a.pdf と a-1.pdf が同居すると
-    # a-* が a-1-1.png まで拾い、ページ数と行数の対応が崩れる（レビュー N-13）
-    # page 指定時は該当番号のみに絞る（過去の全ページ展開の残骸を拾わない）。
-    # pdftoppm はゼロ埋めすることがあるため 0* を許す
-    num = rf"0*{page}" if page is not None else r"\d+"
-    pat = re.compile(rf"{re.escape(source.stem)}-(?P<no>{num})")
-    # 辞書順ではなくページ番号の数値順（issue #20: ゼロ埋め幅が総ページ数で
-    # 変わるため、文字列 sorted() は 1,10,11,...,2 の並びになりうる）
-    hits = []
-    for p in out_dir.glob(f"{glob.escape(source.stem)}-*.png"):
-        m = pat.fullmatch(p.stem)
-        if m:
-            hits.append((int(m.group("no")), p))
-    pages = [p for _no, p in sorted(hits)]
+        if total is not None and not (1 <= page <= total):
+            raise IngestError("PDF_EXPAND_EMPTY")
+        numbers: list[int] | None = [page]
+    elif total is not None:
+        numbers = list(range(1, total + 1))
+    else:
+        # pdfinfo が総ページ数を返さない（破損 PDF など）。1 から順に試し、
+        # 空応答で終端とみなす。破損していれば 1 ページ目で失敗する
+        numbers = None
+
+    pages: list[Path] = []
+    for no in (numbers if numbers is not None else itertools.count(1)):
+        data = _render_page_ppm(source, dpi, no)
+        if not data:
+            if numbers is None:
+                break          # 総ページ数不明時の終端
+            raise IngestError("PDF_EXPAND_FAILED")
+        dst = out_dir / f"{source.stem}-{no:0{width}d}.png"
+        try:
+            with Image.open(io.BytesIO(data)) as img:
+                img.load()
+                img.save(dst, format="PNG", compress_level=PNG_COMPRESS_LEVEL)
+        except Exception as e:  # noqa: BLE001
+            # 変換失敗は展開失敗として扱う。例外メッセージは捨てる
+            # （PIL の例外はファイルパスを含み、パスには入力ファイル名が乗る）
+            raise IngestError("PDF_EXPAND_FAILED") from e
+        pages.append(dst)
+
     if not pages:
         raise IngestError("PDF_EXPAND_EMPTY")
     return pages

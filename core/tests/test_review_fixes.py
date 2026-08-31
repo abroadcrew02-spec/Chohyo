@@ -193,9 +193,16 @@ def test_choice_with_subfields_keeps_row_length(tmp_path):
                 if c.get("subfields"):
                     c["kind"] = "choice"  # エディタの切替事故を装う
                     c.pop("normalize", None)
+                    # マークの x_offset は列相対ではなく**表原点相対**
+                    # （実テンプレート: 列 x_offset=671 に対しマーク 686）。
+                    # 列の内側に収める——外に出るテンプレートは load_template が
+                    # 拒否するようになったため（レビュー4巡目 #48 のコア側検証）
+                    half = max(1, c["width"] // 2)
                     c["choice_marks"] = [
-                        {"value": "A", "x_offset": 0, "width": 20},
-                        {"value": "B", "x_offset": 20, "width": 20}]
+                        {"value": "A", "x_offset": c["x_offset"],
+                         "width": half},
+                        {"value": "B", "x_offset": c["x_offset"] + half,
+                         "width": c["width"] - half}]
     p = tmp_path / "t.json"
     p.write_text(json.dumps(t, ensure_ascii=False), encoding="utf-8")
     template = load_template(p)
@@ -261,7 +268,12 @@ def test_run_reports_stale_pages(tmp_path):
     shutil.copy(RESP, resp / "a_p0001.json")
     run(inp, TPL, cfg, ReplayClient(resp))
 
-    (inp / "a.png").rename(inp / "b.png")  # a を消し b を足す
+    (inp / "a.png").unlink()  # a を消し、別内容の b を足す
+    # 内容まで同一にすると #46 の改名判定（同じ紙が改名された）に入り、
+    # 中間データが b へ付け替わるので stale にならない。ここで見たいのは
+    # 「入力から消えたファイルの行が残る」ケースなので、IEND より後ろの
+    # パディングで sha1 だけ変えて別の紙にする（画素は同一）
+    (inp / "b.png").write_bytes(page_png.read_bytes() + b"\n")
     shutil.copy(RESP, resp / "b_p0001.json")
     events = []
     run(inp, TPL, cfg, ReplayClient(resp), progress=events.append)

@@ -1,0 +1,135 @@
+#!/bin/sh
+#
+# 個人情報・資格情報のコミットを止める pre-commit フック（issue #44 の再発防止）。
+#
+# .gitignore が止められるのは「これから add されるもの」だけで、`git add -f` と
+# 「ルールを足す前に add された分」は素通りする。実際 issue #44 では、commit
+# されないまま add された帳票スキャン画像6枚と Vision 応答 JSON 2件（氏名・
+# 生年月日・電話が平文）が .git/objects に到達不能 blob として 9,896,191 バイト
+# 残っていた。add の時点では誰も気づけなかったので、commit の直前にパスと内容の
+# 両方を見て止める。
+#
+# 配線（clone 後に1度だけ）:
+#   git config core.hooksPath .githooks
+#
+# 制限:
+#   - 内容基準はステージ差分のテキスト部分のみを見る。バイナリに埋まった鍵は
+#     パス基準（*.dpapi・画像・DB）側で受け止める。
+
+set -u
+
+NL='
+'
+blocked=""
+
+block() {
+	blocked="${blocked}  - ${1}${NL}"
+}
+
+# ステージされたパスを列挙する。
+#
+# `--name-only` を素で使ってはいけない。core.quotepath は git の既定が true で、
+# その場合 `notes/帳票.png` は "notes/\345\270\263\347\245\250.png" という
+# 引用符つき8進エスケープで返る。先頭に " が付くため case の *.png にも
+# workdir/* にも一致せず、日本語名のファイルだけが検査を素通りしていた
+# （実測: core.quotepath=true の使い捨てリポジトリで notes/帳票.png と
+# workdir/責任者/読取値.json が commit 成功）。開発機の
+# ~/.gitconfig に core.quotepath=false があると気づけないが、その設定は
+# リポジトリに入らないので別端末の clone では防御が消える。
+# `-z` を付けると git は quotepath 設定に関係なくパスを無加工の NUL 区切りで
+# 出すので、この経路依存が消える。日本語の帳票を扱うツールで日本語名だけ
+# 抜けるのは、最も止めたいケースが抜けるということ。
+#
+# NUL を改行に直して読む。Windows のファイル名は改行を含められないため
+# （NTFS/Win32 API が禁止）、この変換で失われるものはない。
+list_staged() {
+	git diff --cached --name-only --diff-filter=ACMR -z "$@" | tr '\0' '\n'
+}
+
+# --- パス基準 -------------------------------------------------------
+# ステージされた追加・変更・リネーム後のパスだけを見る（削除は無害）。
+staged=$(list_staged)
+
+OLD_IFS=$IFS
+IFS=$NL
+for path in $staged; do
+	[ -n "$path" ] || continue
+
+	lower=$(printf '%s' "$path" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+
+	case "$lower" in
+		workdir/*|*/workdir/*)
+			block "$path … 中間データ（読取値・信頼度・展開画像）"; continue ;;
+		*.dpapi)
+			block "$path … DPAPI 暗号化済みの GCP 鍵"; continue ;;
+		*.sqlite|*.sqlite3|*.db)
+			block "$path … SQLite（読取値がそのまま入る）"; continue ;;
+		*.key|*.pem)
+			block "$path … 秘密鍵"; continue ;;
+		*.png|*.jpg|*.jpeg|*.tif|*.tiff|*.bmp)
+			# 正当な同梱アセット（アプリのアイコンと静的ファイル）だけ画像ルールを免除する。
+			# 免除はこの分岐の中に閉じ込める。旧実装はループ先頭で全ルールを飛ばしていたため、
+			# gui/public/state.sqlite や gui/public/scan001.pdf が commit できてしまった
+			# （実測）。置き場所を変えれば検査を外せる、では防御にならない。
+			# フラグ変数ではなく入れ子の case で書く。core.autocrlf=true で clone すると
+			# このファイルが CRLF になり、行末の値が CR を拾って `asset=1` が "1<CR>" に
+			# なる——[ "$asset" -eq 1 ] が整数比較に失敗して gui/public/logo.png まで
+			# ブロックされた（実測）。case なら行末に値を置かないので影響を受けない。
+			case "$path" in
+				gui/src-tauri/icons/*|gui/public/*) continue ;;
+			esac
+			block "$path … 画像（帳票スキャンの可能性）"; continue ;;
+		*.pdf)
+			block "$path … PDF（帳票の可能性）"; continue ;;
+	esac
+done
+IFS=$OLD_IFS
+
+# --- 内容基準 -------------------------------------------------------
+# サービスアカウント鍵の JSON と PEM 秘密鍵。ファイル名を変えられても中身で捕まえる。
+# 検出内容そのものは表示しない（画面・端末ログへ鍵を出さないため、パターン名と
+# ファイル名だけ出す）。
+# .githooks/pre-commit だけを検査対象から外す——このスクリプト自身が検出パターンを文字列として
+# 持っているため、除外しないとフック自体を commit できない（実測）。
+scan_content() {
+	label=$1
+	pattern=$2
+	hits=$(list_staged -G"$pattern" -- . ':(exclude).githooks/pre-commit' 2>/dev/null) || return 0
+	[ -n "$hits" ] || return 0
+	OLD_IFS=$IFS
+	IFS=$NL
+	for path in $hits; do
+		[ -n "$path" ] || continue
+		block "$path … ${label} がステージ差分に含まれる"
+	done
+	IFS=$OLD_IFS
+}
+
+scan_content 'サービスアカウント鍵（"type": "service_account"）' '"type"[ 	]*:[ 	]*"service_account"'
+scan_content '秘密鍵フィールド（"private_key"）'                  '"private_key"'
+scan_content 'PEM 秘密鍵（BEGIN PRIVATE KEY）'                    'BEGIN PRIVATE KEY'
+scan_content 'PEM 秘密鍵（BEGIN RSA PRIVATE KEY）'                'BEGIN RSA PRIVATE KEY'
+
+# --- 判定 -----------------------------------------------------------
+if [ -n "$blocked" ]; then
+	cat >&2 <<MSG
+コミットを中止しました。個人情報または資格情報が入りうるファイルがステージされています。
+
+$blocked
+このリポジトリは手書き帳票（氏名・生年月日・電話・住所）を扱います。git の履歴は
+一度入ると消すのが難しく、add しただけの blob も .git/objects に残ります（issue #44）。
+そのため commit の手前で止めています。
+
+対処:
+  1. ステージから外す:  git restore --staged <パス>
+  2. 追跡してしまっている場合は削除:  git rm --cached <パス>
+  3. .gitignore に載っているか確認:  git check-ignore -v <パス>
+
+個人情報でないと確認できた場合に限り、次で回避できます（帳票・鍵でないことを
+必ず中身を開いて確かめてから）:
+  git commit --no-verify
+MSG
+	exit 1
+fi
+
+exit 0

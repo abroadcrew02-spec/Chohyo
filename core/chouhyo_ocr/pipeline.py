@@ -12,7 +12,7 @@ from typing import Callable
 from PIL import Image
 
 from . import era, ingest, logging_safe as log, render_rows
-from .align import AlignError, align_page, geometry_hash
+from .align import AlignedFace, AlignError, align_page, geometry_hash
 from .columns import derive_columns, validate_v1
 from .config import Config
 from .mapping import assign, symbols_from_response, to_face_local
@@ -96,6 +96,81 @@ def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
             raise OperationRefused(
                 "テンプレートが変わっている（欄・列の定義の変更）。"
                 "割付が旧テンプレートのままのため——`remap` で割付をやり直す")
+
+
+# 「既に位置合わせ済み」を意味する state（#45）。done は todo に入らないので
+# 不要。failed は入れない——位置合わせ失敗も failed なので、再整列に倒す側で扱う
+_ALIGNED_STATES = frozenset({"aligned", "sending", "received"})
+
+
+def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
+                       page_id: str, geo_hash: str, algo_version: str,
+                       tpl_hash: str
+                       ) -> tuple[list[AlignedFace], "Image.Image"] | None:
+    """保存済みの位置合わせ結果から faces/composite を復元する（#45）。
+
+    send_limit・月次上限による分割送信が通常運用のため、未送信ページは run の
+    たびに再整列されていた（実測 約1.6s/ページ。send_limit=3・10ページの2回
+    連続 run で2回目も7ページを再整列）。位置合わせは decode 済みの中間データで
+    再現できるので、条件を満たすページは作り直さない。
+
+    再利用できるのは、面ごとに ①alignment 行がある ②ok ③geometry_hash が
+    現テンプレートと一致 ④algo_version が現コードと一致 ⑤template_hash が
+    現テンプレートと一致 ⑥整列画像が実在し寸法が source.rect と一致 の
+    **すべて** を満たす場合だけ。1つでも欠けたら None を返して再整列させる
+    （古い定義を使い回して誤った値を出さない）。
+
+    ⑤が要るのは、平行移動の探索アンカー（estimate_shift）が faces[].tables の
+    blocks.origin / row_pitch / columns から作られるのに対し、geometry_hash は
+    render_dpi / image / record / faces.{face_id,source,exclusions} しか見ない
+    ため。罫線定義のズレ補正という最も普通のテンプレ編集が geometry_hash を
+    変えないので、④までのゲートでは旧アンカーで求めた dx/dy を新しいセル定義に
+    使ってしまう（実測: family blocks の origin.y を 5px 動かしたテンプレートで
+    再実行しても align 呼び出しが 0 回のまま＝旧アンカーの位置合わせを再利用して
+    いた。tests/test_review4_pipeline.py::test_table_change_forces_realign）。
+    このゲートを厳しくしても API 送信は増えない——不成立時に起きるのは
+    ローカルの再整列だけで、page の state も保存済み応答も触らないため、
+    received ページは従来どおり保存済み応答を再利用する（issue #38）。
+
+    二値は align_page と同じ binarize_face で作り直す。整列画像は除外領域を
+    白で塗った RGB の PNG（可逆）で、Otsu の母集団も最終マスクも除外領域の
+    外側だけ——align_page が作る binary と一致する。remap も同じ経路で
+    環状帯を再スコアしている。
+    """
+    rows = store.alignments(page_id)
+    if not rows:
+        return None
+    import numpy as np
+
+    from .align import binarize_face
+    w_img, h_img = template.image_size
+    composite = Image.new("RGB", (w_img, h_img), "white")
+    faces: list[AlignedFace] = []
+    for face in template.faces:
+        rec = rows.get(face.face_id)
+        if rec is None:
+            return None
+        transform, ok, geo, algo, tpl = rec
+        if not ok or geo != geo_hash or algo != algo_version or tpl != tpl_hash:
+            return None  # tpl=='' は旧版データ。証明できないものは作り直す
+        img_path = aligned_dir / f"{page_id}_{face.face_id}.png"
+        if not img_path.exists():
+            return None
+        r = face.source_rect
+        try:
+            with Image.open(img_path) as fh:
+                img = fh.convert("RGB")
+        except Exception:  # noqa: BLE001 — 壊れた中間データは再整列で作り直す
+            return None
+        if img.size != (r.w, r.h):
+            return None
+        binary = binarize_face(np.asarray(img.convert("L")), face)
+        faces.append(AlignedFace(
+            face.face_id, img, binary, float(transform.get("angle", 0.0)),
+            dx=int(transform.get("dx", 0)), dy=int(transform.get("dy", 0)),
+            shift_matched=int(transform.get("matched", 0))))
+        composite.paste(img, (r.x, r.y))
+    return faces, composite
 
 
 def _map_and_score(store: Store, template: Template, page_id: str,
@@ -197,6 +272,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     taken: set[str] = store.all_page_ids()
     skipped_files: list[str] = []
     inputs = ingest.list_inputs(input_dir, skipped_files)
+    # 重複判定（#46）と stale 検知（#28）の両方が使うので、ループの前に1回だけ作る
+    input_names = {s.name for s in inputs}
     if skipped_files:
         # 対象外ファイルを進捗イベントへ出す（レビュー M-2）。ログだけだと
         # 利用者には「total=0 の正常終了」にしか見えない
@@ -222,6 +299,37 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             progress({"event": "source_replaced", "file": source.name,
                       "dropped_pages": dropped})
         seen_as = store.known_source(digest)
+        if (seen_as is not None and seen_as != source.name
+                and seen_as not in input_names):
+            # 改名（#46）: 同じ中身の元ファイルが今回の入力に **無い** なら、
+            # 二重投入ではなく「同じ紙が改名された」。重複として扱うと
+            # 「新しい名前＝スキップ（重複）行」と「古い名前＝stale 行」の2行が
+            # 出て §3.4（入力ページ数＝出力行数）が破れる（実測: 要確認セル数が
+            # 4→216 に跳ねる）。中間データを新しい名前へ付け替えて引き継ぐ
+            # ——page_id は据え置くので再送信（課金）は発生しない
+            states = store.states_of_source(source.name)
+            if not states or states == {"skipped_duplicate"}:
+                # 改名先の名前に「スキップ（重複）」の空行だけが残っている場合も
+                # 付け替える（レビュー4巡目 MEDIUM）。空行は送信も割付もして
+                # いないので捨てて構わない——残すと UNIQUE(source_file, page_no)
+                # 違反を避けるために通常処理へ落ち、同じ紙をもう一度送る
+                # （課金）ことになる。実測: 1ファイルの入力に対し api=1・
+                # 「正常」行が2行（旧名の stale と新名）並んでいた
+                if states:
+                    store.drop_pages_of(source.name)
+                moved = store.rename_source(seen_as, source.name)
+                log.info("source_renamed", source_file=source.name, count=moved)
+                progress({"event": "source_renamed", "file": source.name,
+                          "was": seen_as, "pages": moved})
+            else:
+                # 実データを持つページが新しい名前に既にある。付け替えると
+                # UNIQUE(source_file, page_no) 違反になるので、重複にはせず
+                # 通常の入力として処理する——黙って全〓行にするより送り直す
+                # ほうが安全だが、送信（課金）が動く分岐なので黙らない
+                log.info("source_rename_fallback", source_file=source.name)
+                progress({"event": "rename_fallback", "file": source.name,
+                          "was": seen_as})
+            seen_as = None
         if seen_as is not None and seen_as != source.name:
             log.info("skip_duplicate_content", source_file=source.name,
                      duplicate_of=seen_as)
@@ -255,11 +363,20 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             taken.add(pid)
             existing = store.page(pid)
             if existing and existing["state"] == "done":
-                continue  # 再開規則: 処理済みは再送信しない（要件 §5.8）
-            if existing and existing["state"] == "received":
-                # 応答は取得済み（受信後・割付前で中断）。ここで expanded へ
-                # 戻すと保存済み応答を使える条件が消え、再送＝再課金になる
-                # （issue #38）。画像パスだけ更新して進捗は保つ
+                # 再開規則: 処理済みは再送信しない（要件 §5.8）。ただし画像パスは
+                # 追随させる（#46 の改名で旧パスが実在しなくなるため。state は
+                # 触らないので送信・割付の判断は変わらない）
+                if existing["image_path"] != str(img_path):
+                    store.set_image_path(pid, str(img_path))
+                continue
+            if existing and existing["state"] in _ALIGNED_STATES:
+                # 進んだ状態を expanded へ巻き戻さない。
+                # received（受信後・割付前で中断）は、戻すと保存済み応答を使える
+                # 条件が消えて再送＝再課金になる（issue #38）。
+                # aligned / sending（送信上限・月次上限で止まった分割送信の
+                # 途中）は、戻すと位置合わせ済みの印が消えて run のたびに
+                # 再整列される（#45・実測 約1.6s/ページ）。
+                # どちらも画像パスだけ更新して進捗は保つ
                 store.set_image_path(pid, str(img_path))
                 continue
             store.upsert_page(pid, source.name, i, "expanded", str(img_path))
@@ -268,7 +385,6 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     # render は store の全ページを出力するため、消えた入力の行が黙って
     # Excel に残り続ける——検知だけでも見えるようにする（削除は purge のみ）
     all_pages = store.pages()
-    input_names = {s.name for s in inputs}
     missing_inputs = sorted({p["source_file"] for p in all_pages
                              if p["source_file"] not in input_names})
     if missing_inputs:
@@ -303,26 +419,38 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             continue
 
         # --- F3/F4/F5: 切り出し・位置合わせ・再結合 ---
-        try:
-            faces, composite = align_page(img, template)
-        except AlignError:
-            store.set_state(pid, "failed")
-            store.set_status(pid, render_rows.STATUS_ALIGN_FAILED)
-            summary.align_failed += 1
-            progress({"event": "page", "page_id": pid,
-                      "status": render_rows.STATUS_ALIGN_FAILED})
-            continue
-        for f in faces:
-            store.upsert_alignment(
-                pid, f.face_id,
-                {"angle": f.angle, "dx": f.dx, "dy": f.dy,
-                 "matched": f.shift_matched},
-                True, geo_hash, ALGO_VERSION)
-            # 位置合わせ画像はローカル中間データ（remap の再スコア用）で
-            # 配布物ではない。圧縮率を下げてエンコード時間を優先する
-            # （実測: level 6 で 0.35s/枚 → level 1 で 0.22s/枚・容量は +1MB 程度）
-            f.image.save(aligned_dir / f"{pid}_{f.face_id}.png", compress_level=1)
-        store.set_state(pid, "aligned")
+        # 位置合わせ済みのページは作り直さない（#45）。分割送信（send_limit・
+        # 月次上限）が通常運用なので、毎 run の再整列は素の無駄になる
+        reused = (_restore_alignment(store, template, aligned_dir, pid,
+                                     geo_hash, ALGO_VERSION, tpl_hash)
+                  if page["state"] in _ALIGNED_STATES else None)
+        if reused is not None:
+            # state は動かさない（received を aligned へ戻すと保存済み応答を
+            # 使う条件が消え、再送＝再課金になる・issue #38）
+            faces, composite = reused
+            log.info("reuse_alignment", page_id=pid)
+        else:
+            try:
+                faces, composite = align_page(img, template)
+            except AlignError:
+                store.set_state(pid, "failed")
+                store.set_status(pid, render_rows.STATUS_ALIGN_FAILED)
+                summary.align_failed += 1
+                progress({"event": "page", "page_id": pid,
+                          "status": render_rows.STATUS_ALIGN_FAILED})
+                continue
+            for f in faces:
+                store.upsert_alignment(
+                    pid, f.face_id,
+                    {"angle": f.angle, "dx": f.dx, "dy": f.dy,
+                     "matched": f.shift_matched},
+                    True, geo_hash, ALGO_VERSION, tpl_hash)
+                # 位置合わせ画像はローカル中間データ（remap の再スコア用・#45 の
+                # 再利用元）で配布物ではない。圧縮率を下げてエンコード時間を優先する
+                # （実測: level 6 で 0.35s/枚 → level 1 で 0.22s/枚・容量は +1MB 程度）
+                f.image.save(aligned_dir / f"{pid}_{f.face_id}.png",
+                             compress_level=1)
+            store.set_state(pid, "aligned")
 
         # --- F6: 送信（上限・1リクエスト=1画像）---
         if sends >= cfg.send_limit:

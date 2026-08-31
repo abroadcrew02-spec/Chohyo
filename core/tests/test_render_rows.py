@@ -41,16 +41,16 @@ def test_unread_cell_is_unclear_not_empty(template):
 
 def test_low_conf_becomes_unclear(template):
     cells = base_cells(template)
-    cells["person_氏名"] = ("上西諒", 0.60, "text", False)
+    cells["person_氏名"] = ("テスト太郎", 0.60, "text", False)
     row = build_row(template, page(), cells, {}, CFG)
     assert col_value(template, row, "person_氏名") == UNCLEAR
 
 
 def test_high_conf_passes(template):
     cells = base_cells(template)
-    cells["person_氏名"] = ("上西諒", 0.95, "text", False)
+    cells["person_氏名"] = ("テスト太郎", 0.95, "text", False)
     row = build_row(template, page(), cells, {}, CFG)
-    assert col_value(template, row, "person_氏名") == "上西諒"
+    assert col_value(template, row, "person_氏名") == "テスト太郎"
     assert row.min_conf == "0.950"
 
 
@@ -89,7 +89,7 @@ def test_amount_normalized_to_int(template):
 def test_control_chars_become_unclear(template):
     """xlsx に書けない制御文字入りの読取値は〓（issue #2・値の例外漏出防止）。"""
     cells = base_cells(template)
-    cells["person_氏名"] = ("上西諒" + chr(1), 0.95, "text", False)
+    cells["person_氏名"] = ("テスト太郎" + chr(1), 0.95, "text", False)
     cells["person_住所1"] = ("千葉県" + chr(0) + "千葉市", 0.99, "text", False)
     row = build_row(template, page(), cells, {}, CFG)
     assert col_value(template, row, "person_氏名") == UNCLEAR
@@ -112,7 +112,7 @@ def test_era_decision_paths(template):
 def test_choice_conf_excluded_from_min_conf(template):
     """選択式は最低信頼度の母集団に入らない（要件 §5.6）。"""
     cells = base_cells(template)
-    cells["person_氏名"] = ("上西諒", 0.91, "text", False)
+    cells["person_氏名"] = ("テスト太郎", 0.91, "text", False)
     scores = {"person_生年月日_元号": {"昭": 0.01, "平": 0.30, "令": 0.02}}
     row = build_row(template, page(), cells, scores, CFG)
     assert row.min_conf == "0.910"
@@ -141,10 +141,10 @@ def test_min_conf_excludes_cells_that_became_unclear(template):
     cells = base_cells(template)
     # 高信頼だが分割できない値（〓になる）と、低めだが出力される値
     cells["family_01_生年月日"] = ("分割できない値", 0.30, "text", False)
-    cells["person_氏名"] = ("上西諒", 0.91, "text", False)
+    cells["person_氏名"] = ("テスト太郎", 0.91, "text", False)
     row = build_row(template, page(), cells, {}, CFG)
     assert col_value(template, row, "family_01_生年月日_年") == UNCLEAR
-    assert col_value(template, row, "person_氏名") == "上西諒"
+    assert col_value(template, row, "person_氏名") == "テスト太郎"
     assert row.min_conf == "0.910", f"〓セルの信頼度が混ざっている: {row.min_conf}"
 
 

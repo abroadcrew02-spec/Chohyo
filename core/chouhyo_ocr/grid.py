@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
+from .pipeline_errors import OperationRefused
 from .projection import H_COVERAGE, V_COVERAGE, line_positions
 
 ROW_INSET = 4       # 行高 = ピッチ − 罫線ぶんの控え（候補値・編集画面で調整）
@@ -70,8 +71,22 @@ def detect_ruled(gray: "np.ndarray", region: tuple[int, int, int, int]) -> GridF
 
 
 def make_uniform(region: tuple[int, int, int, int], rows: int, cols: int) -> GridFit:
-    """外枠＋行数・列数の等分割。Q-03 に依存せず常に成立する退避先。"""
+    """外枠＋行数・列数の等分割。Q-03 に依存せず常に成立する退避先。
+
+    行数・列数は編集画面の入力欄と CLI の --rows/--cols からそのまま渡る。
+    0 や負値だと ZeroDivisionError／空の列定義になり、CLI の最上位ハンドラで
+    「ERROR ZeroDivisionError: 処理を中止しました」に潰れて何を直せばよいか
+    分からなくなる。業務的な拒否として明示的に断る（レビュー4巡目 LOW）。
+    """
     x, y, w, h = region
+    if rows < 1 or cols < 1:
+        raise OperationRefused(
+            f"行数・列数は 1 以上にする（指定: 行 {rows}・列 {cols}）",
+            hint="表の行数と列数を入力し直す")
+    if w < 1 or h < 1:
+        raise OperationRefused(
+            f"表の外枠の幅・高さは 1px 以上にする（指定: 幅 {w}・高さ {h}）",
+            hint="外枠を描き直す")
     pitch = h / rows
     # 端数を捨てると最終列が枠から最大 cols-1 px 手前で終わり、右端の文字を
     # 取りこぼす。境界を実数で刻んでから整数へ丸め、幅を差で決める（レビュー LOW）

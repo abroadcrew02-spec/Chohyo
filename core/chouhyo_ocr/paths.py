@@ -32,8 +32,17 @@ def template_schema_path() -> Path:
     return app_root() / "schema" / "template.schema.json"
 
 
+# 既定の同期フォルダ名。判定はパス成分の完全一致（または「<名前> - 会社名」形式の
+# 接頭辞一致）なので、`C:\work\dropbox_backup` のような無関係な名前は拾わない。
+# 業務利用のある同期クライアントを広めに含める（レビュー4巡目 M-12）。
+# 検知漏れの代償は要配慮個人情報のクラウド送出で、誤検知の代償は
+# 「保存先を変えてください」と一度言われることなので、広めに倒す。
 _CLOUD_MARKERS = ("onedrive", "dropbox", "google drive", "googledrive",
-                  "ドロップボックス")
+                  "ドロップボックス",
+                  "box", "box sync", "boxdrive",
+                  "nextcloud", "owncloud",
+                  "icloud drive", "iclouddrive",
+                  "egnyte", "syncplicity", "pcloud", "seafile")
 
 
 def is_cloud_synced_path(p: str | Path) -> bool:

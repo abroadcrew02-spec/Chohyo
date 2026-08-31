@@ -36,10 +36,25 @@ def main():
     results.append(run(
         "pytest",
         # -rf: 失敗したテスト名を必ず末尾に出す（パイプで切り詰めても分かる）
-        [str(PYTHON), "-X", "utf8", "-m", "pytest", "-q", "--tb=short", "-rf"],
+        # -rs: skip の理由も出す。素材欠けで大量 skip したときに何が要るか分かる
+        [str(PYTHON), "-X", "utf8", "-m", "pytest", "-q", "--tb=short", "-rf", "-rs"],
         ROOT / "core"))
 
-    # 2) cargo test（サブコマンド白リスト・issue #7）
+    # 2) GUI の純ロジック（座標追従・進捗イベントの文言）。
+    # node と esbuild は既に依存にあるので追加導入は要らない。ここへ載せないと
+    # 誰も走らせず腐る（レビュー4巡目で新設したテストの配線）
+    node = shutil.which("node")
+    gui_test = ROOT / "gui" / "tests" / "gui-logic.test.mjs"
+    if node and gui_test.exists():
+        results.append(run(
+            "gui logic",
+            [node, str(gui_test)],
+            ROOT / "gui"))
+    else:
+        results.append(("gui logic", None,
+                        0.0, "node 未導入のため SKIP"))
+
+    # 3) cargo test（サブコマンド白リスト・issue #7）
     if shutil.which("cargo"):
         results.append(run(
             "cargo test",
@@ -75,6 +90,22 @@ def main():
             status = "FAIL"
             fail = True
             counts += "（実行された試験が0件）"
+        # skip が多いまま PASS と出すと、素材の無い環境の「116 passed, 70 skipped」が
+        # そのままリリースノートへ転記される。約38%のテストが .gitignore 済みの
+        # workdir/ 素材（sample-1.png・s2/resp_*.json）に依存しており、purge 後や
+        # 別マシンでは黙って skip する（レビュー4巡目 M-5）
+        skipped = agg.get("skipped", 0)
+        passed = agg.get("passed", 0)
+        if status == "PASS" and passed and skipped > passed * 0.1:
+            status = "FAIL"
+            fail = True
+            counts += f"（skip が {skipped/(passed+skipped)*100:.0f}% と多い）"
+            print(f"----- {name} の skip 理由 -----")
+            for line in out.splitlines():
+                if line.startswith("SKIPPED"):
+                    print(line)
+            print("素材が要るテストが skip されている。"
+                  "workdir/pages/sample-1.png と workdir/s2/resp_*.json を用意して再実行する")
         if code != 0:
             fail = True
             # 失敗したテスト名だけは必ずサマリへ載せる（全文はその後）

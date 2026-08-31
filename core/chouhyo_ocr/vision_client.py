@@ -49,18 +49,24 @@ class RealVisionClient:
             self.client = vision.ImageAnnotatorClient()
 
     def annotate(self, image_png: bytes, page_id: str) -> dict:
-        # 送信の直前で月次上限を確認する（ユーザー指示 2026-08-28: 請求が
-        # 立つ前に強制停止）。**上限に達していればここで止まり、1バイトも
-        # 送らない**。数えてから送るのは、送信後に記録すると異常終了で
-        # 取りこぼすため（多めに数えるほうが課金より安全）
         from .api_budget import check_and_count
-        used = check_and_count(1, self.monthly_cap)
-        log.info("api_units_used", count=used)
         image = self._vision.Image(content=image_png)
         ctx = self._vision.ImageContext(language_hints=["ja"])
         delay = self.BACKOFF_INITIAL
         last_code = "SEND_FAILED"
         for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            # 送信の直前で月次上限を確認する（ユーザー指示 2026-08-28: 請求が
+            # 立つ前に強制停止）。**上限に達していればここで止まり、1バイトも
+            # 送らない**。数えてから送るのは、送信後に記録すると異常終了で
+            # 取りこぼすため（多めに数えるほうが課金より安全）。
+            # 再試行も1回ごとに数える（レビュー M-4）: resp.error.message 系の
+            # 失敗は _NON_RETRYABLE に該当せず最大 MAX_ATTEMPTS 回投げるので、
+            # ループの外で1回だけ数えると上限を最大5倍まで超えうる。
+            # ※どの失敗応答が実際に課金されるかは GCP 側の仕様で、こちらから
+            # 確認できない（**未検証**）。歯止めとしては多めに数える側へ倒す。
+            # 上限に当たったらその場でリトライを打ち切る（例外が伝播する）
+            used = check_and_count(1, self.monthly_cap)
+            log.info("api_units_used", count=used)
             try:
                 # retry=None で内蔵リトライを止め、自前バックオフに一本化する
                 resp = self.client.document_text_detection(

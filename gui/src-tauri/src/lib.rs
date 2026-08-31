@@ -1,13 +1,21 @@
 // 帳票OCRツール GUI シェル（設計 §3.1・§7）。
 // 処理ロジックを持たない: Python コアの起動・進捗中継・ファイル読み書きに徹する。
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// 実行中のコアの PID（中断ボタン用・同時実行は1つの前提）
 pub struct CoreProc(pub Mutex<Option<u32>>);
+
+/// ファイル選択ダイアログで利用者が実際に選んだパス（issue #49）。
+/// webview は任意のパスで invoke できるため、ファイル読み書きの許可は
+/// 「ここに登録された物」または「アプリ管理下のフォルダ」に限る。
+/// テンプレート編集は任意の場所の JSON を開ける必要があるので、
+/// 白リストをルート固定にはせずダイアログの選択結果で広げる。
+pub struct PickedPaths(pub Mutex<HashSet<PathBuf>>);
 
 /// webview から起動できるサブコマンドの白リスト（issue #7）。
 /// purge（中間データ全削除）は要件 §6.3「削除は明示操作のみ」のため
@@ -71,6 +79,77 @@ fn repo_root(app: &AppHandle) -> Result<PathBuf, String> {
         }
     }
     Err("アプリのルートが見つからない（templates/chouhyo-v1.json を基準に探索）".into())
+}
+
+/// 実在しないファイル（保存先）も扱えるパス正規化（issue #49）。
+/// `..` は canonicalize の前に弾く——canonicalize は実在するパスしか畳めず、
+/// 「保存先の親だけ実在」というケースで外へ抜ける余地を残すため。
+fn normalize_path(path: &str) -> Result<PathBuf, String> {
+    let p = Path::new(path);
+    if p.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("パスに .. を含めることはできません".into());
+    }
+    if let Ok(c) = p.canonicalize() {
+        return Ok(c);
+    }
+    // 未作成のファイル（「保存して検証」の新規保存先）は親を畳んで組み立てる
+    let parent = p
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .ok_or_else(|| "パスを解決できません".to_string())?;
+    let name = p
+        .file_name()
+        .ok_or_else(|| "パスを解決できません".to_string())?;
+    let base = parent
+        .canonicalize()
+        .map_err(|_| "保存先のフォルダが見つかりません".to_string())?;
+    Ok(base.join(name))
+}
+
+/// 拡張子とパススコープの検査（issue #49）。副作用を持たないので単体テスト可能。
+fn check_scope(abs: &Path, exts: &[&str], roots: &[PathBuf],
+               picked: &HashSet<PathBuf>) -> Result<(), String> {
+    let ok_ext = abs
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| exts.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    if !ok_ext {
+        return Err(format!("この操作で扱えるのは {} だけです", exts.join("・")));
+    }
+    if picked.contains(abs) || roots.iter().any(|r| abs.starts_with(r)) {
+        Ok(())
+    } else {
+        Err("アプリの管理外のパスです。ファイル選択ダイアログから選び直してください".into())
+    }
+}
+
+/// ダイアログを介さずに読み書きしてよいフォルダ。アプリルートに加えて、
+/// 設定の workdir も含める（編集画面の PDF 展開結果はここに出る。
+/// workdir を外部フォルダへ向けた構成でもプレビューを壊さない）。
+fn allowed_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let root = repo_root(app)?;
+    let mut roots = vec![root.canonicalize().unwrap_or_else(|_| root.clone())];
+    let workdir = read_config(app.clone())
+        .ok()
+        .and_then(|c| c.get("workdir").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_else(|| "workdir".to_string());
+    let p = PathBuf::from(&workdir);
+    // CLI の相対パス設定は cwd=core 基準（open_folder と同じ流儀）
+    let abs = if p.is_absolute() { p } else { root.join("core").join(p) };
+    if let Ok(c) = abs.canonicalize() {
+        if !roots.contains(&c) {
+            roots.push(c);
+        }
+    }
+    Ok(roots)
+}
+
+/// ダイアログで選ばれたパスを白リストへ登録する。
+fn remember(picked: &State<'_, PickedPaths>, p: &Path) {
+    if let Ok(abs) = normalize_path(&p.to_string_lossy()) {
+        picked.0.lock().unwrap().insert(abs);
+    }
 }
 
 /// コア起動コマンドを組み立てる。配布版は同梱 exe、開発版は venv の python -m。
@@ -192,21 +271,30 @@ fn pick_folder() -> Option<String> {
 }
 
 #[tauri::command]
-fn pick_image() -> Option<String> {
+fn pick_image(picked: State<'_, PickedPaths>) -> Option<String> {
     // テンプレ作成の入力はスキャン PDF のことが多い。PDF はコアの expand-page で
     // 1ページ目を PNG 展開してから表示する（フロント側 loadImage が分岐）
-    rfd::FileDialog::new()
+    let p = rfd::FileDialog::new()
         .add_filter("帳票（PDF・画像）", &["pdf", "png", "jpg", "jpeg"])
-        .pick_file()
-        .map(|p| p.to_string_lossy().to_string())
+        .pick_file()?;
+    remember(&picked, &p);
+    Some(p.to_string_lossy().to_string())
 }
 
 
 #[tauri::command]
-fn pick_json(save: bool) -> Option<String> {
+fn pick_json(picked: State<'_, PickedPaths>, save: bool,
+             remember_pick: Option<bool>) -> Option<String> {
     let d = rfd::FileDialog::new().add_filter("テンプレート", &["json"]);
-    let p = if save { d.set_file_name("template.json").save_file() } else { d.pick_file() };
-    p.map(|p| p.to_string_lossy().to_string())
+    let p = if save { d.set_file_name("template.json").save_file() } else { d.pick_file() }?;
+    // 認証キーの取り込みは remember_pick=false で呼ぶ。白リストへ入れると
+    // GCP サービスアカウント鍵（平文 JSON）がセッション中ずっと read_text で
+    // 読める状態になる——鍵を DPAPI へ退避させる操作が、その鍵を読める窓を
+    // 開けてしまう。テンプレートの読み書きだけが白リストの用途（issue #49）
+    if remember_pick.unwrap_or(true) {
+        remember(&picked, &p);
+    }
+    Some(p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -263,11 +351,18 @@ fn write_config(app: AppHandle, patch: serde_json::Value) -> Result<(), String> 
 }
 
 /// 画像を data URL で返す（編集画面のキャンバス表示用・asset protocol 不使用）。
+/// 白リスト（ダイアログで選ばれた画像／アプリ管理下の展開結果）に限る。
+/// 無検証だと、レンダラを掌握された場合に workdir の cred.dpapi や
+/// 中間 SQLite を b64 で吸い出せてしまう（issue #49）。
 #[tauri::command]
-fn read_file_b64(path: String) -> Result<String, String> {
+fn read_file_b64(app: AppHandle, picked: State<'_, PickedPaths>,
+                 path: String) -> Result<String, String> {
     use base64::Engine;
-    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-    let ext = std::path::Path::new(&path)
+    let abs = normalize_path(&path)?;
+    check_scope(&abs, &["png", "jpg", "jpeg"], &allowed_roots(&app)?,
+                &picked.0.lock().unwrap())?;
+    let bytes = std::fs::read(&abs).map_err(|e| e.to_string())?;
+    let ext = abs
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("png")
@@ -278,21 +373,39 @@ fn read_file_b64(path: String) -> Result<String, String> {
                base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
+/// テンプレート JSON の読み出し。**ダイアログで選ばれたパスだけ**に限る。
+///
+/// アプリ管理下（repo_root・workdir）を無条件に許すと、`workdir/responses/*.json`
+/// ——Vision API の生応答で、帳票の記入値そのもの——が読める。フロントの
+/// read_text 呼び出しは `pick_json` の戻り値に対してだけなので（Editor.tsx）、
+/// roots を渡さず picked のみで足りる（レビュー4巡目・#49 の締め直し）。
 #[tauri::command]
-fn read_text(path: String) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| e.to_string())
+fn read_text(picked: State<'_, PickedPaths>, path: String) -> Result<String, String> {
+    let abs = normalize_path(&path)?;
+    check_scope(&abs, &["json"], &[], &picked.0.lock().unwrap())?;
+    std::fs::read_to_string(abs).map_err(|e| e.to_string())
 }
 
+/// テンプレート JSON の書き出し。読み出しと同じくダイアログで選ばれたパスのみ。
+///
+/// roots を許すと、レンダラを掌握された場合に出荷テンプレート
+/// （`templates/chouhyo-v1.json`）や `config.json` を書き換えられる。
 #[tauri::command]
-fn write_text(path: String, content: String) -> Result<(), String> {
-    std::fs::write(path, content).map_err(|e| e.to_string())
+fn write_text(picked: State<'_, PickedPaths>,
+              path: String, content: String) -> Result<(), String> {
+    let abs = normalize_path(&path)?;
+    check_scope(&abs, &["json"], &[], &picked.0.lock().unwrap())?;
+    std::fs::write(abs, content).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(CoreProc(Mutex::new(None)))
-        .plugin(tauri_plugin_opener::init())
+        .manage(PickedPaths(Mutex::new(HashSet::new())))
+        // opener プラグインは撤去した（issue #49）。gui/src からの呼び出しは
+        // 0 件で、IPC 経由で OS のブラウザ・エクスプローラを起動できる分
+        // CSP の connect-src では止められない外部送出経路になっていた
         .invoke_handler(tauri::generate_handler![
             run_core,
             run_core_capture,
@@ -332,5 +445,56 @@ mod tests {
         assert!(check_args(&v(&["purge", "--yes"])).is_err());
         assert!(check_args(&v(&["--config", "x", "run"])).is_err());
         assert!(check_args(&v(&[])).is_err());
+    }
+
+    // --- パススコープ（issue #49）---
+    use super::{check_scope, normalize_path};
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalize_rejects_parent_traversal() {
+        // 実在パスの途中に .. を挟む形（canonicalize なら畳めてしまう）
+        assert!(normalize_path("C:\\app\\..\\secret\\cred.json").is_err());
+        assert!(normalize_path("../secret.json").is_err());
+        assert!(normalize_path("C:\\app\\templates\\..\\..\\x.json").is_err());
+    }
+
+    #[test]
+    fn normalize_resolves_existing_dir() {
+        // 実在するフォルダは畳める（保存先の新規ファイルもここを経由する）
+        let tmp = std::env::temp_dir();
+        let target = tmp.join("chouhyo_scope_test.json");
+        let abs = normalize_path(&target.to_string_lossy()).expect("親が実在すれば解決できる");
+        assert_eq!(abs.file_name().unwrap(), "chouhyo_scope_test.json");
+    }
+
+    #[test]
+    fn scope_allows_only_listed_extensions() {
+        let roots = vec![PathBuf::from("C:\\app")];
+        let picked = HashSet::new();
+        assert!(check_scope(&PathBuf::from("C:\\app\\t.json"), &["json"], &roots, &picked).is_ok());
+        assert!(check_scope(&PathBuf::from("C:\\app\\t.JSON"), &["json"], &roots, &picked).is_ok());
+        assert!(check_scope(&PathBuf::from("C:\\app\\t.exe"), &["json"], &roots, &picked).is_err());
+        assert!(check_scope(&PathBuf::from("C:\\app\\cred"), &["json"], &roots, &picked).is_err());
+        // 画像コマンドが SQLite や資格情報を読めないこと
+        assert!(check_scope(&PathBuf::from("C:\\app\\workdir\\intermediate.sqlite"),
+                            &["png", "jpg", "jpeg"], &roots, &picked).is_err());
+        assert!(check_scope(&PathBuf::from("C:\\app\\workdir\\cred.dpapi"),
+                            &["png", "jpg", "jpeg"], &roots, &picked).is_err());
+    }
+
+    #[test]
+    fn scope_rejects_outside_roots_unless_picked() {
+        let roots = vec![PathBuf::from("C:\\app")];
+        let outside = PathBuf::from("C:\\Users\\u\\Documents\\t.json");
+        let mut picked = HashSet::new();
+        assert!(check_scope(&outside, &["json"], &roots, &picked).is_err());
+        // ダイアログで選ばれた JSON は開ける（テンプレート編集の正当な用途）
+        picked.insert(outside.clone());
+        assert!(check_scope(&outside, &["json"], &roots, &picked).is_ok());
+        // 選ばれていない別ファイルは、同じフォルダでも通らない
+        assert!(check_scope(&PathBuf::from("C:\\Users\\u\\Documents\\other.json"),
+                            &["json"], &roots, &picked).is_err());
     }
 }

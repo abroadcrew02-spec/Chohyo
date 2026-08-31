@@ -17,15 +17,52 @@ type Verify = { template: boolean; poppler: boolean; cred: string; storage: bool
 type Failure = { page_id: string; status: string };
 
 // ステータス → 平易な言葉（エラー一覧用）
-const STATUS_JA: Record<string, string> = {
+export const STATUS_JA: Record<string, string> = {
   "位置合わせ失敗": "位置合わせに失敗しました（行全体が〓です）",
   "様式不一致": "帳票の様式が一致しませんでした（行全体が〓です）",
   "展開失敗": "ファイルを開けませんでした",
   "送信失敗": "送信に失敗しました（通信環境を確認してください）",
   "未処理（送信上限到達）": "送信上限に達したため未処理です（次回実行時に処理されます）",
   "未処理（中断）": "中断のため未処理です（次回実行時に処理されます）",
+  // core/chouhyo_ocr/render_rows.py の STATUS_DUPLICATE に対応（issue #52 M-3）。
+  // 未対応だと生の「スキップ（重複）」がそのまま出て、行が〓な理由が伝わらない
+  "スキップ（重複）": "同じ内容のファイルが既にあるため送信しませんでした（行全体が〓です）",
   "超過あり": "記入が定義済みの行数を超えています",
 };
+
+/** 進捗イベント → 「実行時のお知らせ」1件。該当しないイベントは null。
+ *
+ *  拾い漏らすと、〓だけの行や増減した行数の**出所が画面から辿れない**。
+ *  利用者は「読み取り漏れ」と「送信を省いた」を区別できず、原本を探し直す。
+ *  対応イベントはコア側の進捗出力（core/chouhyo_ocr/pipeline.py）と対で、
+ *  skip_duplicate・template_changed_resend・remap_warning は issue #52 M-3 で追加。
+ *  純関数にしてあるのは、この対応表だけを単体で検証できるようにするため。 */
+export function noticeFor(ev: Record<string, any>): string | null {
+  switch (ev.event) {
+    // 対象外ファイル・古いページの警告（レビュー M-2・issue #28）。
+    // ログだけだと「total=0 の正常終了」にしか見えない
+    case "skipped_unsupported":
+      return `読み取れない形式のファイルを ${ev.count} 件とばしました: `
+        + (ev.files ?? []).join("、");
+    case "stale_pages":
+      return `前回までの結果が ${ev.count} 件残っています（今回の入力に無いファイル）。`
+        + `出力にはその行も含まれます: ` + (ev.files ?? []).join("、");
+    case "source_replaced":
+      return `${ev.file} は前回と内容が変わっていたため、`
+        + `前回の結果 ${ev.dropped_pages} 件を破棄して読み直します。`;
+    case "skip_duplicate":
+      return `${ev.file} は ${ev.same_as} と同じ内容のため送信を省きました。`
+        + `行は〓で出力されます。`;
+    case "template_changed_resend":
+      return `テンプレートまたは位置合わせ方式が変わっているため、`
+        + `${ev.count} 件のページを読み直します（API 送信が発生します）。`;
+    case "remap_warning":
+      return `${ev.page_id}: 位置合わせ済みの画像が見つからないセルが `
+        + `${ev.missing_aligned_cells} 件あります。該当セルは〓になります。`;
+    default:
+      return null;
+  }
+}
 
 const FolderIcon = ({ c }: { c: string }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"
@@ -83,7 +120,10 @@ export default function RunScreen(
   useEffect(() => { runVerify(); }, []);
 
   const importCredentials = async () => {
-    const p = await invoke<string | null>("pick_json", { save: false });
+    // 認証キーは白リストへ登録しない（登録すると鍵の平文 JSON が
+    // セッション中ずっと read_text で読める・レビュー4巡目）
+    const p = await invoke<string | null>("pick_json",
+      { save: false, rememberPick: false });
     if (!p) return;
     setImporting(true);
     try {
@@ -122,18 +162,8 @@ export default function RunScreen(
               setFailures((f) => [...f, { page_id: ev.page_id, status: ev.status }]);
             }
           }
-          // 対象外ファイル・古いページの警告（レビュー M-2・issue #28）。
-          // ログだけだと「total=0 の正常終了」にしか見えない
-          if (ev.event === "skipped_unsupported") {
-            setNotices((n) => [...n,
-              `読み取れない形式のファイルを ${ev.count} 件とばしました: `
-              + (ev.files ?? []).join("、")]);
-          }
-          if (ev.event === "stale_pages") {
-            setNotices((n) => [...n,
-              `前回までの結果が ${ev.count} 件残っています（今回の入力に無いファイル）。`
-              + `出力にはその行も含まれます: ` + (ev.files ?? []).join("、")]);
-          }
+          const n = noticeFor(ev);
+          if (n) setNotices((ns) => [...ns, n]);
           // 業務的な拒否（テンプレ変更・多重起動など）を正しく伝える（H-C）。
           // 旧実装は exit≠0 の固定文言「再度押すと続きから処理します」を
           // 出していたが、決定論的な拒否なので押しても永久に同じ結果になる
@@ -141,11 +171,6 @@ export default function RunScreen(
             refusedRef.current = true;
             setRefused(ev.error + (ev.hint ? `
 ${ev.hint}` : ""));
-          }
-          if (ev.event === "source_replaced") {
-            setNotices((n) => [...n,
-              `${ev.file} は前回と内容が変わっていたため、`
-              + `前回の結果 ${ev.dropped_pages} 件を破棄して読み直します。`]);
           }
           if (ev.event === "summary") setSummary(ev as Summary);
         } catch { /* JSON 以外の行は無視 */ }
@@ -211,6 +236,11 @@ ${ev.hint}` : ""));
       if (!interruptedRef.current) setError(String(e));
     } finally {
       setRunning(false);
+      // 実行後に残量を取り直す（issue #47）。旧実装は runVerify がマウント時と
+      // 資格情報の取り込み後にしか走らず、100枚読んだ直後も「残り900枚」の
+      // ままだった。開始ボタンの disabled は verify を見ているため、
+      // 上限に達しても押せてしまい、コア側で拒否されるまで理由が分からない
+      await runVerify();
     }
   };
   const interrupt = async () => {
