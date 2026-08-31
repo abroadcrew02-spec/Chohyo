@@ -39,6 +39,7 @@ cd core
 | `detect-grid --image <png> --region x,y,w,h` | 罫線から表の行・列を検出（`--mode uniform --rows N --cols M` で等分割） | しない |
 | `status` / `verify` | 進捗表示／テンプレート・Poppler・資格情報の点検 | しない |
 | `import-credentials <json>` | 鍵を DPAPI 暗号化で取り込む | しない |
+| `debug-images` | 読み取りの可視化画像（どの文字がどの欄に入り、なぜ〓かを1ページ1枚のPNGで表示。出力先は `workdir/debug/`＝個人情報扱い） | しない |
 | `purge --yes` | 中間データの削除 | しない |
 
 ## 開発者向け

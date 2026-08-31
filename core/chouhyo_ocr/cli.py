@@ -214,6 +214,36 @@ def cmd_expand_page(args) -> int:
     return 0
 
 
+def cmd_debug_images(args) -> int:
+    """読み取りの可視化画像を出力する（開発者モード・API 送信なし）。
+
+    どの文字がどの欄に入ったか／なぜ〓になったかを1ページ1枚の PNG で示す。
+    出力は既定で workdir/debug/（読取値が画像に描かれるため中間データ扱い）。
+    """
+    from .config import load_config
+    from .debug_images import write_debug_images
+    from .store import Store
+    from .template import load_template
+    cfg = load_config(args.config)
+    log.init(cfg.log_dir)
+    template = load_template(args.template)
+    wd = Path(cfg.workdir)
+    out_dir = Path(args.out) if args.out else wd / "debug"
+    store = Store(wd / "intermediate.sqlite")
+    try:
+        made = write_debug_images(
+            store, template, wd / "aligned", out_dir,
+            cfg.unclear_threshold,
+            page_ids=[args.page] if args.page else None)
+    finally:
+        store.close()
+    _progress({"event": "debug_images", "ok": True,
+               "count": len(made), "dir": str(out_dir.resolve())})
+    for m in made:
+        print(str(m.resolve()))
+    return 0
+
+
 def cmd_detect_grid(args) -> int:
     """枠候補の生成（設計 §6.9）。テンプレート編集画面が呼ぶ・GUI なしでも検証可。"""
     from .grid import detect_ruled, make_uniform
@@ -304,6 +334,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--template", default=default_tpl)
     p.set_defaults(fn=cmd_expand_page)
+
+    p = sub.add_parser("debug-images",
+                       help="読み取りの可視化画像を出力（開発者モード・API送信なし）")
+    p.add_argument("--template", default=default_tpl)
+    p.add_argument("--out", default=None)
+    p.add_argument("--page", default=None, help="特定の帳票IDのみ出力")
+    p.set_defaults(fn=cmd_debug_images)
 
     p = sub.add_parser("detect-grid", help="枠候補の生成（罫線検出 or 等分割）")
     p.add_argument("--image", help="面画像（--mode ruled で必須）")
