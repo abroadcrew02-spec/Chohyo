@@ -166,11 +166,44 @@ def cmd_expand_page(args) -> int:
     except IngestError as e:
         _progress({"event": "expand_page", "ok": False, "error": str(e)})
         return 0
+    # 展開しただけの生スキャンは、テンプレート座標系（位置合わせ後の基準位置）
+    # と数 mm ズレ・傾きがありうる。生画像の上にテンプレートの枠を重ねると
+    # 「枠が記入欄の横に浮いて見える」→ 利用者が枠を手でズラして「直して」
+    # しまう——run は位置ズレを自動補正するのでその手直しは不要どころか、
+    # テンプレート変更扱いになり再割付・再送信の確認まで誘発する（ユーザー
+    # 指摘・2026-08-31）。編集画面には run と同じ align_page を通した画像を
+    # 返し、枠が最初から記入欄の上に乗るようにする。
+    #
+    # 位置合わせできない紙（run でも位置合わせ失敗になる品質）は生画像へ
+    # 退避し aligned:false で伝える。編集を止めるほどの失敗ではない。
+    page_path = pages[0].resolve()
+    aligned = False
+    try:
+        from PIL import Image
+
+        from .align import AlignError, align_page
+        from .template import load_template
+        template = load_template(args.template)
+        with Image.open(page_path) as img:
+            img.load()
+            _faces, composite = align_page(img, template)
+        # 名前は決め打ちで毎回上書き（同じ紙を開き直すたびに増やさない）。
+        # expand() の stale 掃除は「<stem>-<数字>」の完全一致だけを消すため、
+        # この名前が巻き添えになることはない
+        out = out_dir / f"{src.stem}-p{args.page:04d}-aligned.png"
+        composite.save(out, format="PNG", compress_level=3)
+        page_path = out.resolve()
+        aligned = True
+    except Exception:  # noqa: BLE001
+        # テンプレート破損・位置合わせ失敗・画像不正のいずれも生画像で続行。
+        # 例外メッセージは出さない（パスに入力ファイル名が乗りうる）
+        pass
     # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
     # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
     # 編集画面が「展開中…」のまま止まった原因・2026-08-28）
     _progress({"event": "expand_page", "ok": True,
-               "page_path": str(pages[0].resolve()),
+               "page_path": str(page_path),
+               "aligned": aligned,
                **({"pages": total} if total is not None else {})})
     return 0
 
@@ -263,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--input", required=True)
     p.add_argument("--page", type=int, default=1)
     p.add_argument("--dpi", type=int, default=300)
+    p.add_argument("--template", default=default_tpl)
     p.set_defaults(fn=cmd_expand_page)
 
     p = sub.add_parser("detect-grid", help="枠候補の生成（罫線検出 or 等分割）")

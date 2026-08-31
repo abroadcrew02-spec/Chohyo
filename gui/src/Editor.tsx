@@ -232,7 +232,15 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           return;
         }
         imagePath = ev.page_path;
-        note = ev.pages > 1 ? `（PDF の 1/${ev.pages} ページ目を表示）` : "（PDF を展開）";
+        // 位置合わせ済みの画像なら、テンプレートの枠が最初から記入欄の上に
+        // 乗る。合わせられなかった紙は生画像なので、枠のズレを手で直さない
+        // よう注意を出す（run は位置ズレを自動補正する——手直しはテンプレ
+        // 変更扱いになり再割付・再送信の確認まで誘発する）
+        const pageNote = ev.pages > 1 ? `PDF の 1/${ev.pages} ページ目・` : "";
+        note = ev.aligned
+          ? `（${pageNote}位置合わせ済み・枠が記入欄に重なって表示されます）`
+          : `（${pageNote}位置合わせできませんでした。枠が少しズレて見えても、` +
+            "読み取り時に自動補正されるため枠は動かさないでください）";
       } catch (e) {
         setErrMsg(`PDF を開けませんでした: ${e}`);
         setMsg("");
@@ -612,6 +620,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return (
         <div className="panel">
           <h3>選択中の欄</h3>
+          <p className="note">この枠の読み取り結果は CSV・Excel の
+            「{f.field_id || "（名前未設定）"}」列へ出力されます</p>
           <label>欄の名前（出力の列名になります）<input value={f.field_id}
             onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
           <label>欄の種類
@@ -660,7 +670,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (!t) return null;
     return (
       <div className="panel">
-        <h3>選択中の表</h3>
+        <h3>選択中のくり返し行（表）</h3>
+        <p className="note">各行×各列が CSV・Excel の
+          「{t.table_id}_行番号_列名」列（例: {t.table_id}_01_
+          {t.columns[0]?.name || "列名"}）へ1行ずつ出力されます</p>
         <label>表の名前 <input value={t.table_id}
           onChange={(e) => updateTable(t.uid, { table_id: e.target.value })} /></label>
         {/* 整数で保持する（レビュー M-22: 描画は float・保存時に round だと
@@ -681,7 +694,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             x: t.blocks[t.blocks.length - 1].x + 1020 }] })}>右ブロックを追加（複製）</button>
         <h4>列</h4>
         {t.columns.length === 0 &&
-          <p className="note">列がありません。「表を作成」で外枠を描くと生成されます。</p>}
+          <p className="note">列がありません。「くり返し行（家族・明細）」で外枠を描くと生成されます。</p>}
         {t.columns.map((c, i) => (
           <div className="colrow" key={i}
             onMouseEnter={() => setHlCol(i)} onMouseLeave={() => setHlCol(null)}
@@ -746,7 +759,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => (
           <button key={t} className={tool === t ? "btn active" : "btn"}
             onClick={() => setTool(t)}>
-            {{ select: "選択", field: "欄を追加", excl: "除外範囲", table: "表を作成", split: "表裏の境界" }[t]}
+            {{ select: "選択", field: "欄を追加", excl: "除外範囲",
+               table: "くり返し行（家族・明細）", split: "表裏の境界" }[t]}
           </button>))}
         <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
