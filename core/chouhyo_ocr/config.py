@@ -34,6 +34,10 @@ class Config:
     # 対し余裕を残す。設定6項目（要件 §5.8）には数えない——利用者が日常的に
     # 触る設定ではなく、課金事故を止めるための歯止めだから
     api_monthly_cap: int = 900
+    # 文字単位〓（U-10・#62）。既定 OFF——段階導入し、実データ確認後に反転する
+    # （設計 §8.5）。api_monthly_cap と同じ扱いで GUI 設定画面には出さず、
+    # 設定6項目（要件 §5.8）にも数えない
+    unclear_char_level: bool = False
 
 
 def config_path() -> Path:
@@ -58,6 +62,9 @@ def _validate(cfg: Config) -> Config:
         v = getattr(cfg, key)
         if not isinstance(v, str) or not v.strip():
             raise ConfigError(f"{key} は空でないパス文字列にする（現在: {v!r}）")
+    if not isinstance(cfg.unclear_char_level, bool):
+        raise ConfigError(
+            f"unclear_char_level は true/false にする（現在: {cfg.unclear_char_level!r}）")
     return cfg
 
 

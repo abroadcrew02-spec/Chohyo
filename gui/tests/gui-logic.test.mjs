@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -415,7 +415,8 @@ test("resolve: 選択式は切り抜けず skipped に載る・重なりなし�
                 rect: { x: 120, y: 10, w: 40, h: 20 }, marks: [] };
   const r = resolveOverlaps([owner, era]);
   assert.deepEqual(r.carved, []);
-  assert.deepEqual(r.skipped, ["元号"]);
+  // issue #59 H-4（設計書 U-08）以降、skipped は理由が分かる文言になる
+  assert.deepEqual(r.skipped, ["元号: 選択式のため自動調整できません"]);
   const clean = resolveOverlaps([owner]);
   assert.deepEqual(clean.carved, []);
   assert.equal(clean.fields[0], owner);
@@ -443,28 +444,123 @@ test("resolve-H3-①: 主枠どうしの重なりも autoCarve と同様に解�
 });
 
 test("resolve-H3-②: 消えた旧領域が無関係な第三の欄を削らない（stale claim 根治）", () => {
-  // X の参照先(fallback)が B の主枠を丸ごと切り抜き、B の領域構成が
-  // 総入れ替えになる（主枠が消え、元は無かった extras 由来の領域が新しい
-  // 主枠になる）。その結果 B の主張は post-carve の新しい形（原点付近の
-  // 小さな矩形）だけになり、B の「切り抜き前の旧主枠」が指していた場所
-  // （x:98〜118）にある無関係な第三の欄 C は、もう誰の主張にも触れない
-  // はず。claims を最初に一括収集する実装（fix 前）だと、B の旧主枠
-  // {x:0,y:0,w:100,h:40} がそのまま主張として残り、C を誤って削ってしまう
+  // X の参照先(fallback)が B の主枠の右端をわずかに切り抜く。切り取り線が
+  // B の右端ぎりぎり（残り2px）に掛かるため、その2pxは subtractRect の
+  // minSize 未満で捨てられる——X の主張が直接触れていない場所（x:998〜1000）
+  // が、X にも新しいBにも属さない「宙に浮いた領域」になる。B の主張は
+  // post-carve の新しい形（x:0〜950）だけになるはずなので、その宙に浮いた
+  // 領域にある無関係な第三の欄 C（x:998〜1098・X の主張の範囲 x:950〜998
+  // には掛からない）は、もう誰の主張にも触れないはず。claims を最初に
+  // 一括収集する実装（fix 前）だと、B の旧主枠 {x:0,y:0,w:1000,h:100}
+  // がそのまま主張として残り、C を誤って削ってしまう。
+  // （数値は issue #59 H-4／設計書 U-08 の30%ルール・27×36px下限を跨がない
+  // 大きさに調整してある——欄自体が小さすぎると別ルールで skip されてしまう）
   const X = { uid: "x", field_id: "X", kind: "text",
-              rect: { x: 500, y: 500, w: 10, h: 10 }, marks: [],
-              fallback: { x: 20, y: -10, w: 78, h: 60 } };
+              rect: { x: 5000, y: 5000, w: 50, h: 50 }, marks: [],
+              fallback: { x: 950, y: -10, w: 48, h: 120 } };
   const B = { uid: "b", field_id: "B", kind: "text",
-              rect: { x: 0, y: 0, w: 100, h: 40 }, marks: [] };
+              rect: { x: 0, y: 0, w: 1000, h: 100 }, marks: [] };
   const C = { uid: "c", field_id: "C", kind: "text",
-              rect: { x: 98, y: 0, w: 20, h: 40 }, marks: [] };
+              rect: { x: 998, y: 0, w: 100, h: 100 }, marks: [] };
   const r = resolveOverlaps([X, B, C]);
   assert.deepEqual(r.carved, ["B"], "C は削られてはいけない（stale claim なら誤って carved に入る）");
   assert.deepEqual(r.skipped, []);
   const c2 = r.fields.find((f) => f.uid === "c");
   assert.deepEqual(c2.rect, C.rect, "C は無傷のはず（X の参照先の実際の範囲には触れていない）");
   const b2 = r.fields.find((f) => f.uid === "b");
-  assert.deepEqual(b2.rect, { x: 0, y: 0, w: 20, h: 40 });
+  assert.deepEqual(b2.rect, { x: 0, y: 0, w: 950, h: 100 });
   assert.deepEqual(b2.extras ?? [], []);
+});
+
+// ---------------------------------------------------------------- issue #59 H-4（設計書 U-08）
+// evaluateCarve: 切り抜きの3段階判定（エディタ側の事前確認）
+test("evaluateCarve: 29%は通る（warn・切り抜く）・30%は止まる（skip）という境界", () => {
+  const F = { uid: "f", field_id: "境界欄", kind: "text",
+              rect: { x: 0, y: 0, w: 100, h: 100 }, marks: [] };
+  const at29 = evaluateCarve(F, { x: 71, y: -10, w: 40, h: 120 });
+  assert.equal(at29.tier, "warn", "29%はまだ切り抜かれるはず（10%以上30%未満）");
+  assert.equal(at29.reductionPct, 29);
+  assert.deepEqual(at29.field.rect, { x: 0, y: 0, w: 71, h: 100 });
+
+  const at30 = evaluateCarve(F, { x: 70, y: -10, w: 41, h: 120 });
+  assert.equal(at30.tier, "skip", "30%は自動調整しないはず");
+  assert.ok(at30.reason.includes("境界欄") && at30.reason.includes("30%"), at30.reason);
+});
+
+test("evaluateCarve: 10%未満は auto（減少率を持たない）", () => {
+  const F = { uid: "f", field_id: "微小欄", kind: "text",
+              rect: { x: 0, y: 0, w: 100, h: 100 }, marks: [] };
+  // 左5%を削る
+  const v = evaluateCarve(F, { x: -10, y: -10, w: 15, h: 120 });
+  assert.equal(v.tier, "auto");
+  assert.deepEqual(v.field.rect, { x: 5, y: 0, w: 95, h: 100 });
+});
+
+test("evaluateCarve: 減少率が30%未満でも、切り抜き後が最小サイズ未満なら skip", () => {
+  // 幅30pxの細長い欄から4px削ると、面積の減少率は13%程度でも残り幅が
+  // 27px（U-08 の下限）を割り込む。%だけでは検知できないケース
+  const f = { uid: "f", field_id: "細長欄", kind: "text",
+              rect: { x: 0, y: 0, w: 30, h: 100 }, marks: [] };
+  const claim = { x: 26, y: -10, w: 20, h: 120 };
+  const v = evaluateCarve(f, claim);
+  assert.equal(v.tier, "skip");
+  assert.ok(v.reason.includes("細長欄"), v.reason);
+  assert.ok(v.reason.includes("最小サイズ") && v.reason.includes("27"), v.reason);
+});
+
+test("evaluateCarve: 選択式・完全被覆は面積によらず skip", () => {
+  const choice = { uid: "c", field_id: "元号", kind: "choice",
+                   rect: { x: 0, y: 0, w: 200, h: 200 }, marks: [] };
+  const tiny = evaluateCarve(choice, { x: 0, y: 0, w: 1, h: 1 });
+  assert.equal(tiny.tier, "skip");
+  assert.ok(tiny.reason.includes("選択式"), tiny.reason);
+
+  const text = { uid: "t", field_id: "住所", kind: "text",
+                 rect: { x: 0, y: 0, w: 50, h: 50 }, marks: [] };
+  const covered = evaluateCarve(text, { x: -5, y: -5, w: 100, h: 100 });
+  assert.equal(covered.tier, "skip");
+  assert.ok(covered.reason.includes("完全に覆われる"), covered.reason);
+});
+
+test("carveWarningNotice: 対象なしは null・欄名と減少率を含み4件超は集約", () => {
+  assert.equal(carveWarningNotice([]), null);
+  const one = carveWarningNotice([{ id: "住所", reductionPct: 18 }]);
+  assert.ok(one.includes("住所") && one.includes("18%"), one);
+  const many = carveWarningNotice([
+    { id: "a", reductionPct: 12 }, { id: "b", reductionPct: 15 },
+    { id: "c", reductionPct: 20 }, { id: "d", reductionPct: 25 },
+  ]);
+  assert.ok(many.includes("ほか 1 件"), many);
+});
+
+// T-25（04_unclear_policy.md §12 テスト観点）: resolveOverlaps に減少率
+// 5% / 20% / 40% になる claim を複数欄へ同時に与える
+test("resolve-T25: 切り抜きの3段が resolveOverlaps でも同じ閾値で効く（複数欄）", () => {
+  const mkOwner = (uid, fbX) => ({
+    uid, field_id: uid, kind: "text",
+    rect: { x: 9000 + fbX, y: 9000, w: 10, h: 10 }, marks: [],  // 無関係な場所
+    fallback: { x: fbX, y: -10, w: 40, h: 120 } });
+  // V5: 100幅から5%（5px）だけ削る → auto
+  const V5 = { uid: "v5", field_id: "V5", kind: "text",
+               rect: { x: 0, y: 0, w: 100, h: 100 }, marks: [] };
+  const O5 = mkOwner("o5", 95);
+  // V20: 100幅から20%（20px）削る → warn
+  const V20 = { uid: "v20", field_id: "V20", kind: "text",
+                rect: { x: 300, y: 0, w: 100, h: 100 }, marks: [] };
+  const O20 = mkOwner("o20", 380);
+  // V40: 100幅から40%（40px）削る → skip
+  const V40 = { uid: "v40", field_id: "V40", kind: "text",
+                rect: { x: 600, y: 0, w: 100, h: 100 }, marks: [] };
+  const O40 = mkOwner("o40", 660);
+
+  const r = resolveOverlaps([O5, V5, O20, V20, O40, V40]);
+  assert.ok(r.carved.includes("V5") && r.carved.includes("V20"),
+    "5%・20%はどちらも切り抜かれる（carved）はず: " + JSON.stringify(r.carved));
+  assert.ok(!r.carved.includes("V40"), "40%は切り抜かれてはいけない");
+  assert.deepEqual(r.warned, [{ id: "V20", reductionPct: 20 }],
+    "警告色で出すべきは20%（10%以上30%未満）だけ");
+  assert.equal(r.skipped.length, 1);
+  assert.ok(r.skipped[0].includes("V40") && r.skipped[0].includes("30%"), r.skipped[0]);
 });
 
 // ---------------------------------------------------------------- issue #55

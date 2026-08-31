@@ -36,12 +36,45 @@ class Summary:
     api_calls: int = 0
     unclear_total: int = 0
     overflow: int = 0
+    # U-04/U-07（設計 §10.3・2026-08-31）。サマリ6項目（§5.9 Must）には数えない
+    # ——risky_cells と同じ扱いの追加の可視化項目（出荷ゲートには載せない）
+    fallback_used: int = 0
+    fallback_discarded: int = 0
+    carve_hole: int = 0
 
 
 def _png_bytes(img: "Image.Image") -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def _serialize_char_confs(confs: tuple[float, ...]) -> str:
+    """char_confs（symbol 単位の信頼度タプル）→ store.cell.char_confs の書式
+    （カンマ区切り小数3桁・設計 §3 U-04・§10.1）。
+
+    空タプルは空文字列——render_rows._parse_char_confs 側で「情報なし」として
+    安全側（文字単位〓を適用せず欄全体〓）へ倒れる（設計 §14 不変条件2）。
+    """
+    return ",".join(f"{c:.3f}" for c in confs)
+
+
+def _extras_rows(template: Template, result) -> list[tuple[str, str, str]]:
+    """mapping.MappingResult → store.upsert_cell_extras() の rows 形式。
+
+    run（_map_and_score）と remap の両方で同じ変換を使う——片方だけ直すと
+    再割付のたびに char_confs/origin が消える（U-04/#62 の設計 §12「remap にも
+    同じ変更が要る」を満たす）。
+    """
+    rows: list[tuple[str, str, str]] = []
+    for cell in template.cells:
+        content = result.cells.get(cell.field_id)
+        rows.append((
+            cell.field_id,
+            _serialize_char_confs(content.char_confs) if content else "",
+            content.origin if content else "",
+        ))
+    return rows
 
 
 def _store_path(cfg: Config) -> Path:
@@ -174,12 +207,15 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
 
 
 def _map_and_score(store: Store, template: Template, page_id: str,
-                   resp: dict, aligned_faces) -> tuple[int, int, int, int]:
+                   resp: dict, aligned_faces
+                   ) -> tuple[int, int, int, int, int, int, int]:
     """応答 → token 保存 → 割付 → cell/era 保存。
 
-    (below, other, total, page_total) を返す。page_total は応答全体の symbol 数
-    で、面内に1つも落ちなかったケース（total==0）を D-15 が素通りする穴を
-    塞ぐために使う（issue #37）。
+    (below, other, total, page_total, fallback_used, fallback_discarded,
+    carve_hole) を返す。page_total は応答全体の symbol 数で、面内に1つも
+    落ちなかったケース（total==0）を D-15 が素通りする穴を塞ぐために使う
+    （issue #37）。fallback_used/fallback_discarded/carve_hole は U-04/U-07
+    の件数（設計 §10.3）——呼び出し側が進捗イベント・run サマリへ出す。
     """
     page_syms = symbols_from_response(resp)
     by_face = {f.face_id: to_face_local(f, page_syms) for f in template.faces}
@@ -202,6 +238,10 @@ def _map_and_score(store: Store, template: Template, page_id: str,
                           content.conf_min if content else None,
                           cell.kind, int(is_empty)))
     store.upsert_cells(page_id, cell_rows)
+    # U-04/#62: 文字単位信頼度・値の由来を cell_rows と同じ内容から作り、
+    # 同じ page_id へ拡張列として保存する（store.cells() の戻り値は不変のまま・
+    # 設計 §10.2）
+    store.upsert_cell_extras(page_id, _extras_rows(template, result))
 
     binaries = {f.face_id: f.binary for f in aligned_faces}
     era_scores: dict[str, dict] = {}
@@ -215,7 +255,8 @@ def _map_and_score(store: Store, template: Template, page_id: str,
 
     store.set_unassigned(page_id, result.unassigned_below_table, result.unassigned_other)
     return (result.unassigned_below_table, result.unassigned_other,
-            total_syms, page_total)
+            total_syms, page_total,
+            result.fallback_used, result.fallback_discarded, result.carve_hole)
 
 
 def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
@@ -489,7 +530,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # 応答の構造異常で落ちても received のまま宙に浮かせない（issue #38）。
         # 浮かせると次回実行で再送対象になり、実行のたびに課金が発生する
         try:
-            below, other, total, page_total = _map_and_score(
+            (below, other, total, page_total,
+             fb_used, fb_discarded, hole) = _map_and_score(
                 store, template, pid, resp, faces)
         except Exception as e:  # noqa: BLE001
             store.set_state(pid, "failed")
@@ -521,7 +563,15 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         store.set_state(pid, "done")
         if below >= render_rows.OVERFLOW_MIN_SYMBOLS:
             summary.overflow += 1
-        progress({"event": "page", "page_id": pid, "status": "done"})
+        summary.fallback_used += fb_used
+        summary.fallback_discarded += fb_discarded
+        summary.carve_hole += hole
+        # U-04/U-07: このページで発火した件数のみ載せる（0件のページばかりの
+        # 進捗ログを埋めない）。記入値は含めない（field_id・件数のみ）
+        progress({"event": "page", "page_id": pid, "status": "done",
+                  **({"fallback_used": fb_used} if fb_used else {}),
+                  **({"fallback_discarded": fb_discarded} if fb_discarded else {}),
+                  **({"carve_hole": hole} if hole else {})})
 
     # --- F9: 出力 ---
     # ロック内から呼ぶので内側（ロックを取らない側）を使う——render() を
@@ -538,6 +588,11 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
               "align_failed": summary.align_failed, "api_calls": summary.api_calls,
               "unclear_cells": summary.unclear_total, "overflow": summary.overflow,
               "risky_cells": len(risky),
+              # U-04/U-07（設計 §10.3）。risky_cells と同じ扱いの追加項目
+              # ——サマリ6項目（§5.9 Must）・出荷ゲートには数えない
+              "fallback_used": summary.fallback_used,
+              "fallback_discarded": summary.fallback_discarded,
+              "carve_hole": summary.carve_hole,
               "xlsx": str(xlsx), "csv": str(csvp)})
     store.close()
     return summary
@@ -581,7 +636,8 @@ def _render_locked(template_path: str | Path, cfg: Config,
             # 二度と取り出せなかった（回復手段は purge のみだった）
             try:
                 rows.append(build_row(template, p, store.cells(page["page_id"]),
-                                      store.era_scores(page["page_id"]), cfg))
+                                      store.era_scores(page["page_id"]), cfg,
+                                      extras=store.cell_extras(page["page_id"])))
                 continue
             except Exception as e:  # noqa: BLE001
                 import traceback
@@ -633,6 +689,7 @@ def remap(template_path: str | Path, cfg: Config,
     check_reusable(store, geo_hash, tpl_hash, check_template=False)
 
     n = 0
+    fb_used_total = fb_discarded_total = carve_hole_total = 0
     aligned_dir = Path(cfg.workdir) / "aligned"
     for page in store.pages():
         if page["state"] != "done":
@@ -652,6 +709,13 @@ def remap(template_path: str | Path, cfg: Config,
                               content.conf_min if content else None,
                               cell.kind, int(is_empty)))
         store.upsert_cells(pid, cell_rows)
+        # U-04/#62: run と同じ変換（_extras_rows）で char_confs/origin も
+        # 作り直す。ここを直さないと、再割付のたびに由来印・文字単位〓の
+        # 材料が既定値 '' へ巻き戻る（設計 §12「remap にも同じ変更が要る」）
+        store.upsert_cell_extras(pid, _extras_rows(template, result))
+        fb_used_total += result.fallback_used
+        fb_discarded_total += result.fallback_discarded
+        carve_hole_total += result.carve_hole
 
         # choice_marks の変更に追従: 保存済み位置合わせ画像から環状帯を再スコア
         import numpy as np
@@ -681,5 +745,14 @@ def remap(template_path: str | Path, cfg: Config,
                       "missing_aligned_cells": missing_aligned})
         store.set_unassigned(pid, result.unassigned_below_table, result.unassigned_other)
         n += 1
+    # U-04/U-07（設計 §10.3）: remap は戻り値が既存契約で n（ページ数）の
+    # int 固定のため（cli.py の cmd_remap・既存テストが n の型に依存）、
+    # 件数は run の summary イベントと同じ形の専用イベントで出す。0 件でも
+    # 出す（run の summary と同じく毎回同じキーが並ぶ方が呼び出し側の
+    # 分岐が単純になる）。記入値は含めない（件数のみ）
+    progress({"event": "remap_summary", "pages": n,
+              "fallback_used": fb_used_total,
+              "fallback_discarded": fb_discarded_total,
+              "carve_hole": carve_hole_total})
     store.close()
     return n

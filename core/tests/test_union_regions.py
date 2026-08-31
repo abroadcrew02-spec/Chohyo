@@ -152,3 +152,78 @@ def test_fallback_consulted_only_when_all_regions_empty(tmp_path, raw):
     # 全領域が空 → 参照先を読む
     res2 = _run(t, [_sym("参", SPOT_C)])
     assert res2.cells[fid].text == "参"
+
+
+# ---------- U-06: 帯 → 領域 → 行 → x の連結順（T-01/T-02/T-04・2026-08-31） ----------
+
+# コの字（左右に並ぶ2領域・同じ y 帯）
+KONOJI_PRIMARY = {"x": 2100, "y": 1670, "w": 120, "h": 60}
+KONOJI_EXTRA = {"x": 2260, "y": 1670, "w": 120, "h": 60}
+
+
+def test_konoji_band_reads_left_region_fully_before_right(tmp_path, raw):
+    """T-01: コの字（同じ帯・左右の2領域）は左の領域を読み切ってから右へ進む。
+
+    現行の全 symbol y ソート方式は "ACBD"（行単位で左右が交互に混ざる）に
+    なっていたが、U-06 の帯方式では領域内で完結してから次の領域へ進む。
+    """
+    fld = _first_text_field(raw)
+    fld["rect"] = KONOJI_PRIMARY
+    fld["extra_rects"] = [KONOJI_EXTRA]
+    t = load_template(write(tmp_path, raw))
+    fid = fld["field_id"]
+    syms = [
+        _sym("A", KONOJI_PRIMARY, dx=5, dy=10),
+        _sym("B", KONOJI_PRIMARY, dx=5, dy=50),
+        _sym("C", KONOJI_EXTRA, dx=5, dy=10),
+        _sym("D", KONOJI_EXTRA, dx=5, dy=50),
+    ]
+    res = _run(t, syms)
+    assert res.cells[fid].text == "ABCD"
+
+
+def test_l_shape_uses_real_address_field_geometry():
+    """T-02: person_住所1 の実座標。上段（追加領域）と下段（主）の y 差20pxは
+    _LINE_GAP(30px) 未満だが、領域が異なるため1行に融合しない（帯が分かれる）。
+
+    現行の全 symbol y ソート方式は y の近さだけで1行に融合させ "都千東京" に
+    なっていたが、U-06 の帯方式は領域の y レンジの重なりで帯を決めるため、
+    住所1の主(y368-439)と追加領域(y310-368)は重なりゼロ→別の帯になり、
+    正しい読み順「東京都千」になる。
+    """
+    t = load_template(TPL)
+    cell = next(c for c in t.cells if c.field_id == "person_住所1")
+    extra = cell.extra_rects[0]
+    main = cell.rect
+    syms = [
+        Symbol(text="東", x=extra.x + 71, y=extra.y + 50, conf=0.9),
+        Symbol(text="京", x=extra.x + 171, y=extra.y + 50, conf=0.9),
+        Symbol(text="都", x=main.x + 51, y=main.y + 12, conf=0.9),
+        Symbol(text="千", x=main.x + 151, y=main.y + 12, conf=0.9),
+    ]
+    res = assign(t.cells, {"front": syms, "back": []}, t.faces)
+    assert res.cells["person_住所1"].text == "東京都千"
+
+
+def test_band_merge_boundary_at_half_height_overlap():
+    """T-04: 帯判定の境界は「y レンジの重なり高 >= 0.5 * min(A.h, B.h)」（U-06）。
+
+    2領域とも高さ60px。しきい値ちょうど30px。領域1は左隣(x=-100)に置き、
+    同じ帯に併合されれば x 順で領域1が先に読まれる（"BA"）、別の帯のままなら
+    y の小さい領域0が先に読まれる（"AB"）——出力の並びで境界を判別する。
+    """
+    from chouhyo_ocr.template import CellSpec, Face, Rect
+
+    def _build(y1: int):
+        rect0 = Rect(0, 0, 100, 60)
+        rect1 = Rect(-100, y1, 100, 60)
+        cell = CellSpec("f1", "f", rect0, "text", extra_rects=(rect1,))
+        face = Face(face_id="f", page_offset=0, source_rect=Rect(-200, -200, 600, 600))
+        syms = [Symbol("A", 50, 30, 0.9), Symbol("B", -50, y1 + 30, 0.9)]
+        return assign([cell], {"f": syms}, [face])
+
+    below = _build(y1=31)   # overlap = 60-31=29 < 30 → 別の帯
+    assert below.cells["f1"].text == "AB"
+
+    above = _build(y1=29)   # overlap = 60-29=31 >= 30 → 同じ帯（x 順）
+    assert above.cells["f1"].text == "BA"

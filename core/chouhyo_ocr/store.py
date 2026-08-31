@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS cell(
   conf REAL,
   kind TEXT NOT NULL,
   is_empty_row INTEGER NOT NULL DEFAULT 0,
+  char_confs TEXT NOT NULL DEFAULT '',
+  origin TEXT NOT NULL DEFAULT '',
   PRIMARY KEY(page_id, field_id)
 );
 CREATE TABLE IF NOT EXISTS alignment(
@@ -99,6 +101,11 @@ class Store:
         # tables を含まない。位置合わせ結果の再利用可否（#45）はテンプレート
         # 全体のハッシュで判定する（レビュー4巡目 HIGH）。既定 '' は旧版データ
         self._ensure_column("alignment", "template_hash", "TEXT NOT NULL DEFAULT ''")
+        # 2026-08-31（5巡目 第2段・U-04/U-10・#62）: 文字単位信頼度と値の由来。
+        # 既定 '' は「旧版が書いた・情報を持たない」印——char_confs='' なら文字単位
+        # 〓は適用せず欄全体〓、origin='' なら由来印なし（設計 §10.1）
+        self._ensure_column("cell", "char_confs", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("cell", "origin", "TEXT NOT NULL DEFAULT ''")
         self.con.commit()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -266,6 +273,24 @@ class Store:
                 self.con.execute(
                     "SELECT field_id, raw_text, conf, kind, is_empty_row FROM cell WHERE page_id=?",
                     (page_id,))}
+
+    def upsert_cell_extras(self, page_id: str, rows: list[tuple[str, str, str]]) -> None:
+        """rows: (field_id, char_confs, origin)。既存の cell 行を更新する（U-04/#62）。
+
+        upsert_cells の後に呼ぶ想定（対象の (page_id, field_id) 行が既に存在する
+        こと）。char_confs/origin は付随情報のみを持つ拡張列で、cell の主キーは
+        増減させない——store.cells() の戻り値（4要素タプル）を変えないための
+        意図的な分離（設計 §10.2。呼び出し側の後方互換）。
+        """
+        self.con.executemany(
+            "UPDATE cell SET char_confs=?, origin=? WHERE page_id=? AND field_id=?",
+            [(cc, o, page_id, fid) for fid, cc, o in rows])
+        self.con.commit()
+
+    def cell_extras(self, page_id: str) -> dict[str, tuple[str, str]]:
+        """field_id → (char_confs, origin)。cells() と同じキー集合を持つ（不変条件）。"""
+        return {fid: (cc, o) for fid, cc, o in self.con.execute(
+            "SELECT field_id, char_confs, origin FROM cell WHERE page_id=?", (page_id,))}
 
     # --- alignment / era ---
     def upsert_alignment(self, page_id: str, face_id: str, transform: dict,

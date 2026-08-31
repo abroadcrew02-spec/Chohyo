@@ -112,6 +112,62 @@ export function carveField(f: Field, claim: Rect, minSize = 6): Field | null {
            extras: pieces.filter((_r, i) => i !== bi) };
 }
 
+// 切り抜き後の主 rect がこれを下回ると「文字が1つも入らない」（issue #59 H-4
+// のエディタ側／設計書 04_unclear_policy.md §6 U-08。実応答の文字寸法 p10＝
+// 幅27px・高さ36px が根拠。※実データでの較正は未実施と設計書に明記あり）
+const MIN_CARVED_W = 27, MIN_CARVED_H = 36;
+
+const _totalArea = (f: { rect: Rect; extras?: Rect[] }) =>
+  f.rect.w * f.rect.h + (f.extras ?? []).reduce((s, r) => s + r.w * r.h, 0);
+
+export type CarveVerdict =
+  | { tier: "auto"; field: Field }
+  | { tier: "warn"; field: Field; reductionPct: number }
+  | { tier: "skip"; reason: string };
+
+/// 欄1つを claim で切り抜いてよいかを3段階で判定する（issue #59 H-4 の
+/// エディタ側／設計書 04_unclear_policy.md §6 U-08）。
+/// 減少率 = 1 - 残余面積(主+extras) / 元の面積(主+extras)。
+///   減少率 < 10%                          : auto（従来どおり自動で切り抜く）
+///   10% ≤ 減少率 < 30%                     : warn（切り抜くが警告色で明示・D-7）
+///   減少率 ≥ 30%、または切り抜き後の主 rect が 27×36px 未満: skip（切り抜かない）
+/// 選択式・完全に覆われる欄（carveField が null を返す）も skip に含める。
+/// エディタ＝置く前に止める（面積という静的な情報で判断できる）役割で、
+/// 実行時に穴へ落ちた文字を捕まえるコア側（U-07）とは別の防御層。
+export function evaluateCarve(f: Field, claim: Rect, minSize = 6): CarveVerdict {
+  if (f.kind !== "text")
+    return { tier: "skip", reason: `${f.field_id}: 選択式のため自動調整できません` };
+  const before = _totalArea(f);
+  const next = carveField(f, claim, minSize);
+  if (!next)
+    return { tier: "skip", reason: `${f.field_id}: 完全に覆われるため自動調整できません` };
+  const after = _totalArea(next);
+  const reductionPct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+  const tooSmall = next.rect.w < MIN_CARVED_W || next.rect.h < MIN_CARVED_H;
+  if (reductionPct >= 30 || tooSmall) {
+    const why = tooSmall
+      ? `切り抜き後の主枠が最小サイズ（${MIN_CARVED_W}×${MIN_CARVED_H}px）未満になる`
+      : `面積が${reductionPct}%減る（30%以上）`;
+    return { tier: "skip",
+      reason: `${f.field_id}: 切り抜くと${why}ため自動調整しません。枠の配置を見直してください` };
+  }
+  return reductionPct >= 10
+    ? { tier: "warn", field: next, reductionPct }
+    : { tier: "auto", field: next };
+}
+
+/// 10%以上30%未満の切り抜き（issue #59 H-4・設計書 U-08）を警告色で明示する
+/// ための文言。灰色の msg に混ぜると気づかれない（D-7）ため、専用チャンネル
+/// （warnMsg・.warnbox）で表示する。対象が無ければ null
+export function carveWarningNotice(
+  items: { id: string; reductionPct: number }[]): string | null {
+  if (!items.length) return null;
+  const shown = items.slice(0, 3).map((i) => `「${i.id}」${i.reductionPct}%`).join("、");
+  const more = items.length > 3 ? `、ほか ${items.length - 3} 件` : "";
+  return "切り抜きで面積が10%以上30%未満減った欄があります: " + shown + more
+    + "。意図した配置か確認してください。";
+}
+
 /// テンプレート全体の重なりを一括で解消する（保存時に使う）。
 /// 各欄の主枠・参照先・追加領域を「主張」として、他の文字欄を切り抜く。
 /// 主枠も主張に含める（issue #59 H-3）——ドロップ時の autoCarve は主枠の
@@ -125,14 +181,19 @@ export function carveField(f: Field, claim: Rect, minSize = 6): Field | null {
 /// 収集済みの「切り抜き前の旧領域」がそのまま主張として残り、もう存在しない
 /// 領域が無関係な第三の欄を削っていた。定義順で前の欄が主張優先という
 /// 現行方針は変えず、各欄を処理する直前に fs から取り直すことで対応する。
-/// 切り抜けないもの（選択式・完全に覆われた欄）は skipped に返し、
-/// 呼び出し側が警告する（保存自体は続け、コア検証が最終判定する）。
+/// 切り抜きは evaluateCarve の3段階判定（issue #59 H-4・設計書 U-08）に従う。
+/// 減少率30%未満は carved に、10%以上30%未満は warned にも追加で載る
+/// （呼び出し側が警告色で表示する）。切り抜けないもの（選択式・完全に覆われた
+/// 欄・減少率30%以上・切り抜き後が最小サイズ未満）は理由付きの文言で skipped
+/// に返し、呼び出し側が赤帯で警告する（保存自体は続け、コア検証が最終判定する）。
 export function resolveOverlaps(fields: Field[]): {
-  fields: Field[]; carved: string[]; skipped: string[];
+  fields: Field[]; carved: string[]; warned: { id: string; reductionPct: number }[];
+  skipped: string[];
 } {
   let fs = fields;
   const carved = new Set<string>();
-  const skipped = new Set<string>();
+  const warned = new Map<string, number>();
+  const skipped: string[] = [];
   for (const owner of fields.map((f) => f.uid)) {
     const cur = fs.find((f) => f.uid === owner);
     if (!cur) continue;   // 結合等で既に消えている場合は主張しない
@@ -144,15 +205,17 @@ export function resolveOverlaps(fields: Field[]): {
         const touches = [f.rect, ...(f.extras ?? [])]
           .some((r) => _rectsTouch(r, rect));
         if (!touches) return f;
-        if (f.kind !== "text") { skipped.add(f.field_id); return f; }
-        const next = carveField(f, rect);
-        if (!next) { skipped.add(f.field_id); return f; }
+        const verdict = evaluateCarve(f, rect);
+        if (verdict.tier === "skip") { skipped.push(verdict.reason); return f; }
         carved.add(f.field_id);
-        return next;
+        if (verdict.tier === "warn") warned.set(f.field_id, verdict.reductionPct);
+        return verdict.field;
       });
     }
   }
-  return { fields: fs, carved: [...carved], skipped: [...skipped] };
+  return { fields: fs, carved: [...carved],
+           warned: [...warned].map(([id, reductionPct]) => ({ id, reductionPct })),
+           skipped };
 }
 
 const _rectsTouch = (a: Rect, b: Rect) =>
@@ -318,6 +381,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [dirtyState, setDirtyState] = useState(false);
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
   const [errMsg, setErrMsg] = useState("");
+  // 失敗ではないが目立たせたい注意（切り抜きの10〜30%減・コアの verify
+  // 警告）。灰色の msg に混ぜると気づかれない（D-7）ため errMsg（赤帯）とは
+  // 別チャンネルにする（.warnbox・issue #59 H-4／設計書 U-08・U-09）
+  const [warnMsg, setWarnMsg] = useState("");
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
@@ -683,8 +750,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     toEditorState(parsed);
     resetHistory();   // 別テンプレートをまたぐ Undo は誤操作のもと
     setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
-    // 前のファイルの検証エラーを現在の状態と誤読させない（レビュー N-5）
-    setErrMsg("");
+    // 前のファイルの検証エラー・警告を現在の状態と誤読させない（レビュー N-5）
+    setErrMsg(""); setWarnMsg("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
   };
 
@@ -784,9 +851,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       ? `重なった欄を自動で切り抜きました: ${resolved.carved.join("、")}。`
       : "";
     if (resolved.skipped.length) {
-      setErrMsg(`切り抜けない欄があります: ${resolved.skipped.join("、")}`
-        + "（選択式・完全に覆われた欄は自動調整できません）");
+      setErrMsg(`切り抜けない欄があります: ${resolved.skipped.join("／")}`);
     }
+    // 10%以上30%未満の切り抜きは警告色で明示する（issue #59 H-4・設計書
+    // U-08・D-7）。verify の警告（あれば）は成功時にここへ追記する
+    const carveWarnNote = carveWarningNotice(resolved.warned);
+    setWarnMsg(carveWarnNote ?? "");
 
     // 除外領域（Vision へ送らないマスク）が読み込み時点から劣化していないか
     // 確認する（issue #55・#59 QA再判定条件④）。件数減少だけでなく、同一
@@ -843,6 +913,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
           + `・除外 ${exclCount}`
           + `）: ${p}`);
+        // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
+        // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
+        // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）
+        const coreWarnings: string[] = tpl.warnings ?? [];
+        if (coreWarnings.length) {
+          const shown = coreWarnings.slice(0, 3).join("／");
+          const more = coreWarnings.length > 3 ? `（ほか ${coreWarnings.length - 3} 件）` : "";
+          const coreWarnNote = `コアからの警告: ${shown}${more}`;
+          setWarnMsg([carveWarnNote, coreWarnNote].filter(Boolean).join(" ／ "));
+        }
       } else {
         // NG のときは元ファイルを無傷のまま保つ。検証NGを成功と同じ灰色の
         // 小さい文字で出すと気づかれない（レビュー D-7）ため赤帯へ出し、
@@ -913,36 +993,36 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
 
   // 置いた/動かした枠（claim）の下にある他の文字欄を自動で切り抜く。
   // 「後から置いた枠が勝つ」——重なりを手で組み直す手間と保存時の
-  // 重なりエラーを無くす（ユーザー要望 2026-08-31）。切り抜けないもの
-  // （選択式・完全に覆った欄）はそのまま残し、保存時の検証が受け止める。
+  // 重なりエラーを無くす（ユーザー要望 2026-08-31）。切り抜きの可否は
+  // evaluateCarve の3段階判定（issue #59 H-4・設計書 U-08）に従う。
   // 判定は閉包の fields から先に計算し、setFields は写像1回だけにする
   // （updater 内で配列に push すると StrictMode の二重実行で重複する）
   const autoCarve = (claim: Rect, ownerUid: string) => {
     const carved = new Map<string, Field>();
     const carvedNames: string[] = [];
+    const warned: { id: string; reductionPct: number }[] = [];
     const skipped: string[] = [];
     for (const f of fields) {
       if (f.uid === ownerUid) continue;
       const touches = [f.rect, ...(f.extras ?? [])]
         .some((r) => _rectsTouch(r, claim));
       if (!touches) continue;
-      if (f.kind !== "text") { skipped.push(f.field_id); continue; }
-      const next = carveField(f, claim);
-      if (!next) { skipped.push(f.field_id); continue; }
-      carved.set(f.uid, next);
+      const verdict = evaluateCarve(f, claim);
+      if (verdict.tier === "skip") { skipped.push(verdict.reason); continue; }
+      carved.set(f.uid, verdict.field);
       carvedNames.push(f.field_id);
+      if (verdict.tier === "warn") warned.push({ id: f.field_id, reductionPct: verdict.reductionPct });
     }
     if (carved.size)
       setFields((fs) => fs.map((f) => carved.get(f.uid) ?? f));
-    if (carvedNames.length || skipped.length) {
-      const parts: string[] = [];
-      if (carvedNames.length)
-        parts.push(`重なった欄を自動で切り抜きました: ${carvedNames.join("、")}（Ctrl+Z で戻せます）`);
-      if (skipped.length)
-        parts.push(`切り抜けない欄があります: ${skipped.join("、")}（選択式・完全に覆われた欄は自動調整できません。枠を見直してください）`);
-      setMsg(parts.join(" ／ "));
-      if (carvedNames.length) markDirty(true);
+    if (carvedNames.length) {
+      setMsg(`重なった欄を自動で切り抜きました: ${carvedNames.join("、")}（Ctrl+Z で戻せます）`);
+      markDirty(true);
     }
+    // 切り抜けない欄は赤帯へ（灰色の msg に混ぜると気づかれない・D-7。
+    // 保存時＝resolveOverlaps/saveTemplate と同じ表示経路に揃える）
+    if (skipped.length) setErrMsg(`切り抜けない欄があります: ${skipped.join("／")}`);
+    setWarnMsg(carveWarningNotice(warned) ?? "");
   };
 
   // 欄の部位（主／参照先／追加領域 n）から矩形を引く
@@ -1584,6 +1664,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
       {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
+      {warnMsg && <div className="warnbox" style={{ margin: "8px 18px" }}>{warnMsg}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
           style={spaceHeld ? { cursor: "grab" }

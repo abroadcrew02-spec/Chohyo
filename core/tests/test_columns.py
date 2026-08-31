@@ -63,7 +63,9 @@ def test_extract_columns_excludes_meta(template):
 
 def test_excel_column_letters():
     assert excel_column_letter(7) == "G"
-    assert excel_column_letter(218) == "HJ"   # COUNTIF 範囲 Gn:HJn の根拠
+    assert excel_column_letter(218) == "HJ"   # 純関数の検証値（218固定の根拠ではない）。
+    # render_out.py の COUNTIF 範囲は excel_column_letter(len(columns)) で導出しており、
+    # 現行220列では Gn:HLn になる（218列だった旧版の名残りコメントを2026-08-31 訂正）
 
 
 def test_validate_accepts_any_count(template):

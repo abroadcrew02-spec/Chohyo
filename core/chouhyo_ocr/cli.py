@@ -105,11 +105,15 @@ def cmd_verify(args) -> int:
         # 座標そのものの妥当性検査ではなく、読み込めたテンプレの現在値を
         # そのまま見える化するだけ——比較・拒否の判断は呼び出し側（編集画面）が行う
         exclusions_by_face = {f.face_id: len(f.exclusions) for f in t.faces}
+        # 除外領域×受け皿の重なり警告（U-09・H-6）。拒否はしない——見える化のみ
+        # （§7.1: 出荷テンプレートに意図的な重なりが実在するため）。GUI 側と
+        # 合意済みの契約: warnings は文字列配列（無警告時は空配列）
         _progress({"event": "verify", "check": "template", "ok": True,
                    "columns": len(cols), "cells": len(t.cells),
                    "amount_cells": amount_cell_count(t),
                    "exclusions": sum(exclusions_by_face.values()),
-                   "exclusions_by_face": exclusions_by_face})
+                   "exclusions_by_face": exclusions_by_face,
+                   "warnings": list(t.warnings)})
     except Exception as e:
         ok = False
         _progress({"event": "verify", "check": "template", "ok": False, "error": str(e)})

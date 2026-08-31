@@ -142,15 +142,100 @@ def test_both_empty_stays_empty(tpl_with_fallback):
     assert fid not in res.cells
 
 
-def test_fallback_symbols_not_counted_as_unassigned(tpl_with_fallback):
-    """参照先領域の文字は（主に値があって捨てられる場合でも）枠外に数えない。"""
+def test_fallback_symbols_discarded_count_as_unassigned(tpl_with_fallback):
+    """参照先領域の文字は、主に値があって捨てられる場合は枠外に数える（T-08・2026-08-31改訂）。
+
+    旧仕様（#54(a)）は採用しない参照先の中身が再代入されず静かに消えていた。
+    U-02 では「消える」を許さず、必ず穴（無ければ枠外）へ回す。ここでは穴の
+    無い自由スポットを使うため、破棄分は全て unassigned_other に乗る。
+    """
     t, fid, fb = tpl_with_fallback
     primary = next(c.rect for c in t.cells if c.field_id == fid)
     pr = {"x": primary.x, "y": primary.y}
-    base = _run(t, [_sym("主", pr)])
-    with_fb = _run(t, [_sym("主", pr), _sym("捨", fb)])
-    assert with_fb.unassigned_other == base.unassigned_other
-    assert with_fb.cells[fid].text == "主"
+    base = _run(t, [_sym("主", pr), _sym("値", pr, dx=25)])
+    with_fb = _run(t, [_sym("主", pr), _sym("値", pr, dx=25),
+                       _sym("捨", fb), _sym("却", fb, dx=25)])
+    assert with_fb.cells[fid].text == "主値"
+    assert with_fb.unassigned_other == base.unassigned_other + 2
+    assert with_fb.fallback_discarded == 2
+
+
+# ---------- U-03: 主が空の3分岐（T-06〜T-10・2026-08-31） ----------
+
+def test_fallback_used_counts_the_field(tpl_with_fallback):
+    """T-06: 主が空・参照先2字 → fallback_used は「採用した欄の数」（symbol数ではない）。"""
+    t, fid, fb = tpl_with_fallback
+    res = _run(t, [_sym("参", fb), _sym("照", fb, dx=25)])
+    assert res.cells[fid].text == "参照"
+    assert res.cells[fid].origin == "fallback"
+    assert res.fallback_used == 1
+
+
+def test_conflict_when_main_noise_and_fallback_ambiguous(tpl_with_fallback):
+    """T-07: 主1字（NOISE_MAX以内）・参照先2字以上 → 矛盾。主のまま保存し origin='conflict'。
+
+    参照先を採らない理由: 主の1文字が本物の記入である可能性を排除できないため
+    （U-03）。値そのものは書き換えない（転記主義）。
+    """
+    t, fid, fb = tpl_with_fallback
+    primary = next(c.rect for c in t.cells if c.field_id == fid)
+    pr = {"x": primary.x, "y": primary.y}
+    res = _run(t, [_sym("ノ", pr), _sym("参", fb), _sym("照", fb, dx=25)])
+    assert res.cells[fid].text == "ノ"
+    assert res.cells[fid].origin == "conflict"
+
+
+def test_conflict_does_not_trigger_with_single_fallback_char(tpl_with_fallback):
+    """主1字・参照先1字（n_fb<2）は矛盾条件を満たさない→主を採用（それ以外の分岐）。"""
+    t, fid, fb = tpl_with_fallback
+    primary = next(c.rect for c in t.cells if c.field_id == fid)
+    pr = {"x": primary.x, "y": primary.y}
+    res = _run(t, [_sym("ノ", pr), _sym("参", fb)])
+    assert res.cells[fid].text == "ノ"
+    assert res.cells[fid].origin == ""
+    assert res.fallback_discarded == 1
+
+
+def test_postal_fallback_discard_carves_address_hole():
+    """T-09: 実データ経路。person_郵便番号1 の主に記入があり参照先も記入がある場合、
+    破棄された参照先の文字は person_住所1 の「穴」（追加領域と主の間の隙間）に落ち、
+    住所欄が欄全体〓になる（判定表 #7・H-4 コア層）。
+    """
+    t = load_template(TPL)
+    postal_main = next(c.rect for c in t.cells if c.field_id == "person_郵便番号1")
+    # 参照先領域のうち、住所1 の穴（主649-2416x368-439 と追加1129-2416x310-368の
+    # 隙間＝ x:649-1129 y:310-368）と重なる位置に置く
+    hole_x, hole_y = 700, 320
+    syms = [
+        _sym("1", {"x": postal_main.x, "y": postal_main.y}),
+        _sym("2", {"x": postal_main.x, "y": postal_main.y}, dx=30),
+        Symbol(text="9", x=hole_x, y=hole_y, conf=0.95),
+        Symbol(text="9", x=hole_x + 20, y=hole_y, conf=0.95),
+    ]
+    res = _run(t, syms)
+    assert res.cells["person_郵便番号1"].text == "12"
+    assert res.cells["person_住所1"].text == "〓"
+    assert res.cells["person_住所1"].conf_min is None
+    assert res.carve_hole == 2
+    assert res.fallback_discarded == 2
+    # 穴に落ちた文字は枠外（unassigned_other）に数えない（§5.2）
+    assert res.unassigned_other == 0
+
+
+def test_postal_fallback_adopted_does_not_carve_hole():
+    """T-10: 正常ページ（主が空で参照先を採用する構成）では穴は発火しない。
+
+    §1.3 の実測（郵便番号の参照先文字は必ず住所欄の穴とほぼ一致するが、
+    採用時はそこへ「破棄」ルートを通らないので carve_hole は 0 のまま）と一致。
+    """
+    t = load_template(TPL)
+    postal_fb = next(c.fallback_rect for c in t.cells if c.field_id == "person_郵便番号1")
+    syms = [_sym("2", {"x": postal_fb.x, "y": postal_fb.y}, dx=d)
+            for d in (5, 30, 55, 80)]
+    res = _run(t, syms)
+    assert res.cells["person_郵便番号1"].origin == "fallback"
+    assert res.carve_hole == 0
+    assert "person_住所1" not in res.cells
 
 
 def test_no_fallback_field_unaffected(tmp_path, raw):

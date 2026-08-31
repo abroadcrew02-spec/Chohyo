@@ -75,3 +75,35 @@ def test_page_filter(worked, tmp_path):
     finally:
         store.close()
     assert none == []
+
+
+def test_field_origins_matches_assign_on_real_sample(worked, tmp_path):
+    """#60 M-1③: debug_images._field_origins が mapping.assign() と同じ結論に
+    達すること（実データ経路）。person_郵便番号1 は主が空・参照先採用（実測・
+    test_mapping.py::test_person_fields と同じ前提）なので 'fallback' になる。
+    """
+    from pathlib import Path
+
+    from chouhyo_ocr.debug_images import _field_origins
+    from chouhyo_ocr.mapping import build_symbol_locator
+    from chouhyo_ocr.store import Store
+    from chouhyo_ocr.template import CellSpec
+
+    cfg, _ = worked
+    wd = Path(cfg.workdir)
+    store = Store(wd / "intermediate.sqlite")
+    try:
+        pages = store.pages()
+        assert len(pages) == 1
+        pid = pages[0]["page_id"]
+        tokens = store.tokens(pid)
+        template = load_template(TPL)
+        cells_by_face: dict[str, list[CellSpec]] = {}
+        for c in template.cells:
+            cells_by_face.setdefault(c.face_id, []).append(c)
+        locators = {fid: build_symbol_locator(cs) for fid, cs in cells_by_face.items()}
+        origins = _field_origins(locators, tokens)
+    finally:
+        store.close()
+    assert origins.get("person_郵便番号1") == "fallback"
+    assert origins.get("person_郵便番号2") == "fallback"

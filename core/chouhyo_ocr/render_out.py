@@ -1,10 +1,17 @@
 """出力（.xlsx / .csv 同時生成・設計 §6.6）。
 
 - .xlsx: write_only（M0-S1 で成立確認）。金額のみ数値型・他は文字列型（'@'）・
-  〓へ条件付き書式・要確認セル数は COUNTIF 数式
-- .csv: 全列クォート・BOM 付き UTF-8・要確認セル数は静的な数値
+  〓（欄全体・一部）へ条件付き書式（U-12）・参照先採用セルへ静的な由来色
+  （U-04・FILL_ORIGIN_FALLBACK）・要確認セル数は COUNTIF 数式（U-13・ワイルドカード）
+- .csv: 全列クォート・BOM 付き UTF-8・要確認セル数は静的な数値（U-13・「〓を含む」で数える）
 - 再現性: 同一中間データ・同一設定 → バイト一致（要件 §6.2）。xlsx は
   docProps の日時を固定し、zip エントリの日時も正規化する
+
+2026-08-31（5巡目 第2段・docs/design/chouhyo-ocr/04_unclear_policy.md §8）:
+文字単位〓（#62）で「〓」を含むが完全一致ではないセルが生じるため、要確認
+セル数の数え方を完全一致から「含む」へ統一した（xlsx の COUNTIF・条件付き
+書式・csv の3経路）。文字単位〓が無効なときは〓は必ず単独のセル値になるため、
+この変更で従来の集計結果は変わらない（§8.3 の互換性評価）。
 """
 from __future__ import annotations
 
@@ -17,7 +24,7 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
-from openpyxl.formatting.rule import CellIsRule
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import PatternFill
 
 from .columns import META_COLUMNS, excel_column_letter
@@ -25,6 +32,13 @@ from .render_rows import Row
 
 _FIXED_DT = datetime(2000, 1, 1)
 _FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+# 一部〓（U-12）: セル値が "〓" を含み、かつ長さ2以上（完全一致の _FILL とは
+# 別ルール・2026-08-31）。橙は debug-images で「信頼度不足」を表す色と系統を揃える
+_FILL_PARTIAL = PatternFill(start_color="FFE8CC", end_color="FFE8CC", fill_type="solid")
+# 参照先採用セルの由来色（U-04）。値は書き換えない（転記主義）——静的な背景色のみ。
+# 同じセルに〓の条件付き書式が乗った場合は条件付き書式が優先して表示される
+# （設計 §3 U-04「由来色は〓でなければ」——起きても実害はない多重防御）
+FILL_ORIGIN_FALLBACK = PatternFill(start_color="E8F4FA", end_color="E8F4FA", fill_type="solid")
 
 
 def _normalize_zip(path: Path) -> None:
@@ -54,15 +68,22 @@ def _normalize_zip(path: Path) -> None:
 def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
     n_extract = len(columns) - len(META_COLUMNS)
     first = excel_column_letter(len(META_COLUMNS) + 1)          # G
-    last = excel_column_letter(len(columns))                    # 218列なら HJ
+    last = excel_column_letter(len(columns))                    # 220列なら HL
 
     wb = Workbook(write_only=True)
     wb.properties.created = _FIXED_DT
     wb.properties.modified = _FIXED_DT
     ws = wb.create_sheet("output")
+    rng = f"{first}1:{last}{len(rows) + 1}"
+    # 欄全体〓（完全一致）: 既存の色 FFF2CC を維持する（見た目を変えない・U-12）
     ws.conditional_formatting.add(
-        f"{first}1:{last}{len(rows) + 1}",
-        CellIsRule(operator="equal", formula=['"〓"'], fill=_FILL))
+        rng, CellIsRule(operator="equal", formula=['"〓"'], fill=_FILL))
+    # 一部〓（U-12・#62）: "〓" を含み、かつ長さ2以上。相対参照は範囲の左上
+    # セル（{first}1）を基準に Excel 側が各セルへ自動調整する
+    ws.conditional_formatting.add(
+        rng, FormulaRule(
+            formula=[f'AND(ISNUMBER(FIND("〓",{first}1)),LEN({first}1)>1)'],
+            fill=_FILL_PARTIAL))
 
     def text(v):
         c = WriteOnlyCell(ws, value=v)
@@ -81,12 +102,23 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
     row_no = 1
     for r in rows:
         row_no += 1
+        # U-13: COUNTIF をワイルドカード化（完全一致のままだと文字単位〓の
+        # 部分置換セルを数え損なう・設計 §8.3）。openpyxl は数式を評価しない
+        # ため、この文字列一致までが自動テストで固定できる範囲（T-16 は実機確認）
         formula = WriteOnlyCell(
-            ws, value=f'=COUNTIF({first}{row_no}:{last}{row_no},"〓")')
+            ws, value=f'=COUNTIF({first}{row_no}:{last}{row_no},"*〓*")')
         meta = [formula, text(r.min_conf), text(r.page_id),
                 text(r.source_file), text(str(r.page_no)), text(r.status)]
-        body = [WriteOnlyCell(ws, value=v) if isinstance(v, int) else text(v)
-                for v in r.values]
+        origins = r.origins if len(r.origins) == len(r.values) else ("",) * len(r.values)
+        body = []
+        for v, origin in zip(r.values, origins):
+            cell = WriteOnlyCell(ws, value=v) if isinstance(v, int) else text(v)
+            if origin == "fallback":
+                # 由来色（U-04）: 参照先採用セルへ静的な背景色を付ける。値は
+                # 書き換えない。〓の条件付き書式が同じセルに乗る場合は
+                # 条件付き書式側が表示上優先される（Excel の描画順）
+                cell.fill = FILL_ORIGIN_FALLBACK
+            body.append(cell)
         ws.append(meta + body)
     wb.save(path)
     _normalize_zip(path)

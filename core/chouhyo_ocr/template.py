@@ -12,6 +12,7 @@ from pathlib import Path
 
 import jsonschema
 
+from . import logging_safe as log
 from .paths import template_schema_path
 
 SCHEMA_VERSION = 1
@@ -117,6 +118,10 @@ class Template:
     record_pages: int
     faces: tuple[Face, ...]
     cells: tuple[CellSpec, ...] = field(default=())
+    # 除外領域×受け皿の重なり警告（U-09・H-6・2026-08-31）。拒否はしない——
+    # 出荷テンプレートに意図的な重なりが実在するため（§7.1）。cli.py の verify が
+    # そのまま warnings: [string] として GUI 側へ渡す契約（変更不可）
+    warnings: tuple[str, ...] = field(default=())
 
     def face(self, face_id: str) -> Face:
         for f in self.faces:
@@ -228,6 +233,65 @@ def _table_zones(t: dict) -> list[TableZone]:
             bottom=oy + t["row_pitch"] * (blk["rows"] - 1) + t["row_height"],
         ))
     return zones
+
+
+def _rect_area(r: Rect) -> int:
+    return r.w * r.h
+
+
+def _overlap_area(ra: Rect, rb: Rect) -> int:
+    ox = max(0, min(ra.x + ra.w, rb.x + rb.w) - max(ra.x, rb.x))
+    oy = max(0, min(ra.y + ra.h, rb.y + rb.h) - max(ra.y, rb.y))
+    return ox * oy
+
+
+def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str]:
+    """U-09（H-6）: 除外領域と受け皿の重なりを警告として集める（設計 §7）。
+
+    拒否はしない——出荷テンプレートに意図的な重なりが実在する（印字の一部を
+    欄の内側から除く構成）ため、拒否にすると出荷テンプレート自身が読めなく
+    なる（§7.1）。W-1（情報）は「重なりがある」だけで発火し、W-2（強い警告）は
+    ①受け皿が完全に覆われる ②参照先が被覆される ③参照先を持つ欄の主枠が
+    被覆される、のいずれかで発火する。
+    """
+    warnings: list[str] = []
+    exclusions_by_face = {f.face_id: f.exclusions for f in faces}
+    for c in cells:
+        exclusions = exclusions_by_face.get(c.face_id, ())
+        if not exclusions:
+            continue
+        receptors: list[tuple[str, Rect]] = [("欄", c.rect)]
+        receptors += [("欄の追加領域", r) for r in c.extra_rects]
+        if c.fallback_rect is not None:
+            receptors.append(("参照先の枠", c.fallback_rect))
+        for label, r in receptors:
+            area = _rect_area(r)
+            if area == 0:
+                continue
+            covered = min(sum(_overlap_area(r, e) for e in exclusions), area)
+            if covered <= 0:
+                continue
+            ratio = covered / area
+            warnings.append(
+                f"[W-1] {c.field_id} の{label}が除外領域と重なっている"
+                f"（被覆率 約{ratio * 100:.1f}%）")
+            log.warn("exclusion_overlap_w1", field_id=c.field_id)
+            if covered >= area:
+                warnings.append(
+                    f"[W-2] {c.field_id} の{label}が除外領域に完全に覆われている"
+                    "（恒久的に空になる）")
+                log.warn("exclusion_overlap_w2_full", field_id=c.field_id)
+            if label == "参照先の枠":
+                warnings.append(
+                    f"[W-2] {c.field_id} の参照先が除外領域と重なっている"
+                    "（参照先が機能しない可能性がある）")
+                log.warn("exclusion_overlap_w2_fallback", field_id=c.field_id)
+            elif label == "欄" and c.fallback_rect is not None:
+                warnings.append(
+                    f"[W-2] {c.field_id} の主枠が除外領域と重なっている"
+                    "（『主が空』が構造的に成立しやすくなり、参照先が常時採用されうる）")
+                log.warn("exclusion_overlap_w2_primary", field_id=c.field_id)
+    return warnings
 
 
 def load_template(path: str | Path) -> Template:
@@ -471,4 +535,5 @@ def load_template(path: str | Path) -> Template:
         record_pages=raw["record"]["pages"],
         faces=tuple(faces),
         cells=tuple(cells),
+        warnings=tuple(_exclusion_overlap_warnings(faces, cells)),
     )
