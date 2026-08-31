@@ -11,7 +11,11 @@ type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rec
                normalize?: string;
                // 参照先の枠（文字欄のみ・任意）。主の枠が完全に空のときだけ
                // ここの読取値を採用する（読めない〓のときは参照しない）
-               fallback?: Rect };
+               fallback?: Rect;
+               // 追加の領域（文字欄のみ・任意）。主の枠と等価な受け皿で、
+               // どの領域の文字も同じ欄に集まり読み順で1つの値になる
+               //（L字・コの字の欄。「別の欄と結合」「領域を追加」で作る）
+               extras?: Rect[] };
 type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
 type Column = { name: string; x_offset: number; width: number; kind: "text" | "choice";
                 subfields: string; marks: ColMark[]; normalize?: string };
@@ -19,8 +23,9 @@ type Block = { x: number; y: number; rows: number };
 type Table = { uid: string; table_id: string; row_pitch: number; row_height: number;
                blocks: Block[]; columns: Column[] };
 type Excl = { uid: string; id: string; rect: Rect };
+// part: "fallback"＝参照先 ／ "extra:<n>"＝追加領域の n 番目
 type Sel = { type: "field" | "table" | "excl"; uid: string;
-             part?: "fallback" } | null;
+             part?: string } | null;
 type Tool = "select" | "field" | "excl" | "table" | "split";
 // 元に戻す／やり直しの1コマ。編集対象の4状態をまとめて差し替える
 type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number };
@@ -71,6 +76,17 @@ export function remapMarks(
                        next.y + next.h - h);
     return { ...m, rect: { x, y, w, h } };
   });
+}
+
+/// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
+/// 成功なら結合後の A を、できない場合は理由の文字列を返す。
+export function absorbField(a: Field, b: Field): Field | string {
+  if (a.uid === b.uid) return "同じ欄どうしは結合できません";
+  if (a.kind !== "text" || b.kind !== "text")
+    return "結合できるのは文字欄どうしだけです（選択式は帯の判定が単一矩形前提）";
+  if (b.fallback)
+    return "結合先に参照先が設定されています。先に参照先を削除してください";
+  return { ...a, extras: [...(a.extras ?? []), b.rect, ...(b.extras ?? [])] };
 }
 
 /// 重なった枠の循環選択。cands は前面→背面の順。現在の選択が候補に
@@ -168,6 +184,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
+  // 「領域を追加」で待ち受け中の欄 uid（次のドラッグが追加領域になる）
+  const [exTarget, setExTarget] = useState<string | null>(null);
+  // 「別の欄と結合」で待ち受け中の欄 uid（次にクリックした欄を取り込む）
+  const [mergeTarget, setMergeTarget] = useState<string | null>(null);
   // ハンドルにホバーしたときのリサイズカーソル（"" = 既定）
   const [hoverCursor, setHoverCursor] = useState("");
   const [genRows, setGenRows] = useState(5);
@@ -255,6 +275,18 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       ctx.fillStyle = "#9fd8ff";
       label(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px,
             f.rect.w - 8 * px, f.rect.h);
+      for (let i = 0; i < (f.extras?.length ?? 0); i++) {
+        const ex = f.extras![i];
+        rect(ex, sel?.uid === f.uid && sel?.part === `extra:${i}`
+          ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+        // 同じ欄の一部であることを細線で示す（参照先の破線と区別して実線）
+        ctx.strokeStyle = "rgba(79,195,247,0.45)"; ctx.lineWidth = px;
+        ctx.beginPath();
+        ctx.moveTo(f.rect.x + f.rect.w / 2, f.rect.y + f.rect.h / 2);
+        ctx.lineTo(ex.x + ex.w / 2, ex.y + ex.h / 2);
+        ctx.stroke();
+        ctx.lineWidth = 2 * px;
+      }
       if (f.fallback) {
         // 参照先は破線＋主の枠との接続線。実線の欄と見分けが付き、
         // どの欄の参照先かが線で追える
@@ -433,6 +465,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                   rect: { ...f.rect, y: f.rect.y + oy }, normalize: f.normalize,
                   fallback: f.fallback_rect
                     ? { ...f.fallback_rect, y: f.fallback_rect.y + oy } : undefined,
+                  extras: (f.extra_rects ?? []).map((r: any) =>
+                    ({ ...r, y: r.y + oy })),
                   marks: (f.choice_marks ?? []).map((m: any) =>
                     ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })) });
       for (const tb of face.tables ?? [])
@@ -513,6 +547,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           rect: { ...f.rect, y: f.rect.y - y0 },
           ...(f.kind === "text" && f.fallback
             ? { fallback_rect: { ...f.fallback, y: f.fallback.y - y0 } } : {}),
+          ...(f.kind === "text" && f.extras?.length
+            ? { extra_rects: f.extras.map((r) => ({ ...r, y: r.y - y0 })) } : {}),
           ...(f.normalize && f.kind === "text" ? { normalize: f.normalize } : {}),
           ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
             value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
@@ -620,13 +656,21 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const grabTol = (r: Rect) =>
     Math.min(12 / zoom, Math.max(4, Math.min(r.w, r.h) / 3));
 
-  // 選択中の矩形（field 主／field 参照先／excl）。table は格子定義のため対象外
+  // 欄の部位（主／参照先／追加領域 n）から矩形を引く
+  const partRect = (f: Field | undefined, part?: string): Rect | null => {
+    if (!f) return null;
+    if (!part) return f.rect;
+    if (part === "fallback") return f.fallback ?? null;
+    if (part.startsWith("extra:"))
+      return f.extras?.[Number(part.slice(6))] ?? null;
+    return null;
+  };
+
+  // 選択中の矩形（field の各部位／excl）。table は格子定義のため対象外
   const selectedRect = (): Rect | null => {
     if (!sel) return null;
-    if (sel.type === "field") {
-      const f = fields.find((v) => v.uid === sel.uid);
-      return sel.part === "fallback" ? f?.fallback ?? null : f?.rect ?? null;
-    }
+    if (sel.type === "field")
+      return partRect(fields.find((v) => v.uid === sel.uid), sel.part);
     if (sel.type === "excl")
       return excls.find((v) => v.uid === sel.uid)?.rect ?? null;
     return null;
@@ -638,6 +682,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     const inR = (r: Rect) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
     const out: NonNullable<Sel>[] = [];
     for (const f of fields) if (inR(f.rect)) out.push({ type: "field", uid: f.uid });
+    for (const f of fields)
+      (f.extras ?? []).forEach((ex, i) => {
+        if (inR(ex)) out.push({ type: "field", uid: f.uid, part: `extra:${i}` });
+      });
     for (const f of fields)
       if (f.fallback && inR(f.fallback))
         out.push({ type: "field", uid: f.uid, part: "fallback" });
@@ -658,6 +706,28 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (e.button === 1 || e.altKey || spaceRef.current) {
       drag.current = { mode: "pan", start: { x: e.clientX, y: e.clientY },
                        extra: { ...pan } };
+      return;
+    }
+    if (mergeTarget) {
+      // 「別の欄と結合」の待ち受け中: クリックした欄を取り込む
+      const src = fields.find((f) => f.uid === mergeTarget);
+      const hitSel = hitAll(p).find((c) => c.type === "field" && !c.part);
+      setMergeTarget(null);
+      if (!src || !hitSel) { setMsg("結合を中止しました（欄をクリックしてください）"); return; }
+      const dst = fields.find((f) => f.uid === hitSel.uid)!;
+      const merged = absorbField(src, dst);
+      if (typeof merged === "string") { setErrMsg(merged); return; }
+      setFields((fs) => fs.filter((f) => f.uid !== dst.uid)
+        .map((f) => (f.uid === src.uid ? merged : f)));
+      setSel({ type: "field", uid: src.uid });
+      markDirty(true);
+      setMsg(`「${dst.field_id}」を「${src.field_id}」に結合しました（領域 ${
+        (merged.extras ?? []).length + 1} 個の1つの欄になりました）`);
+      return;
+    }
+    if (exTarget) {
+      // 「領域を追加」の待ち受け中: 次のドラッグが同じ欄の追加領域になる
+      drag.current = { mode: "draw-extra", start: p };
       return;
     }
     if (fbTarget) {
@@ -684,9 +754,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         // setSel は非同期なので selRect()（閉包の sel）は前回選択を返す。
         // 必ず今回ヒットした h から矩形を引く（issue #12: 別図形の座標が適用される）
         const r = h.type === "field"
-                ? (h.part === "fallback"
-                   ? fields.find((f) => f.uid === h.uid)?.fallback ?? null
-                   : fields.find((f) => f.uid === h.uid)?.rect ?? null)
+                ? partRect(fields.find((f) => f.uid === h.uid), h.part)
                 : h.type === "excl" ? excls.find((x) => x.uid === h.uid)?.rect ?? null
                 : null;
         if (r && h.type !== "table") {
@@ -750,6 +818,22 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     drag.current = null;
     if (!d || !d.mode.startsWith("draw-") || !pending) return;
     if (pending.w < 8 || pending.h < 8) { setPending(null); return; }
+    if (d.mode === "draw-extra") {
+      if (exTarget && pending && pending.w >= 8 && pending.h >= 8) {
+        const uid0 = exTarget;
+        let idx = 0;
+        setFields((fs) => fs.map((f) => {
+          if (f.uid !== uid0) return f;
+          idx = (f.extras ?? []).length;
+          return { ...f, extras: [...(f.extras ?? []), pending] };
+        }));
+        setSel({ type: "field", uid: uid0, part: `extra:${idx}` });
+        markDirty(true);
+        setMsg("領域を追加しました（同じ欄の一部として読まれます）");
+      }
+      setExTarget(null); setPending(null);
+      return;
+    }
     if (d.mode === "draw-fallback") {
       if (fbTarget) {
         const uid0 = fbTarget;
@@ -816,7 +900,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         setFields((fs) => fs.map((f) => f.uid === sel.uid && f.fallback
           ? { ...f, fallback: { ...f.fallback,
                                 x: f.fallback.x + dx, y: f.fallback.y + dy } } : f));
-      else
+      else if (sel.part?.startsWith("extra:")) {
+        const i = Number(sel.part.slice(6));
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? { ...f, extras: (f.extras ?? []).map((ex, j) =>
+              j === i ? { ...ex, x: ex.x + dx, y: ex.y + dy } : ex) } : f));
+      } else
         // マークも一緒に動かす（issue #48 と同じ経路）
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? applyRectToField(f, { ...f.rect, x: f.rect.x + dx, y: f.rect.y + dy }) : f));
@@ -896,7 +985,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); zoomBy(1.15); return; }
     if (ctrl && e.key === "-") { e.preventDefault(); zoomBy(1 / 1.15); return; }
     if (e.key === "Escape") {
-      setSel(null); setPending(null); setFbTarget(null); drag.current = null; return;
+      setSel(null); setPending(null); setFbTarget(null);
+      setExTarget(null); setMergeTarget(null); drag.current = null; return;
     }
     if ((e.key === "Delete" || e.key === "Backspace") && sel) {
       e.preventDefault(); removeSel(); return;
@@ -933,7 +1023,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       if (sel.part === "fallback")
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? { ...f, fallback: r } : f));
-      else
+      else if (sel.part?.startsWith("extra:")) {
+        const i = Number(sel.part.slice(6));
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? { ...f, extras: (f.extras ?? []).map((ex, j) => j === i ? r : ex) } : f));
+      } else
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? applyRectToField(f, r) : f));
     }
@@ -953,7 +1047,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       if (sel.part === "fallback")
         setFields((fs) => fs.map((f) => f.uid === sel.uid
           ? { ...f, fallback: undefined } : f));
-      else
+      else if (sel.part?.startsWith("extra:")) {
+        const i = Number(sel.part.slice(6));
+        setFields((fs) => fs.map((f) => f.uid === sel.uid
+          ? { ...f, extras: (f.extras ?? []).filter((_ex, j) => j !== i) } : f));
+      } else
         setFields((fs) => fs.filter((f) => f.uid !== sel.uid));
     }
     if (sel.type === "excl") setExcls((es) => es.filter((e) => e.uid !== sel.uid));
@@ -1028,6 +1126,21 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           <div className="mono">x:{f.rect.x} y:{f.rect.y} w:{f.rect.w} h:{f.rect.h}</div>
           {f.kind === "text" && (
             <>
+              <h4>領域（1つの欄を複数の枠で構成）</h4>
+              <p className="note">L字・コの字の欄を作れます。どの領域の文字も
+                この欄の値として読み順でつながります{f.extras?.length
+                  ? `（現在 ${f.extras.length + 1} 領域）` : ""}</p>
+              <button onClick={() => {
+                setExTarget(f.uid);
+                setMsg("追加する領域を帳票上でドラッグして描いてください（Esc で中止）");
+              }}>領域を追加</button>
+              <button onClick={() => {
+                setMergeTarget(f.uid);
+                setMsg("結合する欄をクリックしてください（クリックした欄はこの欄に取り込まれます・Esc で中止）");
+              }}>別の欄と結合</button>
+              {sel.part?.startsWith("extra:") && (
+                <p className="note">選択中の領域は Delete で個別に削除できます</p>
+              )}
               <h4>参照先（この枠が空のとき読む場所）</h4>
               {f.fallback ? (
                 <>

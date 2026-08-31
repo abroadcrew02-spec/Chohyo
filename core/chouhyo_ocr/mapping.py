@@ -146,7 +146,9 @@ def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
     buckets: dict[tuple[int, int], list] = {}
     targets: list[tuple[str, "Rect"]] = []
     for c in cells:
-        targets.append((c.field_id, c.rect))
+        # 追加領域（L字などの構成片）は主と等価の受け皿。同じ key に集める
+        for r in c.all_rects():
+            targets.append((c.field_id, r))
     for c in cells:
         if c.fallback_rect is not None:
             targets.append((c.field_id + _FB, c.fallback_rect))

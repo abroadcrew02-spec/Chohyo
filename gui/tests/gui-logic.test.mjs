@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -325,6 +325,30 @@ test("overlap: 参照先（part）は主と別の候補として区別される"
   const fb = { type: "field", uid: "f1", part: "fallback" };
   assert.deepEqual(nextOverlapPick([main, fb], main), fb);
   assert.deepEqual(nextOverlapPick([main, fb], fb), main);
+});
+
+// --- 欄の結合（L字化）------------------------------------------------------
+test("absorb: B の全領域が A の追加領域になる", () => {
+  const A = { uid: "a", field_id: "住所", kind: "text",
+              rect: { x: 0, y: 0, w: 100, h: 40 }, marks: [] };
+  const B = { uid: "b", field_id: "番地", kind: "text",
+              rect: { x: 0, y: 50, w: 60, h: 40 }, marks: [],
+              extras: [{ x: 70, y: 50, w: 30, h: 40 }] };
+  const m = absorbField(A, B);
+  assert.equal(typeof m, "object");
+  assert.deepEqual(m.extras, [B.rect, ...B.extras]);
+  assert.equal(m.field_id, "住所");   // 名前は取り込む側が残る
+});
+
+test("absorb: 選択式・自分自身・参照先つきは結合できない", () => {
+  const T = (o) => ({ uid: "x", field_id: "x", kind: "text",
+                      rect: { x: 0, y: 0, w: 10, h: 10 }, marks: [], ...o });
+  assert.equal(typeof absorbField(T({}), T({})), "string");                  // 同一 uid
+  assert.equal(typeof absorbField(T({ uid: "a" }), T({ uid: "b", kind: "choice" })), "string");
+  assert.equal(typeof absorbField(T({ uid: "a", kind: "choice" }), T({ uid: "b" })), "string");
+  assert.equal(typeof absorbField(
+    T({ uid: "a" }),
+    T({ uid: "b", fallback: { x: 90, y: 0, w: 5, h: 5 } })), "string");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

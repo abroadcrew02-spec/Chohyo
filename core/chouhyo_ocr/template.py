@@ -56,6 +56,15 @@ class CellSpec:
     # 主にインクがあるが読めない（〓）場合は参照しない——答えは主に書かれて
     # いるのに別の場所の値を出すと誤転記になるため（転記主義・2026-08-31）
     fallback_rect: Rect | None = None
+    # 追加の領域（text の単独欄のみ・任意）。主の rect と**等価な**受け皿で、
+    # どの領域に入った文字も同じ欄に集まり読み順に連結される（L字・コの字の
+    # 欄を作る・2026-08-31）。fallback_rect と違い「主が空のとき」の条件は無い
+
+    extra_rects: tuple[Rect, ...] = ()
+
+    def all_rects(self) -> tuple[Rect, ...]:
+        """欄を構成する全領域（主＋追加）。参照先は含まない。"""
+        return (self.rect, *self.extra_rects)
 
     def output_columns(self) -> tuple[str, ...]:
         if self.subfields:
@@ -255,6 +264,11 @@ def load_template(path: str | Path) -> Template:
                     f"参照先（fallback_rect）は文字欄（text）のみ指定できる"
                     f"（{fld['field_id']} は {fld['kind']}）。丸印は帯スコアで"
                     "判定するため、別枠への参照は定義できない")
+            if fld.get("extra_rects") and fld["kind"] != "text":
+                raise TemplateError(
+                    f"追加の領域（extra_rects）は文字欄（text）のみ指定できる"
+                    f"（{fld['field_id']} は {fld['kind']}）。丸印の帯スコアは"
+                    "単一矩形が前提のため、複数領域にはできない")
             cells.append(
                 CellSpec(
                     field_id=fld["field_id"],
@@ -269,6 +283,8 @@ def load_template(path: str | Path) -> Template:
                                else None),
                     fallback_rect=(_rect(fld["fallback_rect"])
                                    if fld.get("fallback_rect") is not None else None),
+                    extra_rects=tuple(_rect(r)
+                                      for r in fld.get("extra_rects", ())),
                 )
             )
         for t in f.get("tables", []):
@@ -325,6 +341,8 @@ def load_template(path: str | Path) -> Template:
                                        for m in c.choice_marks]
         if c.fallback_rect is not None:
             targets.append(("参照先の枠", c.fallback_rect))
+        for r in c.extra_rects:
+            targets.append(("欄の追加領域", r))
         for label, r in targets:
             if r.x < 0 or r.y < 0 or r.x + r.w > fw or r.y + r.h > fh:
                 raise TemplateError(
@@ -391,16 +409,24 @@ def load_template(path: str | Path) -> Template:
                 and ra.y < rb.y + rb.h and rb.y < ra.y + ra.h)
 
     for c in cells:
-        if c.fallback_rect is not None and _overlap(c.rect, c.fallback_rect):
-            raise TemplateError(
-                f"参照先の枠が主の枠と重なっている（{c.field_id}）。"
-                "参照先は「主が空のときに読む別の場所」なので、離れた位置に置く")
+        if c.fallback_rect is None:
+            continue
+        # 参照先は「主（全領域）が空のときに読む別の場所」。どれかの領域と
+        # 重なると、その部分の文字は領域側に入って「空」判定が成立しなくなる
+        for r in c.all_rects():
+            if _overlap(r, c.fallback_rect):
+                raise TemplateError(
+                    f"参照先の枠が主の枠と重なっている（{c.field_id}）。"
+                    "参照先は「主が空のときに読む別の場所」なので、離れた位置に置く")
 
     by_face: dict[str, list] = {}
     for c in cells:
-        by_face.setdefault(c.face_id, []).append((c, c.rect, "欄"))
+        # 同じ欄の領域どうしの重なりは無害（同じ受け皿）なので検査しない
+        #（下のループが field_id 一致をスキップする）
+        for r in c.all_rects():
+            by_face.setdefault(c.face_id, []).append((c, r, "欄"))
         if c.fallback_rect is not None:
-            by_face[c.face_id].append((c, c.fallback_rect, "参照先の枠"))
+            by_face.setdefault(c.face_id, []).append((c, c.fallback_rect, "参照先の枠"))
     for fid, cs in by_face.items():
         for i, (a, ra, la) in enumerate(cs):
             for b, rb, lb in cs[i + 1:]:
@@ -408,13 +434,24 @@ def load_template(path: str | Path) -> Template:
                     continue  # 主と自分の参照先は上で検査済み
                 if _overlap(ra, rb):
                     # 主同士は従来の文言を保つ（#24 当時からのメッセージ）。
-                    # 参照先が絡むときだけ、どちらの枠かが分かる形にする
-                    what = ("欄の矩形が" if la == lb == "欄"
-                            else f"{a.field_id} の{la}と {b.field_id} の{lb}が")
+                    # 参照先が絡むときは「なぜダメか・どうすればよいか」まで言う
+                    # ——重なった場所の文字は主の欄が常に取るため、重なった
+                    # 参照先は設定しても1文字も受け取れない（ユーザー報告
+                    # 2026-08-31: 住所の上に郵便番号の参照先を置いて詰まった）
+                    if la == lb == "欄":
+                        raise TemplateError(
+                            f"欄の矩形が重なっている（{fid}: {a.field_id} と "
+                            f"{b.field_id}）。重なり部分の文字がどちらへ入るかが"
+                            "定義順で決まってしまうため、枠を分ける")
+                    fb_owner, other = (a, b) if la == "参照先の枠" else (b, a)
                     raise TemplateError(
-                        f"{what}重なっている（{fid}: {a.field_id} と "
-                        f"{b.field_id}）。重なり部分の文字がどちらへ入るかが"
-                        "定義順で決まってしまうため、枠を分ける")
+                        f"{fb_owner.field_id} の参照先の枠が {other.field_id} の欄と"
+                        f"重なっている（{fid}）。重なった場所の文字は欄の側"
+                        f"（{other.field_id}）に入り、参照先には届かないため、"
+                        "この参照先は機能しない。参照先はどの欄とも重ならない"
+                        "場所に置く。その記入位置が他の欄の中にしか無い場合は"
+                        "参照先では表現できない——読取値は元の欄に入るので、"
+                        "目視確認で移す運用にする")
 
     # 面の切り出し矩形が重なると、同じ記入が両面のセルへ割り付いて二重転記に
     # なる（issue #32）。エディタの「表裏の境界」の誤操作で作れてしまう
