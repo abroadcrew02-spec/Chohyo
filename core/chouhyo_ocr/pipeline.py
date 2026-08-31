@@ -241,6 +241,10 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     template, raw, geo_hash = _load(template_path)
     from .align import ALGO_VERSION, template_hash as _template_hash
     tpl_hash = _template_hash(raw)
+    # run_start（cli.py）の時点ではテンプレートを読んでおらずハッシュが
+    # 分からないため、算出できたここで別行に残す（issue #59 H-7:
+    # run_start がパスのみで、出力がどのテンプレート由来か事後特定できない）
+    log.info("template_loaded", template_hash=tpl_hash)
     store = Store(_store_path(cfg))
     store.record_run(time.strftime("%Y%m%d_%H%M%S"), json.dumps(cfg.__dict__))
 

@@ -33,6 +33,38 @@ fn check_args(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// `--template` を受け付けるサブコマンド（core/chouhyo_ocr/cli.py 準拠・issue #58）。
+/// ALLOWED_SUBCOMMANDS（webview から呼べるコマンドの白リスト）とは別物として
+/// 保つ——debug-images は --template を受けるが白リスト外のまま（GUI からは
+/// 呼べない・方針どおり）なので、ここに含めても inject_default_template まで
+/// 到達しない。
+const TEMPLATE_ACCEPTING_SUBCOMMANDS: &[&str] = &[
+    "run", "render", "remap", "verify", "expand-page", "debug-images",
+];
+
+/// サブコマンドが `--template` を受け付けるのに引数へ含まれていない場合、
+/// 出荷テンプレート（`<repo>/templates/chouhyo-v1.json`）を明示的に追記する
+/// （issue #58）。
+///
+/// 同梱 exe（core-dist/chouhyo-core/chouhyo-core.exe）優先起動時、frozen 側の
+/// `app_root()`（core/chouhyo_ocr/paths.py）は exe の親ディレクトリを指すため、
+/// `--template` 未指定だと CLI 既定値が core-dist 側の別実体テンプレートを
+/// 指してしまい、エディタが保存する `<repo>/templates/chouhyo-v1.json` への
+/// 変更が読み取りへ反映されない（テンプレート二重実体）。ここで常に明示指定
+/// することで、GUI からの起動はどのコアバイナリでも同じファイルを読む。
+fn inject_default_template(mut args: Vec<String>, root: &Path) -> Vec<String> {
+    let accepts = args
+        .first()
+        .map(|c| TEMPLATE_ACCEPTING_SUBCOMMANDS.contains(&c.as_str()))
+        .unwrap_or(false);
+    if accepts && !args.iter().any(|a| a == "--template") {
+        let tpl = root.join("templates").join("chouhyo-v1.json");
+        args.push("--template".to_string());
+        args.push(tpl.to_string_lossy().to_string());
+    }
+    args
+}
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
@@ -181,6 +213,7 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
                   args: Vec<String>) -> Result<i32, String> {
     check_args(&args)?;
     let root = repo_root(&app)?;
+    let args = inject_default_template(args, &root);
     let mut cmd = core_command(&root)?;
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
     // 2本目を断る（レビュー M-2）。以前は PID を上書きしていたため、2本目が
@@ -244,6 +277,7 @@ fn kill_core(state: State<'_, CoreProc>) -> Result<(), String> {
 async fn run_core_capture(app: AppHandle, args: Vec<String>) -> Result<String, String> {
     check_args(&args)?;
     let root = repo_root(&app)?;
+    let args = inject_default_template(args, &root);
     let mut cmd = core_command(&root)?;
     cmd.args(&args);
     let out = tauri::async_runtime::spawn_blocking(move || cmd.output())
@@ -388,7 +422,11 @@ fn read_file_b64(app: AppHandle, picked: State<'_, PickedPaths>,
 /// パスのみに締めたため、エディタ起動時の自動読み込みはこの専用コマンドで
 /// 行う（緩めると responses/ の記入値 JSON が読める穴が戻る）。run が既定で
 /// 使うテンプレートと同じファイルなので、エディタは「1から作る画面」でなく
-/// 「読み取りが実際に使っている欄を直す画面」として開ける。
+/// 「読み取りが実際に使っている欄を直す画面」として開ける——この一致は
+/// inject_default_template（issue #58）が保証している。同梱 exe 優先起動時は
+/// frozen 側の app_root() が core-dist 側の別実体を指すため、注入なしでは
+/// 「read_default_template はここ、run は別ファイル」という二重実体が
+/// 成立していた。
 #[tauri::command]
 fn read_default_template(app: AppHandle) -> Result<String, String> {
     let p = repo_root(&app)?.join("templates").join("chouhyo-v1.json");
@@ -521,5 +559,29 @@ mod tests {
         // 選ばれていない別ファイルは、同じフォルダでも通らない
         assert!(check_scope(&PathBuf::from("C:\\Users\\u\\Documents\\other.json"),
                             &["json"], &roots, &picked).is_err());
+    }
+
+    // --- テンプレート既定値の注入（issue #58）---
+    use super::inject_default_template;
+
+    #[test]
+    fn injects_template_for_accepting_subcommand_without_one() {
+        let root = PathBuf::from("C:\\app");
+        let out = inject_default_template(v(&["run", "--input", "x"]), &root);
+        assert_eq!(out, v(&["run", "--input", "x", "--template",
+                            "C:\\app\\templates\\chouhyo-v1.json"]));
+    }
+
+    #[test]
+    fn does_not_override_explicit_template_or_unrelated_subcommand() {
+        let root = PathBuf::from("C:\\app");
+        // 明示指定済みなら触らない
+        let explicit = v(&["render", "--template", "C:\\other\\t.json"]);
+        assert_eq!(inject_default_template(explicit.clone(), &root), explicit);
+        // --template を持たないサブコマンドはそのまま（status・detect-grid 等）
+        let status = v(&["status"]);
+        assert_eq!(inject_default_template(status.clone(), &root), status);
+        // 空引数は何もしない（check_args で先に弾かれる想定だが、単体では防御的に）
+        assert_eq!(inject_default_template(v(&[]), &root), v(&[]));
     }
 }

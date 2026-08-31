@@ -49,7 +49,10 @@ error.log
 # 追跡中の正当な .json だけを個別に戻す。
 # .json を新しく追加するときは、鍵でないことを確かめてからここへ1行足す。
 *.json
-!/templates/**/*.json
+# templates 直下のみ戻す（再帰させない）。エディタの保存既定が templates/
+# 直下のため、再帰で戻すと下書き・実験ファイルまで追跡対象になりうる
+# （issue #59 H-7）。下書きは templates/drafts/ に置けば無視される。
+!/templates/*.json
 !/schema/**/*.json
 !/design/canvas.json
 !/gui/package.json

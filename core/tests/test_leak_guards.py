@@ -34,6 +34,12 @@ def test_cli_top_level_handler_hides_exception_message(tmp_path):
     err_log = (tmp_path / "logs" / "error.log").read_text(encoding="utf-8")
     assert "unhandled_exception" in err_log
     assert "存在しない入力フォルダ" not in err_log
+    # run_start にテンプレート由来（パス・ハッシュ）が残る（issue #59 H-7）。
+    # 入力フォルダが無くて後段で失敗しても、テンプレート読み込みまでは進むため
+    # 両方のログ行は書かれる
+    app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "run_start" in app_log and "template_path=" in app_log
+    assert "template_loaded" in app_log and "template_hash=" in app_log
 
 
 def test_logging_whitelist_drops_value_key():
@@ -43,6 +49,16 @@ def test_logging_whitelist_drops_value_key():
     assert "page_id=p1" in line
     line2 = logging_safe._fmt("x", {"duplicate_of": "a.png"})
     assert "duplicate_of=a.png" in line2
+
+
+def test_logging_whitelist_allows_template_path_and_hash():
+    """テンプレート由来トレーサビリティのキーが白リストを通る（issue #59 H-7）。"""
+    line = logging_safe._fmt("run_start", {
+        "path": "in", "template_path": "C:\\t.json", "value": "テスト太郎"})
+    assert "template_path=C:\\t.json" in line
+    assert "テスト太郎" not in line
+    line2 = logging_safe._fmt("template_loaded", {"template_hash": "abc123"})
+    assert "template_hash=abc123" in line2
 
 
 def test_fixed_repr_redacts_values():

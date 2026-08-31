@@ -3,7 +3,11 @@ schema/templates/Poppler を同梱レイアウトへ複製する。
 
 出力: <repo>/core-dist/chouhyo-core/
   chouhyo-core.exe        コア CLI（GUI が優先して起動・§lib.rs core_command）
-  schema/  templates/     frozen 時の app_root() 解決先（paths.py）
+  schema/                 frozen 時の app_root() 解決先（paths.py）
+  templates/chouhyo-v1.json  出荷テンプレートのみ複製（issue #59 H-7）。
+                          templates/ ディレクトリ丸ごとの複製はエディタの
+                          下書き・実験ファイルまで配布物へ混入させるため、
+                          出荷テンプレート1ファイルへ絞る
   poppler/pdftoppm.exe 他 frozen 時の pdftoppm_path() 解決先（ingest.py）
 
 実行: .venv/Scripts/python.exe scripts/build_dist.py
@@ -40,11 +44,20 @@ def main() -> int:
         return r.returncode
 
     # 同梱リソース（frozen の app_root=exe ディレクトリに合わせる）
-    for name in ("schema", "templates"):
-        dst = APP / name
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(ROOT / name, dst)
+    dst = APP / "schema"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(ROOT / "schema", dst)
+
+    # templates/ は出荷テンプレート（chouhyo-v1.json）のみを複製する。
+    # ディレクトリ丸ごとの copytree だと、エディタの保存既定が templates/ 直下
+    # のため利用者の下書き・実験ファイルが同じ場所に溜まり、そのまま配布物へ
+    # 混入する（issue #59 H-7・実測: 未追跡の実験ファイル9件が複製されていた）
+    dst = APP / "templates"
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True)
+    shutil.copy2(ROOT / "templates" / "chouhyo-v1.json", dst / "chouhyo-v1.json")
 
     poppler_bins = sorted((ROOT / "vendor" / "poppler").glob("**/Library/bin"))
     if not poppler_bins:

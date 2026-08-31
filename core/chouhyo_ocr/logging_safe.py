@@ -12,6 +12,10 @@ from pathlib import Path
 _ALLOWED_KEYS = {
     "source_file", "page_no", "page_id", "field_id", "step", "error_code",
     "conf", "count", "duplicate_of", "path", "state", "status", "attempt",
+    # テンプレート由来の追跡用（issue #59 H-7）: パスとハッシュ値のみで
+    # 帳票の記入値は含まない。出力がどのテンプレート由来かを事後特定できる
+    # ようにする
+    "template_path", "template_hash",
 }
 
 _app: logging.Logger | None = None

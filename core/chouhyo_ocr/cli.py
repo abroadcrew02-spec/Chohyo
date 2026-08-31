@@ -38,7 +38,7 @@ def _client(cfg: Config, replay_dir: str | None):
 def cmd_run(args) -> int:
     cfg = load_config(args.config)
     log.init(cfg.log_dir)
-    log.info("run_start", path=args.input)
+    log.info("run_start", path=args.input, template_path=args.template)
     from .pipeline import run
     summary = run(args.input, args.template, cfg, _client(cfg, args.replay),
                   _progress,
