@@ -73,6 +73,19 @@ export function remapMarks(
   });
 }
 
+/// 重なった枠の循環選択。cands は前面→背面の順。現在の選択が候補に
+/// 含まれるときは**その次**（1つ下）を返し、末尾なら先頭へ戻る。
+/// 含まれなければ最前面。Ctrl+クリックで呼ばれる（クリックのたびに
+/// 1枚ずつ下へ潜り、最背面まで行ったら最前面へ戻る）。
+export function nextOverlapPick<T extends { type: string; uid: string; part?: string }>(
+  cands: T[], cur: { type: string; uid: string; part?: string } | null): T | null {
+  if (cands.length === 0) return null;
+  if (!cur) return cands[0];
+  const i = cands.findIndex((c) =>
+    c.type === cur.type && c.uid === cur.uid && c.part === cur.part);
+  return i < 0 ? cands[0] : cands[(i + 1) % cands.length];
+}
+
 /// リサイズハンドル。8方向（角4＋辺の中点4）。
 export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 
@@ -610,21 +623,27 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     return null;
   };
 
-  const hit = (p: { x: number; y: number }): Sel => {
+  // 点の下にある要素を**すべて**前面順で返す。先頭が従来の hit() と同じ
+  // 最前面。Ctrl+クリックの循環選択（下の要素を選ぶ）が全候補を必要とする
+  const hitAll = (p: { x: number; y: number }): NonNullable<Sel>[] => {
     const inR = (r: Rect) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
-    for (const f of fields) if (inR(f.rect)) return { type: "field", uid: f.uid };
+    const out: NonNullable<Sel>[] = [];
+    for (const f of fields) if (inR(f.rect)) out.push({ type: "field", uid: f.uid });
     for (const f of fields)
       if (f.fallback && inR(f.fallback))
-        return { type: "field", uid: f.uid, part: "fallback" };
-    for (const e of excls) if (inR(e.rect)) return { type: "excl", uid: e.uid };
+        out.push({ type: "field", uid: f.uid, part: "fallback" });
+    for (const e of excls) if (inR(e.rect)) out.push({ type: "excl", uid: e.uid });
     for (const t of tables) {
       const w = t.columns.length ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
       for (const b of t.blocks)
-        if (inR({ x: b.x, y: b.y, w, h: t.row_pitch * (b.rows - 1) + t.row_height }))
-          return { type: "table", uid: t.uid };
+        if (inR({ x: b.x, y: b.y, w, h: t.row_pitch * (b.rows - 1) + t.row_height })) {
+          out.push({ type: "table", uid: t.uid });
+          break;   // 同じ表の複数ブロックを重複候補にしない
+        }
     }
-    return null;
+    return out;
   };
+  const hit = (p: { x: number; y: number }): Sel => hitAll(p)[0] ?? null;
   const onDown = (e: React.MouseEvent) => {
     const p = toPage(e);
     if (e.button === 1 || e.altKey || spaceRef.current) {
@@ -648,7 +667,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         drag.current = { mode: `resize-${curHnd}`, start: p, orig: { ...cur } };
         return;
       }
-      const h = hit(p);
+      // Ctrl+クリック: 重なった枠を前面から順に1枚ずつ潜って選ぶ。
+      // 普通のクリックは従来どおり最前面（ドラッグ移動の起点を変えない）
+      const h = e.ctrlKey ? nextOverlapPick(hitAll(p), sel) : hit(p);
       setSel(h);
       if (h) {
         // setSel は非同期なので selRect()（閉包の sel）は前回選択を返す。
@@ -958,7 +979,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       <p className="note">ホイール: 拡大縮小 ／ Space・Alt・中ボタン＋ドラッグ: 画面移動<br />
         Ctrl+0: 全体表示 ／ Ctrl+1: 原寸 ／ Ctrl+「+」「-」: 拡大縮小<br />
         矢印キー: 選択した枠を1px移動（Shift で10px）／ Delete: 削除<br />
-        Ctrl+Z: 元に戻す ／ Ctrl+Y: やり直し ／ Esc: 選択解除</p></div>;
+        Ctrl+Z: 元に戻す ／ Ctrl+Y: やり直し ／ Esc: 選択解除<br />
+        Ctrl+クリック: 重なった枠を1枚ずつ下へ選択</p></div>;
     if (sel.type === "field") {
       const f = fields.find((x) => x.uid === sel.uid);
       if (!f) return null;

@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -304,6 +304,27 @@ test("resize: choice 欄は applyRectToField 経由でマークも追従する",
     assert.ok(m.rect.x >= next.x && m.rect.x + m.rect.w <= next.x + next.w);
     assert.ok(m.rect.y >= next.y && m.rect.y + m.rect.h <= next.y + next.h);
   }
+});
+
+// --- 重なった枠の循環選択（Ctrl+クリック）----------------------------------
+test("overlap: 未選択なら最前面・選択中なら1つ下・末尾から先頭へ循環", () => {
+  const a = { type: "field", uid: "a" };
+  const b = { type: "excl", uid: "b" };
+  const c = { type: "table", uid: "c" };
+  const list = [a, b, c];
+  assert.deepEqual(nextOverlapPick(list, null), a);
+  assert.deepEqual(nextOverlapPick(list, a), b);
+  assert.deepEqual(nextOverlapPick(list, b), c);
+  assert.deepEqual(nextOverlapPick(list, c), a);            // 循環
+  assert.deepEqual(nextOverlapPick(list, { type: "field", uid: "zzz" }), a);
+  assert.equal(nextOverlapPick([], a), null);
+});
+
+test("overlap: 参照先（part）は主と別の候補として区別される", () => {
+  const main = { type: "field", uid: "f1" };
+  const fb = { type: "field", uid: "f1", part: "fallback" };
+  assert.deepEqual(nextOverlapPick([main, fb], main), fb);
+  assert.deepEqual(nextOverlapPick([main, fb], fb), main);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
