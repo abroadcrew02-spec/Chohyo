@@ -147,6 +147,26 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       if (fill) { ctx.fillStyle = fill; ctx.fillRect(r.x, r.y, r.w, r.h); }
       ctx.strokeStyle = stroke; ctx.strokeRect(r.x, r.y, r.w, r.h);
     };
+    // ラベルは画面上で読める固定サイズ（約26px）で描くため、縮小すると
+    // 枠のほうが文字より小さくなる。あふれた文字が隣の枠に重なって
+    // 画面が読めなくなるので（ユーザー報告・2026-08-31）、幅に収まらない分は
+    // 「…」で詰め、1文字も収まらない・枠がラベルより背が低いときは描かない。
+    // 枠の色で種別は分かり、クリックすれば右パネルに名前が出る
+    const labelFont = `${26 * px}px sans-serif`;
+    const label = (text: string, x: number, y: number,
+                   maxW: number, maxH: number | null) => {
+      if (!text) return;
+      ctx.font = labelFont;
+      if (maxH !== null && maxH < 30 * px) return;   // 枠が文字より低い
+      let t = text;
+      if (ctx.measureText(t).width > maxW) {
+        while (t.length > 1 && ctx.measureText(t + "…").width > maxW)
+          t = t.slice(0, -1);
+        if (t.length <= 1) return;                    // 1文字も入らない
+        t += "…";
+      }
+      ctx.fillText(t, x, y);
+    };
     ctx.lineWidth = 2 * px;
     for (const e of excls)
       rect(e.rect, sel?.uid === e.uid ? "#ffd54a" : "#888",
@@ -154,8 +174,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     for (const f of fields) {
       rect(f.rect, sel?.uid === f.uid ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
       for (const m of f.marks) rect(m.rect, "#c586ff");
-      ctx.fillStyle = "#9fd8ff"; ctx.font = `${13 * px * 2}px sans-serif`;
-      ctx.fillText(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px);
+      ctx.fillStyle = "#9fd8ff";
+      label(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px,
+            f.rect.w - 8 * px, f.rect.h);
     }
     for (const t of tables) {
       const totalW = t.columns.length
@@ -184,7 +205,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       }
       if (t.blocks[0]) {
         ctx.fillStyle = "#7ce38b";
-        ctx.fillText(t.table_id, t.blocks[0].x, t.blocks[0].y - 8 * px);
+        // 表の上に出すラベルも表の実幅に収める。最低幅の緩衝を持たせると
+        // 縮小時にはみ出た文字が隣の枠へ重なる（欄ラベルと同じ扱いにする）
+        label(t.table_id, t.blocks[0].x, t.blocks[0].y - 8 * px,
+              totalW - 4 * px, null);
       }
     }
     if (pending) rect(pending, "#ff9f43");
