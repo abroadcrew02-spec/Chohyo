@@ -369,9 +369,10 @@ ${ev.hint}` : ""));
                 このまま実行するとすべてのページが展開失敗になります。
                 インストールし直してください。</div>)}
             {!verify.storage && (
-              <div>保存先がクラウド同期フォルダ（OneDrive・Dropbox など）や
+              <div>保存先がクラウド同期フォルダ（OneDrive・Dropbox・Box など）や
                 ネットワーク共有の下にあります。中間データには個人情報が含まれるため、
-                設定でローカルのフォルダへ変更してください。</div>)}
+                <b>この状態では読み取りを開始できません</b>。設定でローカルの
+                フォルダへ変更してください。</div>)}
           </div>
         )}
 
@@ -437,7 +438,8 @@ ${ev.hint}` : ""));
                 <button className="btn primary big" style={{ width: "fit-content" }}
                   onClick={start}
                   disabled={!inputDir || verify?.cred === "missing"
-                    || (!!verify && verify.budgetUsed >= verify.budgetCap)}>
+                    || (!!verify && verify.budgetUsed >= verify.budgetCap)
+                    || (!!verify && !verify.storage)}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="#ffffff">
                     <polygon points="6,4 20,12 6,20" /></svg>
                   読み取りを開始
