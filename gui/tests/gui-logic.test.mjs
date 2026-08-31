@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -267,6 +267,44 @@ test("#48-wiring: choice 以外は marks を触らない（同一参照）", () 
   assert.equal(applyRectToField(text, moved).marks, text.marks);
 });
 
+
+// --- リサイズハンドル（レビュー4巡目後のユーザー指摘対応）------------------
+const R = { x: 100, y: 200, w: 60, h: 40 };
+
+test("handle: 角と辺の8方向を検出し、遠い点は null", () => {
+  assert.equal(handleAt(R, { x: 100, y: 200 }, 6), "nw");
+  assert.equal(handleAt(R, { x: 160, y: 240 }, 6), "se");
+  assert.equal(handleAt(R, { x: 130, y: 200 }, 6), "n");
+  assert.equal(handleAt(R, { x: 100, y: 220 }, 6), "w");
+  assert.equal(handleAt(R, { x: 163, y: 243 }, 6), "se");  // 外側からも掴める
+  assert.equal(handleAt(R, { x: 130, y: 220 }, 6), null);  // 中央は移動
+});
+
+test("resize: se は伸ばし、nw は位置ごと動く", () => {
+  assert.deepEqual(resizeBy(R, "se", 10, 5), { x: 100, y: 200, w: 70, h: 45 });
+  assert.deepEqual(resizeBy(R, "nw", 10, 5), { x: 110, y: 205, w: 50, h: 35 });
+  assert.deepEqual(resizeBy(R, "e", -10, 999), { x: 100, y: 200, w: 50, h: 40 });
+  assert.deepEqual(resizeBy(R, "n", 999, 10), { x: 100, y: 210, w: 60, h: 30 });
+});
+
+test("resize: 反転させない（最小5pxで止まり w/h が負にならない）", () => {
+  const a = resizeBy(R, "se", -200, -200);
+  assert.deepEqual(a, { x: 100, y: 200, w: 5, h: 5 });
+  const b = resizeBy(R, "nw", 200, 200);
+  assert.equal(b.w, 5); assert.equal(b.h, 5);
+  assert.equal(b.x, R.x + R.w - 5, "左ハンドルは右端を固定して詰める");
+  assert.equal(b.y, R.y + R.h - 5);
+});
+
+test("resize: choice 欄は applyRectToField 経由でマークも追従する", () => {
+  const f = eraField();
+  const next = resizeBy(f.rect, "se", 40, 20);
+  const got = applyRectToField(f, next);
+  for (const m of got.marks) {
+    assert.ok(m.rect.x >= next.x && m.rect.x + m.rect.w <= next.x + next.w);
+    assert.ok(m.rect.y >= next.y && m.rect.y + m.rect.h <= next.y + next.h);
+  }
+});
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
 // 出す。これが無いと「実行された試験が0件」と判定されて FAIL になる

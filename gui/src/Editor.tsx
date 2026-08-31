@@ -73,6 +73,51 @@ export function remapMarks(
   });
 }
 
+/// リサイズハンドル。8方向（角4＋辺の中点4）。
+export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+
+const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+export function handlePoints(r: Rect): Record<Handle, { x: number; y: number }> {
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
+  return {
+    nw: { x: r.x, y: r.y }, n: { x: cx, y: r.y }, ne: { x: r.x + r.w, y: r.y },
+    e: { x: r.x + r.w, y: cy }, se: { x: r.x + r.w, y: r.y + r.h },
+    s: { x: cx, y: r.y + r.h }, sw: { x: r.x, y: r.y + r.h }, w: { x: r.x, y: cy },
+  };
+}
+
+/// 点 p が矩形のどのハンドル上にあるか（tol は掴み判定の半径・template 座標系）。
+export function handleAt(r: Rect, p: { x: number; y: number },
+                         tol: number): Handle | null {
+  const pts = handlePoints(r);
+  for (const h of HANDLES) {
+    const q = pts[h];
+    if (Math.abs(p.x - q.x) <= tol && Math.abs(p.y - q.y) <= tol) return h;
+  }
+  return null;
+}
+
+/// ハンドル方向に応じた矩形の変形。最小 5px で止め、左・上ハンドルは
+/// 位置も詰める（反転させない——反転を許すと w/h が負になり保存で壊れる）。
+export function resizeBy(orig: Rect, handle: Handle,
+                         dx: number, dy: number): Rect {
+  let { x, y, w, h } = orig;
+  if (handle.includes("e")) w = orig.w + dx;
+  if (handle.includes("s")) h = orig.h + dy;
+  if (handle.includes("w")) { x = orig.x + dx; w = orig.w - dx; }
+  if (handle.includes("n")) { y = orig.y + dy; h = orig.h - dy; }
+  if (w < 5) { if (handle.includes("w")) x = orig.x + orig.w - 5; w = 5; }
+  if (h < 5) { if (handle.includes("n")) y = orig.y + orig.h - 5; h = 5; }
+  return { x: Math.round(x), y: Math.round(y),
+           w: Math.round(w), h: Math.round(h) };
+}
+
+const HANDLE_CURSOR: Record<Handle, string> = {
+  nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+  n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+};
+
 /// 欄に新しい矩形を適用する（移動・リサイズの唯一の入口）。
 ///
 /// 選択肢マークも一緒に動かす（issue #48）。rect だけ差し替えると帯が旧位置に
@@ -110,6 +155,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
+  // ハンドルにホバーしたときのリサイズカーソル（"" = 既定）
+  const [hoverCursor, setHoverCursor] = useState("");
   const [genRows, setGenRows] = useState(5);
   const [genCols, setGenCols] = useState(4);
   const [genMode, setGenMode] = useState<"ruled" | "uniform">("ruled");
@@ -247,6 +294,29 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       }
     }
     if (pending) rect(pending, "#ff9f43");
+    // 選択中の矩形にリサイズハンドルを描く（画面上で常に同じ大きさ）。
+    // 掴み所が見えないと「リサイズできない」ように見える（ユーザー指摘）
+    {
+      const selR = (() => {
+        if (!sel) return null;
+        if (sel.type === "field") {
+          const f = fields.find((v) => v.uid === sel.uid);
+          return sel.part === "fallback" ? f?.fallback ?? null : f?.rect ?? null;
+        }
+        if (sel.type === "excl")
+          return excls.find((v) => v.uid === sel.uid)?.rect ?? null;
+        return null;
+      })();
+      if (selR) {
+        const hs = 8 * px;
+        ctx.fillStyle = "#ffd54a";
+        ctx.strokeStyle = "#1c1f26"; ctx.lineWidth = px;
+        for (const q of Object.values(handlePoints(selR))) {
+          ctx.fillRect(q.x - hs / 2, q.y - hs / 2, hs, hs);
+          ctx.strokeRect(q.x - hs / 2, q.y - hs / 2, hs, hs);
+        }
+      }
+    }
     ctx.restore();
   }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol]);
 
@@ -522,6 +592,24 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     const r = canvasRef.current!.getBoundingClientRect();
     return { x: (e.clientX - r.left - pan.x) / zoom, y: (e.clientY - r.top - pan.y) / zoom };
   };
+  // ハンドルの掴み半径。画面上で約12px だが、縮小時に 12/zoom が枠の寸法を
+  // 超えると「中央をクリックしても辺リサイズ」「右辺のつもりが角」になる。
+  // 枠の短辺の 1/3 でキャップして、ハンドル同士と内部（移動）を食わない
+  const grabTol = (r: Rect) =>
+    Math.min(12 / zoom, Math.max(4, Math.min(r.w, r.h) / 3));
+
+  // 選択中の矩形（field 主／field 参照先／excl）。table は格子定義のため対象外
+  const selectedRect = (): Rect | null => {
+    if (!sel) return null;
+    if (sel.type === "field") {
+      const f = fields.find((v) => v.uid === sel.uid);
+      return sel.part === "fallback" ? f?.fallback ?? null : f?.rect ?? null;
+    }
+    if (sel.type === "excl")
+      return excls.find((v) => v.uid === sel.uid)?.rect ?? null;
+    return null;
+  };
+
   const hit = (p: { x: number; y: number }): Sel => {
     const inR = (r: Rect) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
     for (const f of fields) if (inR(f.rect)) return { type: "field", uid: f.uid };
@@ -551,6 +639,15 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     if (tool === "split") { setSplitY(Math.round(p.y)); markDirty(true); return; }
     if (tool === "select") {
+      // 選択中の矩形のハンドルは最優先で掴む。ハンドルは矩形の外周に
+      // はみ出して表示されるため、hit()（矩形の内側判定）より先に見ないと
+      // 角・辺の外側からの掴みが「選択解除」に化ける
+      const cur = selectedRect();
+      const curHnd = cur ? handleAt(cur, p, grabTol(cur)) : null;
+      if (cur && curHnd) {
+        drag.current = { mode: `resize-${curHnd}`, start: p, orig: { ...cur } };
+        return;
+      }
       const h = hit(p);
       setSel(h);
       if (h) {
@@ -563,9 +660,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                 : h.type === "excl" ? excls.find((x) => x.uid === h.uid)?.rect ?? null
                 : null;
         if (r && h.type !== "table") {
-          const nearBR = Math.abs(p.x - (r.x + r.w)) < 12 / zoom &&
-                         Math.abs(p.y - (r.y + r.h)) < 12 / zoom;
-          drag.current = { mode: nearBR ? "resize" : "move", start: p, orig: { ...r } };
+          const hnd = handleAt(r, p, grabTol(r));
+          drag.current = hnd
+            ? { mode: `resize-${hnd}`, start: p, orig: { ...r } }
+            : { mode: "move", start: p, orig: { ...r } };
         } else if (h.type === "table") {
           const t = tables.find((x) => x.uid === h.uid)!;
           drag.current = { mode: "moveTable", start: p,
@@ -579,7 +677,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
 
   const onMove = (e: React.MouseEvent) => {
     const d = drag.current;
-    if (!d) return;
+    if (!d) {
+      // ドラッグ中でなければハンドルのホバー判定だけ行い、カーソルで
+      // 「ここを掴めばリサイズできる」を見せる（変化時のみ setState）
+      if (tool === "select") {
+        const cur = selectedRect();
+        const hnd = cur ? handleAt(cur, toPage(e), grabTol(cur)) : null;
+        const want = hnd ? HANDLE_CURSOR[hnd] : "";
+        if (want !== hoverCursor) setHoverCursor(want);
+      } else if (hoverCursor) setHoverCursor("");
+      return;
+    }
     const p = toPage(e);
     if (d.mode === "pan" && d.extra) {
       setPan({ x: d.extra.x + (e.clientX - d.start.x), y: d.extra.y + (e.clientY - d.start.y) });
@@ -594,9 +702,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     if (d.mode === "move" && d.orig) {
       const r = { ...d.orig, x: Math.round(d.orig.x + dx), y: Math.round(d.orig.y + dy) };
       applySelRect(r);
-    } else if (d.mode === "resize" && d.orig) {
-      applySelRect({ ...d.orig, w: Math.max(5, Math.round(d.orig.w + dx)),
-                     h: Math.max(5, Math.round(d.orig.h + dy)) });
+    } else if (d.mode.startsWith("resize-") && d.orig) {
+      applySelRect(resizeBy(d.orig, d.mode.slice(7) as Handle, dx, dy));
     } else if (d.mode === "moveTable" && d.extra) {
       const t = tables.find((x) => x.uid === sel.uid);
       if (t) {
@@ -1033,7 +1140,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
-          style={spaceHeld ? { cursor: "grab" } : undefined}
+          style={spaceHeld ? { cursor: "grab" }
+                 : hoverCursor ? { cursor: hoverCursor } : undefined}
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
           onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
         {panel()}
