@@ -113,7 +113,18 @@ export function carveField(f: Field, claim: Rect, minSize = 6): Field | null {
 }
 
 /// テンプレート全体の重なりを一括で解消する（保存時に使う）。
-/// 各欄の参照先・追加領域を「主張」として、他の文字欄を切り抜く。
+/// 各欄の主枠・参照先・追加領域を「主張」として、他の文字欄を切り抜く。
+/// 主枠も主張に含める（issue #59 H-3）——ドロップ時の autoCarve は主枠の
+/// 移動・リサイズでも切り抜きが働くのに、保存時の一括解消は参照先・追加領域
+/// しか見ておらず、矢印キー移動で作った主枠どうしの重なりが検証NGまで
+/// 解消されないまま残っていた。
+///
+/// 主張の矩形は欄ごとに**その時点の最新状態**から取り直す（issue #59 H-3・
+/// stale claim の根治）。以前は全欄の主張を最初に一括収集していたため、
+/// 先に処理された欄の切り抜きで別の欄の領域構成が総入れ替えになっても、
+/// 収集済みの「切り抜き前の旧領域」がそのまま主張として残り、もう存在しない
+/// 領域が無関係な第三の欄を削っていた。定義順で前の欄が主張優先という
+/// 現行方針は変えず、各欄を処理する直前に fs から取り直すことで対応する。
 /// 切り抜けないもの（選択式・完全に覆われた欄）は skipped に返し、
 /// 呼び出し側が警告する（保存自体は続け、コア検証が最終判定する）。
 export function resolveOverlaps(fields: Field[]): {
@@ -122,29 +133,87 @@ export function resolveOverlaps(fields: Field[]): {
   let fs = fields;
   const carved = new Set<string>();
   const skipped = new Set<string>();
-  const claims: { rect: Rect; owner: string }[] = [];
-  for (const f of fields) {
-    if (f.fallback) claims.push({ rect: f.fallback, owner: f.uid });
-    for (const ex of f.extras ?? []) claims.push({ rect: ex, owner: f.uid });
-  }
-  for (const c of claims) {
-    fs = fs.map((f) => {
-      if (f.uid === c.owner) return f;
-      const touches = [f.rect, ...(f.extras ?? [])]
-        .some((r) => _rectsTouch(r, c.rect));
-      if (!touches) return f;
-      if (f.kind !== "text") { skipped.add(f.field_id); return f; }
-      const next = carveField(f, c.rect);
-      if (!next) { skipped.add(f.field_id); return f; }
-      carved.add(f.field_id);
-      return next;
-    });
+  for (const owner of fields.map((f) => f.uid)) {
+    const cur = fs.find((f) => f.uid === owner);
+    if (!cur) continue;   // 結合等で既に消えている場合は主張しない
+    const claimRects = [cur.rect,
+      ...(cur.fallback ? [cur.fallback] : []), ...(cur.extras ?? [])];
+    for (const rect of claimRects) {
+      fs = fs.map((f) => {
+        if (f.uid === owner) return f;
+        const touches = [f.rect, ...(f.extras ?? [])]
+          .some((r) => _rectsTouch(r, rect));
+        if (!touches) return f;
+        if (f.kind !== "text") { skipped.add(f.field_id); return f; }
+        const next = carveField(f, rect);
+        if (!next) { skipped.add(f.field_id); return f; }
+        carved.add(f.field_id);
+        return next;
+      });
+    }
   }
   return { fields: fs, carved: [...carved], skipped: [...skipped] };
 }
 
 const _rectsTouch = (a: Rect, b: Rect) =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+/// 保存時、除外領域（Vision へ送らないマスク）が読み込み時点より減っていないか
+/// 判定する（issue #55・検知層）。減っていれば確認メッセージを返し、
+/// 減っていなければ null（確認不要）を返す。実際の confirm 呼び出しは
+/// 呼び出し側（saveTemplate）が行う——ここは純粋な判定のみ。
+export function exclusionRegressionNotice(
+  loadedCount: number, currentCount: number): string | null {
+  if (currentCount >= loadedCount) return null;
+  return `除外領域（Vision へ送らないマスク）が ${loadedCount}→${currentCount} `
+    + "に減っています。減らした覚えがなければキャンセルしてください。";
+}
+
+/// 読み込み時点の除外領域1件分のスナップショット（id → rect）。
+/// id は draw-excl で採番される時点で全面を通して一意（`excl_${n}` を
+/// 重複しないまで数え上げる）なので、面をまたいだタグ付けは不要。
+export type ExclSnapshot = { id: string; rect: Rect };
+
+/// 除外領域（Vision へ送らないマスク）が読み込み時点からどう変わったかを判定
+/// する（issue #55・#59 QA再判定条件④「数と座標」）。件数比較だけでは
+/// 「blackout が y1775→1640 へ135pxズレたが件数は変わらない」劣化を見逃す
+/// ため、①件数減少 ②同一idのrect変化（位置・サイズ） ③idの入れ替わり
+/// （削除+追加が同数）の順に検知する。いずれも無ければ null。
+export function exclusionChangeNotice(
+  loaded: ExclSnapshot[], current: ExclSnapshot[]): string | null {
+  // ① 件数減少は既存の強い文言をそのまま使う（優先度最高）
+  if (current.length < loaded.length)
+    return exclusionRegressionNotice(loaded.length, current.length);
+
+  // ② 同一 id で rect（位置・サイズ）が変わったもの
+  const curById = new Map(current.map((e) => [e.id, e.rect]));
+  const fmt = (r: Rect) => `${r.x},${r.y},${r.w},${r.h}`;
+  const changed = loaded
+    .map((l) => ({ id: l.id, from: l.rect, to: curById.get(l.id) }))
+    .filter((c): c is { id: string; from: Rect; to: Rect } =>
+      !!c.to && (c.to.x !== c.from.x || c.to.y !== c.from.y
+                 || c.to.w !== c.from.w || c.to.h !== c.from.h));
+  if (changed.length) {
+    const shown = changed.slice(0, 3)
+      .map((c) => `「${c.id}」の位置/サイズが変わっています（${fmt(c.from)} → ${fmt(c.to)}）`)
+      .join("、");
+    const more = changed.length > 3 ? `、ほか ${changed.length - 3} 件` : "";
+    return `除外領域${shown}${more}。`
+      + "マスクの位置がズレると隠すべき領域が Vision へ送信されます。意図した変更ですか？";
+  }
+
+  // ③ id の入れ替わり（削除と追加が同数＝件数は変わらないが構成が別物）
+  const loadedIds = new Set(loaded.map((e) => e.id));
+  const currentIds = new Set(current.map((e) => e.id));
+  const removed = loaded.filter((e) => !currentIds.has(e.id)).map((e) => e.id);
+  const added = current.filter((e) => !loadedIds.has(e.id)).map((e) => e.id);
+  if (removed.length && removed.length === added.length) {
+    return "除外領域の構成が入れ替わっています（削除: " + removed.join("、")
+      + " ／ 追加: " + added.join("、")
+      + "）。減らした・ズラした覚えがなければキャンセルしてください。";
+  }
+  return null;
+}
 
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
 /// 成功なら結合後の A を、できない場合は理由の文字列を返す。
@@ -262,6 +331,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [genCols, setGenCols] = useState(4);
   const [genMode, setGenMode] = useState<"ruled" | "uniform">("ruled");
   const [imgPath, setImgPath] = useState("");
+  // 現在読み込んでいるテンプレートの絶対パス（保存ダイアログの既定に使う・
+  // issue #56 T1-3）。起動時の自動読込では未確定（null）のままにし、
+  // 保存ダイアログ側で出荷テンプレートへフォールバックさせる
+  const [tplPath, setTplPath] = useState<string | null>(null);
+  // 読み込み時点の除外領域スナップショット（id→rect）。保存時にこれより
+  // 減っていないか・座標やサイズが変わっていないかを確認する
+  // （issue #55・#59 QA再判定条件④）。保存成功のたびに新しい基準へ更新する
+  const [loadedExcls, setLoadedExcls] = useState<ExclSnapshot[]>([]);
   // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
   const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
   // パネルで触っている列（canvas ハイライト用・レビュー D-3）
@@ -463,8 +540,16 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       //（run と同じ dpi＝テンプレート座標系と一致・issue #19）
       setMsg("PDF を展開しています…");
       try {
-        const out = await invoke<string>("run_core_capture",
-          { args: ["expand-page", "--input", p] });
+        // --no-mask: 除外領域を白塗りしない下地で返す（issue #59 H-8）。
+        // 従来は常に出荷テンプレの除外を焼いた画像が下地になり、除外枠の
+        // 位置調整・取捨の判断材料が画面から見えなかった。除外は既存の
+        // 枠オーバーレイ描画（draw 内の excls ループ）で見えているので、
+        // 下地側は焼かずに済む。--template は今読み込んでいるテンプレを
+        // 明示する（未読込＝tplPath が null のときは省略し、lib.rs の
+        // inject_default_template が出荷テンプレを注入する・第0段の配線）
+        const args = ["expand-page", "--input", p, "--no-mask"];
+        if (tplPath) args.push("--template", tplPath);
+        const out = await invoke<string>("run_core_capture", { args });
         const ev = out.split("\n")
           .map((l) => { try { return JSON.parse(l); } catch { return null; } })
           .find((e) => e && e.event === "expand_page");
@@ -549,6 +634,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                     marks: c.choice_marks ?? [] })) });
     }
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
+    setLoadedExcls(es.map((e) => ({ id: e.id, rect: e.rect })));
   };
 
   // 起動時に出荷テンプレート（run が既定で使う templates/chouhyo-v1.json）を
@@ -565,9 +651,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
         setMsg("出荷テンプレート（chouhyo-v1）を読み込みました。帳票を開いて位置を確認してください");
-      } catch {
-        // 配布物欠損・開発中の白紙スタートでは従来どおり空で始める
-        // （初期メッセージが「読み込んで開始」の案内を出す）
+      } catch (e) {
+        // 配布物欠損・開発中の白紙スタート。無言のままだと、この白紙が
+        // 正常な初期状態と区別できず、保存時に出荷テンプレートを上書きする
+        // 恐れがある（issue #56 T1-4）ため必ず可視化する
+        setErrMsg("出荷テンプレートを自動読み込みできませんでした。白紙から始めると、"
+          + `保存時に出荷テンプレートを上書きする恐れがあります: ${e}`);
       }
     })();
     // マウント時に1回だけ実行する（toEditorState は再生成されるが挙動は不変）
@@ -593,6 +682,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     toEditorState(parsed);
     resetHistory();   // 別テンプレートをまたぐ Undo は誤操作のもと
+    setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
     // 前のファイルの検証エラーを現在の状態と誤読させない（レビュー N-5）
     setErrMsg("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
@@ -641,9 +731,47 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     };
   };
 
+  // 確認ダイアログでキャンセルされたときの共通後始末。ファイルには一切
+  // 触れていない時点で呼ぶ（issue #56 T1・T3・#59 H-1・#55: 確認なしの
+  // 経路では上書きしない）
+  const abortSave = (why: string) => {
+    setMsg("");
+    setErrMsg(`保存を中止しました（${why}）`);
+  };
+
   const saveTemplate = async () => {
-    const p = await invoke<string | null>("pick_json", { save: true });
+    const p = await invoke<string | null>("pick_json",
+      { save: true, defaultPath: tplPath ?? undefined });
     if (!p) return;
+
+    // 保存先が出荷テンプレートなら、以降の処理へ進む前に即確認する
+    // （issue #56 T1-3）。保存の既定を「今読み込んでいるファイル」へ
+    // 変えた後も、出荷テンプレートを明示的に選んだ場合はここで止める
+    const isShipped = await invoke<boolean>("is_shipped_template_path", { path: p })
+      .catch(() => false);
+    if (isShipped && !window.confirm(
+        "出荷テンプレートを上書きします。読み取りに直ちに影響します。"
+        + "続行してよろしいですか？")) {
+      abortSave("出荷テンプレートの上書き確認でキャンセル");
+      return;
+    }
+
+    // 開いている画像の寸法がテンプレートと異なるまま保存すると、
+    // geometry_hash が変わり全ページが再送信（課金）対象になる
+    // （issue #59 H-1）。無言で上書きせず、寸法が変わるときだけ確認する。
+    // テンプレートにまだ image が無い（新規作成中）場合は比較対象が無いので
+    // 確認しない
+    if (meta.current.image && imgSize
+        && (meta.current.image.width !== imgSize.w
+            || meta.current.image.height !== imgSize.h)) {
+      const ok = window.confirm(
+        "開いている画像の寸法がテンプレートと異なります（"
+        + `${meta.current.image.width}×${meta.current.image.height} → `
+        + `${imgSize.w}×${imgSize.h}）。`
+        + "保存すると全ページが再送信（課金）の対象になります。続行してよろしいですか？");
+      if (!ok) { abortSave("画像寸法の確認でキャンセル"); return; }
+    }
+
     // 保存直前に重なりを一括解消する。ドロップ時の自動切り抜きは
     // 「置いた瞬間」にしか効かないため、開き直した下書きなど**以前から
     // 重なったままの状態**はここで拾う（ユーザー報告 2026-08-31）
@@ -659,33 +787,76 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       setErrMsg(`切り抜けない欄があります: ${resolved.skipped.join("、")}`
         + "（選択式・完全に覆われた欄は自動調整できません）");
     }
-    await invoke("write_text",
-      { path: p, content: JSON.stringify(buildTemplate(resolved.fields), null, 2) });
-    markDirty(false);
+
+    // 除外領域（Vision へ送らないマスク）が読み込み時点から劣化していないか
+    // 確認する（issue #55・#59 QA再判定条件④）。件数減少だけでなく、同一
+    // idの座標・サイズ変化（例: blackoutがy1775→1640へ135pxズレる）や
+    // idの入れ替わりも検知する。resolveOverlaps は excls を変更しないので、
+    // ここでの内容はカーブ前後で変わらない
+    const currentExclSnapshot: ExclSnapshot[] =
+      excls.map((e) => ({ id: e.id, rect: e.rect }));
+    const currentExclCount = currentExclSnapshot.length;
+    const exclNotice = exclusionChangeNotice(loadedExcls, currentExclSnapshot);
+    if (exclNotice && !window.confirm(exclNotice)) {
+      abortSave("除外領域の変化確認でキャンセル");
+      return;
+    }
+
+    const content = JSON.stringify(buildTemplate(resolved.fields), null, 2);
+
+    // トランザクショナルな保存: まず一時ファイルへ書き、コア検証が ok の
+    // ときだけ本番パスへ確定する。以前は検証より先にファイルを書き切って
+    // いたため、検証 NG でも出荷テンプレートが壊れたまま「保存しました」と
+    // 表示され、バックアップも巻き戻しも無かった（issue #56 T1）
+    let stagedPath: string;
+    try {
+      stagedPath = await invoke<string>("write_template_staged", { path: p, content });
+    } catch (e) {
+      setMsg("");
+      setErrMsg(`保存していません: 一時ファイルへの書き込みに失敗しました: ${e}`);
+      return;
+    }
+
     // 保存物をコアで検証（§8-14: エディタの JSON をコアがそのまま読めること）
     try {
       const out = await invoke<string>("run_core_capture",
-        { args: ["verify", "--template", p] });
+        { args: ["verify", "--template", stagedPath] });
       const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.check === "template");
       if (tpl?.ok) {
+        await invoke("promote_template", { path: p });
+        setTplPath(p);
+        setLoadedExcls(currentExclSnapshot);
+        markDirty(false);
         if (!resolved.skipped.length) setErrMsg("");
         // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
-        // 一目で分かるように・ユーザー指摘 2026-08-31）
+        // 一目で分かるように・ユーザー指摘 2026-08-31）。除外数は verify が
+        // 数えたもの（シオン担当・T4 追加予定）を優先し、無ければ保存物側の
+        // 数で代える
         const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
+        const exclCount = tpl.exclusions ?? currentExclCount;
         setMsg(carveNote + `保存＋コア検証 OK（`
           + (tpl.cells != null
              ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
                + (split ? `＋分割+${split}` : "") + `＋管理6`
              : `${tpl.columns} 列`)
           + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
+          + `・除外 ${exclCount}`
           + `）: ${p}`);
       } else {
-        // 検証 NG を成功と同じ灰色の小さい文字で出すと気づかれない（レビュー D-7）
-        setMsg(`保存先: ${p}`);
-        setErrMsg(`保存しましたが、コアの検証で問題が見つかりました: ${tpl?.error ?? "不明"}`);
+        // NG のときは元ファイルを無傷のまま保つ。検証NGを成功と同じ灰色の
+        // 小さい文字で出すと気づかれない（レビュー D-7）ため赤帯へ出し、
+        // 「保存していません」と明言する（issue #56 T1）
+        await invoke("discard_staged", { path: p }).catch(() => {});
+        setMsg("");
+        setErrMsg("保存していません: コアの検証で問題が見つかりました: "
+          + (tpl?.error ?? "不明"));
       }
-    } catch (e) { setMsg(""); setErrMsg(`保存しましたが、コアの検証で問題が見つかりました: ${e}`); }
+    } catch (e) {
+      await invoke("discard_staged", { path: p }).catch(() => {});
+      setMsg("");
+      setErrMsg(`保存していません: コアの検証に失敗しました: ${e}`);
+    }
   };
 
   // ---------- 枠候補の生成（detect-grid）----------

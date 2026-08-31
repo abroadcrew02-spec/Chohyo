@@ -100,9 +100,16 @@ def cmd_verify(args) -> int:
         # cells は物理的な欄の数。columns との差は「分割（1欄→複数列）＋管理6列」
         # で、編集画面がこの内訳を表示する（欄数と列数の対応を見えるようにする・
         # ユーザー指摘 2026-08-31）
+        # 除外領域（マスク）の個数も同列で出す（#55: 保存経路に保全機構が無く、
+        # 除外が編集中に静かに消えても検証がそれを検知していなかった）。件数・
+        # 座標そのものの妥当性検査ではなく、読み込めたテンプレの現在値を
+        # そのまま見える化するだけ——比較・拒否の判断は呼び出し側（編集画面）が行う
+        exclusions_by_face = {f.face_id: len(f.exclusions) for f in t.faces}
         _progress({"event": "verify", "check": "template", "ok": True,
                    "columns": len(cols), "cells": len(t.cells),
-                   "amount_cells": amount_cell_count(t)})
+                   "amount_cells": amount_cell_count(t),
+                   "exclusions": sum(exclusions_by_face.values()),
+                   "exclusions_by_face": exclusions_by_face})
     except Exception as e:
         ok = False
         _progress({"event": "verify", "check": "template", "ok": False, "error": str(e)})
@@ -192,7 +199,11 @@ def cmd_expand_page(args) -> int:
         template = load_template(args.template)
         with Image.open(page_path) as img:
             img.load()
-            _faces, composite = align_page(img, template)
+            # --no-mask: 除外領域を白塗りしない下地を返す（#59 H-8）。編集画面が
+            # 出荷テンプレの除外を焼いた画像しか下地に持てず、除外枠の位置調整・
+            # 取捨の判断材料が無かった問題への対応。run（送信経路）はこの引数に
+            # 到達しない——expand-page からしか呼ばれない分岐
+            _faces, composite = align_page(img, template, mask=not args.no_mask)
         # 名前は決め打ちで毎回上書き（同じ紙を開き直すたびに増やさない）。
         # expand() の stale 掃除は「<stem>-<数字>」の完全一致だけを消すため、
         # この名前が巻き添えになることはない
@@ -333,6 +344,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--page", type=int, default=1)
     p.add_argument("--dpi", type=int, default=300)
     p.add_argument("--template", default=default_tpl)
+    p.add_argument("--no-mask", action="store_true",
+                   help="除外領域を白塗りしない下地を返す（テンプレート編集画面が"
+                        "除外枠を調整する用途専用・#59 H-8）。run には無い")
     p.set_defaults(fn=cmd_expand_page)
 
     p = sub.add_parser("debug-images",

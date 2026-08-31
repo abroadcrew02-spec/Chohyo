@@ -318,17 +318,30 @@ fn pick_image(picked: State<'_, PickedPaths>) -> Option<String> {
 
 #[tauri::command]
 fn pick_json(app: AppHandle, picked: State<'_, PickedPaths>, save: bool,
-             remember_pick: Option<bool>) -> Option<String> {
-    let d = rfd::FileDialog::new().add_filter("テンプレート", &["json"]);
+             remember_pick: Option<bool>, default_path: Option<String>) -> Option<String> {
+    let mut d = rfd::FileDialog::new().add_filter("テンプレート", &["json"]);
     let p = if save {
-        // 保存の既定は出荷テンプレートの上書き。エディタは起動時に
-        // chouhyo-v1 を読み込むので、「直して保存」の着地点も同じ場所が自然。
-        // 上書き確認は OS の保存ダイアログが出す（別名保存もここで選べる）
-        let d = match repo_root(&app) {
-            Ok(root) => d.set_directory(root.join("templates")),
-            Err(_) => d,
-        };
-        d.set_file_name("chouhyo-v1.json").save_file()
+        // 保存の既定は「エディタが今読み込んでいるファイル」（default_path）。
+        // 指定が無い（起動時の自動読込のまま一度も別ファイルを開いていない）
+        // ときだけ出荷テンプレートへフォールバックする。以前は保存の既定が
+        // 常に出荷テンプレート固定だったため、別テンプレートを編集していても
+        // Enter 1回で出荷テンプレートを上書きしてしまう経路になっていた
+        // （issue #56 T1-3）。出荷テンプレへの保存だけは呼び出し側
+        // （is_shipped_template_path・Editor.tsx）でも明示確認を挟む
+        let dp = default_path.as_deref().map(Path::new)
+            .filter(|p| !p.as_os_str().is_empty());
+        if let Some(dp) = dp {
+            if let Some(dir) = dp.parent().filter(|p| !p.as_os_str().is_empty()) {
+                d = d.set_directory(dir);
+            }
+            if let Some(name) = dp.file_name() {
+                d = d.set_file_name(name.to_string_lossy().into_owned());
+            }
+        } else if let Ok(root) = repo_root(&app) {
+            d = d.set_directory(root.join("templates"));
+            d = d.set_file_name("chouhyo-v1.json");
+        }
+        d.save_file()
     } else { d.pick_file() }?;
     // 認証キーの取り込みは remember_pick=false で呼ぶ。白リストへ入れると
     // GCP サービスアカウント鍵（平文 JSON）がセッション中ずっと read_text で
@@ -460,6 +473,102 @@ fn write_text(picked: State<'_, PickedPaths>,
     std::fs::write(abs, content).map_err(|e| e.to_string())
 }
 
+/// staged 保存で使う一時ファイルのパス（`<path>.saving.json`）。
+/// 拡張子を差し替えるのではなく丸ごと追記する。コアの `--template` は
+/// 拡張子の形を検査しないため、".json" で終わってさえいれば読める。
+fn staged_path(target: &Path) -> PathBuf {
+    let mut s = target.as_os_str().to_os_string();
+    s.push(".saving.json");
+    PathBuf::from(s)
+}
+
+/// promote 時に既存ファイルを退避する先（`<path>.bak`）。
+fn backup_path(target: &Path) -> PathBuf {
+    let mut s = target.as_os_str().to_os_string();
+    s.push(".bak");
+    PathBuf::from(s)
+}
+
+/// write_template_staged / promote_template / discard_staged 共通の入力検証。
+/// write_text と同じ scope（picked パス由来の .json のみ）に限定する。
+fn validate_template_target(path: &str, picked: &HashSet<PathBuf>) -> Result<PathBuf, String> {
+    let abs = normalize_path(path)?;
+    check_scope(&abs, &["json"], &[], picked)?;
+    Ok(abs)
+}
+
+/// staged ファイルを本番パスへ確定する（issue #56 T1・保存経路のトランザクション化）。
+/// 既存ファイルがあれば `.bak` へ退避してから rename するため、検証 NG のまま
+/// 出荷テンプレートが上書きされることも、確定に失敗して両方消えることも無い。
+fn promote_staged(abs: &Path) -> Result<(), String> {
+    let staged = staged_path(abs);
+    if !staged.exists() {
+        return Err("一時保存ファイルが見つかりません（先に保存を実行してください）".into());
+    }
+    if abs.exists() {
+        let bak = backup_path(abs);
+        std::fs::rename(abs, &bak).map_err(|e| format!("バックアップの作成に失敗: {e}"))?;
+    }
+    std::fs::rename(&staged, abs).map_err(|e| format!("保存の確定に失敗: {e}"))
+}
+
+/// staged ファイルを破棄する（コア検証 NG 時の掃除）。既に無ければ成功扱い（冪等）。
+fn discard_staged_file(abs: &Path) -> Result<(), String> {
+    let staged = staged_path(abs);
+    match std::fs::remove_file(&staged) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// abs が出荷テンプレート（`<repo>/templates/chouhyo-v1.json`）と同一ファイルか。
+/// 保存先が出荷テンプレのときだけ上書き前に明示確認を挟むための判定（issue #56 T1-3）。
+fn is_shipped_template(root: &Path, abs: &Path) -> bool {
+    let shipped = root.join("templates").join("chouhyo-v1.json");
+    match (shipped.canonicalize(), abs.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        // 保存先が未作成（新規保存）だと canonicalize できないので、
+        // 正規化済みパスどうしの単純比較にフォールバックする
+        _ => shipped == abs,
+    }
+}
+
+/// テンプレート JSON を一時ファイル（`<path>.saving.json`）へ書き出す。
+/// 検証（verify）が通ってから promote_template で本番パスへ確定する二段構えに
+/// することで、検証 NG のまま出荷テンプレートが上書きされる事故を防ぐ
+/// （issue #56 T1）。
+#[tauri::command]
+fn write_template_staged(picked: State<'_, PickedPaths>,
+                         path: String, content: String) -> Result<String, String> {
+    let abs = validate_template_target(&path, &picked.0.lock().unwrap())?;
+    let staged = staged_path(&abs);
+    std::fs::write(&staged, content).map_err(|e| e.to_string())?;
+    Ok(staged.to_string_lossy().to_string())
+}
+
+/// staged ファイルをコア検証 OK の後に本番パスへ確定する。
+#[tauri::command]
+fn promote_template(picked: State<'_, PickedPaths>, path: String) -> Result<(), String> {
+    let abs = validate_template_target(&path, &picked.0.lock().unwrap())?;
+    promote_staged(&abs)
+}
+
+/// staged ファイルを破棄する（コア検証 NG のとき、元ファイルを無傷のまま保つ）。
+#[tauri::command]
+fn discard_staged(picked: State<'_, PickedPaths>, path: String) -> Result<(), String> {
+    let abs = validate_template_target(&path, &picked.0.lock().unwrap())?;
+    discard_staged_file(&abs)
+}
+
+/// path が出荷テンプレートかどうかを返す（保存前の上書き確認を出すかの判定用）。
+#[tauri::command]
+fn is_shipped_template_path(app: AppHandle, path: String) -> Result<bool, String> {
+    let root = repo_root(&app)?;
+    let abs = normalize_path(&path)?;
+    Ok(is_shipped_template(&root, &abs))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -481,7 +590,11 @@ pub fn run() {
             write_config,
             read_file_b64,
             read_text,
-            write_text
+            write_text,
+            write_template_staged,
+            promote_template,
+            discard_staged,
+            is_shipped_template_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -583,5 +696,114 @@ mod tests {
         assert_eq!(inject_default_template(status.clone(), &root), status);
         // 空引数は何もしない（check_args で先に弾かれる想定だが、単体では防御的に）
         assert_eq!(inject_default_template(v(&[]), &root), v(&[]));
+    }
+
+    // --- staged 保存（issue #56 T1・保存経路のトランザクション化）---
+    use super::{backup_path, discard_staged_file, is_shipped_template, promote_staged,
+                staged_path, validate_template_target};
+
+    #[test]
+    fn staged_and_backup_paths_append_suffix() {
+        let p = PathBuf::from("C:\\app\\templates\\chouhyo-v1.json");
+        assert_eq!(staged_path(&p),
+                   PathBuf::from("C:\\app\\templates\\chouhyo-v1.json.saving.json"));
+        assert_eq!(backup_path(&p),
+                   PathBuf::from("C:\\app\\templates\\chouhyo-v1.json.bak"));
+    }
+
+    #[test]
+    fn validate_template_target_requires_picked_json() {
+        let mut picked = HashSet::new();
+        let p = std::env::temp_dir().join("chouhyo_validate_test.json");
+        assert!(validate_template_target(&p.to_string_lossy(), &picked).is_err(),
+                "picked に無いパスは拒否されるべき");
+        picked.insert(normalize_path(&p.to_string_lossy()).unwrap());
+        assert!(validate_template_target(&p.to_string_lossy(), &picked).is_ok());
+
+        // 拡張子が json 以外なら picked に入っていても拒否される
+        let bad = p.with_extension("txt");
+        picked.insert(normalize_path(&bad.to_string_lossy()).unwrap());
+        assert!(validate_template_target(&bad.to_string_lossy(), &picked).is_err(),
+                "json 以外の拡張子は拒否されるべき");
+    }
+
+    #[test]
+    fn promote_staged_backs_up_existing_target_and_renames() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_promote_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("t.json");
+        let staged = staged_path(&target);
+        let bak = backup_path(&target);
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(&staged, "new").unwrap();
+
+        promote_staged(&target).expect("promote は成功するはず");
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "old",
+                   "既存ファイルは .bak へ退避されるはず");
+        assert!(!staged.exists(), "staged ファイルは rename で消えているはず");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn promote_staged_without_existing_target_skips_backup() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_promote_new_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("t.json");
+        let bak = backup_path(&target);
+        std::fs::write(&staged_path(&target), "new").unwrap();
+
+        promote_staged(&target).expect("promote は成功するはず");
+
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+        assert!(!bak.exists(), "初回保存（対象が未作成）ではバックアップを作らない");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn promote_staged_errors_without_staged_file_and_leaves_target_untouched() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_promote_missing_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("t.json");
+        std::fs::write(&target, "old").unwrap();
+
+        assert!(promote_staged(&target).is_err(),
+                "staged ファイルが無いのに確定できてはいけない");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "old",
+                   "失敗時は元ファイルを無傷に保つ（検証NGでファイルが壊れる事故の再発防止）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discard_staged_file_is_idempotent() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_discard_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("t.json");
+        let staged = staged_path(&target);
+        std::fs::write(&staged, "throwaway").unwrap();
+
+        discard_staged_file(&target).expect("discard は成功するはず");
+        assert!(!staged.exists());
+        // 既に無い状態で呼んでも失敗しない（verify NG 経路からの二重掃除を許す）
+        discard_staged_file(&target).expect("discard は冪等であるべき");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn is_shipped_template_matches_only_repo_templates_path() {
+        let root = PathBuf::from("C:\\app");
+        let shipped = PathBuf::from("C:\\app\\templates\\chouhyo-v1.json");
+        let other = PathBuf::from("C:\\app\\templates\\my-draft.json");
+        assert!(is_shipped_template(&root, &shipped));
+        assert!(!is_shipped_template(&root, &other));
     }
 }

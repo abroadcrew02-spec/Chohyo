@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -419,6 +419,108 @@ test("resolve: 選択式は切り抜けず skipped に載る・重なりなし�
   const clean = resolveOverlaps([owner]);
   assert.deepEqual(clean.carved, []);
   assert.equal(clean.fields[0], owner);
+});
+
+// ---------------------------------------------------------------- issue #59 H-3
+// resolveOverlaps: 主枠も主張になる・主張は逐次カーブ後の最新状態から取り直す
+test("resolve-H3-①: 主枠どうしの重なりも autoCarve と同様に解消される", () => {
+  // 矢印キーでの移動は autoCarve を通らないため、以前は保存時の一括解消
+  // （参照先・追加領域のみが主張）でも重なりが残ったままコア検証まで
+  // 落ちていた（issue #59 H-3 前段）。主枠自体を主張に含めることで
+  // ドロップ時と同じ解消力にする
+  const A = { uid: "a", field_id: "A", kind: "text",
+              rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [] };
+  const B = { uid: "b", field_id: "B", kind: "text",
+              rect: { x: 60, y: 0, w: 100, h: 40 }, marks: [] };
+  const r = resolveOverlaps([A, B]);
+  assert.deepEqual(r.carved, ["B"], "A の主枠の主張で B が切り抜かれるはず");
+  assert.deepEqual(r.skipped, []);
+  const a2 = r.fields.find((f) => f.uid === "a");
+  const b2 = r.fields.find((f) => f.uid === "b");
+  assert.deepEqual(a2.rect, A.rect, "主張した側（先に定義した A）は無傷");
+  assert.deepEqual(b2.rect, { x: 80, y: 0, w: 80, h: 40 },
+    "B は A の主枠に食われた分だけ右へ詰まるはず");
+});
+
+test("resolve-H3-②: 消えた旧領域が無関係な第三の欄を削らない（stale claim 根治）", () => {
+  // X の参照先(fallback)が B の主枠を丸ごと切り抜き、B の領域構成が
+  // 総入れ替えになる（主枠が消え、元は無かった extras 由来の領域が新しい
+  // 主枠になる）。その結果 B の主張は post-carve の新しい形（原点付近の
+  // 小さな矩形）だけになり、B の「切り抜き前の旧主枠」が指していた場所
+  // （x:98〜118）にある無関係な第三の欄 C は、もう誰の主張にも触れない
+  // はず。claims を最初に一括収集する実装（fix 前）だと、B の旧主枠
+  // {x:0,y:0,w:100,h:40} がそのまま主張として残り、C を誤って削ってしまう
+  const X = { uid: "x", field_id: "X", kind: "text",
+              rect: { x: 500, y: 500, w: 10, h: 10 }, marks: [],
+              fallback: { x: 20, y: -10, w: 78, h: 60 } };
+  const B = { uid: "b", field_id: "B", kind: "text",
+              rect: { x: 0, y: 0, w: 100, h: 40 }, marks: [] };
+  const C = { uid: "c", field_id: "C", kind: "text",
+              rect: { x: 98, y: 0, w: 20, h: 40 }, marks: [] };
+  const r = resolveOverlaps([X, B, C]);
+  assert.deepEqual(r.carved, ["B"], "C は削られてはいけない（stale claim なら誤って carved に入る）");
+  assert.deepEqual(r.skipped, []);
+  const c2 = r.fields.find((f) => f.uid === "c");
+  assert.deepEqual(c2.rect, C.rect, "C は無傷のはず（X の参照先の実際の範囲には触れていない）");
+  const b2 = r.fields.find((f) => f.uid === "b");
+  assert.deepEqual(b2.rect, { x: 0, y: 0, w: 20, h: 40 });
+  assert.deepEqual(b2.extras ?? [], []);
+});
+
+// ---------------------------------------------------------------- issue #55
+test("exclusionRegressionNotice: 除外数が減っていれば確認文言・減っていなければ null", () => {
+  assert.equal(exclusionRegressionNotice(7, 7), null, "同数は確認不要");
+  assert.equal(exclusionRegressionNotice(3, 5), null, "増える分には確認不要");
+  const notice = exclusionRegressionNotice(7, 3);
+  assert.ok(notice, "減っていれば null 以外を返すはず");
+  assert.ok(notice.includes("7") && notice.includes("3"), notice);
+  assert.ok(notice.includes("除外領域"), notice);
+});
+
+// issue #59 QA再判定条件④: 「数」だけでなく「座標」の変化も検知する
+test("exclusionChangeNotice: 135pxズレ（blackout実測相当）を件数不変のまま検知する", () => {
+  // 実測: templates/chouhyo-v1.json（出荷版）の blackout は y=1775 だが、
+  // エディタ保存の劣化版9件は y=1640（w/h は 475×105 のまま）だった
+  const loaded = [{ id: "blackout", rect: { x: 1955, y: 1775, w: 475, h: 105 } }];
+  const current = [{ id: "blackout", rect: { x: 1955, y: 1640, w: 475, h: 105 } }];
+  const notice = exclusionChangeNotice(loaded, current);
+  assert.ok(notice, "座標が変わっているのに null が返っている（件数比較だけでは検知できない）");
+  assert.ok(notice.includes("blackout"), notice);
+  assert.ok(notice.includes("1955,1775,475,105") && notice.includes("1955,1640,475,105"),
+    "変化前後の座標が文言に出ているはず: " + notice);
+  assert.ok(notice.includes("Vision"), notice);
+});
+
+test("exclusionChangeNotice: 件数・座標とも変化なしなら null", () => {
+  const a = [{ id: "postal_label_1", rect: { x: 0, y: 0, w: 10, h: 10 } },
+             { id: "tel_paren_l", rect: { x: 20, y: 0, w: 5, h: 5 } }];
+  const b = [{ id: "postal_label_1", rect: { x: 0, y: 0, w: 10, h: 10 } },
+             { id: "tel_paren_l", rect: { x: 20, y: 0, w: 5, h: 5 } }];
+  assert.equal(exclusionChangeNotice(a, b), null);
+});
+
+test("exclusionChangeNotice: 件数減少は exclusionRegressionNotice と同じ強い文言に一本化される", () => {
+  const loaded = [{ id: "x", rect: { x: 0, y: 0, w: 1, h: 1 } },
+                  { id: "y", rect: { x: 0, y: 0, w: 1, h: 1 } }];
+  const current = [{ id: "x", rect: { x: 0, y: 0, w: 1, h: 1 } }];
+  assert.equal(exclusionChangeNotice(loaded, current), exclusionRegressionNotice(2, 1));
+});
+
+test("exclusionChangeNotice: idの入れ替わり（削除+追加が同数）も確認対象", () => {
+  const loaded = [{ id: "old_mask", rect: { x: 0, y: 0, w: 10, h: 10 } }];
+  const current = [{ id: "new_mask", rect: { x: 50, y: 50, w: 10, h: 10 } }];
+  const notice = exclusionChangeNotice(loaded, current);
+  assert.ok(notice, "idが入れ替わっているのに null が返っている");
+  assert.ok(notice.includes("old_mask") && notice.includes("new_mask"), notice);
+});
+
+test("exclusionChangeNotice: 4件以上の座標変化は「ほかN件」に集約する", () => {
+  const loaded = Array.from({ length: 5 }, (_, i) =>
+    ({ id: `e${i}`, rect: { x: 0, y: 0, w: 10, h: 10 } }));
+  const current = loaded.map((e) => ({ id: e.id, rect: { ...e.rect, x: e.rect.x + 5 } }));
+  const notice = exclusionChangeNotice(loaded, current);
+  assert.ok(notice.includes("ほか 2 件"),
+    "3件表示＋『ほか2件』の集約になっているはず: " + notice);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

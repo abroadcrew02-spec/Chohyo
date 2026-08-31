@@ -237,13 +237,20 @@ class AlignError(RuntimeError):
         self.code = code
 
 
-def align_page(page_img: "Image.Image", template: Template) -> tuple[list[AlignedFace], "Image.Image"]:
+def align_page(page_img: "Image.Image", template: Template,
+                mask: bool = True) -> tuple[list[AlignedFace], "Image.Image"]:
     """1ページ → 面ごとの位置合わせ結果と、送信用の再結合画像。
 
     手順（D-25）: 面を探索余白つきで切り出し → 傾き推定・回転 → 罫線射影で
     平行移動を推定（常に補正・信用できなければ位置合わせ失敗）→ 補正済みの
     窓を取り出し → 本マスク。面が1つでも失敗ならページ全体を失敗にする
     （半分だけ正しい行を正常顔で出さない）。
+
+    mask: 除外領域を白塗りするか（既定 True）。要件 §5.2 の送信マスクの
+    契約はこの既定に依存しており、run（pipeline.py）は常に既定のまま
+    呼び出す＝この引数を渡さない。False は expand-page の --no-mask
+    専用（#59 H-8）で、編集画面が除外枠の位置調整・取捨を判断するための
+    下地表示にのみ使う。run からは到達できない。
     """
     W, H = template.image_size
     page = page_img.convert("RGB").resize((W, H))
@@ -285,12 +292,15 @@ def align_page(page_img: "Image.Image", template: Template) -> tuple[list[Aligne
         binary_fine = binarize_face(gray, face)
 
         # 送信画像は除外領域（綴じ穴帯・黒塗り・印字ラベル等）を白塗りする
-        # （要件 §5.2 のマスク。Vision へ除外領域の内容を送らない）
+        # （要件 §5.2 のマスク。Vision へ除外領域の内容を送らない）。
+        # mask=False（expand-page --no-mask 専用）のときは白塗りを適用しない
+        # ——送信には使われない下地専用の分岐で、run はここへ来ない
         masked = crop.copy()
-        from PIL import ImageDraw
-        drw = ImageDraw.Draw(masked)
-        for ex in face.exclusions:
-            drw.rectangle((ex.x, ex.y, ex.x + ex.w - 1, ex.y + ex.h - 1), fill="white")
+        if mask:
+            from PIL import ImageDraw
+            drw = ImageDraw.Draw(masked)
+            for ex in face.exclusions:
+                drw.rectangle((ex.x, ex.y, ex.x + ex.w - 1, ex.y + ex.h - 1), fill="white")
         faces.append(AlignedFace(face.face_id, masked, binary_fine, angle,
                                  dx=est.dx, dy=est.dy, shift_matched=est.matched))
         composite.paste(masked, (r.x, r.y))
