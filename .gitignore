@@ -61,6 +61,11 @@ error.log
 !/gui/tsconfig.node.json
 !/gui/src-tauri/tauri.conf.json
 !/gui/src-tauri/capabilities/*.json
+# 保存のトランザクション化（issue #56 T1）で生じる作業ファイル。.saving.json
+# は templates/ 直下だと *.json → !/templates/*.json の再包含に巻き込まれて
+# 追跡対象になっていた（実測: NOT IGNORED・マリン最終レビュー M-5）
+*.saving.json
+*.bak
 *.key
 *.pem
 .env

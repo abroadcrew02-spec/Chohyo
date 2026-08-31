@@ -658,7 +658,12 @@ def _render_locked(template_path: str | Path, cfg: Config,
             rows.append(build_failure_row(template, p))
     ts = timestamp or time.strftime("%Y%m%d_%H%M%S")
     try:
-        xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows)
+        # unclear_char_level を write_xlsx の COUNTIF・条件付き書式ゲートまで
+        # 貫通させる（QA 再判定・T-16 ブロッカーの解消・2026-08-31）。渡し
+        # 忘れると常に既定 False（完全一致）扱いになり、cfg.unclear_char_level
+        # を ON にしても xlsx 側の「含む」化だけが有効化されない
+        xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows,
+                                          unclear_char_level=cfg.unclear_char_level)
     except Exception:
         store.close()   # 出力に失敗しても接続を残さない（レビュー L-6）
         raise

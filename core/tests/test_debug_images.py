@@ -46,7 +46,7 @@ def test_writes_one_png_per_page(worked, tmp_path):
     store = Store(wd / "intermediate.sqlite")
     try:
         made = write_debug_images(store, load_template(TPL), wd / "aligned",
-                                  out, cfg.unclear_threshold)
+                                  out, cfg)
     finally:
         store.close()
     assert len(made) == 1
@@ -70,7 +70,7 @@ def test_page_filter(worked, tmp_path):
     store = Store(wd / "intermediate.sqlite")
     try:
         none = write_debug_images(store, load_template(TPL), wd / "aligned",
-                                  tmp_path / "dbg2", cfg.unclear_threshold,
+                                  tmp_path / "dbg2", cfg,
                                   page_ids=["存在しないID"])
     finally:
         store.close()
@@ -99,7 +99,10 @@ def test_out_rejects_cloud_synced_path(worked, tmp_path):
     synced_out = tmp_path / "OneDrive" / "debug"
     r = cli.main(["--config", str(cfg_path), "debug-images",
                   "--template", str(TPL), "--out", str(synced_out)])
-    assert r == 1
+    # 業務的な拒否は exit 0（レビュー差し戻し M-3）。main() の規約コメント
+    # （:443-450）・同一コマンド内の page_not_found/no_pages/
+    # OperationRefused（いずれも 0）と揃える
+    assert r == 0
     assert not synced_out.exists(), "拒否されたのに出力先が作られている"
 
 
@@ -185,6 +188,62 @@ def test_debug_images_no_aligned_images_reports_reason(worked, tmp_path, capsys)
     events = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.strip()]
     ev = next(e for e in events if e.get("event") == "debug_images")
     assert ev["ok"] is False and ev["reason"] == "no_aligned_images" and ev["count"] == 0
+
+
+# ---------- M-1（レビュー差し戻し）: unclear_char_level が debug-images まで届く ----------
+
+def test_write_debug_images_accepts_config_and_reflects_char_level(worked, tmp_path):
+    """cli.py が cfg.unclear_threshold（スカラー）だけを渡していたため、
+    debug_images 内で Config を組み直すと unclear_char_level が常に既定
+    False に落ちていた。cfg 本体を渡す経路になったことを型で確認し、
+    ON 時に xlsx の一部〓判定と debug 側の〓シェーディング判定が一致する
+    （どちらも conf<閾値をゲートに使うため、ON/OFF に関わらず「この欄は
+    〓を含むか」の真偽は揃う）ことを実データで固定する。
+    """
+    import dataclasses
+    from pathlib import Path
+
+    from chouhyo_ocr.debug_images import write_debug_images
+    from chouhyo_ocr.pipeline import render
+    from chouhyo_ocr.render_rows import unclear_reason
+    from chouhyo_ocr.store import Store
+
+    cfg, _ = worked
+    cfg_on = dataclasses.replace(cfg, unclear_threshold=0.85, unclear_char_level=True)
+    wd = Path(cfg_on.workdir)
+
+    # xlsx 側の事実: family_01_氏名 は一部〓（"上〓諒" 等）、detail_01_品目 は
+    # 高信頼のクリーンな値（既存テストで確認済みの実データの性質）
+    from openpyxl import load_workbook
+    xlsx, _csv, _rows = render(TPL, cfg_on, timestamp="dbg_align")
+    wb = load_workbook(xlsx)
+    ws = wb["output"]
+    header = [c.value for c in ws[1]]
+    data = [c.value for c in ws[2]]
+    name_val = data[header.index("family_01_氏名")]
+    detail_val = data[header.index("detail_01_品目")]
+    assert "〓" in name_val and name_val != "〓"  # 一部〓であることの前提確認
+    assert "〓" not in str(detail_val)             # クリーンな値であることの前提確認
+
+    # debug-images 側: cfg（Config 本体）を渡してもエラーにならない（M-1 の型修正）
+    out = tmp_path / "dbg_m1"
+    store = Store(wd / "intermediate.sqlite")
+    try:
+        made = write_debug_images(store, load_template(TPL), wd / "aligned", out, cfg_on)
+        assert made  # ON でもクラッシュせず生成される
+
+        # debug の〓シェーディング判定を直接再現する（unclear_reason は
+        # write_debug_images 内部が使うのと同じ関数・同じ cfg）
+        pid = store.pages()[0]["page_id"]
+        cells = store.cells(pid)
+        name_raw, name_conf, _k, _e = cells["family_01_氏名"]
+        detail_raw, detail_conf, _k2, _e2 = cells["detail_01_品目"]
+    finally:
+        store.close()
+    assert unclear_reason(name_raw, name_conf, cfg_on) is not None, \
+        "xlsxで一部〓の欄なのにdebug側が〓なしと判定した（ずれ）"
+    assert unclear_reason(detail_raw, detail_conf, cfg_on) is None, \
+        "xlsxでクリーンな欄なのにdebug側が〓ありと誤判定した（ずれ）"
 
 
 def test_field_origins_matches_assign_on_real_sample(worked, tmp_path):

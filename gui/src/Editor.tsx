@@ -331,6 +331,19 @@ export function saveDiffNote(loaded: CountSnapshot, current: CountSnapshot): {
   return { text, decreasedLabels };
 }
 
+/// promote（staged→本番パスへの確定）が失敗したときの表示文言（マリン最終
+/// レビュー H-1）。verify は既に OK を返している段階なので「保存していません」
+/// と言うと嘘になる——それどころか lib.rs の promote_staged は確定の rename
+/// が失敗すると .bak からの巻き戻しを試みるため、本番パスの状態は「無傷」
+/// 「巻き戻し済み」「巻き戻しにも失敗」のいずれかになりうる。その区別は
+/// lib.rs 側のエラー文言（rustError）にすでに入っているので素通りする。
+/// staged（<path>.saving.json）は promote_staged のどの失敗経路でも消えない
+/// （rename は失敗時に元を消さない）ため、その在り処だけは常に案内できる。
+export function promoteFailureNotice(path: string, rustError: string): string {
+  return `保存を確定できませんでした（${rustError}）。編集内容は ${path}.saving.json `
+    + "に残っています。保存をやり直すか、このファイルを手動で確認してください。";
+}
+
 /// 表の choice 列の marks（列に対する相対 x_offset/width）を、列の width が
 /// 変わったときに比率で追従させる（issue #60 M-8・#48 の単発欄向け
 /// remapMarks と同じ考え方）。x_offset（列の位置）は marks が列に対する
@@ -1033,70 +1046,108 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return;
     }
 
-    // 保存物をコアで検証（§8-14: エディタの JSON をコアがそのまま読めること）
+    // 保存物をコアで検証（§8-14: エディタの JSON をコアがそのまま読めること）。
+    // verify・promote・表示組み立てをそれぞれ別の try に分ける
+    // （マリン最終レビュー H-1）。以前は3つとも同じ try 内にあり、
+    // promote 成功後の表示組み立てで例外が起きても catch が discard_staged
+    // を呼んで「保存していません」と表示していた——verify は通り、
+    // 場合によっては promote も終わって本番パスへ確定済みなのに、
+    // 唯一の新内容（staged）まで消してしまう嘘の失敗報告になっていた
+    let tpl: any = null;
     try {
       const out = await invoke<string>("run_core_capture",
         { args: ["verify", "--template", stagedPath] });
-      const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.check === "template");
-      if (tpl?.ok) {
-        await invoke("promote_template", { path: p });
-        setTplPath(p);
-        setLoadedExcls(currentExclSnapshot);
-        markDirty(false);
-        if (!resolved.skipped.length) setErrMsg("");
-        // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
-        // 一目で分かるように・ユーザー指摘 2026-08-31）。除外数は verify が
-        // 数えたもの（シオン担当・T4 追加予定）を優先し、無ければ保存物側の
-        // 数で代える
-        const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
-        const exclCount = tpl.exclusions ?? currentExclCount;
-        // 読み込み時点との差分（issue #59 H-9・最後の検知網）。列数決め打ち
-        // 廃止の代替「見える化」に比較対象が無く、欄が減っても数字が
-        // 変わるだけで気づけなかった。金額列数は verify の tpl.amount_cells
-        // （無ければ現在の状態から同じ数え方で代える）と、読み込み時点の
-        // buildTemplate 由来の数を比べる
-        const currentFieldCount = tpl.cells ?? resolved.fields.length;
-        const currentAmountCells = tpl.amount_cells ?? countAmountCells(resolved.fields, tables);
-        const diff = saveDiffNote(
-          { fields: loadedCounts.fields, amountCells: loadedCounts.amountCells,
-            exclusions: loadedExcls.length },
-          { fields: currentFieldCount, amountCells: currentAmountCells, exclusions: exclCount });
-        setLoadedCounts({ fields: currentFieldCount, amountCells: currentAmountCells });
-        setMsg(carveNote + `保存＋コア検証 OK（`
-          + (tpl.cells != null
-             ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
-               + (split ? `＋分割+${split}` : "") + `＋管理6`
-             : `${tpl.columns} 列`)
-          + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
-          + `・除外 ${exclCount}`
-          + `）: ${p} ／ 読み込み時から: ${diff.text}`);
-        // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
-        // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
-        // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）
-        const coreWarnings: string[] = tpl.warnings ?? [];
-        const coreWarnNote = coreWarnings.length
-          ? `コアからの警告: ${coreWarnings.slice(0, 3).join("／")}`
-            + (coreWarnings.length > 3 ? `（ほか ${coreWarnings.length - 3} 件）` : "")
-          : null;
-        const decreaseWarnNote = diff.decreasedLabels.length
-          ? `読み込み時点より減った項目があります: ${diff.decreasedLabels.join("、")}。`
-            + "意図した変更か確認してください。"
-          : null;
-        setWarnMsg([carveWarnNote, coreWarnNote, decreaseWarnNote].filter(Boolean).join(" ／ "));
-      } else {
-        // NG のときは元ファイルを無傷のまま保つ。検証NGを成功と同じ灰色の
-        // 小さい文字で出すと気づかれない（レビュー D-7）ため赤帯へ出し、
-        // 「保存していません」と明言する（issue #56 T1）
-        await invoke("discard_staged", { path: p }).catch(() => {});
-        setMsg("");
-        setErrMsg("保存していません: コアの検証で問題が見つかりました: "
-          + (tpl?.error ?? "不明"));
-      }
     } catch (e) {
+      // verify の呼び出し自体が失敗。まだ何も確定していないので
+      // discard_staged で掃除して「保存していません」は正しい
       await invoke("discard_staged", { path: p }).catch(() => {});
       setMsg("");
       setErrMsg(`保存していません: コアの検証に失敗しました: ${e}`);
+      return;
+    }
+
+    if (!tpl?.ok) {
+      // NG のときは元ファイルを無傷のまま保つ。検証NGを成功と同じ灰色の
+      // 小さい文字で出すと気づかれない（レビュー D-7）ため赤帯へ出し、
+      // 「保存していません」と明言する（issue #56 T1）
+      await invoke("discard_staged", { path: p }).catch(() => {});
+      setMsg("");
+      setErrMsg("保存していません: コアの検証で問題が見つかりました: "
+        + (tpl?.error ?? "不明"));
+      return;
+    }
+
+    // ここから verify は OK。promote は別の try に分ける——ここで例外が
+    // 起きても「検証NG」でも「保存していません」でもない。lib.rs 側
+    // （promote_staged）は確定の rename に失敗すると .bak からの巻き戻しを
+    // 試み、戻せたかどうかを Err 文言に載せて返す。discard_staged は
+    // 絶対に呼ばない（rename 失敗時に残る唯一の新内容＝staged を
+    // 消してしまうため・マリン最終レビュー H-1）
+    try {
+      await invoke("promote_template", { path: p });
+    } catch (e) {
+      setMsg("");
+      setErrMsg(promoteFailureNotice(p, String(e)));
+      return;
+    }
+
+    // 確定は完了した＝保存済み。ここから先は表示の組み立てだけなので、
+    // 例外が起きても「保存していません」と嘘をつかない（マリン最終
+    // レビュー H-1 (c)）。状態の更新（保存成功の事実）は表示の try の外で
+    // 先に確定させる
+    setTplPath(p);
+    setLoadedExcls(currentExclSnapshot);
+    markDirty(false);
+    if (!resolved.skipped.length) setErrMsg("");
+    try {
+      // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
+      // 一目で分かるように・ユーザー指摘 2026-08-31）。除外数は verify が
+      // 数えたもの（シオン担当・T4 追加予定）を優先し、無ければ保存物側の
+      // 数で代える
+      const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
+      const exclCount = tpl.exclusions ?? currentExclCount;
+      // 読み込み時点との差分（issue #59 H-9・最後の検知網）。列数決め打ち
+      // 廃止の代替「見える化」に比較対象が無く、欄が減っても数字が
+      // 変わるだけで気づけなかった。金額列数は verify の tpl.amount_cells
+      // （無ければ現在の状態から同じ数え方で代える）と、読み込み時点の
+      // buildTemplate 由来の数を比べる
+      const currentFieldCount = tpl.cells ?? resolved.fields.length;
+      const currentAmountCells = tpl.amount_cells ?? countAmountCells(resolved.fields, tables);
+      const diff = saveDiffNote(
+        { fields: loadedCounts.fields, amountCells: loadedCounts.amountCells,
+          exclusions: loadedExcls.length },
+        { fields: currentFieldCount, amountCells: currentAmountCells, exclusions: exclCount });
+      setLoadedCounts({ fields: currentFieldCount, amountCells: currentAmountCells });
+      setMsg(carveNote + `保存＋コア検証 OK（`
+        + (tpl.cells != null
+           ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
+             + (split ? `＋分割+${split}` : "") + `＋管理6`
+           : `${tpl.columns} 列`)
+        + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
+        + `・除外 ${exclCount}`
+        + `）: ${p} ／ 読み込み時から: ${diff.text}`);
+      // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
+      // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
+      // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）。
+      // 件数のみ出す（レビュー M-2）——毎回同じ十数件の定型文がそのまま
+      // 出ると、本当に注意すべき変化が埋もれて信号にならない。詳細は
+      // verify で確認できる旨を添える
+      const coreWarnings: string[] = tpl.warnings ?? [];
+      const coreWarnNote = coreWarnings.length
+        ? `コアからの警告 ${coreWarnings.length} 件（詳細は verify で確認できます）`
+        : null;
+      const decreaseWarnNote = diff.decreasedLabels.length
+        ? `読み込み時点より減った項目があります: ${diff.decreasedLabels.join("、")}。`
+          + "意図した変更か確認してください。"
+        : null;
+      // 後退検知（decrease）を先頭に（レビュー M-2）——異常時にしか出ない
+      // 分だけ気づいてほしい優先度が高い
+      setWarnMsg([decreaseWarnNote, carveWarnNote, coreWarnNote].filter(Boolean).join(" ／ "));
+    } catch (e) {
+      // 表示の組み立てに失敗しても保存自体は成功している。嘘をつかない
+      setMsg(`保存＋コア検証 OK: ${p}（表示の組み立てに失敗しました: ${e}）`);
     }
   };
 

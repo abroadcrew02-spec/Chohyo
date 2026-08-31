@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -787,6 +787,28 @@ test("expandAlignNotice: reason=image/other は中立文言で自動補正を主
     assert.ok(!r.text.includes("自動補正"), `${reason}: ` + r.text);
     assert.ok(!r.text.includes("テンプレートが壊れている"), `${reason}: ` + r.text);
   }
+});
+
+// ---------------------------------------------------------------- マリン最終レビュー H-1
+test("promoteFailureNotice: staged の在り処を必ず案内し、rustError の詳細をそのまま伝える", () => {
+  const n = promoteFailureNotice("C:\\app\\templates\\chouhyo-v1.json",
+    "保存の確定に失敗しました（アクセスが拒否されました）。直前の内容へ戻しました（壊れていません）。"
+      + "新しい編集内容は C:\\app\\templates\\chouhyo-v1.json.saving.json に残っています。保存をやり直してください");
+  assert.ok(n.includes("chouhyo-v1.json.saving.json"),
+    "staged の在り処（.saving.json）を必ず案内するはず: " + n);
+  assert.ok(!n.includes("保存していません"),
+    "verify は通っているので『保存していません』は嘘になる: " + n);
+  assert.ok(n.includes("直前の内容へ戻しました"), "lib.rs のエラー詳細を落としていない: " + n);
+});
+
+test("promoteFailureNotice: 復元にも失敗した場合の文言も落とさず伝える", () => {
+  const n = promoteFailureNotice("C:\\app\\t.json",
+    "保存の確定に失敗しました（e1）。直前の内容への復元にも失敗しました（e2）。"
+      + "C:\\app\\t.json は存在しません。直前の内容は C:\\app\\t.json.bak に、"
+      + "新しい編集内容は C:\\app\\t.json.saving.json にあります。手動での復旧が必要です");
+  assert.ok(n.includes("t.json.saving.json"));
+  assert.ok(n.includes("復元にも失敗"), n);
+  assert.ok(n.includes("t.json.bak"), "lib.rs 側が案内した .bak の在り処も残るはず: " + n);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

@@ -106,10 +106,13 @@ def test_countif_formula_and_csv_static_agree(outputs):
     from chouhyo_ocr.columns import derive_columns, excel_column_letter
     from chouhyo_ocr.template import load_template
     last = excel_column_letter(len(derive_columns(load_template(TPL))))
-    # U-13（5巡目 第2段・#62・2026-08-31）: 完全一致だと文字単位〓（部分置換
-    # セル）を数え損なうため、COUNTIF をワイルドカード「含む」へ統一した
-    # （docs/design/chouhyo-ocr/04_unclear_policy.md §8.3）
-    assert data[0] == f'=COUNTIF(G2:{last}2,"*〓*")'
+    # U-13（5巡目 第2段・#62・2026-08-31）→ QA 再判定（2026-08-31・T-16
+    # ブロッカーの解消）で unclear_char_level ゲート化。この fixture の cfg は
+    # unclear_char_level=False（既定）のため、COUNTIF は機能追加前と同じ
+    # 完全一致のまま（docs/design/chouhyo-ocr/04_unclear_policy.md §8.3/§8.5）。
+    # ON 時にワイルドカードへ切り替わることは test_e2e_replay.py の
+    # test_char_level_on_produces_partial_unclear_in_real_output 系で別途固定
+    assert data[0] == f'=COUNTIF(G2:{last}2,"〓")'
     lines = outputs["csv"].read_text(encoding="utf-8-sig").splitlines()
     csv_row = next(csv_line for csv_line in lines[1:] if csv_line)
     static = int(csv_row.split('","')[0].strip('"'))
@@ -234,9 +237,14 @@ def test_char_level_off_matches_pre_feature_output(outputs):
                       unclear_char_level=True)
     off = _render_with(outputs, "regress_off", unclear_threshold=0.85,
                        unclear_char_level=False)
+    # 抽出列のみを比較する（META_COLUMNS の6列は除く）。管理列は
+    # unclear_char_level 自体で内容が変わる（要確認セル数の COUNTIF 式・
+    # 最低信頼度）ため、ここでの「抽出値の回帰」比較には含めない
+    from chouhyo_ocr.columns import META_COLUMNS
+    n_meta = len(META_COLUMNS)
     diffs = [(off["header"][i], off["data"][i], on["data"][i])
-             for i in range(len(off["header"]))
-             if off["data"][i] != on["data"][i] and off["header"][i] != "最低信頼度"]
+             for i in range(n_meta, len(off["header"]))
+             if off["data"][i] != on["data"][i]]
     # 差分は「OFF側が欄全体〓で、ON側がそれを部分置換した値」のケースのみ
     for _name, off_v, on_v in diffs:
         assert off_v == "〓", f"OFF側は欄全体〓のはずが: {off_v!r}"

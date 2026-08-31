@@ -185,3 +185,113 @@ def test_no_extras_matches_legacy_behavior(template):
     assert row_with_none.values == row_with_empty.values
     assert col_value(template, row_with_none, "person_氏名") == "テスト太郎"
     assert col_origin(template, row_with_none, "person_氏名") == ""
+
+
+# ---------- H-2（レビュー差し戻し・2026-08-31）: 直列化丸めによる below 全False ----------
+#
+# マリンの数値実証: unclear_reason はセルの未丸め conf（cell.conf・REAL 列）を
+# 見るが、below は pipeline._serialize_char_confs が .3f で直列化した文字列を
+# _parse_char_confs で読み戻した「丸め後」の値を見る。conf=0.8496・閾値0.85
+# のとき、unclear_reason は「閾値未満」と判定するのに、直列化後は "0.850" に
+# 丸まり 0.850<0.85 が False になるため below が全 False——旧実装は「一部〓」
+# 分岐（else 側）に落ちて raw をそのまま返し、〓が1文字も立たなかった。
+
+def test_h2_rounding_mismatch_folds_to_whole_cell_unclear(template):
+    """conf=0.8496（閾値未満）・char_confs="0.850"（直列化で丸まり閾値以上に
+    見える）という矛盾入力で、raw がそのまま漏れず欄全体〓へ倒れること。
+    """
+    cells = base_cells(template)
+    cells[SIMPLE_FIELD] = ("旭", 0.8496, "text", False)  # 単一文字・未丸めconf
+    extras = {SIMPLE_FIELD: ("0.850", "")}  # 直列化後の丸めで below が全False
+    row = build_row(template, page(), cells, {}, CFG_ON, extras=extras)
+    assert col_value(template, row, SIMPLE_FIELD) == UNCLEAR
+    assert row.values != ["旭"], "丸め起因で漏れて生値がそのまま出た（H-2 の再発）"
+
+
+def test_h2_does_not_regress_genuine_partial_case(template):
+    """H-2 の修正が、正当な一部〓ケース（below に True と False が混在）を
+    巻き込んで欄全体〓に倒していないことの回帰（過剰修正の防止）。
+    """
+    cells = base_cells(template)
+    cells[SIMPLE_FIELD] = ("旭川市", 0.31, "text", False)
+    extras = {SIMPLE_FIELD: ("0.97,0.31,0.96", "")}
+    row = build_row(template, page(), cells, {}, CFG_ON, extras=extras)
+    assert col_value(template, row, SIMPLE_FIELD) == "旭〓市"
+
+
+def test_nan_char_conf_is_treated_as_below_threshold(template):
+    """NaN 防御: char_confs に NaN が混ざっても（float("nan") は ValueError に
+    ならず素通りする上、NaN<閾値 は常に False になる）、安全側の 0.0（必ず
+    閾値未満）として扱い、該当文字を正しく〓へ置換する。
+    """
+    cells = base_cells(template)
+    cells[SIMPLE_FIELD] = ("旭川市", 0.31, "text", False)
+    extras = {SIMPLE_FIELD: ("0.97,nan,0.96", "")}  # 中央がNaN
+    row = build_row(template, page(), cells, {}, CFG_ON, extras=extras)
+    assert col_value(template, row, SIMPLE_FIELD) == "旭〓市"
+
+
+def test_infinite_char_conf_is_treated_as_below_threshold(template):
+    """NaN と同型の穴（+inf も < 閾値 が常に False）を防ぐ。"""
+    cells = base_cells(template)
+    cells[SIMPLE_FIELD] = ("旭川市", 0.31, "text", False)
+    extras = {SIMPLE_FIELD: ("0.97,inf,0.96", "")}
+    row = build_row(template, page(), cells, {}, CFG_ON, extras=extras)
+    assert col_value(template, row, SIMPLE_FIELD) == "旭〓市"
+
+
+def test_serialize_parse_round_trip_rounding_boundary():
+    """L-6（レビュー差し戻し）: pipeline._serialize_char_confs →
+    render_rows._parse_char_confs の往復で、閾値境界をまたぐ丸めが起きる
+    ことを固定する（H-2 の根本原因の実証）。0.8496 は .3f 直列化で "0.850"
+    になり、0.850 は 0.85 の閾値を下回らない——below 判定だけでは検知できない
+    ため、build_row 側は unclear_reason（丸め前の conf）との突き合わせで
+    H-2 を防ぐ（このテストは「丸めで境界を跨ぐ」事実そのものの固定）。
+    """
+    from chouhyo_ocr.pipeline import _serialize_char_confs
+    from chouhyo_ocr.render_rows import _parse_char_confs
+
+    raw_conf = 0.8496
+    threshold = 0.85
+    assert raw_conf < threshold  # 丸め前は閾値未満
+
+    serialized = _serialize_char_confs((raw_conf,))
+    assert serialized == "0.850"
+
+    parsed = _parse_char_confs(serialized)
+    assert parsed == (0.850,)
+    assert not (parsed[0] < threshold)  # 丸め後は閾値未満ではない（境界を跨いだ）
+
+
+def test_serialize_parse_round_trip_typical_values_preserve_below_state():
+    """境界をまたがない通常値では往復後も below 判定が保たれる（過剰な
+    不信を持たない——境界を跨ぐのは .3f の丸め幅（0.0005）以内の値だけ）。
+    """
+    from chouhyo_ocr.pipeline import _serialize_char_confs
+    from chouhyo_ocr.render_rows import _parse_char_confs
+
+    threshold = 0.85
+    for raw_conf in (0.31, 0.968, 0.10, 0.999):
+        parsed = _parse_char_confs(_serialize_char_confs((raw_conf,)))[0]
+        assert (parsed < threshold) == (raw_conf < threshold), raw_conf
+
+
+# ---------- QA 再判定: unclear_count の完全一致/含む ゲート（設計 §14 不変条件5） ----------
+
+def test_unclear_count_uses_exact_match_when_off():
+    """OFF（既定）: 要確認セル数は完全一致で数える（機能追加前と同じ）。
+    ON 側は test_unclear_count_counts_partial_cells_as_one で既に固定済み。
+    """
+    cells = (
+        CellSpec("f1", "front", Rect(0, 0, 10, 10), "text"),
+        CellSpec("f2", "front", Rect(20, 0, 10, 10), "text"),
+    )
+    tiny = Template(template_id="t", render_dpi=300, image_size=(100, 100),
+                    record_pages=1, faces=(), cells=cells)
+    cell_data = {
+        "f1": ("旭川市", 0.31, "text", False),
+        "f2": ("普通の値", 0.95, "text", False),
+    }
+    row = build_row(tiny, page(), cell_data, {}, CFG_OFF)  # extras 省略・OFF
+    assert row.values == [UNCLEAR, "普通の値"]
+    assert row.unclear_count == 1

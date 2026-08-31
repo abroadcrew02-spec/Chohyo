@@ -61,12 +61,17 @@ def test_missing_origins_length_mismatch_does_not_crash(tmp_path):
     write_xlsx(out, list(META_COLUMNS) + ["a", "b"], [row])  # 例外にならなければ良い
 
 
-# ---------- T-21: 条件付き書式が2本 ----------
+# ---------- T-21: 条件付き書式（ON 時は2本・OFF 時は既存1本のまま） ----------
+#
+# QA 再判定（2026-08-31・T-16 ブロッカーの解消）: write_xlsx の「含む」判定
+# （COUNTIF ワイルドカード・条件付き書式2本目）は unclear_char_level でゲート
+# する。Excel 実機での COUNTIF("*〓*") 動作（T-16）が未検証のため、既定 OFF
+# の経路には未検証の仮定を載せない。
 
-def test_two_conditional_formatting_rules_present(tmp_path):
+def test_two_conditional_formatting_rules_present_when_on(tmp_path):
     row = _row(["〓", "旭〓市", "z"])
     out = tmp_path / "o.xlsx"
-    write_xlsx(out, COLS, [row])
+    write_xlsx(out, COLS, [row], unclear_char_level=True)
     sheet = _sheet_xml(out)
     assert sheet.count("<cfRule") == 2
     assert 'operator="equal"' in sheet
@@ -74,11 +79,24 @@ def test_two_conditional_formatting_rules_present(tmp_path):
     assert "LEN(" in sheet
 
 
-def test_countif_formula_uses_contains_wildcard(tmp_path):
-    """U-13: COUNTIF が "*〓*" になっている（完全一致のままだと部分〓を数え損なう）。"""
+def test_only_one_conditional_formatting_rule_when_off(tmp_path):
+    """既定 OFF: 条件付き書式は機能追加前と同じ1本（完全一致）のまま。"""
+    row = _row(["〓", "z", "z"])
+    out = tmp_path / "o.xlsx"
+    write_xlsx(out, COLS, [row])  # unclear_char_level 省略＝False
+    sheet = _sheet_xml(out)
+    assert sheet.count("<cfRule") == 1
+    assert 'operator="equal"' in sheet
+    assert "ISNUMBER(FIND(" not in sheet
+
+
+def test_countif_formula_uses_contains_wildcard_when_on(tmp_path):
+    """U-13: unclear_char_level=True のときだけ COUNTIF が "*〓*" になる
+    （完全一致のままだと部分〓を数え損なう）。
+    """
     row = _row(["旭〓市", "y", "z"])
     out = tmp_path / "o.xlsx"
-    write_xlsx(out, COLS, [row])
+    write_xlsx(out, COLS, [row], unclear_char_level=True)
     sheet = _sheet_xml(out)
     first = excel_column_letter(len(META_COLUMNS) + 1)
     last = excel_column_letter(len(COLS))
@@ -86,7 +104,22 @@ def test_countif_formula_uses_contains_wildcard(tmp_path):
         or f'COUNTIF({first}2:{last}2,"*〓*")' in sheet
 
 
-# ---------- T-20: xlsx ↔ csv の一致 ----------
+def test_countif_formula_is_exact_match_when_off(tmp_path):
+    """QA 再判定: 既定 OFF では COUNTIF は機能追加前と同じ完全一致のまま
+    （T-16 が実機確認されるまで、未検証のワイルドカードを既定経路に載せない）。
+    """
+    row = _row(["〓", "y", "z"])
+    out = tmp_path / "o.xlsx"
+    write_xlsx(out, COLS, [row])  # unclear_char_level 省略＝False
+    sheet = _sheet_xml(out)
+    first = excel_column_letter(len(META_COLUMNS) + 1)
+    last = excel_column_letter(len(COLS))
+    assert f'COUNTIF({first}2:{last}2,&quot;〓&quot;)' in sheet \
+        or f'COUNTIF({first}2:{last}2,"〓")' in sheet
+    assert "*〓*" not in sheet
+
+
+# ---------- T-20: xlsx ↔ csv の一致（設計 §14 不変条件5・OFF/ON 両状態） ----------
 
 def test_csv_unclear_count_counts_contains(tmp_path):
     row = _row(["〓", "旭〓市", "普通の値"])  # 欄全体〓1 + 一部〓1 = 2
@@ -97,17 +130,40 @@ def test_csv_unclear_count_counts_contains(tmp_path):
     assert text.splitlines()[1].split(",")[0] == '"2"'
 
 
-def test_write_outputs_keeps_xlsx_and_csv_unclear_count_consistent(tmp_path):
-    """xlsx の COUNTIF 範囲と csv の静的値は同じセル集合（抽出列全体）を指す。
+def test_write_outputs_keeps_xlsx_and_csv_unclear_count_consistent_when_on(tmp_path):
+    """設計 §14 不変条件5（ON 側）: xlsx の COUNTIF 範囲と csv の静的値は
+    同じセル集合（抽出列全体）を指す。row.unclear_count は「含む」で数えた
+    値（render_rows.build_row が cfg.unclear_char_level=True のとき作る値と
+    同じ形）——write_outputs 側も unclear_char_level=True で揃える。
 
     openpyxl は数式を評価しないため、ここでは「範囲」と「csv の値」が
-    同じ行・同じ抽出列幅を指していることまでを固定する。
+    同じ行・同じ抽出列幅を指していることまでを固定する（実機確認は T-16）。
     """
-    row = _row(["〓", "旭〓市", "普通の値"])
-    xlsx, csvp, _risky = write_outputs(tmp_path, "t1", COLS, [row])
+    row = _row(["〓", "旭〓市", "普通の値"])  # 含む判定で2
+    xlsx, csvp, _risky = write_outputs(tmp_path, "t_on", COLS, [row],
+                                       unclear_char_level=True)
     sheet = _sheet_xml(xlsx)
     first = excel_column_letter(len(META_COLUMNS) + 1)
     last = excel_column_letter(len(COLS))
     assert f"{first}2:{last}2" in sheet
+    assert "*〓*" in sheet
     text = csvp.read_text(encoding="utf-8-sig")
     assert text.splitlines()[1].split(",")[0] == '"2"'
+
+
+def test_write_outputs_keeps_xlsx_and_csv_unclear_count_consistent_when_off(tmp_path):
+    """設計 §14 不変条件5（OFF 側）: 完全一致のセルだけを数えた row.unclear_count
+    と、OFF（既定）で書いた xlsx の COUNTIF（完全一致のまま）が同じ意味の
+    セル集合を指す。文字単位〓が無効なら「〓」は必ず単独のセル値になるため、
+    この行には部分〓の値を含めない（OFF 経路の実態と揃える）。
+    """
+    row = _row(["〓", "普通の値", "普通の値"])  # 完全一致でも含むでも1
+    assert row.unclear_count == 1
+    xlsx, csvp, _risky = write_outputs(tmp_path, "t_off", COLS, [row])
+    sheet = _sheet_xml(xlsx)
+    first = excel_column_letter(len(META_COLUMNS) + 1)
+    last = excel_column_letter(len(COLS))
+    assert f"{first}2:{last}2" in sheet
+    assert "*〓*" not in sheet
+    text = csvp.read_text(encoding="utf-8-sig")
+    assert text.splitlines()[1].split(",")[0] == '"1"'

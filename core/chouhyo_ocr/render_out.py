@@ -10,8 +10,14 @@
 2026-08-31（5巡目 第2段・docs/design/chouhyo-ocr/04_unclear_policy.md §8）:
 文字単位〓（#62）で「〓」を含むが完全一致ではないセルが生じるため、要確認
 セル数の数え方を完全一致から「含む」へ統一した（xlsx の COUNTIF・条件付き
-書式・csv の3経路）。文字単位〓が無効なときは〓は必ず単独のセル値になるため、
-この変更で従来の集計結果は変わらない（§8.3 の互換性評価）。
+書式・csv の3経路）。
+
+2026-08-31（QA 再判定・T-16 ブロッカーの解消）: 上記の「含む」化は
+unclear_char_level でゲートする。COUNTIF のワイルドカード（"*〓*"）が
+Excel 実機で期待どおり動くかは T-16 として未検証のため、既定 OFF の経路
+（大半の利用者）にはこの未検証の仮定を載せない——OFF では COUNTIF・
+条件付き書式・csv 判定のすべてが機能追加前と同じ完全一致に戻る。ON に
+した場合のみ「含む」化が効く（詳細は 04_unclear_policy.md §8.3/§8.5）。
 """
 from __future__ import annotations
 
@@ -65,7 +71,12 @@ def _normalize_zip(path: Path) -> None:
     path.write_bytes(buf.getvalue())
 
 
-def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
+def write_xlsx(path: Path, columns: list[str], rows: list[Row],
+               unclear_char_level: bool = False) -> None:
+    """unclear_char_level=False（既定）では COUNTIF・条件付き書式とも機能追加
+    前（完全一致・1本）のまま。True のときだけ「含む」判定・2本目の条件付き
+    書式（一部〓用）が有効になる（QA 再判定・T-16 ブロッカーの解消）。
+    """
     n_extract = len(columns) - len(META_COLUMNS)
     first = excel_column_letter(len(META_COLUMNS) + 1)          # G
     last = excel_column_letter(len(columns))                    # 220列なら HL
@@ -75,15 +86,17 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
     wb.properties.modified = _FIXED_DT
     ws = wb.create_sheet("output")
     rng = f"{first}1:{last}{len(rows) + 1}"
-    # 欄全体〓（完全一致）: 既存の色 FFF2CC を維持する（見た目を変えない・U-12）
+    # 欄全体〓（完全一致）: 既存の色 FFF2CC を維持する（見た目を変えない・U-12）。
+    # この1本は unclear_char_level に関わらず常に有効（機能追加前からの既存挙動）
     ws.conditional_formatting.add(
         rng, CellIsRule(operator="equal", formula=['"〓"'], fill=_FILL))
-    # 一部〓（U-12・#62）: "〓" を含み、かつ長さ2以上。相対参照は範囲の左上
-    # セル（{first}1）を基準に Excel 側が各セルへ自動調整する
-    ws.conditional_formatting.add(
-        rng, FormulaRule(
-            formula=[f'AND(ISNUMBER(FIND("〓",{first}1)),LEN({first}1)>1)'],
-            fill=_FILL_PARTIAL))
+    if unclear_char_level:
+        # 一部〓（U-12・#62）: "〓" を含み、かつ長さ2以上。相対参照は範囲の
+        # 左上セル（{first}1）を基準に Excel 側が各セルへ自動調整する
+        ws.conditional_formatting.add(
+            rng, FormulaRule(
+                formula=[f'AND(ISNUMBER(FIND("〓",{first}1)),LEN({first}1)>1)'],
+                fill=_FILL_PARTIAL))
 
     def text(v):
         c = WriteOnlyCell(ws, value=v)
@@ -102,11 +115,14 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row]) -> None:
     row_no = 1
     for r in rows:
         row_no += 1
-        # U-13: COUNTIF をワイルドカード化（完全一致のままだと文字単位〓の
-        # 部分置換セルを数え損なう・設計 §8.3）。openpyxl は数式を評価しない
-        # ため、この文字列一致までが自動テストで固定できる範囲（T-16 は実機確認）
+        # U-13: unclear_char_level=True のときだけ COUNTIF をワイルドカード化
+        # する（完全一致のままだと文字単位〓の部分置換セルを数え損なう・
+        # 設計 §8.3）。openpyxl は数式を評価しないため、この文字列一致までが
+        # 自動テストで固定できる範囲（T-16 は実機確認・ON 切替の前提条件）。
+        # False（既定）では機能追加前と同じ完全一致のまま
+        pattern = '"*〓*"' if unclear_char_level else '"〓"'
         formula = WriteOnlyCell(
-            ws, value=f'=COUNTIF({first}{row_no}:{last}{row_no},"*〓*")')
+            ws, value=f'=COUNTIF({first}{row_no}:{last}{row_no},{pattern})')
         meta = [formula, text(r.min_conf), text(r.page_id),
                 text(r.source_file), text(str(r.page_no)), text(r.status)]
         origins = r.origins if len(r.origins) == len(r.values) else ("",) * len(r.values)
@@ -189,12 +205,19 @@ def _rollback(backups: list[tuple[Path, Path]], replaced: list[Path]) -> list[Pa
 
 
 def write_outputs(
-    out_dir: str | Path, timestamp: str, columns: list[str], rows: list[Row]
+    out_dir: str | Path, timestamp: str, columns: list[str], rows: list[Row],
+    unclear_char_level: bool = False,
 ) -> tuple[Path, Path, list[tuple[str, str]]]:
     """xlsx/csv を書き、危険接頭セルの一覧（page_id, 列名）を併せて返す。
 
     検出をここに置くのは呼び忘れを構造で防ぐため（issue #27 の行長検査と同じ
     置き方）。検出は出力内容に一切影響しない（D-28）。
+
+    unclear_char_level は write_xlsx の COUNTIF・条件付き書式のゲートへ
+    そのまま渡す（既定 False＝機能追加前と同じ完全一致。QA 再判定・T-16）。
+    csv 側の要確認セル数は render_rows.build_row が cfg.unclear_char_level を
+    見て既に確定させた値（Row.unclear_count）をそのまま書くだけなので、
+    ここでの分岐は不要。
     """
     # 行の値数＝抽出列数は出力の中核不変条件。assert（-O で消える）でなく
     # 明示例外で、xlsx/csv 両形式が必ず通るこの一箇所で検査する（issue #27）
@@ -215,7 +238,7 @@ def write_outputs(
     tmp_x = xlsx.with_suffix(".xlsx.tmp")
     tmp_c = csvp.with_suffix(".csv.tmp")
     try:
-        write_xlsx(tmp_x, columns, rows)
+        write_xlsx(tmp_x, columns, rows, unclear_char_level=unclear_char_level)
         write_csv(tmp_c, columns, rows)
         # 既存を先に退避してから差し替える（レビュー M-5）。片方ずつ replace
         # すると、csv だけ開かれている場合に **xlsx は新・csv は旧**となり

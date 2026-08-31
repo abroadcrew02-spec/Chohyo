@@ -84,12 +84,19 @@ def _field_origins(locators: dict, tokens) -> dict[str, str]:
 
 
 def write_debug_images(store: Store, template: Template, aligned_dir: Path,
-                       out_dir: Path, unclear_threshold: float,
+                       out_dir: Path, cfg: Config,
                        page_ids: list[str] | None = None) -> list[Path]:
     """ページごとの可視化 PNG を out_dir へ書き、パスの一覧を返す。
 
     位置合わせ画像（aligned/{page_id}_{face_id}.png）が無いページは飛ばす
     （展開失敗・位置合わせ失敗のページには重ねる土台が無い）。
+
+    2026-08-31（レビュー差し戻し M-1）: 引数は unclear_threshold（スカラー）
+    ではなく Config 本体を受け取る。以前はここで `Config(unclear_threshold=...)`
+    を組み直しており、呼び出し元（cli.py）が実際に読み込んだ設定の
+    unclear_char_level が常に既定 False へ落ちていた（cli.py 側で `cfg.
+    unclear_threshold` のみを渡していたため）。cfg をそのまま貫通させることで
+    今後 unclear_char_level を使う判定を足しても取りこぼさない。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     W, H = template.image_size
@@ -97,7 +104,7 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
                    for f in template.faces}
     font = _font(26)
     font_small = _font(20)
-    cfg = Config(unclear_threshold=unclear_threshold)
+    unclear_threshold = cfg.unclear_threshold
 
     # symbol の行き先索引は面ごとに固定（テンプレートはページ間で共通）。
     # 全 symbol × 全セルの線形照合をやめ、assign() と同じ空間インデックスで

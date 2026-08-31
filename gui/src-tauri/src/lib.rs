@@ -57,7 +57,9 @@ fn inject_default_template(mut args: Vec<String>, root: &Path) -> Vec<String> {
         .first()
         .map(|c| TEMPLATE_ACCEPTING_SUBCOMMANDS.contains(&c.as_str()))
         .unwrap_or(false);
-    if accepts && !args.iter().any(|a| a == "--template") {
+    // `--template=path`（等号形式）も明示指定として扱う。素通りすると
+    // 二重に --template を積んでコアの argparse がエラーになる（issue L-3）
+    if accepts && !args.iter().any(|a| a == "--template" || a.starts_with("--template=")) {
         let tpl = root.join("templates").join("chouhyo-v1.json");
         args.push("--template".to_string());
         args.push(tpl.to_string_lossy().to_string());
@@ -499,19 +501,61 @@ fn validate_template_target(path: &str, picked: &HashSet<PathBuf>) -> Result<Pat
     Ok(abs)
 }
 
-/// staged ファイルを本番パスへ確定する（issue #56 T1・保存経路のトランザクション化）。
+/// staged ファイルを本番パスへ確定する本体。rename を注入可能にしてあるのは、
+/// 「確定の rename（staged→abs）が失敗する」経路を単体テストで固定するため
+/// （マリン最終レビュー H-1）。Windows では読み取り専用属性がファイル作成を
+/// 妨げず、オープンハンドルの共有モードもプラットフォーム依存で不安定なため、
+/// OS レベルで確実に rename 失敗を誘発する方法が無かった。
+///
 /// 既存ファイルがあれば `.bak` へ退避してから rename するため、検証 NG のまま
-/// 出荷テンプレートが上書きされることも、確定に失敗して両方消えることも無い。
-fn promote_staged(abs: &Path) -> Result<(), String> {
-    let staged = staged_path(abs);
+/// 出荷テンプレートが上書きされることは無い。ただし退避が成功した**後**に
+/// 確定の rename が失敗すると、素朴な実装では本番パスが空になり、かつ
+/// staged だけが唯一の新内容になる。この関数はその失敗時に `.bak` を
+/// 本番パスへ書き戻す（render_out.py の `_rollback` と同じ考え方）。
+/// 書き戻せたかどうかは返す Err 文言に必ず載せる——戻せていないのに
+/// 「戻した」と断言すると、本番パスが存在しないまま利用者を安心させてしまう。
+fn promote_with<F>(staged: &Path, abs: &Path, bak: &Path, mut rename: F) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
     if !staged.exists() {
         return Err("一時保存ファイルが見つかりません（先に保存を実行してください）".into());
     }
-    if abs.exists() {
-        let bak = backup_path(abs);
-        std::fs::rename(abs, &bak).map_err(|e| format!("バックアップの作成に失敗: {e}"))?;
+    let had_backup = abs.exists();
+    if had_backup {
+        rename(abs, bak).map_err(|e| format!("バックアップの作成に失敗: {e}"))?;
     }
-    std::fs::rename(&staged, abs).map_err(|e| format!("保存の確定に失敗: {e}"))
+    if let Err(e) = rename(staged, abs) {
+        return Err(if !had_backup {
+            // 元々 abs が無かった（初回保存）ので戻す先も無い。staged は
+            // rename 失敗時に消えないので、そこに新内容が残っている
+            format!(
+                "保存の確定に失敗しました（{e}）。編集内容は {} に残っています。\
+                 保存をやり直すか、このファイルを手動で {} へ移動してください",
+                staged.display(), abs.display())
+        } else {
+            match rename(bak, abs) {
+                Ok(()) => format!(
+                    "保存の確定に失敗しました（{e}）。{} は直前の内容へ戻しました\
+                     （壊れていません）。新しい編集内容は {} に残っています。\
+                     保存をやり直してください",
+                    abs.display(), staged.display()),
+                Err(e2) => format!(
+                    "保存の確定に失敗しました（{e}）。直前の内容への復元にも失敗しました\
+                     （{e2}）。{} は存在しません。直前の内容は {} に、新しい編集内容は {} に\
+                     あります。手動での復旧が必要です",
+                    abs.display(), bak.display(), staged.display()),
+            }
+        });
+    }
+    Ok(())
+}
+
+/// staged ファイルを本番パスへ確定する（issue #56 T1・保存経路のトランザクション化）。
+fn promote_staged(abs: &Path) -> Result<(), String> {
+    let staged = staged_path(abs);
+    let bak = backup_path(abs);
+    promote_with(&staged, abs, &bak, |from, to| std::fs::rename(from, to))
 }
 
 /// staged ファイルを破棄する（コア検証 NG 時の掃除）。既に無ければ成功扱い（冪等）。
@@ -698,6 +742,9 @@ mod tests {
         assert_eq!(inject_default_template(status.clone(), &root), status);
         // 空引数は何もしない（check_args で先に弾かれる想定だが、単体では防御的に）
         assert_eq!(inject_default_template(v(&[]), &root), v(&[]));
+        // --template=path（等号形式）も明示指定として扱う（issue L-3）
+        let eq_form = v(&["render", "--template=C:\\other\\t.json"]);
+        assert_eq!(inject_default_template(eq_form.clone(), &root), eq_form);
     }
 
     // --- staged 保存（issue #56 T1・保存経路のトランザクション化）---
@@ -779,6 +826,106 @@ mod tests {
                 "staged ファイルが無いのに確定できてはいけない");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "old",
                    "失敗時は元ファイルを無傷に保つ（検証NGでファイルが壊れる事故の再発防止）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- 確定 rename 失敗時の巻き戻し（マリン最終レビュー H-1）---
+    //
+    // OS レベルで rename 失敗を確実に誘発する手段が無い（Windows の読み取り
+    // 専用属性はファイル作成を妨げず、オープンハンドルの共有モードは
+    // プラットフォーム依存）ため、promote_with の rename を注入して固定する。
+    // バックアップ（1回目）とロールバック（3回目）は実ファイルへの本物の
+    // rename を使い、確定（2回目）だけを合成失敗させることで、
+    // 「その他は正常」という現実的な条件で巻き戻し経路を検証する。
+    use super::promote_with;
+
+    #[test]
+    fn promote_with_rolls_back_bak_when_final_rename_fails() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_promote_rollback_ok_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let abs = dir.join("t.json");
+        let staged = staged_path(&abs);
+        let bak = backup_path(&abs);
+        std::fs::write(&abs, "old").unwrap();
+        std::fs::write(&staged, "new").unwrap();
+
+        let mut call = 0;
+        let result = promote_with(&staged, &abs, &bak, |from, to| {
+            call += 1;
+            if call == 2 {
+                // 確定（staged→abs）だけを失敗させる。実ファイルには触れない
+                return Err(std::io::Error::other("simulated rename failure"));
+            }
+            std::fs::rename(from, to)
+        });
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("直前の内容へ戻しました"), "{msg}");
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), "old",
+                   "ロールバックにより abs は元の内容へ戻っているはず");
+        assert!(!bak.exists(), "ロールバック成功時は bak が消えて abs へ戻っているはず");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "new",
+                   "staged は promote の失敗経路では消えない（新しい編集内容の唯一の控え）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn promote_with_reports_when_rollback_also_fails() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_promote_rollback_fail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let abs = dir.join("t.json");
+        let staged = staged_path(&abs);
+        let bak = backup_path(&abs);
+        std::fs::write(&abs, "old").unwrap();
+        std::fs::write(&staged, "new").unwrap();
+
+        let mut call = 0;
+        let result = promote_with(&staged, &abs, &bak, |from, to| {
+            call += 1;
+            if call >= 2 {
+                // 確定（2回目）とロールバック（3回目）を両方失敗させる
+                return Err(std::io::Error::other("simulated failure"));
+            }
+            std::fs::rename(from, to)
+        });
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("復元にも失敗"), "{msg}");
+        assert!(!abs.exists(), "abs はどちらの rename も失敗したので存在しないはず");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "old",
+                   "old の内容は bak に残っているはず（手動復旧の手がかり）");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "new",
+                   "staged も消えない（もう1つの手がかり）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn promote_with_without_backup_mentions_staged_path_only() {
+        // 初回保存（abs が元々存在しない）で確定 rename が失敗するケース。
+        // 戻す先の bak が無いので、staged の在り処だけを案内する
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_promote_first_save_fail_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let abs = dir.join("t.json");
+        let staged = staged_path(&abs);
+        let bak = backup_path(&abs);
+        std::fs::write(&staged, "new").unwrap();
+
+        let result = promote_with(&staged, &abs, &bak,
+            |_from, _to| Err(std::io::Error::other("simulated failure")));
+
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(!msg.contains("復元"), "バックアップが無いのに復元の話をしている: {msg}");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "new");
+        assert!(!abs.exists());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -8,6 +8,7 @@ U-10〜U-13（文字単位〓・#62）・U-04（由来印）・U-03（矛盾=con
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -115,13 +116,20 @@ def _parse_char_confs(s: str) -> tuple[float, ...]:
 
     （呼び出し側が len(raw) と比較して不一致を検知し、安全側=欄全体〓へ倒す・
     設計 §14 不変条件2）。
+
+    NaN・無限大の防御（レビュー差し戻し・2026-08-31）: float() は "nan"/"inf"
+    を例外なく通す。NaN は `< 閾値` の比較が常に False、+inf も常に False に
+    なるため、パース結果に紛れ込むと「閾値未満なのに文字単位〓の対象から
+    漏れる」——H-2 と同型の穴になる。安全側（0.0＝必ず閾値未満扱い）へ倒す
+    （mapping.symbols_from_response の型不正防御 conf=0.0 と同じ方針）。
     """
     if not s:
         return ()
     try:
-        return tuple(float(x) for x in s.split(","))
+        vals = [float(x) for x in s.split(",")]
     except ValueError:
         return ()
+    return tuple(0.0 if not math.isfinite(v) else v for v in vals)
 
 
 def build_row(template: Template, page: dict, cells: dict[str, tuple],
@@ -186,9 +194,21 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
                              and len(char_confs) == len(raw))
             if char_level_ok:
                 below = [c < cfg.unclear_threshold for c in char_confs]
-                if all(below):
+                if all(below) or not any(below):
                     # 判定表 #11: 全文字が閾値未満 → 1文字の〓へ畳む
-                    # （"〓〓〓" を作らない・設計 §14 不変条件1）
+                    # （"〓〓〓" を作らない・設計 §14 不変条件1）。
+                    #
+                    # H-2（レビュー差し戻し・2026-08-31）: `not any(below)`
+                    # は本来ここへ来ないはずの矛盾状態——unclear_reason は
+                    # 丸め前の conf_min（cell.conf・REAL 列）を見て「閾値未満」
+                    # と判定したのに、char_confs（pipeline._serialize_char_confs
+                    # の .3f 直列化で丸められた値）で再判定すると全文字が
+                    # 「閾値以上」になるケースがある（実測: conf=0.8496 は
+                    # 閾値0.85未満だが、直列化で "0.850" になり 0.850<0.85 は
+                    # False）。below が1つも立たないと raw がそのまま出て
+                    # 〓が1文字も出ない――unclear_reason が「読み取り品質に
+                    # 疑義あり」と判定した事実を静かに握りつぶすことになる。
+                    # unclear_reason 側を正として欄全体〓へ倒す（安全側）
                     values.extend([UNCLEAR] * len(out_cols))
                     origins.extend([""] * len(out_cols))
                 else:
@@ -235,9 +255,16 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
             confs.append(conf)
 
     # U-13: 要確認セル数は「〓を含む」で数える（完全一致のままだと文字単位〓が
-    # 出荷ゲートをすり抜ける・設計 §8.3）。文字単位〓が OFF のときは〓は必ず
-    # 単独のセル値になるため、この変更で結果は変わらない（§8.3 の互換性評価）
-    unclear_count = sum(1 for v in values if isinstance(v, str) and UNCLEAR in v)
+    # 出荷ゲートをすり抜ける・設計 §8.3）。ただし QA 再判定（2026-08-31・T-16
+    # ブロッカー）により unclear_char_level でゲートする——文字単位〓が
+    # 有効でなければ〓は必ず単独のセル値になり「含む」と「完全一致」は
+    # 数学的に同じ結果になるが、Excel 実機での COUNTIF ワイルドカード動作
+    # （T-16）は未検証のため、既定 OFF の経路には未検証の仮定を載せない
+    # （render_out.write_xlsx の COUNTIF 式・条件付き書式2本目と対にする）
+    if cfg.unclear_char_level:
+        unclear_count = sum(1 for v in values if isinstance(v, str) and UNCLEAR in v)
+    else:
+        unclear_count = sum(1 for v in values if v == UNCLEAR)
     min_conf = f"{min(confs):.3f}" if confs else ""
     status = compose_status(page.get("status", ""), page.get("unassigned_below_table", 0),
                             processed=True)

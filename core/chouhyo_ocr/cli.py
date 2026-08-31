@@ -273,11 +273,15 @@ def cmd_debug_images(args) -> int:
     # --out の同期フォルダ検査（#59 H-5）。既定（workdir/debug）は従来どおり
     # 検査しない——workdir 自体が同期フォルダ配下かは verify が別途見ている
     if args.out and is_cloud_synced_path(out_dir):
+        # 業務的な拒否は exit 0 で伝える（レビュー差し戻し M-3・main() の規約
+        # コメント :443-450 と同じ理由）。ここだけ 1 を返すと、同一コマンド内の
+        # page_not_found/no_pages/OperationRefused（すべて 0）と矛盾し、
+        # 呼び出し側が「1=再試行で直る一時失敗」と誤解しうる
         _progress({"event": "debug_images", "ok": False, "reason": "synced_path",
                    "error": "--out が同期フォルダ配下を指している。読取値を焼き込んだ"
                             "画像は要配慮個人情報を含むため、同期対象外の場所を指定する",
                    "synced_dir": str(out_dir)})
-        return 1
+        return 0
     template = load_template(args.template)
     validate_v1(template)
     raw = json.loads(Path(args.template).read_text(encoding="utf-8"))
@@ -302,9 +306,12 @@ def cmd_debug_images(args) -> int:
                    "count": 0, "dir": str(out_dir.resolve())})
         return 0
     try:
+        # cfg 本体を渡す（レビュー差し戻し M-1）。以前は cfg.unclear_threshold
+        # のみを渡しており、debug_images 側で Config を組み直すと
+        # unclear_char_level が常に既定 False に落ちていた
         made = write_debug_images(
             store, template, wd / "aligned", out_dir,
-            cfg.unclear_threshold,
+            cfg,
             page_ids=[args.page] if args.page else None)
     finally:
         store.close()
