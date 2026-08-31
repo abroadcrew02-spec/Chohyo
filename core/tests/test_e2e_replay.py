@@ -65,9 +65,10 @@ def test_one_page_one_row(outputs):
 
 
 def test_placement_person(outputs):
-    # 郵便番号は住所列の先頭に転記される（D-24: 記入位置2流儀のため統合）
-    assert val(outputs, "person_住所1").startswith("262-0032")
-    assert "千葉県千葉市" in val(outputs, "person_住所1")
+    # 郵便番号は独立列（2026-08-31）。主（印字ボックス）が空のサンプルなので
+    # 参照先（住所行の先頭ゾーン）から拾われ、住所列には混ざらない
+    assert val(outputs, "person_郵便番号1") == "262-0032"
+    assert val(outputs, "person_住所1").startswith("千葉県千葉市")
     assert "北海道旭川市" in val(outputs, "person_住所2")
 
 

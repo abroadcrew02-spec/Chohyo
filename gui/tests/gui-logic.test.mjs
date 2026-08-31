@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, resolveOverlaps, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -349,6 +349,76 @@ test("absorb: 選択式・自分自身・参照先つきは結合できない", 
   assert.equal(typeof absorbField(
     T({ uid: "a" }),
     T({ uid: "b", fallback: { x: 90, y: 0, w: 5, h: 5 } })), "string");
+});
+
+// --- 自動切り抜き（重なった枠が勝ち、下の文字欄がL字になる）----------------
+test("subtract: 重なりなしは元のまま・中央くり抜きは上下左右の4帯", () => {
+  const R = { x: 0, y: 0, w: 100, h: 100 };
+  assert.deepEqual(subtractRect(R, { x: 200, y: 0, w: 10, h: 10 }), [R]);
+  const four = subtractRect(R, { x: 30, y: 30, w: 40, h: 40 });
+  assert.equal(four.length, 4);
+  const area = four.reduce((a, r) => a + r.w * r.h, 0);
+  assert.equal(area, 100 * 100 - 40 * 40, "面積が保存されない（隙間か重複がある）");
+});
+
+test("subtract: 完全に覆うと空・細片（minSize 未満）は捨てる", () => {
+  const R = { x: 0, y: 0, w: 100, h: 100 };
+  assert.deepEqual(subtractRect(R, { x: -5, y: -5, w: 200, h: 200 }), []);
+  // 右に 3px しか残らない → 捨てられ、上下も無し → 空
+  assert.deepEqual(subtractRect(R, { x: 0, y: 0, w: 97, h: 100 }), []);
+});
+
+test("carve: 最大の断片が主になり、残りは領域・全滅は null", () => {
+  const F = { uid: "f", field_id: "住所", kind: "text",
+              rect: { x: 0, y: 0, w: 300, h: 100 }, marks: [] };
+  // 左端 60px を奪う → 主は右側の大きい断片になる
+  const c = carveField(F, { x: 0, y: 0, w: 60, h: 100 });
+  assert.equal(c.rect.x, 60);
+  assert.equal(c.rect.w, 240);
+  assert.deepEqual(c.extras, []);
+  assert.equal(carveField(F, { x: -1, y: -1, w: 302, h: 102 }), null);
+});
+
+test("carve: 既存の領域も含めて切り直す", () => {
+  const F = { uid: "f", field_id: "x", kind: "text",
+              rect: { x: 0, y: 0, w: 100, h: 40 }, marks: [],
+              extras: [{ x: 0, y: 50, w: 100, h: 40 }] };
+  const c = carveField(F, { x: 40, y: -5, w: 20, h: 200 });  // 縦に貫通
+  // 各領域が左右に割れて計4断片。主は最大断片
+  const all = [c.rect, ...c.extras];
+  assert.equal(all.length, 4);
+  for (const r of all) assert.ok(r.x + r.w <= 40 || r.x >= 60);
+});
+
+// --- 保存時の一括解消（既存の重なりにも効く）-------------------------------
+test("resolve: 参照先の主張が他の文字欄を切り抜く・持ち主は無傷", () => {
+  const postal = { uid: "p", field_id: "郵便番号", kind: "text",
+                   rect: { x: 0, y: 100, w: 50, h: 30 }, marks: [],
+                   fallback: { x: 100, y: 0, w: 80, h: 40 } };
+  const addr = { uid: "a", field_id: "住所", kind: "text",
+                 rect: { x: 100, y: 0, w: 300, h: 40 }, marks: [] };
+  const r = resolveOverlaps([postal, addr]);
+  assert.deepEqual(r.carved, ["住所"]);
+  assert.deepEqual(r.skipped, []);
+  const a2 = r.fields.find((f) => f.uid === "a");
+  assert.equal(a2.rect.x, 180, "参照先ゾーンが住所から切り抜かれていない");
+  const p2 = r.fields.find((f) => f.uid === "p");
+  assert.deepEqual(p2.rect, postal.rect, "主張した側が削られている");
+  assert.deepEqual(p2.fallback, postal.fallback);
+});
+
+test("resolve: 選択式は切り抜けず skipped に載る・重なりなしは何もしない", () => {
+  const owner = { uid: "o", field_id: "o", kind: "text",
+                  rect: { x: 0, y: 100, w: 50, h: 30 }, marks: [],
+                  fallback: { x: 100, y: 0, w: 80, h: 40 } };
+  const era = { uid: "e", field_id: "元号", kind: "choice",
+                rect: { x: 120, y: 10, w: 40, h: 20 }, marks: [] };
+  const r = resolveOverlaps([owner, era]);
+  assert.deepEqual(r.carved, []);
+  assert.deepEqual(r.skipped, ["元号"]);
+  const clean = resolveOverlaps([owner]);
+  assert.deepEqual(clean.carved, []);
+  assert.equal(clean.fields[0], owner);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

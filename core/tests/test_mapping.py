@@ -35,14 +35,16 @@ def text(result, fid):
 
 
 def test_person_fields(result):
-    # 郵便番号は住所ブロックへ統合（page2 で記入位置がラベル右/ラベル下の
-    # 2流儀あることが判明し、独立列の前提が崩れたため。設計 D-24）。
-    # 住所値の先頭に郵便番号がそのまま転記される。
-    assert text(result, "person_住所1").startswith("262-0032")
-    assert "千葉県千葉市" in text(result, "person_住所1")
-    # 末尾「071-8111→071-81」は Vision の読み落とし（第2層・保証対象外）
-    assert text(result, "person_住所2").startswith("071-81")
-    assert "北海道旭川市" in text(result, "person_住所2")
+    # 郵便番号は独立列（2026-08-31・郵便番号1/2 を新設）。このサンプルは
+    # 郵便番号が住所行の先頭に書かれた流儀で、印字の郵便番号ボックス（主）は
+    # 空 → **参照先**（住所行の先頭ゾーン）から拾われる。住所列には郵便番号が
+    # 混ざらない（D-24 の「住所へ統合」は fallback_rect の導入で置き換えた）
+    assert text(result, "person_郵便番号1") == "262-0032"
+    assert text(result, "person_住所1").startswith("千葉県千葉市")
+    assert "262" not in text(result, "person_住所1")
+    # 「071-8111→071-81」は Vision の読み落とし（第2層・保証対象外）
+    assert text(result, "person_郵便番号2") == "071-81"
+    assert text(result, "person_住所2").startswith("北海道旭川市")
     assert "アブロード" in text(result, "person_会社名屋号")
     assert text(result, "person_ふりがな") == "じょうにしりょう"
 

@@ -78,6 +78,74 @@ export function remapMarks(
   });
 }
 
+/// r から cut を引いた残りを最大4つの矩形（上・下・左・右の帯）に分解する。
+/// minSize 未満の細片は捨てる（1px の破片が残ると掴めない・読めないため）。
+/// 重なっていなければ r をそのまま返す。
+export function subtractRect(r: Rect, cut: Rect, minSize = 6): Rect[] {
+  const ix = Math.max(r.x, cut.x), iy = Math.max(r.y, cut.y);
+  const ix2 = Math.min(r.x + r.w, cut.x + cut.w);
+  const iy2 = Math.min(r.y + r.h, cut.y + cut.h);
+  if (ix >= ix2 || iy >= iy2) return [r];
+  const out: Rect[] = [];
+  if (iy - r.y >= minSize)
+    out.push({ x: r.x, y: r.y, w: r.w, h: iy - r.y });
+  if (r.y + r.h - iy2 >= minSize)
+    out.push({ x: r.x, y: iy2, w: r.w, h: r.y + r.h - iy2 });
+  if (ix - r.x >= minSize && iy2 - iy >= minSize)
+    out.push({ x: r.x, y: iy, w: ix - r.x, h: iy2 - iy });
+  if (r.x + r.w - ix2 >= minSize && iy2 - iy >= minSize)
+    out.push({ x: ix2, y: iy, w: r.x + r.w - ix2, h: iy2 - iy });
+  return out;
+}
+
+/// 文字欄 f から claim の面積を切り抜く。全領域（主＋追加）を分解し直し、
+/// 最大の断片を主に据える。何も残らなければ null（呼び出し側は削らず警告）。
+export function carveField(f: Field, claim: Rect, minSize = 6): Field | null {
+  const pieces = [f.rect, ...(f.extras ?? [])]
+    .flatMap((r) => subtractRect(r, claim, minSize));
+  if (pieces.length === 0) return null;
+  let bi = 0;
+  pieces.forEach((r, i) => {
+    if (r.w * r.h > pieces[bi].w * pieces[bi].h) bi = i;
+  });
+  return { ...f, rect: pieces[bi],
+           extras: pieces.filter((_r, i) => i !== bi) };
+}
+
+/// テンプレート全体の重なりを一括で解消する（保存時に使う）。
+/// 各欄の参照先・追加領域を「主張」として、他の文字欄を切り抜く。
+/// 切り抜けないもの（選択式・完全に覆われた欄）は skipped に返し、
+/// 呼び出し側が警告する（保存自体は続け、コア検証が最終判定する）。
+export function resolveOverlaps(fields: Field[]): {
+  fields: Field[]; carved: string[]; skipped: string[];
+} {
+  let fs = fields;
+  const carved = new Set<string>();
+  const skipped = new Set<string>();
+  const claims: { rect: Rect; owner: string }[] = [];
+  for (const f of fields) {
+    if (f.fallback) claims.push({ rect: f.fallback, owner: f.uid });
+    for (const ex of f.extras ?? []) claims.push({ rect: ex, owner: f.uid });
+  }
+  for (const c of claims) {
+    fs = fs.map((f) => {
+      if (f.uid === c.owner) return f;
+      const touches = [f.rect, ...(f.extras ?? [])]
+        .some((r) => _rectsTouch(r, c.rect));
+      if (!touches) return f;
+      if (f.kind !== "text") { skipped.add(f.field_id); return f; }
+      const next = carveField(f, c.rect);
+      if (!next) { skipped.add(f.field_id); return f; }
+      carved.add(f.field_id);
+      return next;
+    });
+  }
+  return { fields: fs, carved: [...carved], skipped: [...skipped] };
+}
+
+const _rectsTouch = (a: Rect, b: Rect) =>
+  a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
 /// 成功なら結合後の A を、できない場合は理由の文字列を返す。
 export function absorbField(a: Field, b: Field): Field | string {
@@ -530,7 +598,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
   };
 
-  const buildTemplate = () => {
+  const buildTemplate = (fieldList: Field[] = fields) => {
     // 優先順: 実際に開いた画像の寸法 > 開いたテンプレートの image > 新規既定値
     const W = imgSize?.w ?? meta.current.image?.width ?? 2490;
     const H = imgSize?.h ?? meta.current.image?.height ?? 3510;
@@ -542,7 +610,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         source: { page_offset: 0, rect: { x: 0, y: y0, w: W, h: y1 - y0 } },
         exclusions: excls.filter((e) => inFace(e.rect.y)).map((e) => ({
           id: e.id, rect: { ...e.rect, y: e.rect.y - y0 } })),
-        fields: fields.filter((f) => inFace(f.rect.y)).map((f) => ({
+        fields: fieldList.filter((f) => inFace(f.rect.y)).map((f) => ({
           field_id: f.field_id, kind: f.kind,
           rect: { ...f.rect, y: f.rect.y - y0 },
           ...(f.kind === "text" && f.fallback
@@ -576,7 +644,23 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const saveTemplate = async () => {
     const p = await invoke<string | null>("pick_json", { save: true });
     if (!p) return;
-    await invoke("write_text", { path: p, content: JSON.stringify(buildTemplate(), null, 2) });
+    // 保存直前に重なりを一括解消する。ドロップ時の自動切り抜きは
+    // 「置いた瞬間」にしか効かないため、開き直した下書きなど**以前から
+    // 重なったままの状態**はここで拾う（ユーザー報告 2026-08-31）
+    const resolved = resolveOverlaps(fields);
+    if (resolved.carved.length) {
+      setFields(resolved.fields);
+      setSel(null);
+    }
+    const carveNote = resolved.carved.length
+      ? `重なった欄を自動で切り抜きました: ${resolved.carved.join("、")}。`
+      : "";
+    if (resolved.skipped.length) {
+      setErrMsg(`切り抜けない欄があります: ${resolved.skipped.join("、")}`
+        + "（選択式・完全に覆われた欄は自動調整できません）");
+    }
+    await invoke("write_text",
+      { path: p, content: JSON.stringify(buildTemplate(resolved.fields), null, 2) });
     markDirty(false);
     // 保存物をコアで検証（§8-14: エディタの JSON をコアがそのまま読めること）
     try {
@@ -585,11 +669,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.check === "template");
       if (tpl?.ok) {
-        setErrMsg("");
+        if (!resolved.skipped.length) setErrMsg("");
         // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
         // 一目で分かるように・ユーザー指摘 2026-08-31）
         const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
-        setMsg(`保存＋コア検証 OK（`
+        setMsg(carveNote + `保存＋コア検証 OK（`
           + (tpl.cells != null
              ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
                + (split ? `＋分割+${split}` : "") + `＋管理6`
@@ -655,6 +739,40 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // 枠の短辺の 1/3 でキャップして、ハンドル同士と内部（移動）を食わない
   const grabTol = (r: Rect) =>
     Math.min(12 / zoom, Math.max(4, Math.min(r.w, r.h) / 3));
+
+  // 置いた/動かした枠（claim）の下にある他の文字欄を自動で切り抜く。
+  // 「後から置いた枠が勝つ」——重なりを手で組み直す手間と保存時の
+  // 重なりエラーを無くす（ユーザー要望 2026-08-31）。切り抜けないもの
+  // （選択式・完全に覆った欄）はそのまま残し、保存時の検証が受け止める。
+  // 判定は閉包の fields から先に計算し、setFields は写像1回だけにする
+  // （updater 内で配列に push すると StrictMode の二重実行で重複する）
+  const autoCarve = (claim: Rect, ownerUid: string) => {
+    const carved = new Map<string, Field>();
+    const carvedNames: string[] = [];
+    const skipped: string[] = [];
+    for (const f of fields) {
+      if (f.uid === ownerUid) continue;
+      const touches = [f.rect, ...(f.extras ?? [])]
+        .some((r) => _rectsTouch(r, claim));
+      if (!touches) continue;
+      if (f.kind !== "text") { skipped.push(f.field_id); continue; }
+      const next = carveField(f, claim);
+      if (!next) { skipped.push(f.field_id); continue; }
+      carved.set(f.uid, next);
+      carvedNames.push(f.field_id);
+    }
+    if (carved.size)
+      setFields((fs) => fs.map((f) => carved.get(f.uid) ?? f));
+    if (carvedNames.length || skipped.length) {
+      const parts: string[] = [];
+      if (carvedNames.length)
+        parts.push(`重なった欄を自動で切り抜きました: ${carvedNames.join("、")}（Ctrl+Z で戻せます）`);
+      if (skipped.length)
+        parts.push(`切り抜けない欄があります: ${skipped.join("、")}（選択式・完全に覆われた欄は自動調整できません。枠を見直してください）`);
+      setMsg(parts.join(" ／ "));
+      if (carvedNames.length) markDirty(true);
+    }
+  };
 
   // 欄の部位（主／参照先／追加領域 n）から矩形を引く
   const partRect = (f: Field | undefined, part?: string): Rect | null => {
@@ -816,6 +934,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const onUp = () => {
     const d = drag.current;
     drag.current = null;
+    // 欄（主・参照先・領域）の移動/リサイズを離した位置で、下の文字欄を
+    // 自動切り抜き。矢印ナッジでは発動しない（1px 刻みの通過で隣の欄を
+    // 少しずつ削ってしまうため。細かい重なりは保存時の検証が受け止める）
+    if (d && (d.mode === "move" || d.mode.startsWith("resize-"))
+        && sel?.type === "field") {
+      const claim = partRect(fields.find((v) => v.uid === sel.uid), sel.part);
+      if (claim) autoCarve(claim, sel.uid);
+    }
     if (!d || !d.mode.startsWith("draw-") || !pending) return;
     if (pending.w < 8 || pending.h < 8) { setPending(null); return; }
     if (d.mode === "draw-extra") {
@@ -830,6 +956,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         setSel({ type: "field", uid: uid0, part: `extra:${idx}` });
         markDirty(true);
         setMsg("領域を追加しました（同じ欄の一部として読まれます）");
+        autoCarve(pending, uid0);
       }
       setExTarget(null); setPending(null);
       return;
@@ -842,6 +969,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         setSel({ type: "field", uid: uid0, part: "fallback" });
         setFbTarget(null); setPending(null); markDirty(true);
         setMsg("参照先の枠を追加しました（主の枠が空のときだけ読まれます）");
+        autoCarve(pending, uid0);
       }
       return;
     }
@@ -854,6 +982,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       const f: Field = { uid: uid(), field_id: `field_${n}`,
                          kind: "text", rect: pending, marks: [] };
       setFields((fs) => [...fs, f]); setSel({ type: "field", uid: f.uid });
+      autoCarve(pending, f.uid);
       setPending(null); markDirty(true);
     } else if (d.mode === "draw-excl") {
       const usedE = new Set(excls.map((e) => e.id));   // 欄と同じく衝突回避（M-15）
@@ -1087,7 +1216,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         Ctrl+0: 全体表示 ／ Ctrl+1: 原寸 ／ Ctrl+「+」「-」: 拡大縮小<br />
         矢印キー: 選択した枠を1px移動（Shift で10px）／ Delete: 削除<br />
         Ctrl+Z: 元に戻す ／ Ctrl+Y: やり直し ／ Esc: 選択解除<br />
-        Ctrl+クリック: 重なった枠を1枚ずつ下へ選択</p></div>;
+        Ctrl+クリック: 重なった枠を1枚ずつ下へ選択</p>
+      <p className="note">枠を重ねて置くと、下の文字欄は自動で切り抜かれて
+        L字になります（Ctrl+Z で戻せます）</p></div>;
     if (sel.type === "field") {
       const f = fields.find((x) => x.uid === sel.uid);
       if (!f) return null;
