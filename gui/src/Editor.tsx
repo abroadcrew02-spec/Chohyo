@@ -504,6 +504,146 @@ export function tableColumnOrderNote(
   return `表の中で${index + 1}番目・帳票では左から${rank}番目`;
 }
 
+/// 出力列の並び（issue #66 段6・FR-2.2・AC-2.4）を読み込み時／直近保存時の基準と
+/// 比べるためのスナップショット。field_id ではなく uid・列名で比較する——field_id
+/// や列名は編集で変わりうるが uid は不変（列名は同一テーブル内での重複が
+/// 想定しづらいため、そのテーブルの列順の識別にそのまま使う）
+export type OutputOrderSnapshot = {
+  fieldUids: string[]; tableUids: string[];
+  tableColumns: { uid: string; names: string[] }[];
+};
+export function outputOrderSnapshot(fields: Field[], tables: Table[]): OutputOrderSnapshot {
+  return {
+    fieldUids: fields.map((f) => f.uid),
+    tableUids: tables.map((t) => t.uid),
+    tableColumns: tables.map((t) => ({ uid: t.uid, names: t.columns.map((c) => c.name) })),
+  };
+}
+const _sameOrder = (a: string[], b: string[]): boolean =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
+/// 読み込み時／直近保存時（loaded）から現在（current）までに、出力へ影響する
+/// 並び（単発欄の配列順・表の配列順・各表内の列の配列順）が変わったかどうか。
+/// 基準が無ければ（初回未読込等）false 側に倒す——並べ替えガードを不必要に
+/// 発火させない（保存自体は従来どおり進められる）
+export function outputOrderChanged(
+  loaded: OutputOrderSnapshot | null, current: OutputOrderSnapshot): boolean {
+  if (!loaded) return false;
+  if (!_sameOrder(loaded.fieldUids, current.fieldUids)) return true;
+  if (!_sameOrder(loaded.tableUids, current.tableUids)) return true;
+  if (loaded.tableColumns.length !== current.tableColumns.length) return true;
+  const curByUid = new Map(current.tableColumns.map((t) => [t.uid, t.names]));
+  for (const lt of loaded.tableColumns) {
+    const cur = curByUid.get(lt.uid);
+    if (!cur || !_sameOrder(lt.names, cur)) return true;
+  }
+  return false;
+}
+
+/// 単発欄の rect / fallback / extras の座標不変ガード（issue #66 段6・FR-2.2・
+/// AC-2.4）に使うジオメトリのスナップショット。resolveOverlaps 前後で撮り、
+/// geometryUnchanged で突き合わせる
+export type FieldGeometrySnapshot = {
+  uid: string; rect: Rect; fallback: Rect | null; extras: Rect[];
+};
+export function fieldGeometrySnapshot(fields: Field[]): FieldGeometrySnapshot[] {
+  return fields.map((f) => ({
+    uid: f.uid, rect: f.rect, fallback: f.fallback ?? null, extras: f.extras ?? [],
+  }));
+}
+const _rectEq = (a: Rect, b: Rect): boolean =>
+  a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+/// 並べ替えを含む保存では resolveOverlaps による自動調整（切り抜き）を許さない
+/// （付録A・U-2）。before/after で1px でもずれた欄があれば false——呼び出し側は
+/// 保存を中止する。順序が変わっていない保存では呼ばない（このガードの対象外・
+/// 従来どおり切り抜きを許す）
+export function geometryUnchanged(
+  before: FieldGeometrySnapshot[], after: FieldGeometrySnapshot[]): boolean {
+  if (before.length !== after.length) return false;
+  const byUid = new Map(after.map((a) => [a.uid, a]));
+  for (const b of before) {
+    const a = byUid.get(b.uid);
+    if (!a) return false;
+    if (!_rectEq(b.rect, a.rect)) return false;
+    if ((b.fallback === null) !== (a.fallback === null)) return false;
+    if (b.fallback && a.fallback && !_rectEq(b.fallback, a.fallback)) return false;
+    if (b.extras.length !== a.extras.length) return false;
+    for (let i = 0; i < b.extras.length; i++) {
+      if (!_rectEq(b.extras[i], a.extras[i])) return false;
+    }
+  }
+  return true;
+}
+
+/// 並べ替えを含む保存で自動調整（切り抜き）が起きたときに保存を中止する理由文
+/// （issue #66 段6・付録A）。「保存していません」系の文言（errbox）と統一する
+export function reorderCarveBlockedNotice(): string {
+  return "保存していません: 並べ替えを含む保存では枠の自動調整は行えません。"
+    + "先に重なりを解消してから並べ替えてください。";
+}
+
+/// 保存後の順序変化報告（issue #66 段7・FR-2.6・AC-2.10）。並べ替えを含む保存の
+/// 成功サマリにだけ添える1行——「順序が変わった」ことと「欄数自体は変わって
+/// いない」ことをセットで伝える。件数の食い違い（増減）は saveDiffNote が
+/// 既に検知・報告しているので、ここでは並べ替えの有無だけを言う。warnbox
+/// （確認を求める・K-M3）には出さない——呼び出し側は setMsg 側にだけ足すこと
+export function orderChangeReportNote(
+  orderChangedThisSave: boolean, fieldCount: number): string | null {
+  return orderChangedThisSave ? `列順を変更（欄 ${fieldCount} は増減なし）` : null;
+}
+
+/// ある面（表面/裏面）に属する単発欄だけを、配列順を保ったまま取り出す
+/// （issue #66 段7・AC-2.1）。buildTemplate の face() 内の inFace 判定と
+/// 同じ述語——ここで抽出することで「並べ替え後に buildTemplate が書く
+/// 配列順が実際に変わる」ことをテストできる（buildTemplate 自体はコンポーネント
+/// の閉包状態に依存し export できないため）
+export function fieldsForFace(
+  fields: Field[], faceId: "front" | "back", splitY: number, imgH: number): Field[] {
+  const [y0, y1] = faceId === "front" ? [0, splitY] : [splitY, imgH];
+  return fields.filter((f) => f.rect.y >= y0 && f.rect.y < y1);
+}
+
+/// 出力列タブでの単発欄の並べ替え（issue #66 段7・FR-2.1・AC-2.1・AC-2.2・
+/// 付録A）。移動対象と同じ面（表面/裏面）内で、配列順でいちばん近い同面の欄と
+/// 入れ替える——面をまたぐ隣接は探さない（面またぎ移動は UI に存在しない構造で
+/// 担保する・AC-2.2）。面の先頭/末尾（3閉区間の境界）では隣が無いので null。
+/// 呼び出し側はこれで [↑][↓] を disabled にする（C-2）
+export function moveFieldOutputOrder(
+  fields: Field[], uid: string, dir: "up" | "down", splitY: number): Field[] | null {
+  const face = (f: Field): "front" | "back" => (f.rect.y < splitY ? "front" : "back");
+  const i = fields.findIndex((f) => f.uid === uid);
+  if (i === -1) return null;
+  const sameFace = face(fields[i]);
+  const step = dir === "up" ? -1 : 1;
+  let j = i + step;
+  while (j >= 0 && j < fields.length && face(fields[j]) !== sameFace) j += step;
+  if (j < 0 || j >= fields.length) return null;
+  const next = fields.slice();
+  [next[i], next[j]] = [next[j], next[i]];
+  return next;
+}
+
+/// 表の内部列（.colrow）の並べ替え（issue #66 段7・FR-2.1・AC-2.3）。220列中
+/// 200列を動かす本体——同じ表の中で隣接する列と入れ替えるだけの単純な操作
+export function moveTableColumnOrder(
+  columns: Column[], index: number, dir: "up" | "down"): Column[] | null {
+  const j = dir === "up" ? index - 1 : index + 1;
+  if (index < 0 || index >= columns.length || j < 0 || j >= columns.length) return null;
+  const next = columns.slice();
+  [next[index], next[j]] = [next[j], next[index]];
+  return next;
+}
+
+/// 表内列の並べ替えが影響する範囲の事前1行（issue #66 段7・付録A）。行数は
+/// blocks から即座に求まるローカルな情報（常に分かる）。列数（行展開後の
+/// CSV 列数）は column_names から実引きした tableColumnRangeInfo.count を渡す
+/// ——未取得のときは行数だけの文言に落とす（誤った列数を言わない・FR-0.1）
+export function tableColumnReorderImpactNote(
+  totalRows: number, totalColumns: number | null): string {
+  return totalColumns == null
+    ? `この変更は ${totalRows} 行分の並びに影響します`
+    : `この変更は ${totalRows} 行分・${totalColumns} 列の並びに影響します`;
+}
+
 /// 保存前確認モーダルに出す⚠一覧を組み立てる（FR-1.6・付録A）。純粋な判定
 /// のみ——実際の確認 UI（モーダル）の表示は呼び出し側（saveTemplate）が
 /// 行う。4件のいずれも該当しなければ空配列を返し、呼び出し側はモーダルを
@@ -732,6 +872,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // 追従しない（次の verify＝保存成功まで据え置き）が、その場合は
   // outputCheckboxLabel が列番号を省略する（誤った番号を言わないため）
   const [columnNames, setColumnNames] = useState<string[] | null>(null);
+  // 読み込み時／直近保存時点の出力順の基準（issue #66 段6・FR-2.2・AC-2.4）。
+  // 並べ替えを含む保存かどうかの判定・段7の列位置表示の失効判定の両方に使う
+  const [loadedOrder, setLoadedOrder] = useState<OutputOrderSnapshot | null>(null);
   // 右パネルのタブ（issue #66 段3・FR-1.7・C-1）。「選択中」欄の詳細か
   // 「出力列」一覧かを切り替える
   const [panelTab, setPanelTab] = useState<"selected" | "output">("selected");
@@ -756,6 +899,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // （issue #66 段3・FR-1.8・C-1）。sel（選択）とは独立——一覧を眺めている
   // だけで選択状態を変えたくない
   const [hlFieldUid, setHlFieldUid] = useState<string | null>(null);
+  // 並べ替え成功時の行フラッシュ（issue #66 段7・付録A・C-2 success）。
+  // 600ms 後に自動で消える。連打時は最後の1回だけ光らせる——毎クリックで
+  // タイマーを張り直す（古いタイマーは clearTimeout）ので必ず「最後の
+  // クリックから600ms」で消える
+  const [flashUid, setFlashUid] = useState<string | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashRow = (uid: string) => {
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    setFlashUid(uid);
+    flashTimer.current = setTimeout(() => setFlashUid(null), 600);
+  };
   const drag = useRef<{ mode: string; start: { x: number; y: number };
                         orig?: Rect; extra?: { x: number; y: number } } | null>(null);
   // 開いたテンプレートのメタ情報。faces 以外を編集画面は触らないが、保存時に
@@ -1116,6 +1270,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
     setLoadedExcls(es.map((e) => ({ id: e.id, rect: e.rect })));
+    // 出力順の読み込み時基準（issue #66 段6・FR-2.2）。この後の並べ替えが
+    // あったかどうかを、この時点の配列順と比べて判定する
+    setLoadedOrder(outputOrderSnapshot(fs, ts));
     // 欄数・金額列数の読み込み時基準（issue #59 H-9）は、この関数の呼び出し側
     // （auto-load useEffect・loadTemplate）が refreshLoadedCounts で verify
     // 応答から別途取得する。toEditorState 自身は同期関数で verify（非同期）を
@@ -1219,7 +1376,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         source: { page_offset: 0, rect: { x: 0, y: y0, w: W, h: y1 - y0 } },
         exclusions: excls.filter((e) => inFace(e.rect.y)).map((e) => ({
           id: e.id, rect: { ...e.rect, y: e.rect.y - y0 } })),
-        fields: fieldList.filter((f) => inFace(f.rect.y)).map((f) => ({
+        // 配列順をそのまま書く（既存挙動・変更なし）。抽出先は fieldsForFace
+        // （issue #66 段7・AC-2.1・付録A・fieldList.filter(inFace) と同じ述語）
+        fields: fieldsForFace(fieldList, id, splitY, H).map((f) => ({
           field_id: f.field_id, kind: f.kind,
           rect: { ...f.rect, y: f.rect.y - y0 },
           ...(f.kind === "text" && f.fallback
@@ -1318,10 +1477,26 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     const isShipped = await invoke<boolean>("is_shipped_template_path", { path: p })
       .catch(() => false);
 
+    // 座標不変ガード（issue #66 段6・FR-2.2・AC-2.4・付録A）: 並べ替えを含む
+    // 保存では resolveOverlaps の自動調整（切り抜き）を許さない。両立を許すと
+    // 「並べ替えたつもりが枠まで動いていた」という気づきにくい破壊が起きうる
+    // ため、before/after の座標を突き合わせて1px でもずれたら保存自体を
+    // 中止する（まだファイルに何も書いていない時点なので中止コストは低い）。
+    // 順序が変わっていない保存は従来どおり切り抜きを許す（このガードの対象外）
+    const orderChangedNow = outputOrderChanged(loadedOrder, outputOrderSnapshot(fields, tables));
+    const geomBefore = fieldGeometrySnapshot(fields);
+
     // 保存直前に重なりを一括解消する。ドロップ時の自動切り抜きは
     // 「置いた瞬間」にしか効かないため、開き直した下書きなど**以前から
     // 重なったままの状態**はここで拾う（ユーザー報告 2026-08-31）
     const resolved = resolveOverlaps(fields, splitY);
+
+    if (orderChangedNow && !geometryUnchanged(geomBefore, fieldGeometrySnapshot(resolved.fields))) {
+      setMsg("");
+      setErrMsg(reorderCarveBlockedNotice());
+      return;
+    }
+
     if (resolved.carved.length) {
       setFields(resolved.fields);
       setSel(null);
@@ -1468,6 +1643,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells,
                         exclusions: exclCount, columns: tpl.columns });
       setColumnNames(Array.isArray(tpl.column_names) ? tpl.column_names : null);
+      // 出力順の基準も保存成功のたびに更新する（issue #66 段6・FR-2.2）。
+      // resolved.fields／tables は今回実際に書き出した並びそのもの
+      const orderNote = orderChangeReportNote(orderChangedNow, tpl.cells ?? resolved.fields.length);
+      setLoadedOrder(outputOrderSnapshot(resolved.fields, tables));
       setMsg(carveNote + `保存＋コア検証 OK（`
         + (tpl.cells != null
            ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
@@ -1477,7 +1656,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         + `・除外 ${exclCount}`
         + (disabledCount ? `・うち出力しない ${disabledCount} 欄` : "")
         + `）: ${p} ／ 読み込み時から: ${diff.text}`
-        + (popNote ? ` ／ ${popNote}` : ""));
+        + (popNote ? ` ／ ${popNote}` : "")
+        + (orderNote ? ` ／ ${orderNote}` : ""));
       // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
       // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
       // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）。
@@ -1907,6 +2087,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     history.current = { past: [], future: [] };
     snapRef.current = null;   // 次の静止時点が新しい基準になる
   };
+  // 1クリック=1 Undo コマ（issue #66 段7・K-M4）。通常の編集は400ms静止で
+  // 1コマにまとめる下の useEffect に任せるが、並べ替えボタンは連打されても
+  // 1回1回を別のコマにしたい（「3つ上げたつもりが1回のUndoで全部戻る」を
+  // 防ぐ）ため、クリック時点で待たずに history へ積む
+  const pushHistoryNow = (next: Snap) => {
+    const prev = snapRef.current ?? { fields, tables, excls, splitY };
+    history.current.past.push(prev);
+    if (history.current.past.length > 100) history.current.past.shift();
+    history.current.future = [];
+    snapRef.current = next;
+  };
   const restoreSnap = (snap: Snap) => {
     restoring.current = true;
     snapRef.current = snap;
@@ -2009,6 +2200,31 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const updateTable = (u: string, patch: Partial<Table>) => {
     setTables((ts) => ts.map((t) => t.uid === u ? { ...t, ...patch } : t)); markDirty(true);
   };
+  // 出力列タブの [↑][↓]（issue #66 段7・FR-2.1・付録A）。境界（面の先頭/末尾）
+  // では moveFieldOutputOrder が null を返す——ボタン側も同じ判定で disabled に
+  // するので通常は呼ばれないが、防御的に何もしない
+  const moveField = (uid: string, dir: "up" | "down") => {
+    const next = moveFieldOutputOrder(fields, uid, dir, splitY);
+    if (!next) return;
+    pushHistoryNow({ fields: next, tables, excls, splitY });
+    setFields(next);
+    markDirty(true);
+    flashRow(uid);
+  };
+  // .colrow の [↑][↓]（issue #66 段7・FR-2.1・AC-2.3）。表の内部列の並べ替え。
+  // 移動後の行（新しい位置）を光らせるため、flash の識別子は `表uid:新index`
+  // にする（列自体は uid を持たない・name は重複しうるので配列位置で識別）
+  const moveTableColumn = (tableUid: string, index: number, dir: "up" | "down") => {
+    const t = tables.find((x) => x.uid === tableUid);
+    if (!t) return;
+    const next = moveTableColumnOrder(t.columns, index, dir);
+    if (!next) return;
+    const nextTables = tables.map((x) => x.uid === tableUid ? { ...x, columns: next } : x);
+    pushHistoryNow({ fields, tables: nextTables, excls, splitY });
+    setTables(nextTables);
+    markDirty(true);
+    flashRow(`${tableUid}:${dir === "up" ? index - 1 : index + 1}`);
+  };
   const removeSel = () => {
     if (!sel) return;
     if (sel.type === "field") {
@@ -2081,12 +2297,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             出力する{!isOutput(f) && <span className="note" style={{ marginLeft: 6 }}>（現在: 出力しない）</span>}
           </label>
           <p className="note">この枠の読み取り結果は CSV・Excel の
-            「{f.field_id || "（名前未設定）"}」列{isOutput(f) && (() => {
+            「{f.field_id || "（名前未設定）"}」列{isOutput(f) && !orderChangedSinceLoad && (() => {
               const posNote = fieldColumnPositionNote(
                 findColumnPositions(columnNames, f.field_id), columnNames?.length ?? null);
               return posNote ? `（${posNote}）` : "";
             })()}へ出力されます{!isOutput(f)
-              ? "——ただし今は出力しない設定です（枠・読み取りは維持されます）" : ""}</p>
+              ? "——ただし今は出力しない設定です（枠・読み取りは維持されます）"
+              : (isOutput(f) && orderChangedSinceLoad
+                  ? "——並べ替え後のため、列番号は保存して検証すると確定します" : "")}</p>
           <label>欄の名前（出力の列名になります）<input value={f.field_id}
             onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
           <label>欄の種類
@@ -2181,16 +2399,23 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         <h3>選択中のくり返し行（表）</h3>
         {(() => {
           const range = tableColumnRangeInfo(columnNames, t.table_id);
-          if (!range) return (
-            <p className="note">各行×各列が CSV・Excel の
-              「{t.table_id}_行番号_列名」列（例: {t.table_id}_01_
-              {t.columns[0]?.name || "列名"}）へ1行ずつ出力されます</p>);
-          const rangeText = range.first === range.last
-            ? `${range.first}列目` : `${range.first}〜${range.last}列目`;
-          return (
-            <p className="note">この表は CSV・Excel の {rangeText}（{range.count}列）を占めます。
-              各行が {t.table_id}_行番号_列名として展開されます（例: {range.exampleName}
-              = {range.examplePosition}列目）</p>);
+          const totalRows = t.blocks.reduce((sum, b) => sum + b.rows, 0);
+          return (<>
+            {range
+              ? <p className="note">この表は CSV・Excel の
+                  {range.first === range.last
+                    ? `${range.first}列目` : `${range.first}〜${range.last}列目`}
+                  （{range.count}列）を占めます。各行が {t.table_id}_行番号_列名として
+                  展開されます（例: {range.exampleName} = {range.examplePosition}列目）</p>
+              : <p className="note">各行×各列が CSV・Excel の
+                  「{t.table_id}_行番号_列名」列（例: {t.table_id}_01_
+                  {t.columns[0]?.name || "列名"}）へ1行ずつ出力されます</p>}
+            {/* issue #66 段7・付録A: 列の並べ替えが影響する範囲の事前注記。
+                行数は blocks から常に分かる・列数は column_names 実引き（count）
+                が取れたときだけ添える */}
+            <p className="note">{tableColumnReorderImpactNote(totalRows, range?.count ?? null)}
+              （[↑][↓] は行を含む列全体の並びに影響します）</p>
+          </>);
         })()}
         <label>表の名前 <input value={t.table_id}
           onChange={(e) => updateTable(t.uid, { table_id: e.target.value })} /></label>
@@ -2214,9 +2439,19 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         {t.columns.length === 0 &&
           <p className="note">列がありません。「くり返し行（家族・明細）」で外枠を描くと生成されます。</p>}
         {t.columns.map((c, i) => (
-          <div className="colrow" key={i}
+          <div className={`colrow${flashUid === `${t.uid}:${i}` ? " flash" : ""}`} key={i}
             onMouseEnter={() => setHlCol(i)} onMouseLeave={() => setHlCol(null)}
             onFocus={() => setHlCol(i)} onBlur={() => setHlCol(null)}>
+            {/* issue #66 段7・FR-2.1・AC-2.3: 220列中200列を動かす本体。同じ表の
+                中で隣接する列と入れ替える（面またぎ・表またぎの概念がそもそも無い） */}
+            <button type="button" className="btn" disabled={i === 0}
+              title={i === 0 ? "この表の先頭列です" : undefined}
+              aria-label={`${c.name || `列${i + 1}`} を1つ上へ`}
+              onClick={() => moveTableColumn(t.uid, i, "up")}>↑</button>
+            <button type="button" className="btn" disabled={i === t.columns.length - 1}
+              title={i === t.columns.length - 1 ? "この表の末尾列です" : undefined}
+              aria-label={`${c.name || `列${i + 1}`} を1つ下へ`}
+              onClick={() => moveTableColumn(t.uid, i, "down")}>↓</button>
             <input className="w8" value={c.name} title="列名"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, name: e.target.value } : v) })} />
@@ -2266,7 +2501,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             <label style={{ flexDirection: "row", alignItems: "center", gap: 4, margin: 0 }}>
               <input type="checkbox" checked={isOutput(c)}
                 aria-label={outputCheckboxLabel(c.name || `列${i + 1}`, isOutput(c),
-                  findTableColumnPositions(columnNames, t.table_id, c.name))}
+                  orderChangedSinceLoad ? null
+                    : findTableColumnPositions(columnNames, t.table_id, c.name))}
                 onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                   j === i ? { ...v, output: e.target.checked ? undefined : false } : v) })} />
               <span className="lbl">出力</span>
@@ -2288,30 +2524,48 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       </div>);
   };
 
-  // 「出力列」タブ（issue #66 段3・FR-1.8・付録A・C-1/C-2）。枠を1つずつ
-  // クリックしないと出力対象外が分からない状態にしない。面見出しで区切り、
-  // 管理6列は固定表示、表は1行ユニット（第1弾は並べ替えボタンなし・
-  // [開く]のみ——並べ替え自体は段7・第2弾の範囲）。対象外行は列番号「—」
+  // 「出力列」タブ（issue #66 段3・FR-1.8・付録A・C-1/C-2、段7・FR-2.1・FR-2.5・
+  // AC-2.1〜2.3/2.5/2.8〜2.10 で並べ替えボタンを追加）。枠を1つずつクリックしないと
+  // 出力対象外が分からない状態にしない。面見出しで区切り、管理6列は固定表示、
+  // 表は1行ユニット（並べ替えボタンなし・[開く]のみ——表ユニットは面の
+  // いちばん後ろに固定される。理由は buildTemplate の面オブジェクトが
+  // fields→tables の順で JSON を書く構造そのものにある）。対象外行は列番号「—」。
+  // [↑][↓] は同じ面（表面/裏面）の欄どうしでしか動かない——面をまたぐ隣接ボタンは
+  // そもそも存在しない（AC-2.2・UI に存在しない構造で担保）
   const outputListPanel = () => {
     const front = { fields: fields.filter((f) => f.rect.y < splitY),
                     tables: tables.filter((t) => t.blocks[0] && t.blocks[0].y < splitY) };
     const back = { fields: fields.filter((f) => f.rect.y >= splitY),
                    tables: tables.filter((t) => t.blocks[0] && t.blocks[0].y >= splitY) };
     const fieldRow = (f: Field) => {
-      const pos = findColumnPositions(columnNames, f.field_id);
+      const pos = orderChangedSinceLoad ? null : findColumnPositions(columnNames, f.field_id);
       const out = isOutput(f);
+      const name = f.field_id || "（名前未設定）";
+      const canUp = moveFieldOutputOrder(fields, f.uid, "up", splitY) !== null;
+      const canDown = moveFieldOutputOrder(fields, f.uid, "down", splitY) !== null;
       return (
-        <div key={f.uid} className={`panel-outrow${out ? "" : " off"}`}
+        <div key={f.uid}
+          className={`panel-outrow${out ? "" : " off"}${flashUid === f.uid ? " flash" : ""}`}
           onMouseEnter={() => setHlFieldUid(f.uid)} onMouseLeave={() => setHlFieldUid(null)}
           onFocus={() => setHlFieldUid(f.uid)} onBlur={() => setHlFieldUid(null)}>
+          <span className="reorder-btns">
+            <button type="button" className="btn" disabled={!canUp}
+              title={canUp ? undefined : "面の先頭です"}
+              aria-label={`${name} を1つ上へ`}
+              onClick={() => moveField(f.uid, "up")}>↑</button>
+            <button type="button" className="btn" disabled={!canDown}
+              title={canDown ? undefined : "面の末尾です"}
+              aria-label={`${name} を1つ下へ`}
+              onClick={() => moveField(f.uid, "down")}>↓</button>
+          </span>
           <span className="colpos">{out ? (pos ? pos.first : "") : "—"}</span>
           <input type="checkbox" checked={out}
-            aria-label={outputCheckboxLabel(f.field_id || "（名前未設定）", out, pos)}
+            aria-label={outputCheckboxLabel(name, out, pos)}
             onChange={(e) => updateField(f.uid, { output: e.target.checked ? undefined : false })} />
           <button className="name" type="button" style={{ textAlign: "left",
             background: "none", border: "none", cursor: "pointer", padding: 0, font: "inherit" }}
             onClick={() => { setSel({ type: "field", uid: f.uid }); setPanelTab("selected"); }}>
-            {f.field_id || "（名前未設定）"}
+            {name}
           </button>
         </div>);
     };
@@ -2319,7 +2573,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       <div key={t.uid} className="panel-outrow"
         onMouseEnter={() => setHlFieldUid(t.uid)} onMouseLeave={() => setHlFieldUid(null)}
         onFocus={() => setHlFieldUid(t.uid)} onBlur={() => setHlFieldUid(null)}>
-        <span className="colpos">表</span>
+        <span className="reorder-btns" title="表は面のいちばん後ろに出力されます" />
+        <span className="colpos" title="表は面のいちばん後ろに出力されます">表</span>
         <span className="name">{t.table_id}（列{t.columns.length}・うち出力
           {t.columns.filter((c) => isOutput(c)).length}）</span>
         <button className="btn" type="button" style={{ minHeight: 28, padding: "3px 10px" }}
@@ -2339,13 +2594,19 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           ページ番号・ステータス）は常に先頭固定で出力されます（並べ替え対象外）</p>
         {faceSection("表面", front)}
         {faceSection("裏面", back)}
-        <p className="note">列の並べ替えは次回の機能で対応予定です。ここでは
-          「出力する/しない」の切り替えのみ行えます。表の列は「開く」から編集してください</p>
+        <p className="note">[↑][↓] で同じ面（表面/裏面）の欄どうしを並べ替えられます。
+          表は面のいちばん後ろに固定され、内部の列は「開く」から並べ替えてください。
+          並べ替え後は「保存して検証」で列番号が確定します</p>
       </div>);
   };
 
   const templateLoaded = fields.length > 0 || tables.length > 0;
   const outputDisabledTotal = countOutputDisabled(fields, tables);
+  // 並べ替え（段7）で読み込み時の並びから変わっているか（段6 のガードと同じ
+  // 判定）。変わっていれば、CSV・Excel の列番号（column_names 由来）の表示を
+  // 一時的に省く——並べ替え直後は column_names がまだ古い並びのままなので、
+  // 誤った番号を出さないため（FR-0.1）。次の保存成功で解消する
+  const orderChangedSinceLoad = outputOrderChanged(loadedOrder, outputOrderSnapshot(fields, tables));
 
   return (
     <div className="editor">

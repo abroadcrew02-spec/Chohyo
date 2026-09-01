@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,8 +39,12 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, noticeFor, STATUS_JA, outputDisabledNotice } =
-  await import(pathToFileURL(outFile).href);
+// mod（名前空間全体）も保持する。AC-2.5（faces/blocks を並べ替える UI 相当の
+// エクスポートが存在しないことの構造確認）に使う——ここで export した名前
+// だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
+// 並べ替えに相当する名前が無いことを機械的に確認できる
+const mod = await import(pathToFileURL(outFile).href);
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, noticeFor, STATUS_JA, outputDisabledNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -949,6 +953,222 @@ test("tableColumnOrderNote: output:false の列は番号でなく「出力対象
 test("tableColumnOrderNote: 範囲外の index は null（防御的）", () => {
   assert.equal(tableColumnOrderNote([{ x_offset: 0 }], 5, true), null);
   assert.equal(tableColumnOrderNote([{ x_offset: 0 }], -1, true), null);
+});
+
+// ---------------------------------------------------------------- issue #66 段6
+// 座標不変ガード（FR-2.2・AC-2.4）: 並べ替えを含む保存では resolveOverlaps の
+// 自動調整（切り抜き）を許さない
+test("outputOrderSnapshot / outputOrderChanged: 単発欄の並び替えを検知する", () => {
+  const A = { uid: "a", output: undefined }, B = { uid: "b", output: undefined };
+  const loaded = outputOrderSnapshot([A, B], []);
+  assert.equal(outputOrderChanged(loaded, outputOrderSnapshot([A, B], [])), false,
+    "同じ並びなら変化なし");
+  assert.equal(outputOrderChanged(loaded, outputOrderSnapshot([B, A], [])), true,
+    "配列順が入れ替われば変化あり");
+});
+
+test("outputOrderSnapshot / outputOrderChanged: 表の配列順・表内列の並びも検知する", () => {
+  const t1 = { uid: "t1", table_id: "family", columns: [{ name: "続柄" }, { name: "氏名" }] };
+  const t2 = { uid: "t2", table_id: "person", columns: [{ name: "住所" }] };
+  const loaded = outputOrderSnapshot([], [t1, t2]);
+  assert.equal(outputOrderChanged(loaded, outputOrderSnapshot([], [t2, t1])), true,
+    "表どうしの配列順が変われば検知する");
+  const t1Reordered = { ...t1, columns: [{ name: "氏名" }, { name: "続柄" }] };
+  assert.equal(outputOrderChanged(loaded, outputOrderSnapshot([], [t1Reordered, t2])), true,
+    "表の内部列の並びが変われば検知する（.colrow の並べ替え）");
+  assert.equal(outputOrderChanged(loaded, outputOrderSnapshot([], [t1, t2])), false);
+});
+
+test("outputOrderChanged: 基準（loaded）が無ければ false 側に倒す（初回未読込時にガードを誤発火させない）", () => {
+  assert.equal(outputOrderChanged(null, outputOrderSnapshot([{ uid: "a" }], [])), false);
+});
+
+test("fieldGeometrySnapshot / geometryUnchanged: rect・fallback・extras の1px変化も検知する", () => {
+  const base = [{ uid: "a", rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [] }];
+  const before = fieldGeometrySnapshot(base);
+  assert.equal(geometryUnchanged(before, fieldGeometrySnapshot(base)), true, "無変化は true");
+  const rectMoved = [{ uid: "a", rect: { x: 1, y: 0, w: 80, h: 40 }, marks: [] }];
+  assert.equal(geometryUnchanged(before, fieldGeometrySnapshot(rectMoved)), false, "1px でも検知");
+  const fallbackAdded = [{ uid: "a", rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [],
+    fallback: { x: 0, y: 40, w: 80, h: 40 } }];
+  assert.equal(geometryUnchanged(before, fieldGeometrySnapshot(fallbackAdded)), false,
+    "fallback の有無の変化も検知");
+  const extrasAdded = [{ uid: "a", rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [],
+    extras: [{ x: 80, y: 0, w: 20, h: 40 }] }];
+  assert.equal(geometryUnchanged(before, fieldGeometrySnapshot(extrasAdded)), false,
+    "extras の増減も検知");
+});
+
+test("reorderCarveBlockedNotice: 保存中止の理由文（errbox・「保存していません」系）", () => {
+  const text = reorderCarveBlockedNotice();
+  assert.ok(text.startsWith("保存していません:"));
+  assert.ok(text.includes("並べ替え"));
+});
+
+test("orderChangeReportNote: 並べ替えを含む保存の成功サマリにだけ1行足す（FR-2.6・AC-2.10）", () => {
+  assert.equal(orderChangeReportNote(false, 14), null, "順序不変では出さない");
+  assert.equal(orderChangeReportNote(true, 14), "列順を変更（欄 14 は増減なし）");
+});
+
+// AC-2.4 の3ケース（コーディネーター指定の判定マトリクス）を、実際に保存時ガードが
+// 計算する式（outputOrderChanged && !geometryUnchanged）どおりに組み立てて検証する
+const wouldBlockSave = (loadedOrder, fieldsNow, tablesNow, splitY) => {
+  const orderChangedNow = outputOrderChanged(loadedOrder, outputOrderSnapshot(fieldsNow, tablesNow));
+  const before = fieldGeometrySnapshot(fieldsNow);
+  const resolved = resolveOverlaps(fieldsNow, splitY);
+  const after = fieldGeometrySnapshot(resolved.fields);
+  return orderChangedNow && !geometryUnchanged(before, after);
+};
+
+test("AC-2.4 ①: 順序不変・切り抜きあり＝通る（従来どおり自動調整を許す）", () => {
+  const A = { uid: "a", field_id: "A", kind: "text", rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [] };
+  const B = { uid: "b", field_id: "B", kind: "text", rect: { x: 60, y: 0, w: 100, h: 40 }, marks: [] };
+  const loaded = outputOrderSnapshot([A, B], []);
+  assert.equal(wouldBlockSave(loaded, [A, B], []), false);
+});
+
+test("AC-2.4 ②: 順序変更・切り抜き発生＝中止（並べ替えと自動調整を両立させない・付録A）", () => {
+  const A = { uid: "a", field_id: "A", kind: "text", rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [] };
+  const B = { uid: "b", field_id: "B", kind: "text", rect: { x: 60, y: 0, w: 100, h: 40 }, marks: [] };
+  const loaded = outputOrderSnapshot([A, B], []);
+  assert.equal(wouldBlockSave(loaded, [B, A], []), true);
+});
+
+test("AC-2.4 ③: 順序変更・切り抜きなし＝通る（重なりが無ければ並べ替えだけの保存は妨げない）", () => {
+  const A = { uid: "a", field_id: "A", kind: "text", rect: { x: 0, y: 0, w: 80, h: 40 }, marks: [] };
+  const B = { uid: "b", field_id: "B", kind: "text", rect: { x: 200, y: 0, w: 100, h: 40 }, marks: [] };
+  const loaded = outputOrderSnapshot([A, B], []);
+  assert.equal(wouldBlockSave(loaded, [B, A], []), false);
+});
+
+// ---------------------------------------------------------------- issue #66 段7
+// 並べ替え UI（FR-2.1/2.5・AC-2.1〜2.3/2.5/2.8〜2.10）
+test("fieldsForFace: splitY 境界で表面/裏面に分け、配列順は保つ", () => {
+  const A = { uid: "a", rect: { y: 0 } }, B = { uid: "b", rect: { y: 500 } },
+        C = { uid: "c", rect: { y: 1900 } };
+  const H = 3510;
+  assert.deepEqual(fieldsForFace([A, B, C], "front", 1880, H).map((f) => f.uid), ["a", "b"]);
+  assert.deepEqual(fieldsForFace([A, B, C], "back", 1880, H).map((f) => f.uid), ["c"]);
+  // 境界ちょうど（y===splitY）は裏面に属する（buildTemplate の inFace と同じ述語）
+  const D = { uid: "d", rect: { y: 1880 } };
+  assert.deepEqual(fieldsForFace([D], "front", 1880, H), []);
+  assert.deepEqual(fieldsForFace([D], "back", 1880, H).map((f) => f.uid), ["d"]);
+});
+
+test("AC-2.1: 面内での並べ替えで fieldsForFace（buildTemplate と同じ抽出）の配列順が変わる", () => {
+  const A = { uid: "a", rect: { y: 0 } }, B = { uid: "b", rect: { y: 100 } },
+        C = { uid: "c", rect: { y: 200 } };
+  const splitY = 1880, H = 3510;
+  assert.deepEqual(fieldsForFace([A, B, C], "front", splitY, H).map((f) => f.uid), ["a", "b", "c"]);
+  const moved = moveFieldOutputOrder([A, B, C], "b", "up", splitY);
+  assert.deepEqual(fieldsForFace(moved, "front", splitY, H).map((f) => f.uid), ["b", "a", "c"],
+    "B を1つ上へ移動すると buildTemplate が書く配列順（=JSON の列順）も b,a,c になる");
+});
+
+test("moveFieldOutputOrder: 面の先頭/末尾では null（3閉区間の境界・C-2 disabled）", () => {
+  const A = { uid: "a", rect: { y: 0 } }, B = { uid: "b", rect: { y: 100 } };
+  const splitY = 1880;
+  assert.equal(moveFieldOutputOrder([A, B], "a", "up", splitY), null, "面の先頭はこれ以上上へ行けない");
+  assert.equal(moveFieldOutputOrder([A, B], "b", "down", splitY), null, "面の末尾はこれ以上下へ行けない");
+  assert.equal(moveFieldOutputOrder([A, B], "no-such-uid", "up", splitY), null, "存在しない uid は null");
+});
+
+test("moveFieldOutputOrder: 面をまたいだ隣接は探さない（AC-2.2・裏面の欄には動かない）", () => {
+  const front = { uid: "f", rect: { y: 0 } };
+  const back = { uid: "b", rect: { y: 2000 } };
+  const splitY = 1880;
+  // front の唯一の欄は「上」も「下」も同面に隣が無いのでどちらも null。
+  // back の欄が配列の隣にあっても、面が違うので隣接扱いしない
+  assert.equal(moveFieldOutputOrder([front, back], "f", "down", splitY), null);
+  assert.equal(moveFieldOutputOrder([front, back], "back", "up", splitY), null);
+});
+
+test("moveFieldOutputOrder: 配列中に他面の欄が挟まっていても同面の最近傍と入れ替える（インターリーブ耐性）", () => {
+  // 追加操作は常に配列末尾に append されるため、表面の欄の後に裏面の欄を
+  // 挟んでから表面の欄を追加する、といった操作で面が配列中で入り混じりうる。
+  // 配列順: [A(表), X(裏), B(表)]。B を「上」へ動かすと、間の X(裏) は
+  // 飛び越して同面の最近傍（A）と入れ替わるはず
+  const A = { uid: "a", rect: { y: 0 } };
+  const X = { uid: "x", rect: { y: 2000 } };
+  const B = { uid: "b", rect: { y: 100 } };
+  const splitY = 1880;
+  const moved = moveFieldOutputOrder([A, X, B], "b", "up", splitY);
+  assert.deepEqual(moved.map((f) => f.uid), ["b", "x", "a"],
+    "X（裏面）はそのまま・B と A（ともに表面）だけが入れ替わる");
+});
+
+test("moveFieldOutputOrder / moveTableColumnOrder: 入力配列を変更しない（イミュータブル・AC-2.9 の前提）", () => {
+  const A = { uid: "a", rect: { y: 0 } }, B = { uid: "b", rect: { y: 100 } };
+  const fieldsBefore = [A, B];
+  const snapshotBefore = JSON.stringify(fieldsBefore);
+  moveFieldOutputOrder(fieldsBefore, "b", "up", 1880);
+  assert.equal(JSON.stringify(fieldsBefore), snapshotBefore, "元の配列は変更されない（新しい配列を返す）");
+
+  const columns = [{ name: "続柄" }, { name: "氏名" }];
+  const colSnapshot = JSON.stringify(columns);
+  moveTableColumnOrder(columns, 0, "down");
+  assert.equal(JSON.stringify(columns), colSnapshot, "元の columns 配列も変更されない");
+});
+
+test("moveTableColumnOrder: 隣接列と入れ替える・境界は null", () => {
+  const columns = [{ name: "続柄" }, { name: "氏名" }, { name: "生年月日" }];
+  const moved = moveTableColumnOrder(columns, 0, "down");
+  assert.deepEqual(moved.map((c) => c.name), ["氏名", "続柄", "生年月日"]);
+  assert.equal(moveTableColumnOrder(columns, 0, "up"), null, "先頭列はこれ以上上へ行けない");
+  assert.equal(moveTableColumnOrder(columns, 2, "down"), null, "末尾列はこれ以上下へ行けない");
+});
+
+test("AC-2.3: 表内列の並べ替えは、行展開後の全行に反映される（1回の並べ替えで全行が動く）", () => {
+  // 展開規則は table_id_行番号_列名（findTableColumnPositions のコメントと同じ）。
+  // GUI 側で行展開そのものを組み立て直すことはしない（FR-0.1）——ここではその
+  // 規則を使って「1回の列順変更が全行に一様に反映される」ことだけを確認する
+  const expand = (tableId, rows, columns) => {
+    const out = [];
+    for (let r = 1; r <= rows; r++)
+      for (const c of columns) out.push(`${tableId}_${String(r).padStart(2, "0")}_${c.name}`);
+    return out;
+  };
+  const columns = [{ name: "続柄" }, { name: "氏名" }];
+  const before = expand("family", 3, columns);
+  assert.deepEqual(before, [
+    "family_01_続柄", "family_01_氏名",
+    "family_02_続柄", "family_02_氏名",
+    "family_03_続柄", "family_03_氏名"]);
+  const moved = moveTableColumnOrder(columns, 0, "down");   // 続柄・氏名 を入れ替え
+  const after = expand("family", 3, moved);
+  assert.deepEqual(after, [
+    "family_01_氏名", "family_01_続柄",
+    "family_02_氏名", "family_02_続柄",
+    "family_03_氏名", "family_03_続柄"],
+    "3行すべてで 氏名/続柄 の並びが入れ替わっている（1行だけが動くバグは無い）");
+});
+
+test("tableColumnReorderImpactNote: 行数は常に示し、列数は取れたときだけ添える（FR-0.1）", () => {
+  assert.equal(tableColumnReorderImpactNote(28, 140), "この変更は 28 行分・140 列の並びに影響します");
+  assert.equal(tableColumnReorderImpactNote(28, null), "この変更は 28 行分の並びに影響します",
+    "column_names 未取得時は列数を言わない（誤った数字を出さない）");
+});
+
+test("AC-2.5: faces/blocks を並べ替える UI 相当のエクスポートが存在しない（構造確認）", () => {
+  // このバンドルが export している名前の全量（=このモジュールの外から呼べる
+  // 操作の全量）に、面や行ブロックを並べ替える系の名前が無いことを機械的に
+  // 確認する。段7で新設したのは単発欄（フィールド）・表の内部列の並べ替えのみ
+  // 単語境界で見る（部分一致だと reorderCarveBlockedNotice の
+  // "Blocked" が "block" に誤爆する）。camelCase を単語に割ってから判定する
+  const camelWords = (name) =>
+    name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[\s_]+/);
+  const keys = Object.keys(mod);
+  const forbidden = keys.filter((k) => {
+    const words = camelWords(k);
+    const hasTarget = words.includes("face") || words.includes("faces")
+      || words.includes("block") || words.includes("blocks");
+    const hasVerb = words.some((w) => ["move", "reorder", "sort", "swap"].includes(w));
+    return hasTarget && hasVerb;
+  });
+  assert.deepEqual(forbidden, [], `想定外のエクスポートを検出: ${forbidden.join(", ")}`);
+  // 新設した並べ替え関数自体は「欄」「表内列」に限定した名前になっている
+  assert.ok(keys.includes("moveFieldOutputOrder"));
+  assert.ok(keys.includes("moveTableColumnOrder"));
 });
 
 test("saveConfirmWarnings: ⚠が0件ならモーダルを出さない（空配列・C-5 empty）", () => {
