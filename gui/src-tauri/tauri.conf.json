@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "帳票OCRツール",
-        "width": 1280,
-        "height": 860
+        "width": 1040,
+        "height": 720
       }
     ],
     "security": {

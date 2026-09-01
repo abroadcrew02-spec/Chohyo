@@ -4,6 +4,7 @@
 // 破棄確認を出す（v3.7 追加分）。
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { invoke, isTauri } from "./bridge";
 import Editor from "./Editor";
 import RunScreen from "./RunScreen";
@@ -17,6 +18,12 @@ const CFG_DEFAULT: Cfg = {
   unclear_threshold: 0.85, era_threshold: 0.05, send_limit: 100,
   output_dir: "output", workdir: "workdir", log_dir: "logs",
 };
+
+// テンプレート編集タブを開いたときに拡大する先のサイズ（issue #65-4）。
+// 起動時の既定（tauri.conf.json の width/height）は実行画面向けに縮小した
+// 1040x720 だが、この値は変更前の既定サイズと同じ（gui/src-tauri/tauri.conf.json
+// の旧 width/height）——編集画面の情報量に合わせて据え置く
+const EDITOR_WINDOW_SIZE = { width: 1280, height: 860 };
 
 function Settings({ onClose }: { onClose: () => void }) {
   const [cfg, setCfg] = useState<Cfg>(CFG_DEFAULT);
@@ -131,6 +138,28 @@ export default function App() {
     });
     return () => { un.then((f) => f()); };
   }, []);
+
+  // 起動時のウィンドウは実行画面向けに縮小してある（issue #65-4）。
+  // テンプレート編集タブは列の並びなど扱う情報量が多く、縮小サイズのままだと
+  // 見切れるため、開いたときに一度だけ従来サイズへ拡大する。すでに従来サイズ
+  // 以上（利用者が手で広げた場合を含む）なら何もしない——毎回リサイズすると
+  // 手動で広げた分をタブ切替のたびに戻してしまう。実行タブへ戻るときは
+  // 縮小しない（片方向の拡大。「押して初めて今のサイズになる」に忠実にする）。
+  // ブラウザのデモモードでは window API が無いため isTauri で no-op にする
+  // （bridge.ts の Tauri 判定と同じ流儀）。
+  useEffect(() => {
+    if (!isTauri || tab !== "editor") return;
+    (async () => {
+      const win = getCurrentWindow();
+      const factor = await win.scaleFactor();
+      const current = (await win.innerSize()).toLogical(factor);
+      if (current.width < EDITOR_WINDOW_SIZE.width
+          || current.height < EDITOR_WINDOW_SIZE.height) {
+        await win.setSize(
+          new LogicalSize(EDITOR_WINDOW_SIZE.width, EDITOR_WINDOW_SIZE.height));
+      }
+    })().catch(() => { /* デモ/取得失敗時は何もしない（実行の妨げにしない） */ });
+  }, [tab]);
 
   const switchTo = (t: "run" | "editor") => {
     if (tab === "editor" && t !== "editor" && editorDirty.current &&

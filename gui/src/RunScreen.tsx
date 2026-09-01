@@ -621,36 +621,7 @@ ${ev.hint}` : ""));
               </div>
             )}
           </>
-        ) : (
-          <>
-            <div className="card explain">
-              <div className="h">このツールの動作</div>
-              <div className="row">
-                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#2563eb"
-                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="5" y="3" width="14" height="18" rx="2" />
-                  <line x1="9" y1="8" x2="15" y2="8" /><line x1="9" y1="12" x2="15" y2="12" /></svg>
-                <div>スキャンした帳票を1ページずつ読み取り、<b>1ページを Excel の1行</b>に変換します。</div>
-              </div>
-              <div className="row">
-                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#b45309"
-                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 3l9 16H3z" /><line x1="12" y1="10" x2="12" y2="14" /></svg>
-                <div>確実に読み取れなかった箇所には、誤った文字を出力せず
-                  <span className="mark">〓</span> を出力します。後の目視確認で修正します。</div>
-              </div>
-              <div className="row">
-                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
-                  strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M20 6L9 17l-5-5" /></svg>
-                <div>処理が中断しても、<b>次回は未処理分から</b>再開します。同じページを重複して送信することはありません。</div>
-              </div>
-            </div>
-            <div className="tipbox">
-              補足: アプリを終了してもデータは保持されます。再度起動して「読み取りを開始」を押すと続きから処理します。
-            </div>
-          </>
-        )}
+        ) : null}
       </div>
     </div>
   );
