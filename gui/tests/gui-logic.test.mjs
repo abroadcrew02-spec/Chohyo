@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice } from "./RunScreen.tsx";\n',
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1397,6 +1397,41 @@ test("AC-1.18 (a): 欄オブジェクトの直列化は「false のときだけ 
   assert.deepEqual(explicitTrue,
     { field_id: "person_住所1", kind: "text", rect: { x: 0, y: 200, w: 10, h: 10 } });
   assert.ok(!("output" in explicitTrue));
+});
+
+// ---------------------------------------------------------------- ウィンドウサイズ最終仕様
+// targetWindowHeight: 完了サマリ表示時にウィンドウを縦拡大する高さのクランプ
+// ロジック（最小=既定・最大=作業領域相当）。実際の setSize 呼び出しは
+// Tauri 実機依存のため、ここでは純関数のクランプ挙動だけを固定する
+test("targetWindowHeight: 通常は本文高+アプリバー高がそのまま採用される", () => {
+  const h = targetWindowHeight(800, 65, 1200);
+  assert.equal(h, 865);
+  assert.ok(h > RUN_WINDOW_HEIGHT_DEFAULT, "既定より小さいケースではない前提が崩れている");
+});
+
+test("targetWindowHeight: 作業領域を超える本文は上限（作業領域）でクランプされる", () => {
+  const h = targetWindowHeight(5000, 65, 1000);
+  assert.equal(h, 1000, "作業領域の高さでクランプされていない");
+});
+
+test("targetWindowHeight: workAreaHeight が不正値なら安全側の固定上限にフォールバックし、"
+  + "本文が既定未満でも既定を割らない", () => {
+  // currentMonitor() が取得できない/失敗した場合を想定した NaN
+  const fallback = targetWindowHeight(10, 65, NaN);
+  assert.equal(fallback, RUN_WINDOW_HEIGHT_DEFAULT,
+    "本文が小さいのに既定より低い値を返している");
+  // 0 や負値など、作業領域として意味を持たない値も同様にフォールバックする
+  assert.equal(targetWindowHeight(5000, 65, 0), targetWindowHeight(5000, 65, NaN),
+    "workAreaHeight=0 が NaN と異なる扱いになっている");
+  assert.equal(targetWindowHeight(5000, 65, -100), targetWindowHeight(5000, 65, NaN),
+    "workAreaHeight が負値でも同じフォールバックになっていない");
+  // contentHeight/chromeHeight 側の不正値（NaN・負値）も落ちずに既定へ丸まる
+  assert.equal(targetWindowHeight(NaN, NaN, NaN), RUN_WINDOW_HEIGHT_DEFAULT);
+  assert.equal(targetWindowHeight(-50, 65, 1200), RUN_WINDOW_HEIGHT_DEFAULT);
+});
+
+test("RUN_WINDOW_WIDTH は tauri.conf.json の既定幅（730）と一致する", () => {
+  assert.equal(RUN_WINDOW_WIDTH, 730);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

@@ -4,6 +4,8 @@
 import { invoke, isTauri } from "./bridge";
 import { listen } from "./bridge";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { useEffect, useRef, useState } from "react";
 
 type Summary = {
@@ -18,6 +20,52 @@ type Verify = { template: boolean; poppler: boolean; cred: string; storage: bool
                 // 欠落）との互換のため undefined を許容する
                 outputDisabledCells?: number };
 type Failure = { page_id: string; status: string };
+
+// ウィンドウサイズ運用（起動時は小窓・完了サマリ表示で縦に自動拡大）。
+// 幅は常に730固定——tauri.conf.json の windows[0].width と一致させる。
+export const RUN_WINDOW_WIDTH = 730;
+
+// 実行前の最大状態（Playwright 実測: フォルダ未選択時の手順3ヒント文まで
+// 込みで appbar 65px + run-screen 547px = 612px。folder選択後はヒント文が
+// 消えて逆に低くなるため、未選択時の方が実は高い）に、実機WebView2と
+// 計測に使ったヘッドレスChromiumのフォント描画差を吸収する安全マージン
+// 8pxを足した値。tauri.conf.json の windows[0].height と同じ値を保つこと
+// （既定サイズの正本は tauri.conf.json 側。ここでは resize 判定の
+// 下限値として参照する）。
+export const RUN_WINDOW_HEIGHT_DEFAULT = 620;
+
+// アプリバー（App.tsx の .appbar）の高さ。実行画面の外側にあるため、
+// document.querySelector で動的に測る（App.tsx とファイルをまたぐが、
+// 単一ウィンドウ構成でこの2つは常に同時にマウントされているため参照可能。
+// 取得に失敗した場合だけの保険としてPlaywright実測値を fallback に使う）。
+const APPBAR_HEIGHT_FALLBACK = 65;
+
+// currentMonitor() が取得できない場合の安全側の固定上限。値は本機能の
+// 実装前まで実際にこのウィンドウの既定高さとして使われていた 1150px
+// （旧 tauri.conf.json の height）をそのまま流用する。
+const FALLBACK_MAX_WINDOW_HEIGHT = 1150;
+
+/** 完了サマリ表示時にウィンドウを縦へ拡大する高さを決める純関数。
+ *  contentHeight: .run-screen の実測 scrollHeight（本文の実高）。
+ *  chromeHeight: 本文の外側にあるアプリバー等の高さ。
+ *  workAreaHeight: 現在のモニタの作業領域の論理高さ（取得できない/不正な
+ *    値なら安全側の固定上限 FALLBACK_MAX_WINDOW_HEIGHT を上限に使う）。
+ *  返り値は [RUN_WINDOW_HEIGHT_DEFAULT, 上限] にクランプした整数。
+ *  上限でクランプされ本文がそれより高い場合、はみ出した分は setSize では
+ *  拡げられない——.run-screen 側の overflow:auto によるスクロールに委ねる
+ *  （画面より大きい物理ウィンドウは作れないため、意図してスクロールを
+ *  許容する唯一のケース）。 */
+export function targetWindowHeight(
+  contentHeight: number, chromeHeight: number, workAreaHeight: number,
+): number {
+  const content = Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : 0;
+  const chrome = Number.isFinite(chromeHeight) && chromeHeight > 0 ? chromeHeight : 0;
+  const needed = Math.ceil(content + chrome);
+  const max = Number.isFinite(workAreaHeight) && workAreaHeight > RUN_WINDOW_HEIGHT_DEFAULT
+    ? Math.floor(workAreaHeight)
+    : FALLBACK_MAX_WINDOW_HEIGHT;
+  return Math.min(max, Math.max(RUN_WINDOW_HEIGHT_DEFAULT, needed));
+}
 
 // ステータス → 平易な言葉（エラー一覧用）
 export const STATUS_JA: Record<string, string> = {
@@ -173,6 +221,7 @@ export default function RunScreen(
   const [notices, setNotices] = useState<string[]>([]);  // 実行時の警告（M-2・#28）
   const [refused, setRefused] = useState("");  // 業務的な拒否（H-C）
   const logRef = useRef<HTMLPreElement>(null);
+  const screenRef = useRef<HTMLDivElement>(null);
 
   const parseVerify = (text: string): Verify => {
     const v: Verify = { template: false, poppler: false, cred: "missing", storage: true,
@@ -236,6 +285,36 @@ export default function RunScreen(
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
+
+  // ウィンドウの縦幅を実行画面の状態に揃える（起動時の余白なし・完了サマリ
+  // でのスクロールなしの両立・ユーザー承認済み 2026-09-01）。
+  //   - サマリ未表示（起動直後・入力待ち・処理中）: 既定の小窓に揃える
+  //   - サマリ表示中: 本文の実測高から必要な高さを求め、縦だけ拡大する
+  // タブ切替のたびに規定サイズへ揃える方針のため、この画面がアクティブに
+  // なった瞬間（active）と、サマリの有無が変わった瞬間（summary）の両方で
+  // 発火させる——手動リサイズの保持はしない。ブラウザのデモモードでは
+  // window API が無いため isTauri で no-op にする（bridge.ts と同じ流儀）。
+  useEffect(() => {
+    if (!isTauri || !active) return;
+    (async () => {
+      const win = getCurrentWindow();
+      if (!summary) {
+        await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, RUN_WINDOW_HEIGHT_DEFAULT));
+        return;
+      }
+      const factor = await win.scaleFactor();
+      const contentHeight = screenRef.current?.scrollHeight ?? RUN_WINDOW_HEIGHT_DEFAULT;
+      const appbarHeight = document.querySelector(".appbar")?.getBoundingClientRect().height
+        ?? APPBAR_HEIGHT_FALLBACK;
+      let workAreaHeight = NaN;
+      try {
+        const monitor = await currentMonitor();
+        if (monitor) workAreaHeight = monitor.workArea.size.toLogical(factor).height;
+      } catch { /* 取得失敗時は targetWindowHeight が安全側の上限へフォールバックする */ }
+      const height = targetWindowHeight(contentHeight, appbarHeight, workAreaHeight);
+      await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, height));
+    })().catch(() => { /* デモ/取得失敗時は実行の妨げにしない */ });
+  }, [active, summary]);
 
   useEffect(() => {
     const subs: Promise<UnlistenFn>[] = [
@@ -341,7 +420,7 @@ ${ev.hint}` : ""));
   const xlsxName = summary?.xlsx?.split(/[\\/]/).pop();
 
   return (
-    <div className="run-screen">
+    <div className="run-screen" ref={screenRef}>
       {dropping && (
         <div className="dropzone-overlay">
           ここにドロップすると読み取り対象になります（フォルダ・PDF ファイルどちらでも）
@@ -389,6 +468,48 @@ ${ev.hint}` : ""));
             <button className="btn big" onClick={start}>再度読み取る</button>
             <button className="btn" onClick={() => setSummary(null)}>条件を変更して読み取る</button>
           </div>
+        )}
+
+        {/* 完了後の付随情報（次の作業・実行時のお知らせ・CSV注意・位置合わせ失敗）。
+            issue #65-5: 以前は右カラム（幅380px固定）に出していたが、実行前は
+            その右カラムが空のまま幅だけ確保されて余白になっていた（issue #65-4
+            で説明文を消した後に発覚）。単一カラムへ統合し、完了時にウィンドウ幅を
+            変えずに済むようにする（完了の瞬間にリサイズすると体験が悪い） */}
+        {summary && (
+          <>
+            <div className="card nextsteps">
+              <div className="explain"><div className="h">次の作業（目視確認）</div></div>
+              <div className="row"><b>1.</b>
+                <div>Excel を開き、先頭列の<b>「要確認セル数」</b>を降順に並べ替えます</div></div>
+              <div className="row"><b>2.</b>
+                <div>背景色付きの <span className="mark">〓</span> セルを、原本と照合して修正します</div></div>
+              <div className="row"><b>3.</b>
+                <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
+            </div>
+            {notices.length > 0 && (
+              <div className="card warnbox">
+                <b>実行時のお知らせ</b>
+                {notices.map((t, i) => <div key={i}>{t}</div>)}
+              </div>
+            )}
+            {(summary.risky_cells ?? 0) > 0 && (
+              // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
+              // 出ており、修正の必要はない——CSV の開き方だけの注意
+              <div className="card warnbox">
+                <b>CSV の開き方に注意</b>
+                <div>「=」「+」「-」で始まる値が {summary.risky_cells} セルあります。
+                  CSV を Excel でダブルクリックして開くと、これらが計算式として実行され、
+                  先頭ゼロも失われます。中身を見るときはテキストエディタか、Excel の
+                  「データ」→「テキストまたは CSV から」で全列を文字列として取り込んでください。
+                  目視確認と提出に使う Excel（.xlsx）側は影響を受けません。</div>
+              </div>
+            )}
+            {summary.align_failed > 0 && (
+              <div className="errbox">
+                位置合わせに失敗したページが {summary.align_failed} 件あります。該当行はすべて〓のため、原本を参照して直接入力してください。
+              </div>
+            )}
+          </>
         )}
 
         {/* 処理中 */}
@@ -582,46 +703,6 @@ ${ev.hint}` : ""));
             <pre ref={logRef}>{log.join("\n")}</pre>
           </details>
         )}
-      </div>
-
-      {/* 右カラム */}
-      <div className="run-side">
-        {summary ? (
-          <>
-            <div className="card nextsteps">
-              <div className="explain"><div className="h">次の作業（目視確認）</div></div>
-              <div className="row"><b>1.</b>
-                <div>Excel を開き、先頭列の<b>「要確認セル数」</b>を降順に並べ替えます</div></div>
-              <div className="row"><b>2.</b>
-                <div>背景色付きの <span className="mark">〓</span> セルを、原本と照合して修正します</div></div>
-              <div className="row"><b>3.</b>
-                <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
-            </div>
-            {notices.length > 0 && (
-              <div className="card warnbox">
-                <b>実行時のお知らせ</b>
-                {notices.map((t, i) => <div key={i}>{t}</div>)}
-              </div>
-            )}
-            {(summary.risky_cells ?? 0) > 0 && (
-              // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
-              // 出ており、修正の必要はない——CSV の開き方だけの注意
-              <div className="card warnbox">
-                <b>CSV の開き方に注意</b>
-                <div>「=」「+」「-」で始まる値が {summary.risky_cells} セルあります。
-                  CSV を Excel でダブルクリックして開くと、これらが計算式として実行され、
-                  先頭ゼロも失われます。中身を見るときはテキストエディタか、Excel の
-                  「データ」→「テキストまたは CSV から」で全列を文字列として取り込んでください。
-                  目視確認と提出に使う Excel（.xlsx）側は影響を受けません。</div>
-              </div>
-            )}
-            {summary.align_failed > 0 && (
-              <div className="errbox">
-                位置合わせに失敗したページが {summary.align_failed} 件あります。該当行はすべて〓のため、原本を参照して直接入力してください。
-              </div>
-            )}
-          </>
-        ) : null}
       </div>
     </div>
   );

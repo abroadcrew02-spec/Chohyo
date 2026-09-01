@@ -57,8 +57,9 @@ label { display: flex; flex-direction: column; gap: 5px; font-size: 12px;
 
 /* 実行画面 */
 .run-screen { flex: 1; display: flex; gap: 22px; padding: 24px; min-height: 0; overflow: auto; }
+/* issue #65-5: 右カラム（旧 .run-side）は撤去し単一カラムへ統合した。
+   実行前は右カラムが空のまま幅だけ確保され、余白として残っていたため */
 .run-main { flex: 1; max-width: 680px; display: flex; flex-direction: column; gap: 14px; }
-.run-side { width: 380px; display: flex; flex-direction: column; gap: 14px; flex-shrink: 0; }
 
 .step { display: flex; gap: 16px; align-items: flex-start; }
 .step .no { width: 34px; height: 34px; border-radius: 50%; background: #eef1f6; color: var(--sub);
