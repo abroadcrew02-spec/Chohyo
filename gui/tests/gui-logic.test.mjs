@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, countAmountCells, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -625,25 +625,6 @@ test("resolve: splitY を渡すと保存時の一括解消でも面またぎ切�
 });
 
 // ---------------------------------------------------------------- issue #59 H-9
-test("countAmountCells: normalize=amount の欄・表の列（分割指定なし）を数える", () => {
-  const fields = [
-    { kind: "text", normalize: "amount" },
-    { kind: "text", normalize: "amount" },
-    { kind: "text" },
-    { kind: "choice", normalize: "amount" },  // choice は対象外
-  ];
-  const tables = [
-    { columns: [
-      { kind: "text", normalize: "amount", subfields: "" },
-      { kind: "text", normalize: "amount", subfields: "年,月,日" },  // 分割指定は対象外
-      { kind: "choice", normalize: "amount", subfields: "" },        // choice は対象外
-      { kind: "text", subfields: "" },
-    ] },
-  ];
-  assert.equal(countAmountCells(fields, tables), 3);  // 欄2 + 表列1
-  assert.equal(countAmountCells([], []), 0);
-});
-
 test("saveDiffNote: 減少を検知し、不変なら静か（増減なしは単一の数値のまま）", () => {
   const loaded = { fields: 194, amountCells: 28, exclusions: 9 };
   const decreased = saveDiffNote(loaded, { fields: 193, amountCells: 28, exclusions: 9 });
@@ -659,6 +640,34 @@ test("saveDiffNote: 減少を検知し、不変なら静か（増減なしは単
   const increased = saveDiffNote(loaded, { fields: 195, amountCells: 28, exclusions: 9 });
   assert.ok(increased.text.includes("欄 194 → 195（+1）"), increased.text);
   assert.deepEqual(increased.decreasedLabels, [], "増加は減少扱いしない");
+});
+
+// ---------------------------------------------------------------- issue #66 段0（F-10 バグ修正・AC-0.2 相当）
+// 母集団を verify 応答（core の template チェック: cells/amount_cells/
+// exclusions）へ一本化すると、無編集保存で差分ゼロになる（saveDiffNote 自体は
+// 既に「両辺が同じ数なら静か」だが、旧実装は読み込み時だけ GUI 側で
+// fields.length（単発欄のみ・表の列を含まない）を数えており、保存時の
+// tpl.cells（行展開後の全セル数）と母集団が違うために「欄 14→194」のような
+// 差分が無編集でも出ていた。この回帰を、母集団を両辺とも core の verify
+// 応答由来の数に揃えた場合の結果として固定する
+test("saveDiffNote: 両辺を verify 応答（core の cells/amount_cells）に揃えると無編集保存は差分ゼロ（F-10）", () => {
+  // 実測値（04_unclear_policy.md §1.2）: 出荷テンプレは cells=194・
+  // amount_cells=28・除外9。読み込み時・保存時の両方が同じ verify 応答から
+  // 取った数値であれば、テンプレを一切編集していない保存はこの値が
+  // そのまま両辺に来る
+  const verifyResponseAtLoad = { fields: 194, amountCells: 28, exclusions: 9 };
+  const verifyResponseAtSave = { fields: 194, amountCells: 28, exclusions: 9 };
+  const diff = saveDiffNote(verifyResponseAtLoad, verifyResponseAtSave);
+  assert.equal(diff.text, "欄 194・金額 28・除外 9",
+    "無編集保存なのに矢印つきの差分が出ている（F-10 の再発）: " + diff.text);
+  assert.deepEqual(diff.decreasedLabels, []);
+
+  // 対比: 旧実装のように読み込み時だけ「単発欄のみ」の小さい数（例: 14）を
+  // 使うと、無編集でも巨大な差分が出ていた——これが直した不具合そのもの
+  const buggyLoadedSnapshot = { fields: 14, amountCells: 1, exclusions: 9 };
+  const buggyDiff = saveDiffNote(buggyLoadedSnapshot, verifyResponseAtSave);
+  assert.ok(buggyDiff.text.includes("欄 14 → 194"),
+    "母集団が揃っていなければ巨大な差分になる（旧バグの再現・比較用）: " + buggyDiff.text);
 });
 
 // ---------------------------------------------------------------- issue #60 M-8

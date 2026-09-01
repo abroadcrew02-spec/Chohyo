@@ -296,19 +296,6 @@ export function exclusionChangeNotice(
 /// なく見える化」に、比較対象が無かった）。
 export type CountSnapshot = { fields: number; amountCells: number; exclusions: number };
 
-/// normalize=amount の欄・表の列（分割指定が無いもの）を数える。verify 応答の
-/// tpl.amount_cells と同じ対象を、読み込み直後（verify を呼ぶ前）にも
-/// 同じ考え方で数えられるようにする——比較の基準が要るため（issue #59 H-9）。
-export function countAmountCells(
-  fields: { kind: string; normalize?: string }[],
-  tables: { columns: { kind: string; normalize?: string; subfields: string }[] }[]): number {
-  const fromFields = fields.filter((f) => f.kind === "text" && f.normalize === "amount").length;
-  const fromTables = tables.reduce((sum, t) =>
-    sum + t.columns.filter((c) =>
-      c.kind === "text" && c.normalize === "amount" && !c.subfields.trim()).length, 0);
-  return fromFields + fromTables;
-}
-
 /// 読み込み時点との差分を表示用の文言にする（issue #59 H-9）。増減が無い
 /// 項目は現行どおり単一の数値で表示してよい（呼び出し側の判断で省略しても
 /// 破綻しない設計）。decreasedLabels は減少した項目名——呼び出し側が
@@ -548,7 +535,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   const [loadedExcls, setLoadedExcls] = useState<ExclSnapshot[]>([]);
   // 読み込み時点の欄数・金額列数（issue #59 H-9・最後の検知網）。除外数は
   // 上の loadedExcls.length で足りるためここには持たない
-  const [loadedCounts, setLoadedCounts] = useState({ fields: 0, amountCells: 0 });
+  const [loadedCounts, setLoadedCounts] =
+    useState({ fields: 0, amountCells: 0, exclusions: 0 });
   // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
   const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
   // パネルで触っている列（canvas ハイライト用・レビュー D-3）
@@ -858,9 +846,39 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     }
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
     setLoadedExcls(es.map((e) => ({ id: e.id, rect: e.rect })));
-    // 読み込み時点の欄数・金額列数を控える（issue #59 H-9）。保存時に
-    // これより減っていれば静かに数字が変わるだけでなく警告を出せる
-    setLoadedCounts({ fields: fs.length, amountCells: countAmountCells(fs, ts) });
+    // 欄数・金額列数の読み込み時基準（issue #59 H-9）は、この関数の呼び出し側
+    // （auto-load useEffect・loadTemplate）が refreshLoadedCounts で verify
+    // 応答から別途取得する。toEditorState 自身は同期関数で verify（非同期）を
+    // 呼べないうえ、GUI 側で fs.length 等から再導出すると保存時（core の
+    // verify＝行展開後の全セル数）と母集団がずれる（issue #66 段0・F-10）
+  };
+
+  // 読み込み時点の欄数・金額列数・除外数の基準を verify 応答から取得する
+  // （issue #66 段0・出力列制御 MVP・F-10 バグ修正）。以前は GUI 側で
+  // fields.length・countAmountCells 等を数えて基準にしていたが、これは
+  // 単発欄だけを数え表の列を含まない値で、保存時（core の verify＝行展開後の
+  // 全セル数）と母集団が異なっていた——無編集で保存しても「欄 14→194」の
+  // ように差分が出る既知バグの原因だった。読み込み時・保存時のどちらも
+  // 同じ verify（template チェック）応答の cells/amount_cells/exclusions を
+  // 基準にすることで、母集団を必ず揃える。templatePath が null のときは
+  // --template を省略し、lib.rs の inject_default_template が出荷テンプレを
+  // 注入する（第0段の配線・read_default_template と同じファイルになる）
+  const refreshLoadedCounts = async (templatePath: string | null) => {
+    try {
+      const args = ["verify"];
+      if (templatePath) args.push("--template", templatePath);
+      const out = await invoke<string>("run_core_capture", { args });
+      const tpl = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .find((e) => e && e.check === "template");
+      if (tpl?.ok) {
+        setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells,
+                          exclusions: tpl.exclusions });
+      }
+      // NG のときは基準の更新を諦める（読み込み自体は既に成功しているので
+      // ブロックしない）。古い基準のまま残るが、次に保存できる状態になった
+      // 時点でまた比較すればよい——このテンプレートは verify NG のままだと
+      // どのみち保存時にも NG になり、差分計算まで到達しない
+    } catch { /* 基準取得の失敗も同様に読み込み自体は妨げない */ }
   };
 
   // 起動時に出荷テンプレート（run が既定で使う templates/chouhyo-v1.json）を
@@ -877,6 +895,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
         setMsg("出荷テンプレート（chouhyo-v1）を読み込みました。帳票を開いて位置を確認してください");
+        await refreshLoadedCounts(null);
       } catch (e) {
         // 配布物欠損・開発中の白紙スタート。無言のままだと、この白紙が
         // 正常な初期状態と区別できず、保存時に出荷テンプレートを上書きする
@@ -912,6 +931,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     // 前のファイルの検証エラー・警告を現在の状態と誤読させない（レビュー N-5）
     setErrMsg(""); setWarnMsg("");
     markDirty(false); setMsg(`テンプレート読込: ${p}`);
+    await refreshLoadedCounts(p);
   };
 
   const buildTemplate = (fieldList: Field[] = fields) => {
@@ -1108,18 +1128,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       // 数で代える
       const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
       const exclCount = tpl.exclusions ?? currentExclCount;
-      // 読み込み時点との差分（issue #59 H-9・最後の検知網）。列数決め打ち
-      // 廃止の代替「見える化」に比較対象が無く、欄が減っても数字が
-      // 変わるだけで気づけなかった。金額列数は verify の tpl.amount_cells
-      // （無ければ現在の状態から同じ数え方で代える）と、読み込み時点の
-      // buildTemplate 由来の数を比べる
-      const currentFieldCount = tpl.cells ?? resolved.fields.length;
-      const currentAmountCells = tpl.amount_cells ?? countAmountCells(resolved.fields, tables);
+      // 読み込み時点との差分（issue #59 H-9・最後の検知網）。比較の両辺を
+      // 必ず verify 応答（staged 側＝この tpl）に一本化する（issue #66 段0・
+      // F-10 バグ修正）。読み込み時側も refreshLoadedCounts が同じ verify の
+      // template チェックから取得済みなので、母集団は必ず揃う——無編集保存で
+      // 「欄 14→194」のような差分が出ていたのは、読み込み時だけ GUI 側で
+      // fields.length 等を数えていたため（表の列を含まない・保存時とは別物）
       const diff = saveDiffNote(
         { fields: loadedCounts.fields, amountCells: loadedCounts.amountCells,
-          exclusions: loadedExcls.length },
-        { fields: currentFieldCount, amountCells: currentAmountCells, exclusions: exclCount });
-      setLoadedCounts({ fields: currentFieldCount, amountCells: currentAmountCells });
+          exclusions: loadedCounts.exclusions },
+        { fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount });
+      setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount });
       setMsg(carveNote + `保存＋コア検証 OK（`
         + (tpl.cells != null
            ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`

@@ -108,12 +108,18 @@ def cmd_verify(args) -> int:
         # 除外領域×受け皿の重なり警告（U-09・H-6）。拒否はしない——見える化のみ
         # （§7.1: 出荷テンプレートに意図的な重なりが実在するため）。GUI 側と
         # 合意済みの契約: warnings は文字列配列（無警告時は空配列）
+        # column_names は derive_columns の結果そのもの（validate_v1 の戻り値＝
+        # cols と同一。管理6列を含む順序付き全列名）。出力列制御 MVP・FR-0.1:
+        # 列構成の唯一の正を verify 応答に置き、GUI 側での再導出（F-10 の
+        # 原因だった二重実装）を無くすための入り口。220件規模の文字列配列だが
+        # verify は対話操作でしか呼ばれず、頻度・サイズとも問題にならない
         _progress({"event": "verify", "check": "template", "ok": True,
                    "columns": len(cols), "cells": len(t.cells),
                    "amount_cells": amount_cell_count(t),
                    "exclusions": sum(exclusions_by_face.values()),
                    "exclusions_by_face": exclusions_by_face,
-                   "warnings": list(t.warnings)})
+                   "warnings": list(t.warnings),
+                   "column_names": cols})
     except Exception as e:
         ok = False
         _progress({"event": "verify", "check": "template", "ok": False, "error": str(e)})
