@@ -62,6 +62,11 @@ class CellSpec:
     # 欄を作る・2026-08-31）。fallback_rect と違い「主が空のとき」の条件は無い
 
     extra_rects: tuple[Rect, ...] = ()
+    # 出力列に出すか（省略時 true・issue #66 D-34）。false でも読み取り・
+    # 重なり検証・空行判定・field_id の一意性検証は従来どおり行う——この
+    # 属性が変えるのは出力の可否だけで、幾何にも母集団にも触れない
+    # （FR-1.2）。対象外判定は output_cells() の1関数に集約する（S-3設計）。
+    output: bool = True
 
     def all_rects(self) -> tuple[Rect, ...]:
         """欄を構成する全領域（主＋追加）。参照先は含まない。"""
@@ -130,6 +135,22 @@ class Template:
         raise KeyError(face_id)
 
 
+def output_cells(template: Template) -> tuple[CellSpec, ...]:
+    """出力列に出すセルだけを、定義順のまま返す（issue #66 D-34・S-3設計）。
+
+    列を作る側（columns.derive_columns）と値を作る側（render_rows.build_row・
+    build_failure_row）の3経路がすべてここを通ることで、対象外判定が1箇所に
+    集約され、列と値の対応がズレない。個別に `if not cell.output` を
+    散らさないための唯一の窓口——3経路以外からもこの関数越しに参照すること。
+
+    重なり検証・空行判定・field_id の一意性検証・fallback_rect の受け皿・
+    resolveOverlaps はこの関数を経由しない（FR-1.2）——それらは
+    `template.cells`（全セル）をそのまま見る。対象外はあくまで
+    「出力列から外れる」だけで、テンプレートの構造からは消えない。
+    """
+    return tuple(c for c in template.cells if c.output)
+
+
 def _rect(d: dict) -> Rect:
     return Rect(d["x"], d["y"], d["w"], d["h"])
 
@@ -185,6 +206,10 @@ def _expand_table(face_id: str, t: dict) -> list[CellSpec]:
                                    else None),
                         table_id=t["table_id"],
                         row_no=row_no,
+                        # 表の列は列単位の属性（全行一括・FR-1.1）。行ごとに
+                        # 違う値を持たせる経路は無い——1つの tableColumn
+                        # 定義が対象外なら、展開後の全行が対象外になる
+                        output=c.get("output", True),
                     )
                 )
     return cells
@@ -424,6 +449,7 @@ def load_template(path: str | Path) -> Template:
                                    if fld.get("fallback_rect") is not None else None),
                     extra_rects=tuple(_rect(r)
                                       for r in fld.get("extra_rects", ())),
+                    output=fld.get("output", True),
                 )
             )
         for t in f.get("tables", []):

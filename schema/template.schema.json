@@ -274,6 +274,10 @@
           "enum": [
             "amount"
           ]
+        },
+        "output": {
+          "description": "この欄を出力列に出すか。省略時は true。false でも読み取り・重なり検証・空行判定・field_id の一意性検証は従来どおり行い、読取値は中間データに保存される（再指定で API 再送信なしに復帰できる）。幾何セクションではないため geometry_hash は変わらず、template_hash は変わる（remap が必要）。",
+          "type": "boolean"
         }
       },
       "allOf": [
@@ -448,6 +452,10 @@
           "enum": [
             "amount"
           ]
+        },
+        "output": {
+          "description": "この欄を出力列に出すか。省略時は true。false でも読み取り・重なり検証・空行判定・field_id の一意性検証は従来どおり行い、読取値は中間データに保存される（再指定で API 再送信なしに復帰できる）。幾何セクションではないため geometry_hash は変わらず、template_hash は変わる（remap が必要）。",
+          "type": "boolean"
         }
       },
       "allOf": [

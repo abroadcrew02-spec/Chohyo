@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from . import era
 from .config import Config
 from .normalize import normalize_amount, split_composite
-from .template import Template
+from .template import Template, output_cells
 
 UNCLEAR = "〓"
 
@@ -145,7 +145,10 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
     confs: list[float] = []
     origins: list[str] = []
 
-    for cell in template.cells:
+    # 出力対象外（output: false）の欄はここで丸ごとスキップする（issue #66・
+    # FR-1.1）。values と origins は常に同じループでしか増えないので、
+    # スキップは自動的に対になる（片方だけ抜け落ちることがない）
+    for cell in output_cells(template):
         raw, conf, _kind, is_empty = cells.get(cell.field_id, ("", None, cell.kind, False))
         out_cols = cell.output_columns()
         extra = extras.get(cell.field_id) if extras else None
@@ -274,7 +277,7 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
 
 def build_failure_row(template: Template, page: dict) -> Row:
     """未処理・失敗ページの全〓行（要件 §3.4: 入力ページ数＝出力行数を常に維持）。"""
-    n = sum(len(c.output_columns()) for c in template.cells)
+    n = sum(len(c.output_columns()) for c in output_cells(template))
     status = compose_status(page.get("status", ""), 0, processed=False)
     return Row(page["page_id"], page["source_file"], page["page_no"],
                status, [UNCLEAR] * n, n, "", ("",) * n)
