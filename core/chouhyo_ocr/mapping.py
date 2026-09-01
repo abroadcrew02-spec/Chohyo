@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 from . import logging_safe as log
-from .template import CellSpec, Face, Rect
+from .template import CellSpec, Face, Rect, hole_bbox
 
 # 由来〓が確定した欄にだけ使うローカルの記号。render_rows.UNCLEAR と同じ文字だが
 # あえて別定義にする——mapping は「事実だけを渡す」層という原則（設計 §14 不変条件3）
@@ -233,23 +233,6 @@ def _connect_regions(region_syms: list[list[Symbol]],
     return _symbols_to_text_and_confs(out)
 
 
-def _hole_bbox(cell: CellSpec) -> Rect | None:
-    """欄の受け皿群の外接矩形（BBox）。単一領域なら None（穴は空・U-07 §5.1）。
-
-    実際の「穴」は BBox から受け皿の和集合を引いた領域だが、割付での判定は
-    first-hit の順序（領域→参照先→穴）で保証するため、ここでは BBox の矩形
-    だけを持てば十分（§5.1・§14 不変条件7）。
-    """
-    rects = cell.all_rects()
-    if len(rects) < 2:
-        return None
-    x0 = min(r.x for r in rects)
-    y0 = min(r.y for r in rects)
-    x1 = max(r.x + r.w for r in rects)
-    y1 = max(r.y + r.h for r in rects)
-    return Rect(x0, y0, x1 - x0, y1 - y0)
-
-
 def fallback_decision(n_main: int, n_fb: int) -> str:
     """U-03 の3分岐。origin 文字列（''／'fallback'／'conflict'）を返す。
 
@@ -276,8 +259,11 @@ def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
 
     1セルが複数バケツにまたがる場合は全てへ入れる。バケツ内の順序は
     「欄の領域（定義順）→ 参照先 → 穴」（設計 §14 不変条件7）——重なりは
-    load_template が拒否するので、この順序が結果を変えることはない
-    （参照先・穴は欄の領域とは異なる意味の受け皿のため、順序で優先度を表す）。
+    load_template が拒否するので、**穴どうしを除き**この順序が結果を
+    変えることはない（参照先・穴は欄の領域とは異なる意味の受け皿のため、
+    順序で優先度を表す）。穴どうしの重なりだけは拒否せず W-4 で警告のみ
+    （issue #66 第2弾・05 F-12・template._hole_overlap_warnings）——その場合
+    ここでの積み順（=cells の配列順）が first-hit を決める、残存する順序依存。
     """
     buckets: dict[tuple[int, int], list] = {}
     targets: list[tuple[tuple[str, object], Rect]] = []
@@ -288,7 +274,7 @@ def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
         if c.fallback_rect is not None:
             targets.append(((c.field_id, _TAG_FALLBACK), c.fallback_rect))
     for c in cells:
-        bbox = _hole_bbox(c)
+        bbox = hole_bbox(c)
         if bbox is not None:
             targets.append(((c.field_id, _TAG_HOLE), bbox))
     for i, (key, r) in enumerate(targets):

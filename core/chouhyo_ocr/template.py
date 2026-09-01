@@ -270,6 +270,26 @@ def _overlap_area(ra: Rect, rb: Rect) -> int:
     return ox * oy
 
 
+def hole_bbox(cell: CellSpec) -> Rect | None:
+    """欄の受け皿群の外接矩形（BBox）。単一領域なら None（穴は空・U-07 §5.1）。
+
+    実際の「穴」は BBox から受け皿の和集合を引いた領域だが、割付での判定は
+    first-hit の順序（領域→参照先→穴）で保証するため、ここでは BBox の矩形
+    だけを持てば十分（§5.1・§14 不変条件7）。
+
+    mapping._bucket_cells と _hole_overlap_warnings（W-4・issue #66 第2弾）の
+    両方が使う共有ロジック（2026-09-01 に mapping.py から移設・単一の正）。
+    """
+    rects = cell.all_rects()
+    if len(rects) < 2:
+        return None
+    x0 = min(r.x for r in rects)
+    y0 = min(r.y for r in rects)
+    x1 = max(r.x + r.w for r in rects)
+    y1 = max(r.y + r.h for r in rects)
+    return Rect(x0, y0, x1 - x0, y1 - y0)
+
+
 def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str]:
     """U-09（H-6）: 除外領域と受け皿の重なりを警告として集める（設計 §7）。
 
@@ -401,6 +421,43 @@ def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
                     f"文字はどの欄にも入らず読み取られない{tag}")
                 log.warn("adjacent_gap_w3", face_id=face_id, field_a=id_a,
                          field_b=id_b, gap_px=gap)
+    return warnings
+
+
+# 穴どうしの重なり検出（W-4・issue #66 第2弾・05 F-12・ぼたん Phase 2 レビュー B
+# 経路B・2026-09-01）。mapping の空間インデックス（_bucket_cells）は
+# 「領域→参照先→穴」の3層 first-hit で、層をまたぐ優先順位は配列順と無関係
+# だが、**穴（extra_rects を持つ単発欄の切り抜き穴・hole_bbox）どうしの重なり
+# だけは load_template の欄矩形の重なり拒否（issue #24）の母集団に入って
+# おらず、配列順依存が残る**——2つの穴の BBox が重なるバケツに落ちた symbol
+# は、_bucket_cells が cells の定義順で targets へ積んだ順（=first-hit）で
+# どちらの穴に割り付くかが決まる。第2弾（列の並べ替え・配列順変更）を許すと、
+# 並べ替えだけで割付結果が黙って変わりうる。拒否はしない——現行出荷テンプレは
+# 非発火（実測: 穴どうしの y 帯が重ならない）であり、拒否にする実害の裏付けが
+# 無い。切り抜き（extra_rects）の増加で将来発生しうる事象を、W-1/W-2/W-3 と
+# 同じ「見える化のみ」方針で伝える。
+def _hole_overlap_warnings(cells: list[CellSpec]) -> list[str]:
+    warnings: list[str] = []
+    by_face: dict[str, list[tuple[str, Rect]]] = {}
+    for c in cells:
+        bbox = hole_bbox(c)
+        if bbox is not None:
+            by_face.setdefault(c.face_id, []).append((c.field_id, bbox))
+    for face_id, holes in by_face.items():
+        n = len(holes)
+        for i in range(n):
+            id_a, ra = holes[i]
+            for j in range(i + 1, n):
+                id_b, rb = holes[j]
+                if _overlap_area(ra, rb) <= 0:
+                    continue
+                warnings.append(
+                    f"[W-4] {id_a} と {id_b} の穴（切り抜き）が重なっている"
+                    f"（面 '{face_id}'）。重なった部分に落ちた文字の割付先は"
+                    "テンプレートの配列順（定義順）で決まる——欄・列の並べ替えで"
+                    "割付結果が変わりうる")
+                log.warn("hole_overlap_w4", face_id=face_id,
+                         field_a=id_a, field_b=id_b)
     return warnings
 
 
@@ -663,5 +720,6 @@ def load_template(path: str | Path) -> Template:
         faces=tuple(faces),
         cells=tuple(cells),
         warnings=tuple(_exclusion_overlap_warnings(faces, cells)
-                       + _adjacent_gap_warnings(cells)),
+                       + _adjacent_gap_warnings(cells)
+                       + _hole_overlap_warnings(cells)),
     )

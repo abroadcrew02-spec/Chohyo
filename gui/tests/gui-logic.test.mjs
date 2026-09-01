@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, noticeFor, STATUS_JA, outputDisabledNotice } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, noticeFor, STATUS_JA, outputDisabledNotice } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -880,6 +880,75 @@ test("outputCheckboxLabel: 欄が違えばラベルも異なる（SR一覧での
   const a = outputCheckboxLabel("氏名", true, { first: 7, last: 7 });
   const b = outputCheckboxLabel("住所1", true, { first: 8, last: 8 });
   assert.notEqual(a, b);
+});
+
+// ---------------------------------------------------------------- issue #66 段5
+// 列位置表示（FR-2.3・AC-2.7前半＝「表示が column_names と一致」）
+const COLUMN_NAMES_220 = (() => {
+  // 実物に近い220列を組み立てる: 管理6列 + 埋め草2列 + 単発欄 person_氏名(9列目・
+  // コーディネーター指定例と一致させる) + family 表4行×2列(続柄・氏名) +
+  // 残りは埋め草の単発欄
+  const names = ["要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名", "ページ番号", "ステータス",
+    "dummy_a", "dummy_b", "person_氏名"];
+  for (let row = 1; row <= 4; row++) {
+    names.push(`family_${String(row).padStart(2, "0")}_続柄`);
+    names.push(`family_${String(row).padStart(2, "0")}_氏名`);
+  }
+  while (names.length < 220) names.push(`dummy_${names.length}`);
+  return names;
+})();
+
+test("fieldColumnPositionNote: 単発欄の位置注記（左から9列目 / 全220列・コーディネーター指定例）", () => {
+  const pos = findColumnPositions(COLUMN_NAMES_220, "person_氏名");
+  assert.deepEqual(pos, { first: 9, last: 9 });
+  assert.equal(fieldColumnPositionNote(pos, COLUMN_NAMES_220.length),
+    "左から9列目 / 全220列");
+});
+
+test("fieldColumnPositionNote: position・totalColumns のどちらか欠けたら null（未取得時は番号を出さない）", () => {
+  assert.equal(fieldColumnPositionNote(null, 220), null);
+  assert.equal(fieldColumnPositionNote({ first: 1, last: 1 }, null), null);
+  assert.equal(fieldColumnPositionNote(null, null), null);
+});
+
+test("fieldColumnPositionNote: 範囲がある場合（複合欄など）は first〜last で表示", () => {
+  assert.equal(fieldColumnPositionNote({ first: 8, last: 11 }, 220), "左から8〜11列目 / 全220列");
+});
+
+test("tableColumnRangeInfo: 表の範囲を column_names から実引きする（範囲表記・AC-2.7、コーディネーター指定例に近い形）", () => {
+  const info = tableColumnRangeInfo(COLUMN_NAMES_220, "family");
+  assert.deepEqual(info, {
+    first: 10, last: 17, count: 8,
+    exampleName: "family_01_続柄", examplePosition: 10,
+  });
+});
+
+test("tableColumnRangeInfo: column_names 未取得・該当なしは null（安全側）", () => {
+  assert.equal(tableColumnRangeInfo(null, "family"), null);
+  assert.equal(tableColumnRangeInfo(COLUMN_NAMES_220, "no_such_table"), null);
+});
+
+test("tableColumnRangeInfo: 例文は column_names に実在するエントリをそのまま引く（FR-0.1・組み立て直し禁止）", () => {
+  const info = tableColumnRangeInfo(COLUMN_NAMES_220, "family");
+  assert.ok(COLUMN_NAMES_220.includes(info.exampleName));
+  assert.equal(COLUMN_NAMES_220[info.examplePosition - 1], info.exampleName);
+});
+
+test("tableColumnOrderNote: 表の中での定義順と x_offset の左右順を併記（付録A）", () => {
+  const columns = [{ x_offset: 100 }, { x_offset: 0 }, { x_offset: 200 }];
+  assert.equal(tableColumnOrderNote(columns, 0, true), "表の中で1番目・帳票では左から2番目");
+  assert.equal(tableColumnOrderNote(columns, 1, true), "表の中で2番目・帳票では左から1番目");
+  assert.equal(tableColumnOrderNote(columns, 2, true), "表の中で3番目・帳票では左から3番目");
+});
+
+test("tableColumnOrderNote: output:false の列は番号でなく「出力対象外」（段3実装と整合）", () => {
+  const columns = [{ x_offset: 100 }, { x_offset: 0 }];
+  assert.equal(tableColumnOrderNote(columns, 0, false), "出力対象外");
+});
+
+test("tableColumnOrderNote: 範囲外の index は null（防御的）", () => {
+  assert.equal(tableColumnOrderNote([{ x_offset: 0 }], 5, true), null);
+  assert.equal(tableColumnOrderNote([{ x_offset: 0 }], -1, true), null);
 });
 
 test("saveConfirmWarnings: ⚠が0件ならモーダルを出さない（空配列・C-5 empty）", () => {

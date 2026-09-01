@@ -452,6 +452,58 @@ export function outputCheckboxLabel(
   return `${displayName}を出力する（現在: ${posText}）`;
 }
 
+/// 単発欄パネルの説明文に添える列位置の注記（issue #66 段5・FR-2.3・AC-2.7前半）。
+/// position・totalColumns のどちらか一方でも欠けたら null（column_names 未取得・
+/// 不整合時は番号を出さない——段3 の安全側判断を踏襲）。output:false の場合の
+/// 表示は呼び出し側の既存文言（「ただし今は出力しない設定です」）に委ねるため、
+/// ここでは output は受け取らない（重複した「出力対象外」表記を避ける）。
+export function fieldColumnPositionNote(
+  position: { first: number; last: number } | null,
+  totalColumns: number | null): string | null {
+  if (!position || totalColumns == null) return null;
+  const posText = position.first === position.last
+    ? `左から${position.first}列目` : `左から${position.first}〜${position.last}列目`;
+  return `${posText} / 全${totalColumns}列`;
+}
+
+export type TableColumnRangeInfo = {
+  first: number; last: number; count: number;
+  exampleName: string; examplePosition: number;
+};
+/// 表全体が CSV・Excel の何列目〜何列目を占めるかを column_names から実引きする
+/// （issue #66 段5・FR-2.3）。表の列は行展開で複数回登場するため単一の数字は
+/// 作れず範囲表記にする。例文（family_01_氏名 = 22列目 のような1件）も
+/// column_names に実在するエントリからそのまま引く（GUI 側での組み立て直し禁止・
+/// FR-0.1）。該当エントリが1つも無ければ null（column_names 未取得時など）。
+export function tableColumnRangeInfo(
+  columnNames: string[] | null, tableId: string): TableColumnRangeInfo | null {
+  if (!columnNames) return null;
+  const prefix = `${tableId}_`;
+  const idxs: number[] = [];
+  columnNames.forEach((name, i) => { if (name.startsWith(prefix)) idxs.push(i); });
+  if (!idxs.length) return null;
+  return {
+    first: idxs[0] + 1, last: idxs[idxs.length - 1] + 1, count: idxs.length,
+    exampleName: columnNames[idxs[0]], examplePosition: idxs[0] + 1,
+  };
+}
+
+/// 表の内部列（.colrow）に薄く併記する注記（issue #66 段5・付録A）。
+/// 「表の中で n 番目」は列の定義順（配列インデックス）、「帳票では左から n 番目」は
+/// x_offset 順——列を後から追加すると定義順と見た目の左右順がずれるため、
+/// 両方を示す。CSV・Excel の列番号（column_names 由来）とは別の、表単体で
+/// ローカルに求まる情報なので column_names は使わない。output:false の列は
+/// 番号を出さず「出力対象外」（段3実装と整合）。
+export function tableColumnOrderNote(
+  columns: { x_offset: number }[], index: number, output: boolean): string | null {
+  if (!output) return "出力対象外";
+  if (index < 0 || index >= columns.length) return null;
+  const order = columns.map((_, i) => i)
+    .sort((a, b) => columns[a].x_offset - columns[b].x_offset);
+  const rank = order.indexOf(index) + 1;
+  return `表の中で${index + 1}番目・帳票では左から${rank}番目`;
+}
+
 /// 保存前確認モーダルに出す⚠一覧を組み立てる（FR-1.6・付録A）。純粋な判定
 /// のみ——実際の確認 UI（モーダル）の表示は呼び出し側（saveTemplate）が
 /// 行う。4件のいずれも該当しなければ空配列を返し、呼び出し側はモーダルを
@@ -2029,7 +2081,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             出力する{!isOutput(f) && <span className="note" style={{ marginLeft: 6 }}>（現在: 出力しない）</span>}
           </label>
           <p className="note">この枠の読み取り結果は CSV・Excel の
-            「{f.field_id || "（名前未設定）"}」列へ出力されます{!isOutput(f)
+            「{f.field_id || "（名前未設定）"}」列{isOutput(f) && (() => {
+              const posNote = fieldColumnPositionNote(
+                findColumnPositions(columnNames, f.field_id), columnNames?.length ?? null);
+              return posNote ? `（${posNote}）` : "";
+            })()}へ出力されます{!isOutput(f)
               ? "——ただし今は出力しない設定です（枠・読み取りは維持されます）" : ""}</p>
           <label>欄の名前（出力の列名になります）<input value={f.field_id}
             onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
@@ -2123,9 +2179,19 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     return (
       <div className="panel">
         <h3>選択中のくり返し行（表）</h3>
-        <p className="note">各行×各列が CSV・Excel の
-          「{t.table_id}_行番号_列名」列（例: {t.table_id}_01_
-          {t.columns[0]?.name || "列名"}）へ1行ずつ出力されます</p>
+        {(() => {
+          const range = tableColumnRangeInfo(columnNames, t.table_id);
+          if (!range) return (
+            <p className="note">各行×各列が CSV・Excel の
+              「{t.table_id}_行番号_列名」列（例: {t.table_id}_01_
+              {t.columns[0]?.name || "列名"}）へ1行ずつ出力されます</p>);
+          const rangeText = range.first === range.last
+            ? `${range.first}列目` : `${range.first}〜${range.last}列目`;
+          return (
+            <p className="note">この表は CSV・Excel の {rangeText}（{range.count}列）を占めます。
+              各行が {t.table_id}_行番号_列名として展開されます（例: {range.exampleName}
+              = {range.examplePosition}列目）</p>);
+        })()}
         <label>表の名前 <input value={t.table_id}
           onChange={(e) => updateTable(t.uid, { table_id: e.target.value })} /></label>
         {/* 整数で保持する（レビュー M-22: 描画は float・保存時に round だと
@@ -2205,6 +2271,12 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                   j === i ? { ...v, output: e.target.checked ? undefined : false } : v) })} />
               <span className="lbl">出力</span>
             </label>
+            {/* issue #66 段5・付録A: 表の内部列に「表の中で何番目／帳票では左から
+                何番目」を薄く併記する。x_offset 順は列を後から足すと定義順とずれる
+                ため、両方示す（column_names は使わない・表単体でローカルに求まる） */}
+            <span className="note" style={{ marginLeft: 2 }}>
+              {tableColumnOrderNote(t.columns, i, isOutput(c))}
+            </span>
             <button onClick={() => updateTable(t.uid,
               { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
           </div>))}
