@@ -150,6 +150,25 @@ def write_csv(path: Path, columns: list[str], rows: list[Row]) -> None:
                        + [str(v) for v in r.values])
 
 
+def write_columns_txt(path: Path, columns: list[str]) -> None:
+    """列名一覧を1行1列名で書く（issue #66 第2弾・05 Q-30③・Could）。
+
+    取り込み先システムとの列構成突き合わせ用。内容は derive_columns の結果
+    そのまま（管理6列を含む・列構成の唯一の正・FR-0.1 と同じ思想）——ここで
+    列を選び直したり並べ替えたりしない。
+
+    BOM 付き UTF-8・CRLF は write_csv と同じ流儀に揃える（根拠）: 列名は
+    日本語を含むため、BOM を落とすと Windows のメモ帳・一部の取り込み先で
+    csv と同じ文字化けが起きる。改行を \r\n に固定するのは、os.linesep
+    （OS 既定）に委ねると実行環境が変わったときにバイトが変わり、§6.2 の
+    決定性（同一テンプレ・同一設定での再出力バイト一致）が環境依存になって
+    しまうため——csv 側が lineterminator="\r\n" を明示しているのと同じ理由。
+    """
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        f.write("\r\n".join(columns))
+        f.write("\r\n")
+
+
 # Excel が数式として解釈しうる接頭文字（D-28）。@ とタブは実測で無害だったが、
 # 検出は無害化ではないので偽陽性コストが低く、Excel のバージョン差・LibreOffice・
 # 別の取り込み先まで含めて広く取る
@@ -231,24 +250,33 @@ def write_outputs(
     d.mkdir(parents=True, exist_ok=True)
     xlsx = d / f"output_{timestamp}.xlsx"
     csvp = d / f"output_{timestamp}.csv"
+    # 列名一覧の併記（issue #66 第2弾・05 Q-30③・Could）。xlsx/csv と同じ
+    # timestamp 系の命名（取り込み先との突き合わせで3ファイルの対応が
+    # 一目で分かるように）。アトミック差し替えの対象に加える（下記）——
+    # 併記のためだけに #36/#51 の保護から外れた経路を作らない
+    colp = d / f"output_{timestamp}_columns.txt"
     # 一時ファイルへ書いてから os.replace で差し替える（issue #36）。
     # 直接書くと、出力を Excel で開いたまま再実行したときに
     # 「open→truncate→ロック違反」の順で **既存の正常な成果物が 0 バイトに
     # 破壊される**（実測: 9246→0）。置換が完了するまで既存ファイルは無傷に保つ
     tmp_x = xlsx.with_suffix(".xlsx.tmp")
     tmp_c = csvp.with_suffix(".csv.tmp")
+    tmp_col = colp.with_suffix(".txt.tmp")
     try:
         write_xlsx(tmp_x, columns, rows, unclear_char_level=unclear_char_level)
         write_csv(tmp_c, columns, rows)
+        write_columns_txt(tmp_col, columns)
         # 既存を先に退避してから差し替える（レビュー M-5）。片方ずつ replace
         # すると、csv だけ開かれている場合に **xlsx は新・csv は旧**となり
         # §8-12（xlsx↔csv の値一致）が破れる。退避に失敗した時点で中断して
         # 戻すので、「両方更新される」か「どちらも変わらない」かに限定される。
         # 開かれているファイルは rename できない＝これが最も確実な事前確認
-        # （追記オープンでの判定は共有モードで通ってしまい役に立たなかった）
+        # （追記オープンでの判定は共有モードで通ってしまい役に立たなかった）。
+        # columns.txt も同じ3点セットとして扱う（3つとも更新される／3つとも
+        # 変わらない、以外の中間状態を作らない）
         backups: list[tuple[Path, Path]] = []
         try:
-            for final in (xlsx, csvp):
+            for final in (xlsx, csvp, colp):
                 if final.exists():
                     bak = final.parent / (final.name + ".bak")
                     if bak.exists():
@@ -259,9 +287,9 @@ def write_outputs(
             for final, bak in backups:          # 退避済みを元へ戻す
                 os.replace(bak, final)
             raise PermissionError(
-                f"出力ファイルを更新できない（{xlsx.name} または {csvp.name} が"
-                "Excel などで開かれている可能性）。閉じてからやり直す。"
-                "既存のファイルは壊れていない") from e
+                f"出力ファイルを更新できない（{xlsx.name}・{csvp.name}・"
+                f"{colp.name} のいずれかが Excel などで開かれている可能性）。"
+                "閉じてからやり直す。既存のファイルは壊れていない") from e
         # 差し替え本体も try で守る（issue #51）。裸で置くと、ここでの失敗
         # （xlsx を Excel で開いたままの PermissionError 等）で finally が tmp を
         # 消す一方、退避した .bak は戻らず削除もされない——手元に残るのは .bak
@@ -274,26 +302,28 @@ def write_outputs(
             replaced.append(xlsx)
             os.replace(tmp_c, csvp)
             replaced.append(csvp)
+            os.replace(tmp_col, colp)
+            replaced.append(colp)
         except OSError as e:
             not_restored = _rollback(backups, replaced)
             if not_restored:
                 names = "・".join(sorted(p.name for p in not_restored))
                 tail = (f"巻き戻しにも失敗した（{names}）。"
-                        "xlsx と csv で内容が食い違っている可能性があるため、"
+                        "出力ファイルで内容が食い違っている可能性があるため、"
                         "同フォルダの .bak と突き合わせて確認する")
             else:
                 tail = "既存のファイルは元の内容に戻した"
             raise PermissionError(
-                f"出力ファイルを更新できない（{xlsx.name} または {csvp.name} の"
-                "差し替えに失敗した。Excel などで開かれている可能性）。"
-                f"閉じてからやり直す。{tail}") from e
+                f"出力ファイルを更新できない（{xlsx.name}・{csvp.name}・"
+                f"{colp.name} のいずれかの差し替えに失敗した。Excel などで"
+                f"開かれている可能性）。閉じてからやり直す。{tail}") from e
         for _final, bak in backups:
             try:
                 bak.unlink()
             except OSError:
                 pass
     finally:
-        for t in (tmp_x, tmp_c):
+        for t in (tmp_x, tmp_c, tmp_col):
             if t.exists():
                 try:
                     t.unlink()

@@ -75,7 +75,7 @@
 | 8-13 | 最低信頼度列（文字ベースのみ・該当なしは空欄） | test_render_rows・test_e2e_replay | L1 |
 | 8-14 | エディタ書き出し JSON をコアがそのまま読める | test_template（スキーマ検証）・test_gui_smoke（編集タブ）・test_review_fixes（expand-page） | L1/L2（保存→run 貫通は L3 で1回実施済み・2026-08-27。**ただし「スキャン PDF からゼロにテンプレを作る」導線は 2026-08-28 のユーザー指摘まで未検証だった**——§5 の教訓2） |
 | 8-15 | GUI 指定の除外領域が抽出・二値化から除外 | test_mapping（除外領域）・test_e2e_replay | L1 |
-| 8-16 | 等分割生成のドリフトなし・クリックで対象外→列に出ない | test_grid（算術位置）・test_output_columns_stage1（output=false の列非出現・issue #66） | L1 |
+| 8-16 | 等分割生成のドリフトなし（後半の「クリックで対象外→列に出ない」は 05 の AC-1.1・AC-1.15 へ分割・2026-09-01・P3-c） | test_grid（算術位置）・test_output_columns_stage1（output=false の列非出現・issue #66） | L1 |
 | 8-17 | 罫線自動検出が候補を返す。不成立でも等分割で完走 | test_grid（検出・フォールバック） | L1 |
 
 ### NFR（§6）⇔ テスト
