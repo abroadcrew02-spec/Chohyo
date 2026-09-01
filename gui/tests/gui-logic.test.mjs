@@ -22,8 +22,8 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice } from "./RunScreen.tsx";\n',
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor } from "./Editor.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, noticeFor, STATUS_JA, outputDisabledNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -249,6 +249,66 @@ test("#60 rename_fallback が「実行時のお知らせ」になる（課金に
   assert.ok(t, "null が返っている（イベントを捨てている）");
   assert.ok(t.includes("a.pdf") && t.includes("b.pdf"), t);
   assert.ok(t.includes("課金"), "課金に触れていない: " + t);
+});
+
+// ---------------------------------------------------------------- issue #65-3 S2
+// counterNotice: run/remap の完了サマリに乗る新カウンタ（fallback_used/
+// fallback_discarded/carve_hole/conflict_excluded_field）の「実行時のお知らせ」
+// 1行化。マリンレビュー S-3（conflict の区別漏れ）・S-4（carve_hole が〓に
+// 触れていない）・N-7（「参照先から採用/破棄」の主語を明確化）を反映した文言
+test("S2-1 counterNotice: 非0カウンタから対象外欄由来の内訳・〓の結果・食い違いを含む通知が作られる", () => {
+  const t = counterNotice({
+    fallback_used: 2, fallback_discarded: 1, fallback_discarded_excluded_field: 1,
+    carve_hole: 3, carve_hole_excluded_field: 2,
+    conflict_excluded_field: 1,
+  });
+  assert.ok(t, "null が返っている（カウンタを捨てている）");
+  assert.ok(t.includes("参照先の文字"), "N-7: 破棄されるのが参照先の文字だと分かる主語が無い: " + t);
+  assert.ok(t.includes("採用 2件"), t);
+  assert.ok(t.includes("破棄 1件"), t);
+  assert.ok(t.includes("うち出力しない欄由来 1件"), "fallback_discarded の内訳が無い: " + t);
+  assert.ok(t.includes("3件"), t);
+  assert.ok(t.includes("〓になっています"), "S-4: carve_hole が〓化の結果に触れていない: " + t);
+  assert.ok(t.includes("うち出力しない欄由来 2件"), "carve_hole の内訳が無い: " + t);
+  // S-3: conflict は fallback_discarded の内訳に混ぜず独立句で出す
+  // （fallback_discarded にも二重計上されるが「主と参照先の食い違い」という
+  //  別の事実なので、破棄の件数とは別に読めること）
+  assert.ok(t.includes("主と参照先の食い違い") && t.includes("1件"),
+    "conflict_excluded_field の区別が出ていない: " + t);
+});
+
+test("S2-2 counterNotice: 全カウンタ0なら null（0件表示はノイズになるので出さない）", () => {
+  assert.equal(counterNotice({}), null);
+  assert.equal(counterNotice({
+    fallback_used: 0, fallback_discarded: 0, carve_hole: 0,
+    fallback_discarded_excluded_field: 0, carve_hole_excluded_field: 0,
+    conflict_excluded_field: 0,
+  }), null);
+});
+
+test("S2-2b counterNotice: conflict 単独が非0でも他が0なら独立句だけが出る", () => {
+  // conflict は総数カウンタを持たず対象外欄由来の内訳しか無い（S-3）ため、
+  // fallback_used/fallback_discarded/carve_hole がすべて0でも単独で発火しうる
+  const t = counterNotice({ conflict_excluded_field: 1 });
+  assert.ok(t, "conflict だけでは null になっている（区別が消えている）");
+  assert.equal(t, "主と参照先の食い違い 1件（出力しない欄）");
+});
+
+// 片配線の回帰ゲート: run 用の summary にしかカウンタを配線せず remap_summary
+// を default 節に落として捨てる、という #60 M-2（source_renamed/rename_fallback）
+// と同種の事故を防ぐ。noticeFor を通した結果が両イベントで同じ counterNotice を
+// 経由していることを固定する（conflict_excluded_field も含めて配線を確認）
+test("S2-3 noticeFor: summary と remap_summary の両方で counterNotice が呼ばれる", () => {
+  const counts = {
+    fallback_used: 2, fallback_discarded: 1, fallback_discarded_excluded_field: 1,
+    carve_hole: 3, carve_hole_excluded_field: 2, conflict_excluded_field: 1,
+  };
+  const viaSummary = noticeFor({ event: "summary", ...counts });
+  const viaRemap = noticeFor({ event: "remap_summary", ...counts });
+  assert.ok(viaSummary, "summary 側で null が返っている（配線漏れ）");
+  assert.equal(viaSummary, viaRemap,
+    "summary と remap_summary で文言が異なる（同じ counterNotice を通っていない）");
+  assert.equal(viaSummary, counterNotice(counts));
 });
 
 // ---------------------------------------------------------------- issue #47
@@ -1181,7 +1241,7 @@ test("saveConfirmWarnings: 該当する項目だけを順に積む（4種統合�
     isShipped: true,
     imageSizeMismatch: { from: "2490×3510", to: "2480×3500" },
     exclusionNotice: "除外領域が減っています",
-    columnDecrease: { from: 220, to: 217 },
+    columnDecrease: { kind: "decrease", from: 220, to: 217 },
   });
   assert.equal(w.length, 4);
   assert.deepEqual(w.map((x) => x.key), ["shipped", "image-size", "exclusion", "columns"]);
@@ -1191,6 +1251,50 @@ test("saveConfirmWarnings: 該当する項目だけを順に積む（4種統合�
   assert.ok(w[3].text.includes("220 → 217"), w[3].text);
   assert.ok(w[3].text.includes("枠と読み取りは残ります"),
     "対象外欄の可逆性（Q-29）を保存前確認にも明示する: " + w[3].text);
+});
+
+test("saveConfirmWarnings: columnDecrease が unknown（列数比較不能）でも⚠を出す（issue #65-1・fail-open 修正の配線確認）", () => {
+  const w = saveConfirmWarnings({ isShipped: false, imageSizeMismatch: null,
+    exclusionNotice: null, columnDecrease: { kind: "unknown" } });
+  assert.equal(w.length, 1);
+  assert.equal(w[0].key, "columns");
+  // unknown は基準未取得（穴A）・今回値の欠落（穴B）のどちらでも立つため、
+  // 原因を一方に決め打ちした文言にしない（レビュー指摘 S-1）
+  assert.ok(w[0].text.includes("列数を比較できません"), w[0].text);
+  assert.ok(!w[0].text.includes("基準未取得"), w[0].text);
+});
+
+// ---------------------------------------------------------------- issue #65-1（M2・列数比較の fail-open 修正）
+test("columnDecreaseFor: baseline未取得（0）は decrease でなく unknown を返す（穴A・fail-open 回帰ゲート）", () => {
+  // loadedCounts.columns の初期値は0（useState宣言部）で、verify応答の
+  // 取得に失敗した経路でもそのまま残る。0のまま `current < baseline` の
+  // ような直接比較をすると常に false（=減っていない）になり、実際に列が
+  // 減っても無警告になる（fail-open・issue #65-1 本丸）。0はvalidate_v1が
+  // 抽出列0を拒否するため到達しないsentinelとして扱い、比較不能を
+  // unknownで明示しなければならない——nullを返すと「減っていない」と
+  // 誤認され、この関数がまさに直そうとしているバグを再現してしまう
+  assert.deepEqual(columnDecreaseFor(0, 220), { kind: "unknown" });
+  assert.notEqual(columnDecreaseFor(0, 220), null);
+});
+
+test("columnDecreaseFor: 基準ありで列が減れば decrease（from/toを保持）、同数・増加は null", () => {
+  assert.deepEqual(columnDecreaseFor(220, 217), { kind: "decrease", from: 220, to: 217 });
+  assert.equal(columnDecreaseFor(220, 220), null, "同数は decrease ではない");
+  assert.equal(columnDecreaseFor(220, 230), null, "増加は decrease ではない");
+});
+
+test("columnDecreaseFor: current が数値でなければ unknown（穴B・verify応答の欠落防御）", () => {
+  assert.deepEqual(columnDecreaseFor(220, undefined), { kind: "unknown" });
+  assert.deepEqual(columnDecreaseFor(220, NaN), { kind: "unknown" });
+  assert.deepEqual(columnDecreaseFor(220, "220"), { kind: "unknown" });
+});
+
+test("columnDecreaseFor: baseline が数値でなくても unknown（レビュー指摘 M-1・片側だけ緩いガードだと fail-open が残る）", () => {
+  // baseline<=0 の判定だけに頼ると、baseline が非数値のとき
+  // `undefined <= 0` も `NaN <= 0` も false ですり抜け、null（＝減っていない）
+  // を返してしまう——current 側と同じ型ガードを baseline 側にも必須で通す
+  assert.deepEqual(columnDecreaseFor(undefined, 220), { kind: "unknown" });
+  assert.deepEqual(columnDecreaseFor(NaN, 220), { kind: "unknown" });
 });
 
 test("unclearPopulationNote: 要確認セル数の母集団が縮小したときだけ確定文言を返す（AC-1.16・T-S8）", () => {

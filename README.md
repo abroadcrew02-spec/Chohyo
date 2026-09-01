@@ -44,7 +44,7 @@ cd core
 | `render` | 閾値変更後などに .xlsx/.csv を作り直す | しない |
 | `remap` | テンプレートの枠変更後にセル割付をやり直す（幾何変更は `run` が必要と拒否される） | しない |
 | `detect-grid --image <png> --region x,y,w,h` | 罫線から表の行・列を検出（`--mode uniform --rows N --cols M` で等分割） | しない |
-| `status` / `verify` | 進捗表示／テンプレート・Poppler・資格情報の点検 | しない |
+| `status` / `verify` | 進捗表示／テンプレート・Poppler・資格情報の点検。`verify --expect-columns N` で導出列数が N 列未満なら NG になる（取り込み先と列構成を合わせた後の突き合わせ用・N 以上は OK） | しない |
 | `import-credentials <json>` | 鍵を DPAPI 暗号化で取り込む | しない |
 | `debug-images` | 読み取りの可視化画像（どの文字がどの欄に入り、なぜ〓かを1ページ1枚のPNGで表示。出力先は `workdir/debug/`＝個人情報扱い） | しない |
 | `purge --yes` | 中間データの削除 | しない |

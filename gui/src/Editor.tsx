@@ -644,6 +644,33 @@ export function tableColumnReorderImpactNote(
     : `この変更は ${totalRows} 行分・${totalColumns} 列の並びに影響します`;
 }
 
+/// 保存前確認の列数比較（issue #65-1・M2）。loadedCounts.columns はコンポーネント
+/// マウント直後の初期値が 0（useState 宣言部）で、verify 応答の取得に失敗した
+/// 経路（refreshLoadedCounts 内の catch・invoke 失敗・自動読込の失敗で
+/// refreshLoadedCounts 自体が呼ばれない経路）でもそのまま残る。baseline<=0の
+/// まま `tpl.columns < loadedCounts.columns` のような直接比較をすると、0は
+/// どんな列数より必ず小さいため、列が実際に減っても警告が出ない（fail-open）。
+/// validate_v1 は抽出列0を拒否したうえで管理6列を必ず加えるため、verify成功時
+/// の列数は必ず7以上——0はこの未取得の初期値でしか現れないsentinelとして
+/// 扱える。baseline・current のどちらが数値でない場合（verify応答の欠落・
+/// 旧コア・破損応答）も比較できないため同じ unknown 扱いにする——baseline側
+/// だけ緩いガードにすると、baseline が非数値のときに `<= 0` 判定が false
+/// （`undefined <= 0`・`NaN <= 0` はどちらも false）をすり抜けて null（＝
+/// 減っていない）を返してしまい、今回塞いだのと同型の fail-open が片側に
+/// 残る（issue #65-1 レビュー指摘 M-1）。
+export type ColumnDecreaseCheck =
+  | { kind: "decrease"; from: number; to: number }
+  | { kind: "unknown" }
+  | null;
+export function columnDecreaseFor(baseline: unknown, current: unknown): ColumnDecreaseCheck {
+  if (typeof baseline !== "number" || !Number.isFinite(baseline) || baseline <= 0) {
+    return { kind: "unknown" };
+  }
+  if (typeof current !== "number" || !Number.isFinite(current)) return { kind: "unknown" };
+  if (current < baseline) return { kind: "decrease", from: baseline, to: current };
+  return null;
+}
+
 /// 保存前確認モーダルに出す⚠一覧を組み立てる（FR-1.6・付録A）。純粋な判定
 /// のみ——実際の確認 UI（モーダル）の表示は呼び出し側（saveTemplate）が
 /// 行う。4件のいずれも該当しなければ空配列を返し、呼び出し側はモーダルを
@@ -653,7 +680,7 @@ export function saveConfirmWarnings(input: {
   isShipped: boolean;
   imageSizeMismatch: { from: string; to: string } | null;
   exclusionNotice: string | null;
-  columnDecrease: { from: number; to: number } | null;
+  columnDecrease: ColumnDecreaseCheck;
 }): SaveWarning[] {
   const warnings: SaveWarning[] = [];
   if (input.isShipped) {
@@ -669,11 +696,18 @@ export function saveConfirmWarnings(input: {
   if (input.exclusionNotice) {
     warnings.push({ key: "exclusion", text: input.exclusionNotice });
   }
-  if (input.columnDecrease) {
+  if (input.columnDecrease?.kind === "decrease") {
     warnings.push({ key: "columns",
       text: `出力列が ${input.columnDecrease.from} → ${input.columnDecrease.to} 列に減ります。`
         + "csv を取り込むシステムがある場合は、列構成の変更を先方と合わせてから"
         + "保存してください（README §7）。枠と読み取りは残ります（あとで戻せます）。" });
+  } else if (input.columnDecrease?.kind === "unknown") {
+    // unknown は「読み込み時基準が未取得」（穴A）・「今回の列数を取得できな
+    // かった」（穴B）のどちらでも立つ。原因を一方に決め打ちしない
+    // （issue #65-1 レビュー指摘 S-1）
+    warnings.push({ key: "columns",
+      text: "列数を比較できません（列数を取得できませんでした）。"
+        + "保存後の verify で列構成を確認してください。" });
   }
   return warnings;
 }
@@ -1582,8 +1616,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       ? { from: `${meta.current.image.width}×${meta.current.image.height}`,
           to: `${imgSize.w}×${imgSize.h}` }
       : null;
-    const columnDecrease = tpl.columns < loadedCounts.columns
-      ? { from: loadedCounts.columns, to: tpl.columns } : null;
+    const columnDecrease = columnDecreaseFor(loadedCounts.columns, tpl.columns);
     const warnings = saveConfirmWarnings(
       { isShipped, imageSizeMismatch, exclusionNotice: exclNotice, columnDecrease });
     if (warnings.length) {
@@ -1622,7 +1655,21 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       // 一目で分かるように・ユーザー指摘 2026-08-31）。除外数は verify が
       // 数えたもの（シオン担当・T4 追加予定）を優先し、無ければ保存物側の
       // 数で代える
-      const split = tpl.cells != null ? tpl.columns - 6 - tpl.cells : null;
+      // tpl.columns の欠落防御（issue #65-1 穴B）。旧コア・応答破損で列数が
+      // 数値以外になっても、以下の差分表示（saveDiffNote）・母集団注記
+      // （unclearPopulationNote）を NaN のまま出さない——直下の
+      // tpl.column_names（Array.isArray ガード）・tpl.warnings（?? []）と
+      // 同じ「欠落時は安全側に倒す」方針に揃える。読み込み時基準へ
+      // フォールバックすることで、比較（増減判定）は「変化なし」として続行する
+      const columnsUnknown = typeof tpl.columns !== "number";
+      const tplColumns = columnsUnknown ? loadedCounts.columns : tpl.columns;
+      // 上の tplColumns はあくまで比較用の内部値——「今回保存したテンプレート
+      // の列数」として画面に出すと、実際には取得できていない数値を事実として
+      // 見せてしまう（捏造）。表示側は columnsUnknown を見て数値を出さず
+      // 「列数不明」に倒す（issue #65-1 レビュー指摘 S-2・fail-visible 方針）
+      const columnsText = columnsUnknown
+        ? "列数不明（verify で確認してください）" : `${tplColumns} 列`;
+      const split = !columnsUnknown && tpl.cells != null ? tplColumns - 6 - tpl.cells : null;
       const exclCount = tpl.exclusions ?? currentExclCount;
       // 読み込み時点との差分（issue #59 H-9・最後の検知網）。比較の両辺を
       // 必ず verify 応答（staged 側＝この tpl）に一本化する（issue #66 段0・
@@ -1634,14 +1681,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         { fields: loadedCounts.fields, amountCells: loadedCounts.amountCells,
           exclusions: loadedCounts.exclusions, columns: loadedCounts.columns },
         { fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount,
-          columns: tpl.columns });
+          columns: tplColumns });
       // 出力しない欄の件数（issue #66 段3・保存サマリ）。列位置表示の唯一の
       // 入力源は verify（column_names）に一本化する（FR-0.1）
       const disabledCount = countOutputDisabled(resolved.fields, tables);
       const popNote = unclearPopulationNote(
-        loadedCounts.columns - 6, tpl.columns - 6, disabledCount);
+        loadedCounts.columns - 6, tplColumns - 6, disabledCount);
       setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells,
-                        exclusions: exclCount, columns: tpl.columns });
+                        exclusions: exclCount, columns: tplColumns });
       setColumnNames(Array.isArray(tpl.column_names) ? tpl.column_names : null);
       // 出力順の基準も保存成功のたびに更新する（issue #66 段6・FR-2.2）。
       // resolved.fields／tables は今回実際に書き出した並びそのもの
@@ -1649,9 +1696,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       setLoadedOrder(outputOrderSnapshot(resolved.fields, tables));
       setMsg(carveNote + `保存＋コア検証 OK（`
         + (tpl.cells != null
-           ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
-             + (split ? `＋分割+${split}` : "") + `＋管理6`
-           : `${tpl.columns} 列`)
+           ? (columnsUnknown
+              ? `欄 ${tpl.cells}・${columnsText}`
+              : `欄 ${tpl.cells} → ${columnsText}＝欄${tpl.cells}`
+                + (split ? `＋分割+${split}` : "") + `＋管理6`)
+           : columnsText)
         + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
         + `・除外 ${exclCount}`
         + (disabledCount ? `・うち出力しない ${disabledCount} 欄` : "")

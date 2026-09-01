@@ -33,6 +33,56 @@ export const STATUS_JA: Record<string, string> = {
   "超過あり": "記入が定義済みの行数を超えています",
 };
 
+/** run/remap の完了サマリに乗るカウンタ（issue #65-3・S2）を「実行時のお知らせ」
+ *  1行にまとめる。対象: fallback_used（参照先の文字を採用した数）・
+ *  fallback_discarded（参照先の文字を破棄した数）・carve_hole（切り抜きの穴に
+ *  落ちた文字数）・conflict_excluded_field（主と参照先の食い違いのうち対象外欄
+ *  由来の数）。対象外欄（出力しない欄）由来の内訳（issue #66 段2・FR-1.4）が
+ *  非0なら括弧書きで添える。carve_hole は U-07 でその欄が丸ごと〓になる
+ *  （mapping.py:463-466）ため、件数だけでなく〓化した事実も一言添える
+ *  （noticeFor 全体の趣旨＝〓の出所を画面から辿れるようにする、に合わせる）。
+ *
+ *  conflict は n_fb>=2（参照先候補が複数）のときだけ立ち、常に fallback_discarded
+ *  にも二重に計上される（総数カウンタを持たず対象外欄由来の内訳しか無い）。
+ *  件数が別に増えるわけではなく「主と参照先が食い違った」という別の事実の
+ *  可視化なので、破棄の内訳に混ぜず独立した句で足す（マリンレビュー S-3）。
+ *
+ *  4項目とも0なら null——0件表示はノイズになるので出さない。
+ *
+ *  summary（run）・remap_summary の両方から呼ぶ前提の関数（noticeFor 側で配線）。
+ *  run にしか配線しないと remap 経由の出力だけ通知が欠ける
+ *  （test_output_columns_stage2.py が指摘した「片配線」の再発防止・issue #66）。 */
+export function counterNotice(ev: Record<string, any>): string | null {
+  const used = ev.fallback_used ?? 0;
+  const discarded = ev.fallback_discarded ?? 0;
+  const discardedExcl = ev.fallback_discarded_excluded_field ?? 0;
+  const hole = ev.carve_hole ?? 0;
+  const holeExcl = ev.carve_hole_excluded_field ?? 0;
+  const conflictExcl = ev.conflict_excluded_field ?? 0;
+  const segments: string[] = [];
+  if (used > 0 || discarded > 0) {
+    const parts: string[] = [];
+    if (used > 0) parts.push(`採用 ${used}件`);
+    if (discarded > 0) {
+      parts.push(`破棄 ${discarded}件`
+        + (discardedExcl > 0 ? `（うち出力しない欄由来 ${discardedExcl}件）` : ""));
+    }
+    // N-7: 「参照先から採用/破棄」だと破棄されたのが参照先の文字だと
+    // 読み取りにくいため、主語を明示する形にする
+    segments.push(`参照先の文字: ${parts.join("／")}`);
+  }
+  if (hole > 0) {
+    let t = `切り抜きの穴に落ちた文字 ${hole}件（その欄は〓になっています`;
+    if (holeExcl > 0) t += `・うち出力しない欄由来 ${holeExcl}件`;
+    t += "）";
+    segments.push(t);
+  }
+  if (conflictExcl > 0) {
+    segments.push(`主と参照先の食い違い ${conflictExcl}件（出力しない欄）`);
+  }
+  return segments.length ? segments.join("・") : null;
+}
+
 /** 進捗イベント → 「実行時のお知らせ」1件。該当しないイベントは null。
  *
  *  拾い漏らすと、〓だけの行や増減した行数の**出所が画面から辿れない**。
@@ -72,6 +122,12 @@ export function noticeFor(ev: Record<string, any>): string | null {
       // 出しているイベント（pipeline.py:373）。文言も再送信・課金に触れる
       return `${ev.was} と同じ内容の ${ev.file} を改名として引き継げなかったため、`
         + `新規入力として送信します（API 送信＝課金が発生します）。`;
+    // issue #65-3 S2: run の完了サマリ・remap の完了サマリの両方に配線する
+    // （#60 M-2 の source_renamed／#66 段2 の片配線と同じ「片方だけ配線」を
+    // 繰り返さない）
+    case "summary":
+    case "remap_summary":
+      return counterNotice(ev);
     default:
       return null;
   }

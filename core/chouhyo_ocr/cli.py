@@ -119,14 +119,27 @@ def cmd_verify(args) -> int:
         # 列数ではないため、output_cells() を経由してここで直接数える
         # （GUI 側での再導出はしない・FR-0.1 と同じ「唯一の正」の思想）
         output_disabled_cells = len(t.cells) - len(output_cells(t))
-        _progress({"event": "verify", "check": "template", "ok": True,
-                   "columns": len(cols), "cells": len(t.cells),
-                   "amount_cells": amount_cell_count(t),
-                   "exclusions": sum(exclusions_by_face.values()),
-                   "exclusions_by_face": exclusions_by_face,
-                   "warnings": list(t.warnings),
-                   "column_names": cols,
-                   "output_disabled_cells": output_disabled_cells})
+        # --expect-columns（issue #65-1 穴C）: GUI 側の読み込み時基準
+        # （loadedCounts.columns）が verify 失敗・invoke 失敗等で取得できな
+        # かった場合でも、CLI 単体で列数の後退を検知できるようにする最後の
+        # 砦。省略時（None）は従来どおり常に True——挙動を変えない
+        column_count_ok = (args.expect_columns is None
+                            or len(cols) >= args.expect_columns)
+        event = {"event": "verify", "check": "template", "ok": column_count_ok,
+                 "columns": len(cols), "cells": len(t.cells),
+                 "amount_cells": amount_cell_count(t),
+                 "exclusions": sum(exclusions_by_face.values()),
+                 "exclusions_by_face": exclusions_by_face,
+                 "warnings": list(t.warnings),
+                 "column_names": cols,
+                 "output_disabled_cells": output_disabled_cells}
+        if not column_count_ok:
+            # 記入値は含まれない（列数という件数のみ）ため、既存の記入値
+            # 漏出防止方針（設計 §8.1）に抵触しない
+            event["error"] = (f"列数が期待値を下回っています（{len(cols)} 列 < "
+                               f"--expect-columns {args.expect_columns}）")
+        _progress(event)
+        ok = ok and column_count_ok
     except Exception as e:
         ok = False
         _progress({"event": "verify", "check": "template", "ok": False, "error": str(e)})
@@ -419,6 +432,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("verify", help="資格情報・Poppler・テンプレートの検証")
     p.add_argument("--template", default=default_tpl)
+    p.add_argument("--expect-columns", type=int, default=None,
+                   help="期待する最小列数。実際の列数がこれを下回ったら"
+                        "template チェックを失敗として報告する（GUI 側の"
+                        "読み込み時基準が取得できない場合の最後の砦・"
+                        "issue #65-1）。省略時は従来どおり比較しない")
     p.set_defaults(fn=cmd_verify)
 
     p = sub.add_parser("import-credentials", help="資格情報 JSON を DPAPI 暗号化で取り込む")

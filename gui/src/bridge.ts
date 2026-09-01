@@ -28,6 +28,14 @@ async function mockRun(): Promise<number> {
   emit("core-line", JSON.stringify({
     event: "summary", pages: total, rows: total, align_failed: 1,
     api_calls: total - 1, unclear_cells: 247, overflow: 0, risky_cells: 2,
+    // issue #65-3 S2: 実行時のお知らせに乗る新カウンタをデモモードでも確認
+    // できるようにする（参照先の採用/破棄・対象外欄由来の内訳・主と参照先の
+    // 食い違い（マリンレビュー S-3）の各セグメントを1回のデモ実行で確認できる
+    // 組み合わせ。carve_hole は0のままにして「非0のときだけ表示」の分岐も
+    // デモから確認できるようにする）
+    fallback_used: 2, fallback_discarded: 1, carve_hole: 0,
+    fallback_discarded_excluded_field: 1, carve_hole_excluded_field: 0,
+    conflict_excluded_field: 1,
     xlsx: "output\\output_demo.xlsx", csv: "output\\output_demo.csv" }));
   return 0;
 }

@@ -2,9 +2,9 @@
 
 | 項目 | 内容 |
 |---|---|
-| 版 | v1.1（2026-08-31・列数の決め打ち廃止と D-24 差し戻し `2e8f882` へ追従。v1.0=2026-08-28） |
-| 正本 | 本書（テスト要件・トレーサビリティ）。要件は 01_requirements.md、設計は 02_design.md |
-| 実行方法 | `python scripts/run_all_tests.py`（pytest 全体＋cargo test＋集計） |
+| 版 | v1.2（2026-09-01・issue #64 の一括更新: §2/§3 の件数を実測405件へ是正し5巡目〜#66 の新設21スイートを掲載、回帰ゲート基準値の正本を §3 に置いた。v1.1=2026-08-31・v1.0=2026-08-28） |
+| 正本 | 本書（テスト要件・トレーサビリティ）。要件は 01_requirements.md、設計は 02_design.md。**回帰ゲート基準値の管理先は §3**（05 P4-1・要件側で二重管理しない） |
+| 実行方法 | `python scripts/run_all_tests.py`（pytest 全体＋gui logic＋cargo test＋集計） |
 
 ## 1. テスト方針
 
@@ -26,35 +26,62 @@
 | L2 半自動 | スクリプトはあるが環境準備（dev サーバー・release exe）が要る | リリース前 |
 | L3 手動 | 人の操作・外部環境が必要 | 節目のみ（§6） |
 
-- L1: pytest 120 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip）＋ cargo test 2 件
+- L1: pytest 405 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip）＋ gui-logic 111 件＋ cargo test 18 件。いずれも `run_all_tests.py` が一括実行する（件数は 2026-09-01 実測・`pytest --collect-only -q` で 405 collected）
 - L2: GUI スモーク（`npm run dev` 起動下で L1 に合流）／release exe の CDP 検証（issue #5/#6/#7 の実機確認・scripts 化はレビュー時に都度）
 - L3: §6 の残項目
 
 ## 3. テストスイート一覧（L1）
 
+件数は 2026-09-01 実測（`pytest --collect-only -q` → 405 collected をファイル別に集計）。
+
 | ファイル | 件数 | 対象 |
 |---|---|---|
-| core/tests/test_template.py | 12 | テンプレート読込・v1 受入範囲・格子展開（列導出の前提。現行テンプレートの導出結果は220列） |
-| core/tests/test_columns.py | 7 | 列導出（出荷テンプレの現在値220列・内訳・field_id 一意）。固定列数での拒否は撤去され、拒否は列名重複のみ（2026-08-31・`2e8f882`） |
-| core/tests/test_mapping.py | 6 | symbol 割付・行クラスタ・除外領域（実応答回帰） |
-| core/tests/test_normalize.py | 4 | 金額 D-01・複合セル分割 D-23 |
-| core/tests/test_render_rows.py | 11 | セル3状態・〓判定・ステータス合成・制御文字〓化 |
-| core/tests/test_e2e_replay.py | 12 | run→xlsx/csv 貫通・配置検証・バイト一致再現性 |
-| core/tests/test_resume_cap.py | 4 | 再開規則・送信上限（§8-6/7） |
-| core/tests/test_duplicate_source.py | 2 | 二重取り込み検知 |
-| core/tests/test_charset.py | 1 | 異体字・サロゲートペア保持（§6.4） |
-| core/tests/test_grid.py | 4 | 枠候補生成（罫線検出・等分割、§8-16/17 の土台） |
-| core/tests/test_process_interrupt.py | 1 | 実プロセス強制終了→再開（C10 の自動化可能部分） |
+| core/tests/test_review_fixes.py | 38 | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page）＋ `verify --expect-columns` の列数ゲート3方向検証（#65-2 の緑偽装置換） |
+| core/tests/test_normalize.py | 30 | 金額 D-01・複合セル分割 D-23 |
+| core/tests/test_template.py | 22 | テンプレート読込・v1 受入範囲・格子展開（列導出の前提。現行テンプレートの導出結果は220列） |
+| core/tests/test_response_robustness.py | 20 | 応答異常・出力の原子性・多重起動・対象外入力の可視化（#35〜#40・M-2）|
+| core/tests/test_char_level_unclear.py | 20 | 文字単位〓（#62・U-10〜U-13・判定表 T-12〜T-21） |
+| core/tests/test_local_storage_guard.py | 19 | 同期フォルダ検知（issue #8・`debug-images --out` の検査 #59 H-5 を含む） |
+| core/tests/test_fallback.py | 18 | 参照先（fallback_rect）の採否3分岐・由来印（#54・U-02〜U-04） |
+| core/tests/test_e2e_replay.py | 17 | run→xlsx/csv 貫通・配置検証・バイト一致再現性 |
+| core/tests/test_render_rows.py | 14 | セル3状態・〓判定・ステータス合成・制御文字〓化 |
+| core/tests/test_union_regions.py | 14 | 複数領域（L字・コの字）の連結順「領域→帯→行→x」（#57・U-06） |
+| core/tests/test_output_columns_stage1.py | 13 | 出力列制御 段1: `output` 属性・列導出3経路・抽出列0拒否（#66・AC-1.1 系・§8-16 後半） |
+| core/tests/test_output_columns_stage2.py | 13 | 段2: 対象外欄の母集団維持・W 警告の（出力対象外）印・カウンタの run/remap 両配線（AC-1.4 系） |
+| core/tests/test_review4_pipeline.py | 11 | 位置合わせの再利用（#45）・入力ファイル改名時の行数保存（#46） |
+| core/tests/test_render_out_unclear.py | 10 | 由来色・部分〓の条件付き書式・COUNTIF の `unclear_char_level` ゲート（U-04/U-12/U-13） |
+| core/tests/test_debug_images.py | 10 | debug-images の判定共通化・テンプレート不一致の拒否ゲート（#60 M-1・U-15。実サンプル素材が無い環境では skip） |
+| core/tests/test_review4_io.py | 8 | 4巡目の入出力修正（#51/#47/#52 M-4） |
+| core/tests/test_mapping.py | 8 | symbol 割付・行クラスタ・除外領域（実応答回帰） |
+| core/tests/test_exclusion_warnings.py | 8 | 除外領域×受け皿の重なり警告 W-1/W-2（U-09・H-6） |
+| core/tests/test_columns.py | 8 | 列導出（出荷テンプレの現在値220列・内訳・field_id 一意）。拒否は列名重複と抽出列0（FR-1.3）のみ |
+| core/tests/test_adjacent_gap_warnings.py | 8 | 受け皿間の隙間（死角）警告 W-3（#61 L-4） |
+| core/tests/test_review4_ingest.py | 7 | PDF 展開の高速化が出力を変えていないことの回帰（#50） |
+| core/tests/test_api_budget.py | 7 | API 送信ユニットの月次上限（強制停止） |
+| core/tests/test_output_columns_stage7.py | 6 | 段7: 並べ替え3閉区間・座標不変（AC-2.x） |
+| core/tests/test_hole_overlap_warnings.py | 6 | 切り抜き穴どうしの重なり警告 W-4（#66 第2弾 段6） |
 | core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
-| core/tests/test_leak_guards.py | 3 | 漏出防止の再発防止（issue #2/#3/#4） |
-| core/tests/test_local_storage_guard.py | 2 | 同期フォルダ検知（issue #8） |
-| core/tests/test_response_robustness.py | 16 | 応答異常・出力の原子性・多重起動・対象外入力の可視化（#35〜#40・M-2）|
-| core/tests/test_era_calibration.py | 3 | 丸印判定の較正（#23・8箇所全問正解と閾値への余裕）|
+| core/tests/test_unclear_char_level_config.py | 5 | `unclear_char_level` 設定の検証・既定 OFF（U-14） |
+| core/tests/test_store_extras.py | 5 | cell.char_confs / cell.origin の追加列とマイグレーション（§10） |
 | core/tests/test_reuse_guards.py | 5 | 中間データ再利用の歯止め・重複行（#25/#29 B-2）|
-| core/tests/test_alignment_robustness.py | 3 | 位置合わせ頑健性（回転・平行移動・#30）|
-| core/tests/test_review_fixes.py | 14 | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page） |
+| core/tests/test_output_columns_stage8.py | 5 | 段8: 列名一覧ファイル・列順報告（FR-2.7・AC-2.10） |
+| core/tests/test_leak_guards.py | 5 | 漏出防止の再発防止（issue #2/#3/#4） |
 | core/tests/test_gui_smoke.py | 5 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip） |
-| gui/src-tauri（cargo test） | 2 | サブコマンド白リスト（issue #7） |
+| core/tests/test_grid.py | 5 | 枠候補生成（罫線検出・等分割、§8-16/17 の土台） |
+| core/tests/test_exclusion_guard.py | 5 | 除外領域の後退検知・verify の exclusions 出力（#55・#59 H-8） |
+| core/tests/test_resume_cap.py | 4 | 再開規則・送信上限（§8-6/7） |
+| core/tests/test_output_columns_stage4.py | 4 | 段4: debug-images の対象外表示・verify `output_disabled_cells`（FR-1.9） |
+| core/tests/test_output_columns_stage0.py | 4 | 段0: verify `column_names`・保存時差分の母集団是正（AC-0.x） |
+| core/tests/test_alignment_robustness.py | 4 | 位置合わせ頑健性（回転・平行移動・#30）|
+| core/tests/test_era_calibration.py | 3 | 丸印判定の較正（#23・8箇所全問正解と閾値への余裕）|
+| core/tests/test_duplicate_source.py | 2 | 二重取り込み検知 |
+| core/tests/test_process_interrupt.py | 1 | 実プロセス強制終了→再開（C10 の自動化可能部分） |
+| core/tests/test_output_columns_ac118_equivalence.py | 1 | AC-1.18: JSON 直接編集と画面経由の run 出力一致 |
+| core/tests/test_charset.py | 1 | 異体字・サロゲートペア保持（§6.4） |
+| gui/tests/gui-logic.test.mjs（node 直実行） | 111 | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブほか） |
+| gui/src-tauri（cargo test） | 18 | サブコマンド白リスト（issue #7）ほか GUI 境界 |
+
+**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (400 passed, 5 skipped, 434.6s) | gui logic: PASS (111 passed, 0.9s) | cargo test: PASS (18 passed, 55.2s) / total 490.7s`（実行日 2026-09-01）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。skip 5 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → 5 passed, 36.74s・実行日 2026-09-01）。
 
 ## 4. トレーサビリティ（要件 §8 合格条件 ⇔ テスト）
 

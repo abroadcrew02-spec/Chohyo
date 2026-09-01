@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from chouhyo_ocr import cli
 from chouhyo_ocr.config import Config, ConfigError, load_config
 from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.render_rows import UNCLEAR, build_row
@@ -105,16 +106,74 @@ def test_amount_count_is_reported_not_rejected(tmp_path):
     「金額 N 列」を必ず表示し、N=0 を見た管理者が気づける（N-1/N-4 の
     検知経路をエラーから表示へ移した）。
 
-    このテストは「拒否されないこと」だけを固定する。読み込み時点との差分を
-    見て N=0 を能動的に検知するのは GUI 側の前後差分表示の役目（#59 H-9・
-    フブキが実装中）——コア側は N を計算して見える化するところまでが責務。
+    「拒否されないこと」は validate_v1 が例外を投げないことで固定する。
+    列数そのものの後退検知（GUI 側の読み込み時基準比較・CLI の
+    `verify --expect-columns`）は本テストの責務外——
+    test_verify_expect_columns_matches_and_detects_shortfall で別途固定する
+    （issue #65-1・レビュー指摘 S-5: 金額列の契約と列数比較の契約は別物の
+    ため同居させない）。
     """
     from chouhyo_ocr.columns import amount_cell_count, validate_v1
     ok = _template_with(tmp_path)
     assert amount_cell_count(ok) == 28
     broken = _template_with(tmp_path, drop_normalize=True)
-    validate_v1(broken)                       # 拒否はしない
+    validate_v1(broken)                       # 拒否はしない（例外にならない）
     assert amount_cell_count(broken) == 0     # が、表示で 0 と分かる
+
+
+def _verify_cfg(tmp_path):
+    """verify を cli.main 経由で呼ぶための最小 config.json（issue #65-1）。
+
+    poppler/credentials/api_budget など列数と無関係なチェックの成否は
+    環境依存（この tmp_path には資格情報が無いため常に NG になる）ため、
+    以下のテストは overall の終了コードではなく「template」チェックの
+    イベント自身の ok/error だけを見る。同型の判定方法は
+    test_output_columns_stage4.py の _verify_template_event が既に使っている
+    （このverify呼び出しは環境非依存で再現できることを同ファイルが示している）。
+    """
+    p = tmp_path / "config.json"
+    p.write_text(json.dumps({
+        "output_dir": str(tmp_path / "out"), "workdir": str(tmp_path / "wd"),
+        "log_dir": str(tmp_path / "logs"),
+    }), encoding="utf-8")
+    return p
+
+
+def _verify_template_event(tmp_path, capsys, template_path, expect_columns=None):
+    cfg_path = _verify_cfg(tmp_path)
+    args = ["--config", str(cfg_path), "verify", "--template", str(template_path)]
+    if expect_columns is not None:
+        args += ["--expect-columns", str(expect_columns)]
+    cli.main(args)
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    return next(e for e in events if e.get("check") == "template")
+
+
+def test_verify_expect_columns_matches_and_detects_shortfall(tmp_path, capsys):
+    """`verify --expect-columns` は列数の後退を検知する最後の砦（issue #65-1 穴C）。
+
+    GUI 側の読み込み時基準比較（Editor.tsx の columnDecreaseFor）に加えて、
+    CLI 単体でも列数の後退を検知できるようにする段——GUI が基準を取得
+    できない場合（invoke 失敗・自動読込失敗）でも、この CLI 経路は独立に
+    機能する。一致・不足・省略の3方向を固定する（レビュー指摘 S-5 で
+    test_amount_count_is_reported_not_rejected から分離）。
+    """
+    # 一致（実列数 220 と同じ期待値）: 失敗にしない
+    matched = _verify_template_event(tmp_path, capsys, TPL, expect_columns=220)
+    assert matched["ok"] is True
+    assert matched["columns"] == 220
+    assert "error" not in matched
+
+    # 実列数を上回る期待値を渡すと不足として検知する（ok:False）。
+    # メッセージに記入値（帳票の値）は含まれない——列数という件数のみ
+    short = _verify_template_event(tmp_path, capsys, TPL, expect_columns=221)
+    assert short["ok"] is False
+    assert "221" in short["error"] and "220" in short["error"]
+
+    # 省略時は従来どおり挙動不変（列数と無関係に ok:True のまま）
+    omitted = _verify_template_event(tmp_path, capsys, TPL)
+    assert omitted["ok"] is True
+    assert "error" not in omitted
 
 
 # ---------- #13: glob メタ文字を含むファイル名 ----------
