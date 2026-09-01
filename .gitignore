@@ -105,3 +105,7 @@ desktop.ini
 
 # design canvas の seed 済み成果物（再生成可能・~2MB）
 /design/chouhyo-ocr-gui.html
+
+# 検証資産（testdata/）は追跡する。配布物には同梱されない（tauri.conf は templates/ のみ同梱）。
+# 経緯・置き場方針は docs/design/chouhyo-ocr/06_second_form_findings.md §2
+!testdata/**

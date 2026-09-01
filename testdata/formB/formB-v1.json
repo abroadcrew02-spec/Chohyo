@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "template_id": "formB-v1",
+  "render_dpi": 300,
+  "image": {
+    "width": 1800,
+    "height": 1200
+  },
+  "record": {
+    "pages": 1
+  },
+  "faces": [
+    {
+      "face_id": "front",
+      "source": {
+        "page_offset": 0,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 1800,
+          "h": 1200
+        }
+      },
+      "exclusions": [],
+      "fields": [
+        {
+          "field_id": "氏名",
+          "kind": "text",
+          "rect": {
+            "x": 100,
+            "y": 100,
+            "w": 400,
+            "h": 80
+          }
+        },
+        {
+          "field_id": "受付日",
+          "kind": "text",
+          "rect": {
+            "x": 600,
+            "y": 100,
+            "w": 300,
+            "h": 80
+          }
+        },
+        {
+          "field_id": "備考",
+          "kind": "text",
+          "rect": {
+            "x": 100,
+            "y": 750,
+            "w": 850,
+            "h": 150
+          }
+        }
+      ],
+      "tables": [
+        {
+          "table_id": "visit",
+          "row_pitch": 80,
+          "row_height": 70,
+          "blocks": [
+            {
+              "origin": {
+                "x": 100,
+                "y": 300
+              },
+              "rows": 5
+            }
+          ],
+          "columns": [
+            {
+              "name": "来場日",
+              "x_offset": 0,
+              "width": 200,
+              "kind": "text"
+            },
+            {
+              "name": "人数",
+              "x_offset": 200,
+              "width": 150,
+              "kind": "text"
+            },
+            {
+              "name": "メモ",
+              "x_offset": 350,
+              "width": 400,
+              "kind": "text"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
