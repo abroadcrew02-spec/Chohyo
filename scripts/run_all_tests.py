@@ -37,7 +37,12 @@ def main():
         "pytest",
         # -rf: 失敗したテスト名を必ず末尾に出す（パイプで切り詰めても分かる）
         # -rs: skip の理由も出す。素材欠けで大量 skip したときに何が要るか分かる
-        [str(PYTHON), "-X", "utf8", "-m", "pytest", "-q", "--tb=short", "-rf", "-rs"],
+        # -n auto: pytest-xdist で CPU 数ぶん並列（2026-09-01・ユーザー承認）。
+        #   テストは tmp_path 隔離・共有素材（workdir/s2 等）は読み取りのみなので
+        #   並列安全。集計行「N passed in Xs」の形式は xdist でも同じで、下の
+        #   SUMMARY_LINE 集計はそのまま機能する
+        [str(PYTHON), "-X", "utf8", "-m", "pytest", "-q", "--tb=short", "-rf", "-rs",
+         "-n", "auto"],
         ROOT / "core"))
 
     # 2) GUI の純ロジック（座標追従・進捗イベントの文言）。
