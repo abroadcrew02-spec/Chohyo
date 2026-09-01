@@ -41,6 +41,11 @@ class Summary:
     fallback_used: int = 0
     fallback_discarded: int = 0
     carve_hole: int = 0
+    # issue #66 段2（FR-1.4・AC-1.10）。上記3件のうち output: false の欄が
+    # 発火元のものだけの内訳（総数からは減らさない・値は記入値を含まない）
+    fallback_discarded_excluded_field: int = 0
+    carve_hole_excluded_field: int = 0
+    conflict_excluded_field: int = 0
 
 
 def _png_bytes(img: "Image.Image") -> bytes:
@@ -208,14 +213,18 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
 
 def _map_and_score(store: Store, template: Template, page_id: str,
                    resp: dict, aligned_faces
-                   ) -> tuple[int, int, int, int, int, int, int]:
+                   ) -> tuple[int, int, int, int, int, int, int, int, int, int]:
     """応答 → token 保存 → 割付 → cell/era 保存。
 
     (below, other, total, page_total, fallback_used, fallback_discarded,
-    carve_hole) を返す。page_total は応答全体の symbol 数で、面内に1つも
-    落ちなかったケース（total==0）を D-15 が素通りする穴を塞ぐために使う
-    （issue #37）。fallback_used/fallback_discarded/carve_hole は U-04/U-07
-    の件数（設計 §10.3）——呼び出し側が進捗イベント・run サマリへ出す。
+    carve_hole, fallback_discarded_excluded_field, carve_hole_excluded_field,
+    conflict_excluded_field) を返す。page_total は応答全体の symbol 数で、
+    面内に1つも落ちなかったケース（total==0）を D-15 が素通りする穴を塞ぐ
+    ために使う（issue #37）。fallback_used/fallback_discarded/carve_hole は
+    U-04/U-07 の件数（設計 §10.3）——呼び出し側が進捗イベント・run サマリへ
+    出す。末尾3つは issue #66 段2（FR-1.4）: 上記のうち output: false の欄が
+    発火元のものだけの内訳（MappingResult をそのまま素通しするだけで、
+    ここでは判定しない——判定は mapping.assign() に集約済み）。
     """
     page_syms = symbols_from_response(resp)
     by_face = {f.face_id: to_face_local(f, page_syms) for f in template.faces}
@@ -256,7 +265,9 @@ def _map_and_score(store: Store, template: Template, page_id: str,
     store.set_unassigned(page_id, result.unassigned_below_table, result.unassigned_other)
     return (result.unassigned_below_table, result.unassigned_other,
             total_syms, page_total,
-            result.fallback_used, result.fallback_discarded, result.carve_hole)
+            result.fallback_used, result.fallback_discarded, result.carve_hole,
+            result.fallback_discarded_excluded_field,
+            result.carve_hole_excluded_field, result.conflict_excluded_field)
 
 
 def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
@@ -531,7 +542,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # 浮かせると次回実行で再送対象になり、実行のたびに課金が発生する
         try:
             (below, other, total, page_total,
-             fb_used, fb_discarded, hole) = _map_and_score(
+             fb_used, fb_discarded, hole,
+             fb_discarded_excl, hole_excl, conflict_excl) = _map_and_score(
                 store, template, pid, resp, faces)
         except Exception as e:  # noqa: BLE001
             store.set_state(pid, "failed")
@@ -566,12 +578,21 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         summary.fallback_used += fb_used
         summary.fallback_discarded += fb_discarded
         summary.carve_hole += hole
+        summary.fallback_discarded_excluded_field += fb_discarded_excl
+        summary.carve_hole_excluded_field += hole_excl
+        summary.conflict_excluded_field += conflict_excl
         # U-04/U-07: このページで発火した件数のみ載せる（0件のページばかりの
         # 進捗ログを埋めない）。記入値は含めない（field_id・件数のみ）
         progress({"event": "page", "page_id": pid, "status": "done",
                   **({"fallback_used": fb_used} if fb_used else {}),
                   **({"fallback_discarded": fb_discarded} if fb_discarded else {}),
-                  **({"carve_hole": hole} if hole else {})})
+                  **({"carve_hole": hole} if hole else {}),
+                  # issue #66 段2（FR-1.4）: 対象外欄由来の内訳も同じ
+                  # 「非ゼロのときだけキーを足す」流儀に揃える
+                  **({"fallback_discarded_excluded_field": fb_discarded_excl}
+                     if fb_discarded_excl else {}),
+                  **({"carve_hole_excluded_field": hole_excl} if hole_excl else {}),
+                  **({"conflict_excluded_field": conflict_excl} if conflict_excl else {})})
 
     # --- F9: 出力 ---
     # ロック内から呼ぶので内側（ロックを取らない側）を使う——render() を
@@ -593,6 +614,11 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
               "fallback_used": summary.fallback_used,
               "fallback_discarded": summary.fallback_discarded,
               "carve_hole": summary.carve_hole,
+              # issue #66 段2（FR-1.4・AC-1.10）。対象外欄由来の内訳
+              # （常にキーを出す・remap_summary と同じ流儀）
+              "fallback_discarded_excluded_field": summary.fallback_discarded_excluded_field,
+              "carve_hole_excluded_field": summary.carve_hole_excluded_field,
+              "conflict_excluded_field": summary.conflict_excluded_field,
               "xlsx": str(xlsx), "csv": str(csvp)})
     store.close()
     return summary
@@ -695,6 +721,9 @@ def remap(template_path: str | Path, cfg: Config,
 
     n = 0
     fb_used_total = fb_discarded_total = carve_hole_total = 0
+    # issue #66 段2（FR-1.4・AC-1.10）: run と同じ内訳を remap 側にも配線する
+    # （run だけに入れると remap 経由の出力で対象外欄由来の警告が消える）
+    fb_discarded_excl_total = carve_hole_excl_total = conflict_excl_total = 0
     aligned_dir = Path(cfg.workdir) / "aligned"
     for page in store.pages():
         if page["state"] != "done":
@@ -721,6 +750,9 @@ def remap(template_path: str | Path, cfg: Config,
         fb_used_total += result.fallback_used
         fb_discarded_total += result.fallback_discarded
         carve_hole_total += result.carve_hole
+        fb_discarded_excl_total += result.fallback_discarded_excluded_field
+        carve_hole_excl_total += result.carve_hole_excluded_field
+        conflict_excl_total += result.conflict_excluded_field
 
         # choice_marks の変更に追従: 保存済み位置合わせ画像から環状帯を再スコア
         import numpy as np
@@ -758,6 +790,11 @@ def remap(template_path: str | Path, cfg: Config,
     progress({"event": "remap_summary", "pages": n,
               "fallback_used": fb_used_total,
               "fallback_discarded": fb_discarded_total,
-              "carve_hole": carve_hole_total})
+              "carve_hole": carve_hole_total,
+              # issue #66 段2（FR-1.4・AC-1.10）。run の summary イベントと
+              # 同じキー名・同じ「常に出す」流儀（0件でも出す）
+              "fallback_discarded_excluded_field": fb_discarded_excl_total,
+              "carve_hole_excluded_field": carve_hole_excl_total,
+              "conflict_excluded_field": conflict_excl_total})
     store.close()
     return n

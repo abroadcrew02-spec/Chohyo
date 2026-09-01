@@ -72,6 +72,16 @@ class MappingResult:
     fallback_used: int = 0        # 参照先を採用した欄の数（判定表 #9）
     fallback_discarded: int = 0   # 破棄した参照先 symbol の数（判定表 A）
     carve_hole: int = 0           # 欄の穴に落ちた symbol の数（判定表 #7）
+    # issue #66 段2（FR-1.4・AC-1.10）: 上記3件のうち、発火元（穴の持ち主／
+    # fallback_rect の持ち主／矛盾の主）の欄が output: false のものだけを別に
+    # 数える。上記の総数（fallback_discarded・carve_hole）は output に関わらず
+    # 従来どおり全欄を数え続ける——read/mapping 層は output の影響を受けない
+    # という FR-1.1 の不変条件を壊さないため、これは総数の「内訳」であって
+    # 「差し替え」ではない。conflict はこれまで総数を持たなかった（ログのみ）ため、
+    # ここでは対象外欄由来の件数だけを追加する（総数の新設は本タスクの範囲外）
+    fallback_discarded_excluded_field: int = 0
+    carve_hole_excluded_field: int = 0
+    conflict_excluded_field: int = 0
 
 
 def symbols_from_response(resp: dict) -> list[Symbol]:
@@ -398,6 +408,13 @@ def assign(
     contents: dict[str, CellContent] = {}
     fallback_used = 0
     fallback_discarded = 0
+    fallback_discarded_excluded_field = 0
+    conflict_excluded_field = 0
+    # issue #66 段2（FR-1.4）: 発火元の欄が output: false かどうかの参照用。
+    # 対象外判定はここで output_cells() を経由せず CellSpec.output を直接見る
+    # ——column.py 側の「output に出す/出さない」判定とは別で、こちらは
+    # 「読み取り上の事実（どの欄で警告が起きたか）」を output で色分けするだけ
+    output_by_id = {c.field_id: c.output for c in cells}
 
     for c in cells:
         all_rects = c.all_rects()
@@ -428,6 +445,8 @@ def assign(
             char_confs=confs, origin=("conflict" if decision == "conflict" else ""))
         if decision == "conflict":
             log.warn("fallback_conflict", field_id=c.field_id)
+            if not c.output:
+                conflict_excluded_field += 1
 
         if n_fb >= 1:
             # U-02: 参照先は「主が空のときだけ有効な受け皿」。無効なとき参照先の
@@ -435,6 +454,9 @@ def assign(
             # （設計 §14 不変条件6・判定表 A）
             fallback_discarded += n_fb
             log.warn("fallback_discarded", field_id=c.field_id, count=n_fb)
+            if not c.output:
+                # fallback_rect は c（この欄）が持つので、発火元の欄は c 自身
+                fallback_discarded_excluded_field += n_fb
             loc = locators.get(c.face_id)
             for s in fsyms:
                 hit_fid = _hole_hit(loc, s.x, s.y) if loc is not None else None
@@ -444,6 +466,11 @@ def assign(
                     other += 1
 
     carve_hole = sum(hole_hits.values())
+    # issue #66 段2（FR-1.4）: 穴の持ち主（fid）は _hole_hit / 直撃のどちらの
+    # 経路でも hole_hits のキーになるため、ここを1回集計するだけで両経路を
+    # 網羅できる（fid の output で対象外由来かを判定）
+    carve_hole_excluded_field = sum(
+        n for fid, n in hole_hits.items() if not output_by_id.get(fid, True))
     for fid, n in hole_hits.items():
         # U-07: 穴に落ちた文字が1つでもあれば、その欄のそれまでの内容を
         # 破棄して欄全体〓にする（判定表 #7）。空欄だった場合も新規に立てる——
@@ -469,4 +496,7 @@ def assign(
         fallback_used=fallback_used,
         fallback_discarded=fallback_discarded,
         carve_hole=carve_hole,
+        fallback_discarded_excluded_field=fallback_discarded_excluded_field,
+        carve_hole_excluded_field=carve_hole_excluded_field,
+        conflict_excluded_field=conflict_excluded_field,
     )

@@ -285,6 +285,10 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
         exclusions = exclusions_by_face.get(c.face_id, ())
         if not exclusions:
             continue
+        # issue #66 段2（トワ・ぼたん S-8）: 対象の欄が output: false なら、
+        # W-1/W-2 の全文言に印を付ける。無改変テンプレート（全欄 output=True）
+        # では tag は常に空文字列なので、既存の件数固定テストは影響を受けない
+        tag = "（出力対象外）" if not c.output else ""
         receptors: list[tuple[str, Rect]] = [("欄", c.rect)]
         receptors += [("欄の追加領域", r) for r in c.extra_rects]
         if c.fallback_rect is not None:
@@ -299,22 +303,22 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
             ratio = covered / area
             warnings.append(
                 f"[W-1] {c.field_id} の{label}が除外領域と重なっている"
-                f"（被覆率 約{ratio * 100:.1f}%）")
+                f"（被覆率 約{ratio * 100:.1f}%）{tag}")
             log.warn("exclusion_overlap_w1", field_id=c.field_id)
             if covered >= area:
                 warnings.append(
                     f"[W-2] {c.field_id} の{label}が除外領域に完全に覆われている"
-                    "（恒久的に空になる）")
+                    f"（恒久的に空になる）{tag}")
                 log.warn("exclusion_overlap_w2_full", field_id=c.field_id)
             if label == "参照先の枠":
                 warnings.append(
                     f"[W-2] {c.field_id} の参照先が除外領域と重なっている"
-                    "（参照先が機能しない可能性がある）")
+                    f"（参照先が機能しない可能性がある）{tag}")
                 log.warn("exclusion_overlap_w2_fallback", field_id=c.field_id)
             elif label == "欄" and c.fallback_rect is not None:
                 warnings.append(
                     f"[W-2] {c.field_id} の主枠が除外領域と重なっている"
-                    "（『主が空』が構造的に成立しやすくなり、参照先が常時採用されうる）")
+                    f"（『主が空』が構造的に成立しやすくなり、参照先が常時採用されうる）{tag}")
                 log.warn("exclusion_overlap_w2_primary", field_id=c.field_id)
     return warnings
 
@@ -345,6 +349,10 @@ GAP_MIN_PX = 1  # 0px（接触）は死角ではない。1px 以上を隙間と�
 
 
 def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
+    # issue #66 段2（FR-1.2・トワ・ぼたん S-8）: 隙間の当事者どちらかが
+    # output: false なら「（出力対象外）」を付す（欄単位の属性なので field_id
+    # で引く。参照先の枠・追加領域も同じ欄の output に従う）
+    output_by_id = {c.field_id: c.output for c in cells}
     by_face: dict[str, list[tuple[str, str, Rect]]] = {}
     for c in cells:
         for r in c.all_rects():
@@ -380,10 +388,17 @@ def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
                     if k != i and k != j)
                 if blocked:
                     continue  # 間に別の受け皿が挟まっている＝隣接ではない
+                # 対象外欄を1つ作った場合に印が付く（AC-1.5）: どちらか一方が
+                # output: false であれば付す（OR）。「片方は出力に残るので
+                # まだ実害がある」ケースを黙って対象外扱いにしないため、
+                # 両方が output: false のときだけ付す（AND）ではなくこちらを選ぶ
+                tag = ("（出力対象外）"
+                      if not output_by_id.get(id_a, True)
+                      or not output_by_id.get(id_b, True) else "")
                 warnings.append(
                     f"[W-3] {id_a}（{label_a}）と {id_b}（{label_b}）の間に"
                     f"{gap}px の隙間がある（面 '{face_id}'）。この隙間に書かれた"
-                    "文字はどの欄にも入らず読み取られない")
+                    f"文字はどの欄にも入らず読み取られない{tag}")
                 log.warn("adjacent_gap_w3", face_id=face_id, field_a=id_a,
                          field_b=id_b, gap_px=gap)
     return warnings
