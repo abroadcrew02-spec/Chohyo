@@ -20,9 +20,9 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
-from .template import Face, Template
+from .template import BASE_DPI, Face, Template
 
-COARSE_DILATE = 60  # 粗マスクの膨張量（設計 §6.2: ceil(D*sin(2°)) ≈ 53 → 60）
+COARSE_DILATE = 60  # 粗マスクの膨張量（設計 §6.2: ceil(D*sin(2°)) ≈ 53 → 60・300dpi=BASE_DPI 基準値）
 
 
 @dataclass(frozen=True)
@@ -37,9 +37,9 @@ class AlignedFace:
 
 
 # --- 平行移動推定の採否定数（D-25・※実物で較正・§4.6）---
-SHIFT_MATCH_RATIO = 0.5   # 期待線のうち一致すべき割合の下限
-SHIFT_GAP_MIN = 2         # 最良シフトと次点（4px 以上離れた位置）のスコア差の下限
-SHIFT_RUNNER_DIST = 4     # 次点とみなす最小距離（px）
+SHIFT_MATCH_RATIO = 0.5   # 期待線のうち一致すべき割合の下限（無次元・dpi非依存）
+SHIFT_GAP_MIN = 2         # 最良シフトと次点（4px 以上離れた位置）のスコア差の下限（無次元・dpi非依存）
+SHIFT_RUNNER_DIST = 4     # 次点とみなす最小距離（px・300dpi=BASE_DPI 較正値）
 
 
 @dataclass(frozen=True)
@@ -52,12 +52,15 @@ class ShiftEstimate:
     reason: str       # NG のとき: few_lines / boundary / ambiguous
 
 
-def _axis_shift(detected: list[int], expected: list[int],
-                n: int) -> tuple[int, int, int, bool]:
+def _axis_shift(detected: list[int], expected: list[int], n: int,
+                runner_dist: int = SHIFT_RUNNER_DIST) -> tuple[int, int, int, bool]:
     """1軸のシフト探索。(best_shift, best_score, runner_up, at_boundary)。
 
     スコア＝検出線が期待線＋シフトの ±1px にある本数。次点は最良から
-    SHIFT_RUNNER_DIST 以上離れた位置での最大スコア（1行ズレ解との拮抗検出）。
+    runner_dist 以上離れた位置での最大スコア（1行ズレ解との拮抗検出）。
+    runner_dist は呼び出し元（estimate_shift）が dpi に応じてスケール済みの
+    値を渡す（S-2・汎用化 A-3）。省略時は従来どおり SHIFT_RUNNER_DIST
+    （300dpi 較正値）を使う。
     """
     det = set(detected)
     scores: dict[int, int] = {}
@@ -66,19 +69,27 @@ def _axis_shift(detected: list[int], expected: list[int],
                         if (e + s) in det or (e + s - 1) in det or (e + s + 1) in det)
     best_s = max(scores, key=lambda s: (scores[s], -abs(s)))  # 同点は小シフト優先
     runner = max((sc for s, sc in scores.items()
-                  if abs(s - best_s) >= SHIFT_RUNNER_DIST), default=0)
+                  if abs(s - best_s) >= runner_dist), default=0)
     return best_s, scores[best_s], runner, abs(best_s) >= n and n > 0
 
 
-def estimate_shift(binary: "np.ndarray", face: Face) -> ShiftEstimate:
+def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> ShiftEstimate:
     """罫線射影による面の平行移動推定（D-25）。
 
     テンプレートのテーブル定義（罫線の期待位置）をアンカーに、検出線との
     一致本数が最大になるシフトを探す。線が足りない・探索境界・次点と拮抗の
     いずれかなら ok=False——0 で素通しせず「位置合わせ失敗」へ倒すのは、
     ズレたまま正常顔で出すのが今回潰した故障そのものだから。
+
+    dpi はテンプレートの render_dpi（汎用化 A-3）。projection.LINE_GAP・
+    SHIFT_RUNNER_DIST は BASE_DPI=300 較正の px 定数なので、dpi/BASE_DPI の
+    比でスケールしてから使う（S-1・S-2）。既定 dpi=BASE_DPI のときは
+    従来と完全に同じ値になる。
     """
-    from .projection import H_COVERAGE, V_COVERAGE, line_positions
+    from .projection import H_COVERAGE, LINE_GAP, V_COVERAGE, line_positions
+    scale = dpi / BASE_DPI
+    line_gap = max(0, round(LINE_GAP * scale))
+    runner_dist = max(1, round(SHIFT_RUNNER_DIST * scale))
     n_x, n_y = face.shift_limits
     h, w = binary.shape
     det_h: set[int] = set()
@@ -89,16 +100,16 @@ def estimate_shift(binary: "np.ndarray", face: Face) -> ShiftEstimate:
         x0 = max(0, g.x_min - n_x)
         x1 = min(w, g.x_max + n_x)
         strip = binary[:, x0:x1]
-        det_h.update(line_positions(strip.sum(axis=1), (x1 - x0) * H_COVERAGE))
+        det_h.update(line_positions(strip.sum(axis=1), (x1 - x0) * H_COVERAGE, gap=line_gap))
         exp_h += list(g.h_lines)
         y0 = max(0, g.y_min - n_y)
         y1 = min(h, g.y_max + n_y)
         strip_v = binary[y0:y1, :]
-        det_v.update(line_positions(strip_v.sum(axis=0), (y1 - y0) * V_COVERAGE))
+        det_v.update(line_positions(strip_v.sum(axis=0), (y1 - y0) * V_COVERAGE, gap=line_gap))
         exp_v += list(g.v_lines)
 
-    dy, sy, ry, by = _axis_shift(sorted(det_h), exp_h, n_y)
-    dx, sx, rx, bx = _axis_shift(sorted(det_v), exp_v, n_x)
+    dy, sy, ry, by = _axis_shift(sorted(det_h), exp_h, n_y, runner_dist)
+    dx, sx, rx, bx = _axis_shift(sorted(det_v), exp_v, n_x, runner_dist)
     matched, total = sx + sy, len(exp_h) + len(exp_v)
 
     import math
@@ -192,9 +203,16 @@ def _otsu(gray: "np.ndarray", exclude: "np.ndarray") -> int:
     return int(np.nanargmax(sigma))
 
 
-def binarize_face(gray: "np.ndarray", face: Face) -> "np.ndarray":
-    """粗マスク→Otsu→本マスクの二値化。run と remap で同一結果になるよう共通化。"""
-    coarse = _exclusion_mask(face, COARSE_DILATE)
+def binarize_face(gray: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> "np.ndarray":
+    """粗マスク→Otsu→本マスクの二値化。run と remap で同一結果になるよう共通化。
+
+    dpi はテンプレートの render_dpi（汎用化 A-3）。COARSE_DILATE は
+    BASE_DPI=300 較正の px 定数なので、Template.dpi_scale 相当の比で
+    スケールしてから使う。既定 dpi=BASE_DPI のときは従来と完全に同じ値になる。
+    """
+    scale = dpi / BASE_DPI
+    dilate = max(0, round(COARSE_DILATE * scale))
+    coarse = _exclusion_mask(face, dilate)
     th = _otsu(gray, coarse)
     binary = (gray < th) & ~coarse
     return binary & ~_exclusion_mask(face, 0)
@@ -257,6 +275,12 @@ def align_page(page_img: "Image.Image", template: Template,
     composite = Image.new("RGB", (W, H), "white")
     faces: list[AlignedFace] = []
 
+    # COARSE_DILATE は BASE_DPI=300 較正の px 定数（汎用化 A-3）。pad は
+    # face.shift_limits（行ピッチ・列間隔）由来で、既にこのテンプレートの
+    # render_dpi 座標系の値なのでスケール不要——加算する COARSE_DILATE 側だけ
+    # dpi_scale で合わせる
+    dilate = max(0, round(COARSE_DILATE * template.dpi_scale))
+
     # 探索余白つきキャンバスはページ単位で1回だけ作る（面ごとに作り直すと
     # 30MB 規模の確保と貼り付けが面の数だけ走り、実測で align が数倍遅くなる）
     pad = max((max(f.shift_limits) for f in template.faces), default=0)
@@ -271,7 +295,7 @@ def align_page(page_img: "Image.Image", template: Template,
 
         # 傾き推定は従来どおり中央窓（w×h）で行う
         gray = np.asarray(big.crop((pad, pad, pad + r.w, pad + r.h)).convert("L"))
-        coarse = _exclusion_mask(face, COARSE_DILATE + pad)  # ズレの分も覆う（D-25）
+        coarse = _exclusion_mask(face, dilate + pad)  # ズレの分も覆う（D-25）
         th = _otsu(gray, coarse)
         angle = _deskew_angle((gray < th) & ~coarse)
         if angle != 0.0:
@@ -282,14 +306,14 @@ def align_page(page_img: "Image.Image", template: Template,
 
         # 平行移動の推定（回転補正後・粗マスク二値。ズレた状態では除外矩形も
         # 同じだけズレているため、本マスクではなく膨張済みの粗マスクを使う）
-        est = estimate_shift((gray < th) & ~coarse, face)
+        est = estimate_shift((gray < th) & ~coarse, face, dpi=template.render_dpi)
         if not est.ok:
             raise AlignError(f"TRANSLATION_UNRELIABLE_{est.reason}")
         crop = big.crop((pad + est.dx, pad + est.dy,
                          pad + est.dx + r.w, pad + est.dy + r.h))
         gray = np.asarray(crop.convert("L"))
 
-        binary_fine = binarize_face(gray, face)
+        binary_fine = binarize_face(gray, face, dpi=template.render_dpi)
 
         # 送信画像は除外領域（綴じ穴帯・黒塗り・印字ラベル等）を白塗りする
         # （要件 §5.2 のマスク。Vision へ除外領域の内容を送らない）。

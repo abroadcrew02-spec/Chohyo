@@ -25,6 +25,20 @@ def _progress(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def _render_dpi_arg(value: str) -> int:
+    """--dpi の範囲検証（S-8）。schema/template.schema.json の render_dpi と
+    同じ 72〜1200 を受理範囲とする——detect-grid の --dpi は grid.detect_ruled/
+    make_uniform の px 定数スケール（汎用化 A-3）にそのまま渡る値なので、
+    範囲外を渡すとテンプレートでは拒否される値がここだけ静かに通ってしまう。
+    範囲外は argparse の標準エラー（exit code 2）で拒否する。
+    """
+    n = int(value)
+    if not 72 <= n <= 1200:
+        raise argparse.ArgumentTypeError(
+            f"--dpi は 72〜1200 の範囲で指定する（指定: {n}）")
+    return n
+
+
 def _client(cfg: Config, replay_dir: str | None):
     if replay_dir:
         from .vision_client import ReplayClient
@@ -360,7 +374,7 @@ def cmd_detect_grid(args) -> int:
     log.init(load_config(getattr(args, "config", None)).log_dir)  # M-9
     region = tuple(int(v) for v in args.region.split(","))
     if args.mode == "uniform":
-        fit = make_uniform(region, args.rows, args.cols)   # 画像を読まない
+        fit = make_uniform(region, args.rows, args.cols, dpi=args.dpi)   # 画像を読まない
     else:
         import numpy as np                                  # ruled のときだけ
         from PIL import Image
@@ -376,7 +390,7 @@ def cmd_detect_grid(args) -> int:
             _progress({"event": "detect_grid", "ok": False,
                        "error": "画像を読み込めない。帳票を開き直す"})
             return 0
-        fit = detect_ruled(gray, region)
+        fit = detect_ruled(gray, region, dpi=args.dpi)
         if fit is None:
             _progress({"event": "detect_grid", "ok": False,
                        "error": "罫線が検出できない。等分割生成（--mode uniform）へ切り替える"})
@@ -466,6 +480,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--mode", choices=["ruled", "uniform"], default="ruled")
     p.add_argument("--rows", type=int, default=1)
     p.add_argument("--cols", type=int, default=1)
+    # px 定数（grid.ROW_INSET）の dpi 正規化（汎用化 A-3）。既定 300（=BASE_DPI）は
+    # 未対応の呼び出し元（省略時）が従来どおりの値を得るための後方互換。
+    # 範囲検証は schema の render_dpi と同値（72〜1200・S-8）
+    p.add_argument("--dpi", type=_render_dpi_arg, default=300,
+                   help="この画像の render_dpi（既定 300・72〜1200）。ROW_INSET 等の"
+                        "px 定数をこの dpi に合わせてスケールする")
     p.set_defaults(fn=cmd_detect_grid)
 
     p = sub.add_parser("purge", help="中間データの削除（--yes 必須）")

@@ -202,7 +202,7 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
             return None
         if img.size != (r.w, r.h):
             return None
-        binary = binarize_face(np.asarray(img.convert("L")), face)
+        binary = binarize_face(np.asarray(img.convert("L")), face, dpi=template.render_dpi)
         faces.append(AlignedFace(
             face.face_id, img, binary, float(transform.get("angle", 0.0)),
             dx=int(transform.get("dx", 0)), dy=int(transform.get("dy", 0)),
@@ -236,7 +236,7 @@ def _map_and_score(store: Store, template: Template, page_id: str,
         for seq, (fid, s) in enumerate(
             (fid, s) for fid, syms in by_face.items() for s in syms)])
 
-    result = assign(template.cells, by_face, template.faces)
+    result = assign(template.cells, by_face, template.faces, dpi=template.render_dpi)
 
     cell_rows = []
     for cell in template.cells:
@@ -733,7 +733,7 @@ def remap(template_path: str | Path, cfg: Config,
         from .mapping import Symbol
         for _seq, face_id, text, conf, x, y in store.tokens(pid):
             by_face.setdefault(face_id, []).append(Symbol(text, x, y, conf))
-        result = assign(template.cells, by_face, template.faces)
+        result = assign(template.cells, by_face, template.faces, dpi=template.render_dpi)
         cell_rows = []
         for cell in template.cells:
             content = result.cells.get(cell.field_id)
@@ -772,7 +772,7 @@ def remap(template_path: str | Path, cfg: Config,
                 continue
             gray = np.asarray(Image.open(img_p).convert("L"))
             from .align import binarize_face
-            binary = binarize_face(gray, template.face(cell.face_id))
+            binary = binarize_face(gray, template.face(cell.face_id), dpi=template.render_dpi)
             era_scores[cell.field_id] = era.score_cell(binary, cell)
         store.upsert_eras(pid, era_scores)
         store.set_template_hash(pid, tpl_hash)  # 割付し直した版の印（#25）

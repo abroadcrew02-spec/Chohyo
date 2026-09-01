@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
 from . import logging_safe as log
-from .template import CellSpec, Face, Rect, hole_bbox
+from .template import BASE_DPI, CellSpec, Face, Rect, hole_bbox
 
 # 由来〓が確定した欄にだけ使うローカルの記号。render_rows.UNCLEAR と同じ文字だが
 # あえて別定義にする——mapping は「事実だけを渡す」層という原則（設計 §14 不変条件3）
@@ -141,21 +141,23 @@ def to_face_local(face: Face, symbols: Iterable[Symbol]) -> list[Symbol]:
     return out
 
 
-_LINE_GAP = 30.0  # 行の切れ目とみなす y ギャップ（px・300dpi）※実物で調整
-_BAND_OVERLAP_RATIO = 0.5  # 領域を帯へ併合する y 重なりの下限（U-06・§4.2）
+_LINE_GAP = 30.0  # 行の切れ目とみなす y ギャップ（px・300dpi=BASE_DPI 基準値）※実物で調整
+_BAND_OVERLAP_RATIO = 0.5  # 領域を帯へ併合する y 重なりの下限（U-06・§4.2。無次元の比率のため dpi 非依存）
 
 
-def _line_cluster(syms: list[Symbol]) -> list[Symbol]:
+def _line_cluster(syms: list[Symbol], line_gap: float = _LINE_GAP) -> list[Symbol]:
     """1領域内の symbol を y でクラスタし、各行を x 順に並べる（旧 _cell_text の中核）。
 
-    行の分離は固定量子化でなく y ギャップのクラスタリングで行う。
+    行の分離は固定量子化でなく y ギャップのクラスタリングで行う。line_gap は
+    呼び出し元が Template.dpi_scale でスケール済みの値を渡す（汎用化 A-3。
+    既定値は BASE_DPI=300 基準のまま・後方互換）。
     """
     if not syms:
         return []
     by_y = sorted(syms, key=lambda s: s.y)
     lines: list[list[Symbol]] = [[by_y[0]]]
     for s in by_y[1:]:
-        if s.y - lines[-1][-1].y > _LINE_GAP:
+        if s.y - lines[-1][-1].y > line_gap:
             lines.append([s])
         else:
             lines[-1].append(s)
@@ -178,13 +180,14 @@ def _symbols_to_text_and_confs(ordered: list[Symbol]) -> tuple[str, tuple[float,
     return text, tuple(confs)
 
 
-def _connect_single(syms: list[Symbol]) -> tuple[str, tuple[float, ...]]:
+def _connect_single(syms: list[Symbol], line_gap: float = _LINE_GAP) -> tuple[str, tuple[float, ...]]:
     """単一領域（参照先の枠など）の連結。"""
-    return _symbols_to_text_and_confs(_line_cluster(syms))
+    return _symbols_to_text_and_confs(_line_cluster(syms, line_gap))
 
 
 def _connect_regions(region_syms: list[list[Symbol]],
-                     region_rects: Sequence[Rect]) -> tuple[str, tuple[float, ...]]:
+                     region_rects: Sequence[Rect],
+                     line_gap: float = _LINE_GAP) -> tuple[str, tuple[float, ...]]:
     """帯 → 領域 → 行 → x の順で連結する（U-06・設計 §4.2）。
 
     領域を y レンジの重なりで「帯」へ推移的に併合し、帯を y_min 昇順、
@@ -195,7 +198,7 @@ def _connect_regions(region_syms: list[list[Symbol]],
     if not active:
         return "", ()
     if len(active) == 1:
-        return _connect_single(region_syms[active[0]])
+        return _connect_single(region_syms[active[0]], line_gap)
 
     parent = {i: i for i in active}
 
@@ -229,7 +232,7 @@ def _connect_regions(region_syms: list[list[Symbol]],
     out: list[Symbol] = []
     for band in band_order:
         for ridx in sorted(band, key=lambda i: region_rects[i].x):
-            out.extend(_line_cluster(region_syms[ridx]))
+            out.extend(_line_cluster(region_syms[ridx], line_gap))
     return _symbols_to_text_and_confs(out)
 
 
@@ -246,7 +249,7 @@ def fallback_decision(n_main: int, n_fb: int) -> str:
     return ""
 
 
-_BUCKET = 128  # グリッドの一辺（px）。セル高（実測 90〜148px）と同程度
+_BUCKET = 128  # グリッドの一辺（px・300dpi=BASE_DPI 基準値）。セル高（実測 90〜148px）と同程度
 
 # _bucket_cells が返す索引のキーは (field_id, tag) の組。tag は
 # 領域インデックス（int・欄の領域）／_TAG_FALLBACK（参照先）／_TAG_HOLE（欄の穴）
@@ -254,7 +257,36 @@ _TAG_FALLBACK = "fb"
 _TAG_HOLE = "hole"
 
 
-def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
+def _bucket_for(dpi: int) -> int:
+    """_BUCKET（px・BASE_DPI=300 較正）を dpi に合わせてスケールした整数バケツ幅。
+
+    離散化パラメタ（グリッドの一辺）は px 整数が必要なので丸める。四捨五入
+    （round）で最も近い px へ寄せ、極端な低 dpi でも 0 除算・無限バケツ化を
+    避けるため下限 1 を保証する（丸め方針・汎用化 A-3）。schema 許容域
+    （72〜1200・schema/template.schema.json）の dpi では実際にはこの下限に
+    到達しない（72dpi でも _BUCKET*0.24 ≈ 31）——本関数を直接呼ぶ経路
+    （テスト等・schema 検証を経ない呼び出し）向けの防御として残している。
+
+    assign()・build_symbol_locator()・（旧）locate_symbol() の3箇所に散っていた
+    同じ計算式をここへ1箇所化した（レビュー M-2）。
+    """
+    return max(1, round(_BUCKET * (dpi / BASE_DPI)))
+
+
+@dataclass(frozen=True)
+class SymbolLocator:
+    """symbol の行き先索引（build_symbol_locator の戻り値・#60 M-6・A-3 M-2）。
+
+    バケツ辞書とバケツ幅を1つにまとめて保持する。locate_symbol 側が別途 dpi を
+    受け取ってバケツ幅を再計算する必要がなくなるため、索引を作った dpi と
+    引く時の dpi が食い違うことが型として起こらない（旧設計は locator と
+    dpi を別々に持ち回る必要があり、面をまたいだ取り違えが起こり得た）。
+    """
+    buckets: dict
+    bucket: int
+
+
+def _bucket_cells(cells: Sequence[CellSpec], bucket: int = _BUCKET) -> dict:
     """セルをグリッドのバケツへ入れる（issue #17 の空間インデックス）。
 
     1セルが複数バケツにまたがる場合は全てへ入れる。バケツ内の順序は
@@ -264,6 +296,11 @@ def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
     順序で優先度を表す）。穴どうしの重なりだけは拒否せず W-4 で警告のみ
     （issue #66 第2弾・05 F-12・template._hole_overlap_warnings）——その場合
     ここでの積み順（=cells の配列順）が first-hit を決める、残存する順序依存。
+
+    bucket は呼び出し元が Template.dpi_scale でスケール済みの値を渡す
+    （汎用化 A-3。既定値は BASE_DPI=300 基準のまま・後方互換）。0 除算を
+    避けるため呼び出し元は 1 未満を渡さないこと（build_symbol_locator/
+    assign が丸め時に下限 1 を保証する）。
     """
     buckets: dict[tuple[int, int], list] = {}
     targets: list[tuple[tuple[str, object], Rect]] = []
@@ -278,44 +315,52 @@ def _bucket_cells(cells: Sequence[CellSpec]) -> dict:
         if bbox is not None:
             targets.append(((c.field_id, _TAG_HOLE), bbox))
     for i, (key, r) in enumerate(targets):
-        for bx in range(r.x // _BUCKET, (r.x + r.w) // _BUCKET + 1):
-            for by in range(r.y // _BUCKET, (r.y + r.h) // _BUCKET + 1):
+        for bx in range(r.x // bucket, (r.x + r.w) // bucket + 1):
+            for by in range(r.y // bucket, (r.y + r.h) // bucket + 1):
                 buckets.setdefault((bx, by), []).append((i, key, r))
     return buckets
 
 
-def _candidates(buckets: dict, x: float, y: float):
+def _candidates(buckets: dict, x: float, y: float, bucket: int = _BUCKET):
     """座標を含むバケツの受け皿（key, rect）を定義順で返す。"""
-    got = buckets.get((int(x) // _BUCKET, int(y) // _BUCKET))
+    got = buckets.get((int(x) // bucket, int(y) // bucket))
     if not got:
         return ()
     return [(k, r) for _i, k, r in got]
 
 
-def _locate_hit(buckets: dict, x: float, y: float):
+def _locate_hit(buckets: dict, x: float, y: float, bucket: int = _BUCKET):
     """(x, y) の first-hit を返す（(field_id, tag) または None）。"""
-    for key, r in _candidates(buckets, x, y):
+    for key, r in _candidates(buckets, x, y, bucket):
         if r.x <= x < r.x + r.w and r.y <= y < r.y + r.h:
             return key
     return None
 
 
-def build_symbol_locator(cells: Sequence[CellSpec]):
+def build_symbol_locator(cells: Sequence[CellSpec], dpi: int = BASE_DPI) -> SymbolLocator:
     """symbol の行き先を調べるための索引を作る（debug-images 等の再利用向け・#60 M-6）。
 
-    戻り値は assign() が内部で使う索引と同一形式の不透明オブジェクト。座標系は
-    面ごとに独立するため、cells は同一 face_id のセルに絞って渡すこと。
+    戻り値は SymbolLocator（バケツ辞書＋バケツ幅）。座標系は面ごとに独立する
+    ため、cells は同一 face_id のセルに絞って渡すこと。
+
+    dpi はテンプレートの render_dpi（汎用化 A-3）。既定 BASE_DPI=300 のときは
+    従来どおり _BUCKET をそのまま使う。locator がバケツ幅を自分で保持する
+    ため、locate_symbol はこの locator だけで正しいバケツ幅を引ける——
+    面をまたいで locator を使い回しても、各 locator は自分を作ったときの
+    dpi 由来のバケツ幅のまま動く（dpi の取り違えが型として起こらない）。
     """
-    return _bucket_cells(cells)
+    bucket = _bucket_for(dpi)
+    return SymbolLocator(buckets=_bucket_cells(cells, bucket), bucket=bucket)
 
 
-def locate_symbol(locator, x: float, y: float) -> tuple[str | None, str | None]:
+def locate_symbol(locator: SymbolLocator, x: float, y: float) -> tuple[str | None, str | None]:
     """1つの symbol の行き先を返す（field_id, tag）。
 
     tag は "region"（欄の領域）／"fallback"（参照先）／"hole"（欄の穴）のいずれか。
-    どの受け皿にも入らない場合は (None, None)。
+    どの受け皿にも入らない場合は (None, None)。locator は build_symbol_locator
+    が返すバケツ幅つきの索引なので、呼び出し側は dpi を意識しなくてよい。
     """
-    hit = _locate_hit(locator, x, y)
+    hit = _locate_hit(locator.buckets, x, y, locator.bucket)
     if hit is None:
         return None, None
     fid, tag = hit
@@ -326,7 +371,7 @@ def locate_symbol(locator, x: float, y: float) -> tuple[str | None, str | None]:
     return fid, "hole"
 
 
-def _hole_hit(buckets: dict, x: float, y: float) -> str | None:
+def _hole_hit(buckets: dict, x: float, y: float, bucket: int = _BUCKET) -> str | None:
     """(x, y) がどこかの欄の穴に入っているかを調べる（破棄された参照先 symbol 用）。
 
     呼び出し元は「この座標は既にどこかの参照先に当たった」ことを知っている
@@ -338,7 +383,7 @@ def _hole_hit(buckets: dict, x: float, y: float) -> str | None:
     拒否しているため（issue #24）、参照先タグをスキップしても欄の領域を
     誤って穴と判定することはない。
     """
-    for key, r in _candidates(buckets, x, y):
+    for key, r in _candidates(buckets, x, y, bucket):
         fid, tag = key
         if tag == _TAG_FALLBACK:
             continue
@@ -351,8 +396,19 @@ def assign(
     cells: Sequence[CellSpec],
     symbols_by_face: Mapping[str, Sequence[Symbol]],
     faces: Sequence[Face],
+    dpi: int = BASE_DPI,
 ) -> MappingResult:
-    """面ローカル symbol をセルへ割り付け、空行と枠外を分類する（U-02/U-03/U-06/U-07）。"""
+    """面ローカル symbol をセルへ割り付け、空行と枠外を分類する（U-02/U-03/U-06/U-07）。
+
+    dpi はテンプレートの render_dpi（汎用化 A-3）。_LINE_GAP・_BUCKET は
+    BASE_DPI=300 較正の px 定数なので、Template.dpi_scale 相当の比で
+    スケールしてから使う。既定 dpi=BASE_DPI のときは scale=1.0 となり、
+    従来の定数をそのまま使ったときと完全に同じ値になる（バイト一致契約）。
+    """
+    scale = dpi / BASE_DPI
+    line_gap = _LINE_GAP * scale
+    bucket = _bucket_for(dpi)
+
     cells_by_face: dict[str, list[CellSpec]] = {}
     for c in cells:
         cells_by_face.setdefault(c.face_id, []).append(c)
@@ -371,10 +427,10 @@ def assign(
         # 空間インデックス（issue #17）。全 symbol × 全セルの線形照合は
         # 記入密度 × 列数の掛け算で悪化する。セルをグリッドのバケツへ入れ、
         # symbol の座標から候補だけを見る。**定義順の first-hit は保つ**
-        buckets = _bucket_cells(face_cells)
+        buckets = _bucket_cells(face_cells, bucket)
         locators[face_id] = buckets
         for s in syms:
-            hit = _locate_hit(buckets, s.x, s.y)
+            hit = _locate_hit(buckets, s.x, s.y, bucket)
             if hit is not None:
                 fid, tag = hit
                 if tag == _TAG_FALLBACK:
@@ -415,7 +471,7 @@ def assign(
         decision = fallback_decision(n_main, n_fb)
         if decision == "fallback":
             # U-02: 主（全領域）が完全に空のときだけ参照先を読む（判定表 #9）
-            text, confs = _connect_single(fsyms)
+            text, confs = _connect_single(fsyms, line_gap)
             contents[c.field_id] = CellContent(
                 text=text, conf_min=(min(confs) if confs else None),
                 char_confs=confs, origin="fallback")
@@ -425,7 +481,7 @@ def assign(
 
         # 主を採用する（矛盾＝conflict の場合も値は主のまま・U-03）
         region_list = [rsyms.get(i, []) for i in range(len(all_rects))]
-        text, confs = _connect_regions(region_list, all_rects)
+        text, confs = _connect_regions(region_list, all_rects, line_gap)
         contents[c.field_id] = CellContent(
             text=text, conf_min=(min(confs) if confs else None),
             char_confs=confs, origin=("conflict" if decision == "conflict" else ""))
@@ -445,7 +501,7 @@ def assign(
                 fallback_discarded_excluded_field += n_fb
             loc = locators.get(c.face_id)
             for s in fsyms:
-                hit_fid = _hole_hit(loc, s.x, s.y) if loc is not None else None
+                hit_fid = _hole_hit(loc, s.x, s.y, bucket) if loc is not None else None
                 if hit_fid is not None:
                     hole_hits[hit_fid] = hole_hits.get(hit_fid, 0) + 1
                 else:

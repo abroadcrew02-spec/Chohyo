@@ -262,8 +262,11 @@ def test_run_and_remap_both_report_excluded_field_counters(tmp_path, monkeypatch
 
     real_assign = pipeline.assign
 
-    def fake_assign(cells, by_face, faces):
-        result = real_assign(cells, by_face, faces)
+    def fake_assign(cells, by_face, faces, **kwargs):
+        # dpi 等の追加キーワード引数（汎用化 A-3）は実体へ透過させる。
+        # 固定シグネチャで受けると pipeline 側の引数追加のたびに TypeError で
+        # map_failed に倒れ、このテストが本来見たいカウンタ配線と無関係に落ちる
+        result = real_assign(cells, by_face, faces, **kwargs)
         return dataclasses.replace(
             result,
             fallback_discarded_excluded_field=result.fallback_discarded_excluded_field + 3,

@@ -15,9 +15,10 @@ from dataclasses import asdict, dataclass
 import numpy as np
 
 from .pipeline_errors import OperationRefused
-from .projection import H_COVERAGE, V_COVERAGE, line_positions
+from .projection import H_COVERAGE, LINE_GAP, V_COVERAGE, line_positions
+from .template import BASE_DPI
 
-ROW_INSET = 4       # 行高 = ピッチ − 罫線ぶんの控え（候補値・編集画面で調整）
+ROW_INSET = 4       # 行高 = ピッチ − 罫線ぶんの控え（候補値・編集画面で調整・300dpi=BASE_DPI 基準値）
 
 
 @dataclass(frozen=True)
@@ -36,16 +37,24 @@ class GridFit:
         return asdict(self)
 
 
-def detect_ruled(gray: "np.ndarray", region: tuple[int, int, int, int]) -> GridFit | None:
-    """罫線からテーブル定義を当てはめる。線が足りなければ None。"""
+def detect_ruled(gray: "np.ndarray", region: tuple[int, int, int, int],
+                 dpi: int = BASE_DPI) -> GridFit | None:
+    """罫線からテーブル定義を当てはめる。線が足りなければ None。
+
+    dpi はこの画像の render_dpi（汎用化 A-3）。ROW_INSET・projection.LINE_GAP は
+    BASE_DPI=300 較正の px 定数なので、dpi/BASE_DPI の比でスケールしてから使う。
+    既定 dpi=BASE_DPI のときは従来と完全に同じ値になる（S-1）。
+    """
+    row_inset = max(0, round(ROW_INSET * (dpi / BASE_DPI)))
+    line_gap = max(0, round(LINE_GAP * (dpi / BASE_DPI)))
     x, y, w, h = region
     seg = gray[y:y + h, x:x + w] < 128
 
-    h_lines = line_positions(seg.sum(axis=1), w * H_COVERAGE)
+    h_lines = line_positions(seg.sum(axis=1), w * H_COVERAGE, gap=line_gap)
     if len(h_lines) < 3:          # 行を1つ作るにも上下の線＋もう1本要る
         return None
     v_lines = line_positions(seg[h_lines[0]:h_lines[-1], :].sum(axis=0),
-                             (h_lines[-1] - h_lines[0]) * V_COVERAGE)
+                             (h_lines[-1] - h_lines[0]) * V_COVERAGE, gap=line_gap)
     if len(v_lines) < 2:
         return None
 
@@ -64,20 +73,25 @@ def detect_ruled(gray: "np.ndarray", region: tuple[int, int, int, int]) -> GridF
         origin_y=y + h_lines[0],
         rows=rows,
         row_pitch=round(pitch, 2),
-        row_height=max(1, int(pitch) - ROW_INSET),
+        row_height=max(1, int(pitch) - row_inset),
         columns=columns,
         residual_px=round(float(residual_h), 2),
     )
 
 
-def make_uniform(region: tuple[int, int, int, int], rows: int, cols: int) -> GridFit:
+def make_uniform(region: tuple[int, int, int, int], rows: int, cols: int,
+                 dpi: int = BASE_DPI) -> GridFit:
     """外枠＋行数・列数の等分割。Q-03 に依存せず常に成立する退避先。
 
     行数・列数は編集画面の入力欄と CLI の --rows/--cols からそのまま渡る。
     0 や負値だと ZeroDivisionError／空の列定義になり、CLI の最上位ハンドラで
     「ERROR ZeroDivisionError: 処理を中止しました」に潰れて何を直せばよいか
     分からなくなる。業務的な拒否として明示的に断る（レビュー4巡目 LOW）。
+
+    dpi はこの画像の render_dpi（汎用化 A-3）。ROW_INSET のスケールは
+    detect_ruled と同じ（既定 dpi=BASE_DPI のときは従来と完全に同じ値）。
     """
+    row_inset = max(0, round(ROW_INSET * (dpi / BASE_DPI)))
     x, y, w, h = region
     if rows < 1 or cols < 1:
         raise OperationRefused(
@@ -99,7 +113,7 @@ def make_uniform(region: tuple[int, int, int, int], rows: int, cols: int) -> Gri
         origin_y=y,
         rows=rows,
         row_pitch=round(pitch, 2),
-        row_height=max(1, int(pitch) - ROW_INSET),
+        row_height=max(1, int(pitch) - row_inset),
         columns=columns,
         residual_px=0.0,
     )

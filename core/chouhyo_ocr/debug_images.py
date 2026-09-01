@@ -118,7 +118,7 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
     cells_by_face: dict[str, list[CellSpec]] = {}
     for c in template.cells:
         cells_by_face.setdefault(c.face_id, []).append(c)
-    locators = {face_id: mapping.build_symbol_locator(cs)
+    locators = {face_id: mapping.build_symbol_locator(cs, dpi=template.render_dpi)
                for face_id, cs in cells_by_face.items()}
 
     made: list[Path] = []

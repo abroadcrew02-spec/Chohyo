@@ -21,6 +21,19 @@ V1_FACE_IDS = {"front", "back"}
 # 検証箇所（issue #48）のコメントに実測つきで書いてある
 CHOICE_MARK_MARGIN_PX = 4
 
+# px 単位の内部定数（mapping._LINE_GAP/_BUCKET・align.COARSE_DILATE/
+# SHIFT_RUNNER_DIST・grid.ROW_INSET・projection.LINE_GAP・本モジュールの
+# CHOICE_MARK_MARGIN_PX）が較正された基準 dpi（汎用化 A-3）。render_dpi は
+# テンプレートで可変（schema/template.schema.json: 72〜1200）だが、これらの
+# 定数は現行様式の 300dpi 実測に固定較正されている。dpi が違う様式では
+# 黙って壊れる（行クラスタ崩れ→〓増・枠外率超過→様式不一致誤判定）ため、
+# 各定数を使う関数はスケールしてから使う。実装上は大半が `dpi: int` 引数を
+# 受け取り、その場で `dpi / BASE_DPI` を計算する形（呼び出し元は
+# template.render_dpi を渡す）——Template インスタンスを直接持つ数少ない
+# 呼び出し元（align.align_page）だけが Template.dpi_scale プロパティを
+# そのまま使う（S-6b・2026-09-01 実態に合わせて訂正）。
+BASE_DPI = 300
+
 
 class TemplateError(ValueError):
     """テンプレートが受け入れ範囲外。メッセージに拒否理由を必ず含める。"""
@@ -133,6 +146,17 @@ class Template:
             if f.face_id == face_id:
                 return f
         raise KeyError(face_id)
+
+    @property
+    def dpi_scale(self) -> float:
+        """render_dpi が基準 dpi（BASE_DPI=300）からどれだけ違うかの倍率。
+
+        mapping._LINE_GAP/_BUCKET・align.COARSE_DILATE・grid.ROW_INSET など
+        300dpi 較正の px 定数をスケールするのに使う（汎用化 A-3）。
+        render_dpi==BASE_DPI のとき 1.0 ちょうど（300/300.0）になる——
+        定数側の「scale==1.0 なら従来値と完全一致」という契約はこの正確性に依存する。
+        """
+        return self.render_dpi / BASE_DPI
 
 
 def output_cells(template: Template) -> tuple[CellSpec, ...]:
@@ -618,19 +642,23 @@ def load_template(path: str | Path) -> Template:
     # 「マーク群と欄の各辺の距離が編集の前後で保たれているか」を見る別設計が要る（別issue）。
     # 現状これで許容しているのは、元号の当落を左右する縦方向の取りこぼしが最大10px＝
     # マーク高32〜47px・並び間隔32〜50px の1/3未満に収まっているため。
+    # CHOICE_MARK_MARGIN_PX は BASE_DPI=300 較正の px 定数（汎用化 A-3・S-3）。
+    # dpi/BASE_DPI の比でスケールしてから使う。300dpi（scale=1.0）のときは
+    # round(4*1.0)=4 で従来と完全に同じ値になる
+    margin_px = max(0, round(CHOICE_MARK_MARGIN_PX * (raw["render_dpi"] / BASE_DPI)))
     for c in cells:
         r = c.rect
         for m in c.choice_marks:
             q = m.rect
             over = max(r.x - q.x, r.y - q.y,
                        q.x + q.w - (r.x + r.w), q.y + q.h - (r.y + r.h))
-            if over > CHOICE_MARK_MARGIN_PX:
+            if over > margin_px:
                 raise TemplateError(
                     f"選択肢の枠が欄からはみ出している: {c.field_id} のマーク"
                     f"『{m.value}』が欄の矩形の外にある"
                     f"（欄 x={r.x} y={r.y} w={r.w} h={r.h} / "
                     f"マーク x={q.x} y={q.y} w={q.w} h={q.h}・"
-                    f"はみ出し {over}px・許容 {CHOICE_MARK_MARGIN_PX}px）。"
+                    f"はみ出し {over}px・許容 {margin_px}px）。"
                     "テンプレート編集画面で欄を移動した際に選択肢の枠が"
                     "追従していない可能性がある")
 
