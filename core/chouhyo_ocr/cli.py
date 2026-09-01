@@ -94,7 +94,7 @@ def cmd_verify(args) -> int:
     # テンプレート
     try:
         from .columns import amount_cell_count, validate_v1
-        from .template import load_template
+        from .template import load_template, output_cells
         t = load_template(args.template)
         cols = validate_v1(t)
         # cells は物理的な欄の数。columns との差は「分割（1欄→複数列）＋管理6列」
@@ -113,13 +113,20 @@ def cmd_verify(args) -> int:
         # 列構成の唯一の正を verify 応答に置き、GUI 側での再導出（F-10 の
         # 原因だった二重実装）を無くすための入り口。220件規模の文字列配列だが
         # verify は対話操作でしか呼ばれず、頻度・サイズとも問題にならない
+        # issue #66 段4（フブキ実測）: GUI 側の差分計算（cells+6-columns）は
+        # subfields 展開で破綻する（cells=194・columns=220 のとき -20 になる）。
+        # 「N 欄を出力しません」（FR-1.9）に使う N は欄数（物理セル数）であり
+        # 列数ではないため、output_cells() を経由してここで直接数える
+        # （GUI 側での再導出はしない・FR-0.1 と同じ「唯一の正」の思想）
+        output_disabled_cells = len(t.cells) - len(output_cells(t))
         _progress({"event": "verify", "check": "template", "ok": True,
                    "columns": len(cols), "cells": len(t.cells),
                    "amount_cells": amount_cell_count(t),
                    "exclusions": sum(exclusions_by_face.values()),
                    "exclusions_by_face": exclusions_by_face,
                    "warnings": list(t.warnings),
-                   "column_names": cols})
+                   "column_names": cols,
+                   "output_disabled_cells": output_disabled_cells})
     except Exception as e:
         ok = False
         _progress({"event": "verify", "check": "template", "ok": False, "error": str(e)})

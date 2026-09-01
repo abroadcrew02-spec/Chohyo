@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
+      'export { noticeFor, STATUS_JA, outputDisabledNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, noticeFor, STATUS_JA, outputDisabledNotice } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -910,6 +910,24 @@ test("unclearPopulationNote: 要確認セル数の母集団が縮小したとき
     "抽出列数は減っても対象外欄が0件なら null（別要因の減少・列並べ替え等は本関数の対象外）");
   const note = unclearPopulationNote(214, 211, 3);
   assert.equal(note, "要確認セル数の母集団: 214列 → 211列（出力しない 3 欄を除く）");
+});
+
+// ---------------------------------------------------------------- issue #66 段4（FR-1.9・かなたS-5）
+test("outputDisabledNotice: N=0・フィールド欠落（旧コア互換）は非表示", () => {
+  assert.equal(outputDisabledNotice(0), null, "対象外0件は表示しない");
+  assert.equal(outputDisabledNotice(undefined), null, "旧コア（フィールド欠落）は非表示に倒す");
+  assert.equal(outputDisabledNotice(-1), null, "非負のはずが崩れても表示しない（防御的）");
+});
+
+test("outputDisabledNotice: N=1・複数のときは欄数を含む1行を返す", () => {
+  const one = outputDisabledNotice(1);
+  assert.ok(one, "1件は表示するはず");
+  assert.ok(one.includes("1"), one);
+  assert.ok(one.includes("欄"), one);
+
+  const many = outputDisabledNotice(3);
+  assert.ok(many.includes("3"), many);
+  assert.notEqual(one, many, "件数によって文言が変わるはず");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

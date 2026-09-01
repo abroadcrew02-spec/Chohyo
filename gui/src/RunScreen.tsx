@@ -13,7 +13,10 @@ type Summary = {
   xlsx?: string; csv?: string;
 };
 type Verify = { template: boolean; poppler: boolean; cred: string; storage: boolean;
-                budgetUsed: number; budgetCap: number };
+                budgetUsed: number; budgetCap: number;
+                // 出力対象外の欄数（issue #66 段4・FR-1.9）。旧コア（フィールド
+                // 欠落）との互換のため undefined を許容する
+                outputDisabledCells?: number };
 type Failure = { page_id: string; status: string };
 
 // ステータス → 平易な言葉（エラー一覧用）
@@ -74,6 +77,19 @@ export function noticeFor(ev: Record<string, any>): string | null {
   }
 }
 
+/// verify の template チェックが返す output_disabled_cells（issue #66 段4・
+/// FR-1.9・かなた S-5「事故防止の最後の砦」）から「N 欄を出力しません」の
+/// 1行を組み立てる。テンプレート編集画面を見ない運用者に、出力対象外の
+/// 欄があることを実行前に届ける唯一の経路。
+///
+/// N=0（対象外なし）・フィールド欠落（旧コアとの組み合わせ）はいずれも
+/// null——呼び出し側は何も表示しない。GUI 側で欄数を再導出せず、この値を
+/// そのまま使う（FR-0.1 と同じ「唯一の正は core 応答」の思想）。
+export function outputDisabledNotice(n: number | undefined): string | null {
+  if (n == null || n <= 0) return null;
+  return `このテンプレートは ${n} 欄を出力しません。`;
+}
+
 const FolderIcon = ({ c }: { c: string }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"
     strokeLinecap="round" strokeLinejoin="round">
@@ -109,7 +125,13 @@ export default function RunScreen(
       try {
         const e = JSON.parse(line);
         if (e.event !== "verify") continue;
-        if (e.check === "template") v.template = !!e.ok;
+        if (e.check === "template") {
+          v.template = !!e.ok;
+          // 旧コア（フィールド欠落）では undefined のまま——outputDisabledNotice
+          // が非表示に倒す（issue #66 段4）
+          v.outputDisabledCells = typeof e.output_disabled_cells === "number"
+            ? e.output_disabled_cells : undefined;
+        }
         if (e.check === "poppler") v.poppler = !!e.ok;
         if (e.check === "credentials") v.cred = e.state ?? (e.ok ? "env" : "missing");
         if (e.check === "local_storage") v.storage = !!e.ok;
@@ -383,6 +405,16 @@ ${ev.hint}` : ""));
                 ネットワーク共有の下にあります。中間データには個人情報が含まれるため、
                 <b>この状態では読み取りを開始できません</b>。設定でローカルの
                 フォルダへ変更してください。</div>)}
+          </div>
+        )}
+
+        {/* 出力対象外の欄がある旨（issue #66 段4・FR-1.9）。テンプレート編集画面を
+            見ない運用者に届く事故防止の最後の砦——実行して初めて「列が足りない」
+            と気づくのを防ぐ。エラーではないので実行はブロックしない */}
+        {!running && verify && outputDisabledNotice(verify.outputDisabledCells) && (
+          <div className="card warnbox" style={{ fontSize: 12.5 }}>
+            {outputDisabledNotice(verify.outputDisabledCells)}
+            枠・読み取りは維持されます（テンプレート編集画面でいつでも戻せます）。
           </div>
         )}
 

@@ -44,6 +44,12 @@ COL_FALLBACK_OK = (0, 180, 120)     # 参照先で採用された文字（従来
 COL_FALLBACK_DISCARD = (200, 60, 200)  # 参照先で破棄された文字（U-15・判定表A）
 COL_HOLE = (120, 70, 20)            # 欄の穴に落ちた文字（U-15・判定表#7）
 FILL_UNCLEAR = (255, 60, 60, 40)   # 〓欄のうっすら塗り
+# 出力対象外（output: false）の欄の枠・ラベル（issue #66 段4・ぼたん S-9）。
+# 読み取りは他の欄と同じく継続する（record 側は変えない）ため symbol の色分けは
+# そのまま——ここで塗り分けるのは「欄の枠・ラベル」だけで、なぜこの欄が出力に
+# 無いのかを画像から追えるようにする。既存の色（青=文字欄・紫=選択式・
+# 水色=参照先）のどれとも被らない灰色を新設する
+COL_EXCLUDED = (140, 140, 140)
 
 
 def _font(size: int):
@@ -156,24 +162,34 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
                 unclear = not _text
             else:
                 unclear = unclear_reason(_text, conf, cfg) is not None
-            color = COL_CHOICE if c.kind == "choice" else COL_TEXT
+            # issue #66 段4: output: false の欄は枠・ラベルを専用色で塗り分ける
+            # （読み取り自体は継続するので symbol の色分け・〓塗りは変えない）
+            if c.output:
+                color = COL_CHOICE if c.kind == "choice" else COL_TEXT
+            else:
+                color = COL_EXCLUDED
             for box in _cell_targets(c, ox, oy):
                 if unclear:
                     dr.rectangle(box, fill=FILL_UNCLEAR)
                 dr.rectangle(box, outline=color, width=3)
+            mark_color = COL_EXCLUDED if not c.output else COL_CHOICE
             for m in c.choice_marks:
                 dr.rectangle((m.rect.x + ox, m.rect.y + oy,
                               m.rect.x + m.rect.w + ox, m.rect.y + m.rect.h + oy),
-                             outline=COL_CHOICE, width=2)
+                             outline=mark_color, width=2)
             if c.fallback_rect is not None:
                 r = c.fallback_rect
+                fb_color = COL_EXCLUDED if not c.output else COL_FALLBACK
                 dr.rectangle((r.x + ox, r.y + oy, r.x + r.w + ox, r.y + r.h + oy),
-                             outline=COL_FALLBACK, width=3)
+                             outline=fb_color, width=3)
                 dr.text((r.x + ox + 4, r.y + oy + 2),
-                        f"{c.field_id} の参照先", fill=COL_FALLBACK, font=font_small)
-            # 欄名は主枠の左上（読めるサイズ固定・原寸画像なので潰れない）
+                        f"{c.field_id} の参照先", fill=fb_color, font=font_small)
+            # 欄名は主枠の左上（読めるサイズ固定・原寸画像なので潰れない）。
+            # 対象外欄は「なぜこの欄が出力に無いのか」を画像から追えるよう
+            # ラベルへも印を付す（template.py の W 警告と同じ文言に揃える）
+            label = c.field_id if c.output else f"{c.field_id}（出力対象外）"
             dr.text((c.rect.x + ox + 4, c.rect.y + oy + 2),
-                    c.field_id, fill=color, font=font_small)
+                    label, fill=color, font=font_small)
 
         # --- 1文字ずつ: 割付先を再現して色分け ---
         n_ok = n_low = n_stray = n_fb_ok = n_fb_discard = n_hole = 0
@@ -215,6 +231,7 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
             (COL_HOLE, f"茶 = 欄の穴に落ちた（その欄が〓になる・{n_hole}字）"),
             (COL_STRAY, f"赤 = どの欄にも入らなかった（{n_stray}字）"),
             (COL_TEXT, "青枠 = 文字欄 ／ 紫枠 = 選択式 ／ 水色枠 = 参照先"),
+            (COL_EXCLUDED, "灰枠 = 出力対象外（output: false・読み取りは継続するが列には出ない）"),
             ((90, 90, 90), "うっすら赤い欄 = 〓判定"),
         ]
         lx, ly = 20, H - 40 * (len(legend) + 1)
