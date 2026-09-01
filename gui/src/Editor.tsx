@@ -15,10 +15,15 @@ type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rec
                // 追加の領域（文字欄のみ・任意）。主の枠と等価な受け皿で、
                // どの領域の文字も同じ欄に集まり読み順で1つの値になる
                //（L字・コの字の欄。「別の欄と結合」「領域を追加」で作る）
-               extras?: Rect[] };
+               extras?: Rect[];
+               // 出力列に出すか（issue #66 出力列制御 MVP・FR-1.1）。省略/undefined
+               // は true と同義（既存テンプレ互換・FR-1.7）。false のときだけ
+               // buildTemplate が JSON に書く。枠・座標・読み取りには影響しない
+               // （P3-a：resolveOverlaps の入力から外さない）
+               output?: boolean };
 type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
 type Column = { name: string; x_offset: number; width: number; kind: "text" | "choice";
-                subfields: string; marks: ColMark[]; normalize?: string };
+                subfields: string; marks: ColMark[]; normalize?: string; output?: boolean };
 type Block = { x: number; y: number; rows: number };
 type Table = { uid: string; table_id: string; row_pitch: number; row_height: number;
                blocks: Block[]; columns: Column[] };
@@ -294,12 +299,16 @@ export function exclusionChangeNotice(
 /// 欄数・金額列数・除外数の増減を見せないと、静かに欄が減っても数字が
 /// 変わるだけで気づけない（列数決め打ち廃止の代替として掲げた「拒否では
 /// なく見える化」に、比較対象が無かった）。
-export type CountSnapshot = { fields: number; amountCells: number; exclusions: number };
+export type CountSnapshot = { fields: number; amountCells: number; exclusions: number;
+                              columns: number };
 
-/// 読み込み時点との差分を表示用の文言にする（issue #59 H-9）。増減が無い
-/// 項目は現行どおり単一の数値で表示してよい（呼び出し側の判断で省略しても
-/// 破綻しない設計）。decreasedLabels は減少した項目名——呼び出し側が
-/// warnbox で強調するために使う（灰色の msg に混ぜると気づかれない・D-7）。
+/// 読み込み時点との差分を表示用の文言にする（issue #59 H-9・issue #66 段3で
+/// 列数も対象に追加）。増減が無い項目は現行どおり単一の数値で表示してよい
+/// （呼び出し側の判断で省略しても破綻しない設計）。decreasedLabels は
+/// 減少した項目名——呼び出し側が warnbox で強調するために使う
+/// （灰色の msg に混ぜると気づかれない・D-7）。列の減少はここでは保存前の
+/// 確認（saveConfirmWarnings・FR-1.6）が別途ブロックする対象なので、この
+/// 関数自体は判定せず一様に差分を見せるだけに留める
 export function saveDiffNote(loaded: CountSnapshot, current: CountSnapshot): {
   text: string; decreasedLabels: string[];
 } {
@@ -314,6 +323,7 @@ export function saveDiffNote(loaded: CountSnapshot, current: CountSnapshot): {
     part("欄", loaded.fields, current.fields),
     part("金額", loaded.amountCells, current.amountCells),
     part("除外", loaded.exclusions, current.exclusions),
+    part("列", loaded.columns, current.columns),
   ].join("・");
   return { text, decreasedLabels };
 }
@@ -358,6 +368,133 @@ export function remapColumnMarks(
 export function extraIndexValid(
   f: { extras?: Rect[] } | undefined, i: number): boolean {
   return !!f && Number.isInteger(i) && i >= 0 && i < (f.extras?.length ?? 0);
+}
+
+// ============================================================
+// 出力列制御 MVP・第1弾（issue #66 段3）: 欄単位の「出力しない」
+// ============================================================
+
+/// output が false のときだけ「出力しない」（P3-b）。省略/undefined は
+/// 出力する（既存テンプレ互換・FR-1.7）。
+export const isOutput = (item: { output?: boolean }): boolean => item.output !== false;
+
+/// buildTemplate が output 属性を JSON へどう書くかの規則（FR-1.1 B-確定・
+/// B-S4）。false のときだけ書く（省略時 true＝出力する）——無関係な保存で
+/// template_hash を動かさないため。Field・Column の両シリアライズが同じ
+/// 規則を1箇所から呼ぶことで、書き方が2箇所で食い違う事故を防ぐ。
+export function outputAttrForJson(output: boolean | undefined): { output: false } | object {
+  return output === false ? { output: false } : {};
+}
+
+/// 現在「出力しない」に設定されている欄・表の列の総数を数える（FR-1.8 の
+/// タブ見出しバッジ用）。列番号の再導出ではなく単なるフラグの集計なので
+/// FR-0.1 の「GUI側での列名・列順の再導出禁止」には抵触しない。
+export function countOutputDisabled(
+  fields: { output?: boolean }[],
+  tables: { columns: { output?: boolean }[] }[]): number {
+  const fromFields = fields.filter((f) => !isOutput(f)).length;
+  const fromTables = tables.reduce((s, t) => s + t.columns.filter((c) => !isOutput(c)).length, 0);
+  return fromFields + fromTables;
+}
+
+/// 単発欄の field_id が verify の column_names（FR-0.1）の中でどの位置に
+/// あるかを探す。列名は "<field_id>" または "<field_id>_<subfield>" の形
+/// （F-2）なので、完全一致または "field_id_" 接頭一致で拾う。subfields で
+/// 複数列に分かれる欄は最初と最後の位置を返す。見つからなければ null
+/// （output:false・columnNames 未取得・該当なしのいずれか）。
+/// **列の並び自体は再導出しない**——column_names に実際にある位置を
+/// そのまま読むだけ（FR-0.1・T-M11 の趣旨を維持）。
+export function findColumnPositions(
+  columnNames: string[] | null, fieldId: string): { first: number; last: number } | null {
+  if (!columnNames) return null;
+  const idxs: number[] = [];
+  columnNames.forEach((name, i) => {
+    if (name === fieldId || name.startsWith(fieldId + "_")) idxs.push(i + 1);
+  });
+  return idxs.length ? { first: idxs[0], last: idxs[idxs.length - 1] } : null;
+}
+
+/// 表の列（table_id・column名）が column_names のどの位置にあるかを探す。
+/// 表の列名は行展開により "<table_id>_<行番号>_<列名>"（例: family_01_生年月日）
+/// の形で複数回登場する（F-1）。findColumnPositions と同じく実在する位置を
+/// 読むだけで、行展開そのものを GUI 側で組み立て直しはしない。
+export function findTableColumnPositions(
+  columnNames: string[] | null, tableId: string, columnName: string):
+  { first: number; last: number } | null {
+  if (!columnNames) return null;
+  const prefix = `${tableId}_`;
+  const idxs: number[] = [];
+  columnNames.forEach((name, i) => {
+    if (!name.startsWith(prefix)) return;
+    const rest = name.slice(prefix.length);
+    // "<行番号>_<列名>..." の行番号部分を飛ばして列名と突き合わせる
+    const m = /^\d+_(.*)$/.exec(rest);
+    const tail = m ? m[1] : rest;
+    if (tail === columnName || tail.startsWith(columnName + "_")) idxs.push(i + 1);
+  });
+  return idxs.length ? { first: idxs[0], last: idxs[idxs.length - 1] } : null;
+}
+
+/// 「出力する」チェックボックスの accessible name（AC-1.21・AC-1.25）。
+/// 欄の識別子を必ず含み（AC-1.21・SR のフォームコントロール一覧で行が
+/// 重複しないようにする）、チェック操作の結果（現在の状態）を動的に含める
+/// （AC-1.25・SC 4.1.3）。output:false は常に「出力対象外」（ローカルに
+/// 確定できる）。output:true は column_names 上の位置が分かれば列番号を、
+/// 分からなければ（未読込・編集直後で verify 未反映など）素直に
+/// 「出力する」とだけ言い、誤った列番号を言わない。
+export function outputCheckboxLabel(
+  displayName: string, output: boolean,
+  position: { first: number; last: number } | null): string {
+  if (!output) return `${displayName}を出力する（現在: 出力対象外）`;
+  if (!position) return `${displayName}を出力する（現在: 出力する）`;
+  const posText = position.first === position.last
+    ? `${position.first}列目` : `${position.first}〜${position.last}列目`;
+  return `${displayName}を出力する（現在: ${posText}）`;
+}
+
+/// 保存前確認モーダルに出す⚠一覧を組み立てる（FR-1.6・付録A）。純粋な判定
+/// のみ——実際の確認 UI（モーダル）の表示は呼び出し側（saveTemplate）が
+/// 行う。4件のいずれも該当しなければ空配列を返し、呼び出し側はモーダルを
+/// 出さずに保存を続ける（C-5 の empty 状態）。
+export type SaveWarning = { key: string; text: string };
+export function saveConfirmWarnings(input: {
+  isShipped: boolean;
+  imageSizeMismatch: { from: string; to: string } | null;
+  exclusionNotice: string | null;
+  columnDecrease: { from: number; to: number } | null;
+}): SaveWarning[] {
+  const warnings: SaveWarning[] = [];
+  if (input.isShipped) {
+    warnings.push({ key: "shipped",
+      text: "出荷テンプレートを上書きします。読み取りに直ちに影響します。" });
+  }
+  if (input.imageSizeMismatch) {
+    warnings.push({ key: "image-size",
+      text: "開いている画像の寸法がテンプレートと異なります（"
+        + `${input.imageSizeMismatch.from} → ${input.imageSizeMismatch.to}）。`
+        + "保存すると全ページが再送信（課金）の対象になります。" });
+  }
+  if (input.exclusionNotice) {
+    warnings.push({ key: "exclusion", text: input.exclusionNotice });
+  }
+  if (input.columnDecrease) {
+    warnings.push({ key: "columns",
+      text: `出力列が ${input.columnDecrease.from} → ${input.columnDecrease.to} 列に減ります。`
+        + "csv を取り込むシステムがある場合は、列構成の変更を先方と合わせてから"
+        + "保存してください（README §7）。枠と読み取りは残ります（あとで戻せます）。" });
+  }
+  return warnings;
+}
+
+/// 保存サマリの要確認セル数・母集団縮小の注記（AC-1.16・T-S8）。
+/// 「要確認セル数の母集団: 214列 → 211列（出力しない 3 欄を除く）」の形式。
+/// 抽出列数（列数から管理6列を除いた数）が減っていない、または対象外が
+/// 0件のときは null（呼び出し側は何も表示しない）。
+export function unclearPopulationNote(
+  loadedExtractColumns: number, currentExtractColumns: number, disabledCount: number): string | null {
+  if (currentExtractColumns >= loadedExtractColumns || disabledCount <= 0) return null;
+  return `要確認セル数の母集団: ${loadedExtractColumns}列 → ${currentExtractColumns}列`
+    + `（出力しない ${disabledCount} 欄を除く）`;
 }
 
 /// expand-page が返す位置合わせ失敗の理由（ぺこら担当・core 側で追加中）。
@@ -533,14 +670,40 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // 減っていないか・座標やサイズが変わっていないかを確認する
   // （issue #55・#59 QA再判定条件④）。保存成功のたびに新しい基準へ更新する
   const [loadedExcls, setLoadedExcls] = useState<ExclSnapshot[]>([]);
-  // 読み込み時点の欄数・金額列数（issue #59 H-9・最後の検知網）。除外数は
-  // 上の loadedExcls.length で足りるためここには持たない
+  // 読み込み時点の欄数・金額列数・列数（issue #59 H-9・#66 FR-1.6・最後の
+  // 検知網）。除外数は上の loadedExcls.length で足りるためここには持たない
   const [loadedCounts, setLoadedCounts] =
-    useState({ fields: 0, amountCells: 0, exclusions: 0 });
+    useState({ fields: 0, amountCells: 0, exclusions: 0, columns: 0 });
+  // 読み込み時点の verify column_names（issue #66 段3・FR-0.1）。列位置表示
+  // （出力列タブ・チェックの accessible name）の唯一の入力源——GUI 側で
+  // 列名・列順を再導出しない（FR-0.1・F-10 の再発防止）。編集中の増減には
+  // 追従しない（次の verify＝保存成功まで据え置き）が、その場合は
+  // outputCheckboxLabel が列番号を省略する（誤った番号を言わないため）
+  const [columnNames, setColumnNames] = useState<string[] | null>(null);
+  // 右パネルのタブ（issue #66 段3・FR-1.7・C-1）。「選択中」欄の詳細か
+  // 「出力列」一覧かを切り替える
+  const [panelTab, setPanelTab] = useState<"selected" | "output">("selected");
+  // 保存前確認モーダル（issue #66 段3・FR-1.6・AC-1.23）。window.confirm の
+  // 3連発＋列減少チェックを1枚のモーダルに統合するための Promise ブリッジ。
+  // resolve(true)=このまま保存 / resolve(false)=保存しない
+  const [confirmModal, setConfirmModal] = useState<
+    { warnings: SaveWarning[]; busy: boolean; resolve: (proceed: boolean) => void } | null>(null);
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
+  const modalCancelRef = useRef<HTMLButtonElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
+  // 保存モーダルの直近の開閉状態（開いた瞬間だけ初期フォーカスするための番兵）
+  const prevModalOpen = useRef(false);
+  // saveTemplate の多重起動防止（C-5「二重押下防止」の根っこのガード。
+  // モーダルのボタン disabled はこれの補助で、保存フロー全体を1本化する）
+  const savingRef = useRef(false);
   // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
   const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
   // パネルで触っている列（canvas ハイライト用・レビュー D-3）
   const [hlCol, setHlCol] = useState<number | null>(null);
+  // 出力列タブの行 hover/focus で canvas の該当欄をハイライトする
+  // （issue #66 段3・FR-1.8・C-1）。sel（選択）とは独立——一覧を眺めている
+  // だけで選択状態を変えたくない
+  const [hlFieldUid, setHlFieldUid] = useState<string | null>(null);
   const drag = useRef<{ mode: string; start: { x: number; y: number };
                         orig?: Rect; extra?: { x: number; y: number } } | null>(null);
   // 開いたテンプレートのメタ情報。faces 以外を編集画面は触らないが、保存時に
@@ -607,6 +770,40 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       }
       ctx.fillText(t, x, y);
     };
+    // 出力しない欄・表の列の描画（issue #66 段3・FR-1.5・AC-1.22）。枠色は
+    // 維持したまま斜線ハッチを重ね、16px固定（画面上で常に同じ大きさ・
+    // label() 非経由）の⊘バッジを不透明チップ（塗り背景＋前景記号）で描く。
+    // グレーアウトは除外領域の灰色と、破線は参照先の表現と意味が衝突する
+    // ため使わない。選択中でもハッチ・バッジは消さない（C-4: 選択で状態を
+    // 見失わせない）
+    const hatchArea = (r: Rect) => {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
+      ctx.strokeStyle = "rgba(28,31,38,0.30)"; ctx.lineWidth = 2 * px;
+      const step = 10 * px;
+      for (let d = -r.h; d < r.w + r.h; d += step) {
+        ctx.beginPath();
+        ctx.moveTo(r.x + d, r.y);
+        ctx.lineTo(r.x + d - r.h, r.y + r.h);
+        ctx.stroke();
+      }
+      ctx.restore();
+    };
+    const outputBadge = (r: Rect) => {
+      // チップ単体で 3:1 以上のコントラストを持たせる（可変のスキャン画像を
+      // 背景に取らない・AC-1.22）。不透明な濃色円＋白い⊘記号の自己完結配色
+      const size = 16 * px, m = 2 * px;
+      const cx = r.x + r.w - size / 2 - m, cy = r.y + size / 2 + m;
+      ctx.beginPath(); ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+      ctx.fillStyle = "#1c1f26"; ctx.fill();
+      const rr = size / 2 - 3 * px;
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = Math.max(1.4 * px, px);
+      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
+      const d = rr * Math.SQRT1_2;
+      ctx.beginPath();
+      ctx.moveTo(cx - d, cy + d); ctx.lineTo(cx + d, cy - d);
+      ctx.stroke();
+    };
     ctx.lineWidth = 2 * px;
     for (const e of excls)
       rect(e.rect, sel?.uid === e.uid ? "#ffd54a" : "#888",
@@ -614,6 +811,11 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     for (const f of fields) {
       rect(f.rect, sel?.uid === f.uid && sel?.part !== "fallback"
         ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+      if (hlFieldUid === f.uid) {
+        ctx.fillStyle = "rgba(255,213,74,0.28)";
+        ctx.fillRect(f.rect.x, f.rect.y, f.rect.w, f.rect.h);
+      }
+      if (!isOutput(f)) { hatchArea(f.rect); outputBadge(f.rect); }
       for (const m of f.marks) rect(m.rect, "#c586ff");
       ctx.fillStyle = "#9fd8ff";
       label(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px,
@@ -622,6 +824,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         const ex = f.extras![i];
         rect(ex, sel?.uid === f.uid && sel?.part === `extra:${i}`
           ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+        if (!isOutput(f)) hatchArea(ex);   // 追加領域も同じ欄の一部（出力しない欄は全域）
         // 同じ欄の一部であることを細線で示す（参照先の破線と区別して実線）
         ctx.strokeStyle = "rgba(79,195,247,0.45)"; ctx.lineWidth = px;
         ctx.beginPath();
@@ -655,6 +858,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         const bh = t.row_pitch * (b.rows - 1) + t.row_height;
         rect({ x: b.x, y: b.y, w: totalW, h: bh },
              sel?.uid === t.uid ? "#ffd54a" : "#7ce38b");
+        if (hlFieldUid === t.uid) {
+          ctx.fillStyle = "rgba(255,213,74,0.28)";
+          ctx.fillRect(b.x, b.y, totalW, bh);
+        }
         ctx.strokeStyle = "rgba(124,227,139,0.55)"; ctx.lineWidth = px;
         for (let i = 0; i < b.rows; i++) {
           const top = b.y + t.row_pitch * i;
@@ -670,6 +877,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
           ctx.strokeStyle = "#ffd54a"; ctx.lineWidth = 3 * px;
           ctx.strokeRect(b.x + c.x_offset, b.y, c.width, bh);
           ctx.lineWidth = 2 * px;
+        }
+        // 出力しない列（issue #66 段3・付録A）: ブロック全高に1枚のハッチ＋
+        // バッジ（行ごとには描かない——全行一括で外れる仕様のため・FR-1.1）
+        for (const c of t.columns) {
+          if (isOutput(c)) continue;
+          const colRect = { x: b.x + c.x_offset, y: b.y, w: c.width, h: bh };
+          hatchArea(colRect);
+          outputBadge(colRect);
         }
         ctx.lineWidth = 2 * px;
       }
@@ -706,7 +921,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       }
     }
     ctx.restore();
-  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol]);
+  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol, hlFieldUid]);
 
   // draw() は全欄のラベルをループで measureText トリムするため、ドラッグ中の
   // mousemove のたびに毎回同期実行すると重い（issue #60 M-3・実測で back面
@@ -832,7 +1047,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                   extras: (f.extra_rects ?? []).map((r: any) =>
                     ({ ...r, y: r.y + oy })),
                   marks: (f.choice_marks ?? []).map((m: any) =>
-                    ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })) });
+                    ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })),
+                  // output 省略＝出力する（FR-1.7・既存テンプレ互換）
+                  output: f.output === false ? false : undefined });
       for (const tb of face.tables ?? [])
         ts.push({ uid: uid(), table_id: tb.table_id, row_pitch: tb.row_pitch,
                   row_height: tb.row_height,
@@ -842,7 +1059,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                     name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
                     subfields: (c.subfields ?? []).join(","),
                     normalize: c.normalize,
-                    marks: c.choice_marks ?? [] })) });
+                    marks: c.choice_marks ?? [],
+                    output: c.output === false ? false : undefined })) });
     }
     setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
     setLoadedExcls(es.map((e) => ({ id: e.id, rect: e.rect })));
@@ -872,7 +1090,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
         .find((e) => e && e.check === "template");
       if (tpl?.ok) {
         setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells,
-                          exclusions: tpl.exclusions });
+                          exclusions: tpl.exclusions, columns: tpl.columns });
+        // column_names は verify がまだ返さない旧コアでも動くよう、フィールド
+        // 欠落時は null のまま（outputCheckboxLabel 等が列番号を省略する）
+        setColumnNames(Array.isArray(tpl.column_names) ? tpl.column_names : null);
       }
       // NG のときは基準の更新を諦める（読み込み自体は既に成功しているので
       // ブロックしない）。古い基準のまま残るが、次に保存できる状態になった
@@ -955,7 +1176,10 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
             ? { extra_rects: f.extras.map((r) => ({ ...r, y: r.y - y0 })) } : {}),
           ...(f.normalize && f.kind === "text" ? { normalize: f.normalize } : {}),
           ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
-            value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}) })),
+            value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}),
+          // false のときだけ書く（省略時 true・FR-1.1 B-確定）。無関係な保存で
+          // template_hash を動かさない（B-S4）
+          ...outputAttrForJson(f.output) })),
         tables: tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y)).map((t) => ({
           table_id: t.table_id, row_pitch: t.row_pitch,
           row_height: t.row_height,
@@ -966,7 +1190,8 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
               ? { subfields: c.subfields.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
             ...(c.normalize && c.kind === "text" && !c.subfields.trim()
               ? { normalize: c.normalize } : {}),
-            ...(c.kind === "choice" ? { choice_marks: c.marks } : {}) })) })),
+            ...(c.kind === "choice" ? { choice_marks: c.marks } : {}),
+            ...outputAttrForJson(c.output) })) })),
       };
     };
     return {
@@ -985,38 +1210,61 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     setErrMsg(`保存を中止しました（${why}）`);
   };
 
+  // 保存前確認モーダル（issue #66 段3・FR-1.6・AC-1.23）。window.confirm 3連発
+  // ＋列減少チェックを1枚のモーダルに統合する Promise ブリッジ。
+  // resolve(true)=このまま保存 / resolve(false)=保存しない
+  const askConfirm = (warnings: SaveWarning[]): Promise<boolean> =>
+    new Promise((resolve) => setConfirmModal({ warnings, busy: false, resolve }));
+  const closeConfirmModal = (proceed: boolean) => {
+    setConfirmModal((m) => {
+      m?.resolve(proceed);
+      return null;
+    });
+    // フォーカスを保存ボタンへ戻す（AC-1.23）。モーダルの unmount 後に
+    // 対象が存在する必要があるため次フレームへずらす
+    requestAnimationFrame(() => saveBtnRef.current?.focus());
+  };
+  // 開いた瞬間だけ「保存しない」へ初期フォーカスする（破壊的でない側を既定・C-5）
+  useEffect(() => {
+    const isOpen = !!confirmModal;
+    if (isOpen && !prevModalOpen.current) modalCancelRef.current?.focus();
+    prevModalOpen.current = isOpen;
+  }, [confirmModal]);
+  // Esc=キャンセル・Tab はモーダル内で循環（AC-1.23）
+  const onModalKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); closeConfirmModal(false); return; }
+    if (e.key !== "Tab") return;
+    const root = modalRef.current;
+    if (!root) return;
+    const focusables = Array.from(root.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+      .filter((el) => !el.hasAttribute("disabled"));
+    if (focusables.length === 0) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+
   const saveTemplate = async () => {
+    if (savingRef.current) return;   // 二重押下防止（C-5）。モーダルの外側の起点
+    savingRef.current = true;
+    try {
+      await saveTemplateInner();
+    } finally {
+      savingRef.current = false;
+    }
+  };
+
+  const saveTemplateInner = async () => {
     const p = await invoke<string | null>("pick_json",
       { save: true, defaultPath: tplPath ?? undefined });
     if (!p) return;
 
-    // 保存先が出荷テンプレートなら、以降の処理へ進む前に即確認する
-    // （issue #56 T1-3）。保存の既定を「今読み込んでいるファイル」へ
-    // 変えた後も、出荷テンプレートを明示的に選んだ場合はここで止める
+    // 保存先が出荷テンプレートかは、以降の確認モーダルに含めるため先に
+    // 取得しておく（issue #56 T1-3）。確認そのものは verify OK が確定した
+    // 後（下）に1枚のモーダルへ統合する（issue #66 段3・FR-1.6・付録A）
     const isShipped = await invoke<boolean>("is_shipped_template_path", { path: p })
       .catch(() => false);
-    if (isShipped && !window.confirm(
-        "出荷テンプレートを上書きします。読み取りに直ちに影響します。"
-        + "続行してよろしいですか？")) {
-      abortSave("出荷テンプレートの上書き確認でキャンセル");
-      return;
-    }
-
-    // 開いている画像の寸法がテンプレートと異なるまま保存すると、
-    // geometry_hash が変わり全ページが再送信（課金）対象になる
-    // （issue #59 H-1）。無言で上書きせず、寸法が変わるときだけ確認する。
-    // テンプレートにまだ image が無い（新規作成中）場合は比較対象が無いので
-    // 確認しない
-    if (meta.current.image && imgSize
-        && (meta.current.image.width !== imgSize.w
-            || meta.current.image.height !== imgSize.h)) {
-      const ok = window.confirm(
-        "開いている画像の寸法がテンプレートと異なります（"
-        + `${meta.current.image.width}×${meta.current.image.height} → `
-        + `${imgSize.w}×${imgSize.h}）。`
-        + "保存すると全ページが再送信（課金）の対象になります。続行してよろしいですか？");
-      if (!ok) { abortSave("画像寸法の確認でキャンセル"); return; }
-    }
 
     // 保存直前に重なりを一括解消する。ドロップ時の自動切り抜きは
     // 「置いた瞬間」にしか効かないため、開き直した下書きなど**以前から
@@ -1037,19 +1285,15 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     const carveWarnNote = carveWarningNotice(resolved.warned);
     setWarnMsg(carveWarnNote ?? "");
 
-    // 除外領域（Vision へ送らないマスク）が読み込み時点から劣化していないか
-    // 確認する（issue #55・#59 QA再判定条件④）。件数減少だけでなく、同一
+    // 除外領域（Vision へ送らないマスク）が読み込み時点から劣化していないかの
+    // 判定材料（issue #55・#59 QA再判定条件④）。件数減少だけでなく、同一
     // idの座標・サイズ変化（例: blackoutがy1775→1640へ135pxズレる）や
     // idの入れ替わりも検知する。resolveOverlaps は excls を変更しないので、
-    // ここでの内容はカーブ前後で変わらない
+    // ここでの内容はカーブ前後で変わらない。実際の確認は下のモーダルで行う
     const currentExclSnapshot: ExclSnapshot[] =
       excls.map((e) => ({ id: e.id, rect: e.rect }));
     const currentExclCount = currentExclSnapshot.length;
     const exclNotice = exclusionChangeNotice(loadedExcls, currentExclSnapshot);
-    if (exclNotice && !window.confirm(exclNotice)) {
-      abortSave("除外領域の変化確認でキャンセル");
-      return;
-    }
 
     const content = JSON.stringify(buildTemplate(resolved.fields), null, 2);
 
@@ -1099,7 +1343,32 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return;
     }
 
-    // ここから verify は OK。promote は別の try に分ける——ここで例外が
+    // ここまでで verify は OK＝内容の正しさは確定した。保存前確認モーダルは
+    // ここで初めて出す（issue #66 段3・FR-1.6・付録A）。列数の増減判定は
+    // GUI 側で再導出せず、この verify 応答（staged 側）の tpl.columns を
+    // 読み込み時基準（loadedCounts.columns・同じく verify 由来）と比べる
+    // だけにする（FR-0.1 の原則を保つ）。4件の⚠を1枚のモーダルへ統合し、
+    // ⚠が無ければモーダルを出さずそのまま保存を続ける（C-5 の empty 状態）
+    const imageSizeMismatch = (meta.current.image && imgSize
+        && (meta.current.image.width !== imgSize.w
+            || meta.current.image.height !== imgSize.h))
+      ? { from: `${meta.current.image.width}×${meta.current.image.height}`,
+          to: `${imgSize.w}×${imgSize.h}` }
+      : null;
+    const columnDecrease = tpl.columns < loadedCounts.columns
+      ? { from: loadedCounts.columns, to: tpl.columns } : null;
+    const warnings = saveConfirmWarnings(
+      { isShipped, imageSizeMismatch, exclusionNotice: exclNotice, columnDecrease });
+    if (warnings.length) {
+      const proceed = await askConfirm(warnings);
+      if (!proceed) {
+        await invoke("discard_staged", { path: p }).catch(() => {});
+        abortSave("保存前の確認でキャンセル");
+        return;
+      }
+    }
+
+    // ここから確定。promote は別の try に分ける——ここで例外が
     // 起きても「検証NG」でも「保存していません」でもない。lib.rs 側
     // （promote_staged）は確定の rename に失敗すると .bak からの巻き戻しを
     // 試み、戻せたかどうかを Err 文言に載せて返す。discard_staged は
@@ -1136,9 +1405,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       // fields.length 等を数えていたため（表の列を含まない・保存時とは別物）
       const diff = saveDiffNote(
         { fields: loadedCounts.fields, amountCells: loadedCounts.amountCells,
-          exclusions: loadedCounts.exclusions },
-        { fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount });
-      setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount });
+          exclusions: loadedCounts.exclusions, columns: loadedCounts.columns },
+        { fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount,
+          columns: tpl.columns });
+      // 出力しない欄の件数（issue #66 段3・保存サマリ）。列位置表示の唯一の
+      // 入力源は verify（column_names）に一本化する（FR-0.1）
+      const disabledCount = countOutputDisabled(resolved.fields, tables);
+      const popNote = unclearPopulationNote(
+        loadedCounts.columns - 6, tpl.columns - 6, disabledCount);
+      setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells,
+                        exclusions: exclCount, columns: tpl.columns });
+      setColumnNames(Array.isArray(tpl.column_names) ? tpl.column_names : null);
       setMsg(carveNote + `保存＋コア検証 OK（`
         + (tpl.cells != null
            ? `欄 ${tpl.cells} → ${tpl.columns} 列＝欄${tpl.cells}`
@@ -1146,7 +1423,9 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
            : `${tpl.columns} 列`)
         + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
         + `・除外 ${exclCount}`
-        + `）: ${p} ／ 読み込み時から: ${diff.text}`);
+        + (disabledCount ? `・うち出力しない ${disabledCount} 欄` : "")
+        + `）: ${p} ／ 読み込み時から: ${diff.text}`
+        + (popNote ? ` ／ ${popNote}` : ""));
       // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
       // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
       // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）。
@@ -1740,8 +2019,18 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return (
         <div className="panel">
           <h3>選択中の欄</h3>
+          {/* チェック極性は「出力する」（P3-b）。JSON の output と一致させる。
+              表示文言・警告は「出力しない」を使う（NFR-06） */}
+          <label style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <input type="checkbox" checked={isOutput(f)}
+              aria-label={outputCheckboxLabel(f.field_id || "（名前未設定）", isOutput(f),
+                findColumnPositions(columnNames, f.field_id))}
+              onChange={(e) => updateField(f.uid, { output: e.target.checked ? undefined : false })} />
+            出力する{!isOutput(f) && <span className="note" style={{ marginLeft: 6 }}>（現在: 出力しない）</span>}
+          </label>
           <p className="note">この枠の読み取り結果は CSV・Excel の
-            「{f.field_id || "（名前未設定）"}」列へ出力されます</p>
+            「{f.field_id || "（名前未設定）"}」列へ出力されます{!isOutput(f)
+              ? "——ただし今は出力しない設定です（枠・読み取りは維持されます）" : ""}</p>
           <label>欄の名前（出力の列名になります）<input value={f.field_id}
             onChange={(e) => updateField(f.uid, { field_id: e.target.value })} /></label>
           <label>欄の種類
@@ -1908,6 +2197,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                 j === i ? { ...v, normalize: e.target.value || undefined } : v) })}>
               <option value="">正規化なし</option><option value="amount">金額</option>
             </select>
+            <label style={{ flexDirection: "row", alignItems: "center", gap: 4, margin: 0 }}>
+              <input type="checkbox" checked={isOutput(c)}
+                aria-label={outputCheckboxLabel(c.name || `列${i + 1}`, isOutput(c),
+                  findTableColumnPositions(columnNames, t.table_id, c.name))}
+                onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
+                  j === i ? { ...v, output: e.target.checked ? undefined : false } : v) })} />
+              <span className="lbl">出力</span>
+            </label>
             <button onClick={() => updateTable(t.uid,
               { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
           </div>))}
@@ -1919,13 +2216,72 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       </div>);
   };
 
+  // 「出力列」タブ（issue #66 段3・FR-1.8・付録A・C-1/C-2）。枠を1つずつ
+  // クリックしないと出力対象外が分からない状態にしない。面見出しで区切り、
+  // 管理6列は固定表示、表は1行ユニット（第1弾は並べ替えボタンなし・
+  // [開く]のみ——並べ替え自体は段7・第2弾の範囲）。対象外行は列番号「—」
+  const outputListPanel = () => {
+    const front = { fields: fields.filter((f) => f.rect.y < splitY),
+                    tables: tables.filter((t) => t.blocks[0] && t.blocks[0].y < splitY) };
+    const back = { fields: fields.filter((f) => f.rect.y >= splitY),
+                   tables: tables.filter((t) => t.blocks[0] && t.blocks[0].y >= splitY) };
+    const fieldRow = (f: Field) => {
+      const pos = findColumnPositions(columnNames, f.field_id);
+      const out = isOutput(f);
+      return (
+        <div key={f.uid} className={`panel-outrow${out ? "" : " off"}`}
+          onMouseEnter={() => setHlFieldUid(f.uid)} onMouseLeave={() => setHlFieldUid(null)}
+          onFocus={() => setHlFieldUid(f.uid)} onBlur={() => setHlFieldUid(null)}>
+          <span className="colpos">{out ? (pos ? pos.first : "") : "—"}</span>
+          <input type="checkbox" checked={out}
+            aria-label={outputCheckboxLabel(f.field_id || "（名前未設定）", out, pos)}
+            onChange={(e) => updateField(f.uid, { output: e.target.checked ? undefined : false })} />
+          <button className="name" type="button" style={{ textAlign: "left",
+            background: "none", border: "none", cursor: "pointer", padding: 0, font: "inherit" }}
+            onClick={() => { setSel({ type: "field", uid: f.uid }); setPanelTab("selected"); }}>
+            {f.field_id || "（名前未設定）"}
+          </button>
+        </div>);
+    };
+    const tableRow = (t: Table) => (
+      <div key={t.uid} className="panel-outrow"
+        onMouseEnter={() => setHlFieldUid(t.uid)} onMouseLeave={() => setHlFieldUid(null)}
+        onFocus={() => setHlFieldUid(t.uid)} onBlur={() => setHlFieldUid(null)}>
+        <span className="colpos">表</span>
+        <span className="name">{t.table_id}（列{t.columns.length}・うち出力
+          {t.columns.filter((c) => isOutput(c)).length}）</span>
+        <button className="btn" type="button" style={{ minHeight: 28, padding: "3px 10px" }}
+          onClick={() => { setSel({ type: "table", uid: t.uid }); setPanelTab("selected"); }}>開く</button>
+      </div>);
+    const faceSection = (label: string, group: { fields: Field[]; tables: Table[] }) => (
+      <div key={label}>
+        <h4>{label}</h4>
+        {group.fields.length === 0 && group.tables.length === 0
+          ? <p className="note">欄がありません</p>
+          : <>{group.fields.map(fieldRow)}{group.tables.map(tableRow)}</>}
+      </div>);
+    return (
+      <div className="panel">
+        <h3>出力列</h3>
+        <p className="note">🔒 管理6列（要確認セル数・最低信頼度・帳票ID・入力ファイル名・
+          ページ番号・ステータス）は常に先頭固定で出力されます（並べ替え対象外）</p>
+        {faceSection("表面", front)}
+        {faceSection("裏面", back)}
+        <p className="note">列の並べ替えは次回の機能で対応予定です。ここでは
+          「出力する/しない」の切り替えのみ行えます。表の列は「開く」から編集してください</p>
+      </div>);
+  };
+
+  const templateLoaded = fields.length > 0 || tables.length > 0;
+  const outputDisabledTotal = countOutputDisabled(fields, tables);
+
   return (
     <div className="editor">
       <div className="adminstrip">この画面では<b>帳票の読み取り位置（枠）を定義します</b>（管理者向け）。通常の読み取りは「実行」タブから行ってください。</div>
       <div className="toolbar">
         <button className="btn" onClick={loadImage}>帳票を開く（PDF・画像）</button>
         <button className="btn" onClick={loadTemplate}>テンプレートを開く</button>
-        <button className="btn primary" onClick={saveTemplate}>保存して検証</button>
+        <button ref={saveBtnRef} className="btn primary" onClick={saveTemplate}>保存して検証</button>
         <span className="sep" />
         {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => (
           <button key={t} className={tool === t ? "btn active" : "btn"}
@@ -1943,8 +2299,52 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                  : hoverCursor ? { cursor: hoverCursor } : undefined}
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
           onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
-        {panel()}
+        {/* 「選択中/出力列」の2タブ構成（issue #66 段3・FR-1.7・C-1・AC-1.24）。
+            出力列タブはテンプレート未読込時 disabled（C-1 の empty 定義） */}
+        <div className="panel-wrap">
+          <div className="tabs panel-tabs" role="tablist" aria-label="編集パネル">
+            <button type="button" role="tab" id="edittab-selected"
+              aria-selected={panelTab === "selected"} aria-controls="edittabpanel"
+              className={panelTab === "selected" ? "active" : ""}
+              onClick={() => setPanelTab("selected")}>選択中</button>
+            <button type="button" role="tab" id="edittab-output"
+              aria-selected={panelTab === "output"} aria-controls="edittabpanel"
+              className={panelTab === "output" ? "active" : ""}
+              disabled={!templateLoaded}
+              title={templateLoaded ? undefined : "テンプレートを開くと使えます"}
+              onClick={() => setPanelTab("output")}>
+              出力列
+              {outputDisabledTotal > 0 && <span className="badge">⊘{outputDisabledTotal}</span>}
+            </button>
+          </div>
+          <div id="edittabpanel" role="tabpanel"
+            aria-labelledby={panelTab === "selected" ? "edittab-selected" : "edittab-output"}>
+            {panelTab === "output" && templateLoaded ? outputListPanel() : panel()}
+          </div>
+        </div>
       </div>
+      {confirmModal && (
+        <div className="modal-back" onClick={() => closeConfirmModal(false)}>
+          <div className="modal" ref={modalRef} role="alertdialog" aria-modal="true"
+            aria-labelledby="save-confirm-title" onClick={(e) => e.stopPropagation()}
+            onKeyDown={onModalKeyDown}>
+            <h3 id="save-confirm-title">保存前の確認</h3>
+            <ul style={{ margin: "0 0 16px", paddingLeft: 20, lineHeight: 1.8, fontSize: 13 }}>
+              {confirmModal.warnings.map((w) => <li key={w.key}>{w.text}</li>)}
+            </ul>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button ref={modalCancelRef} type="button" className="btn"
+                disabled={confirmModal.busy}
+                onClick={() => closeConfirmModal(false)}>保存しない</button>
+              <button type="button" className="btn primary" disabled={confirmModal.busy}
+                onClick={() => {
+                  setConfirmModal((m) => m && { ...m, busy: true });
+                  closeConfirmModal(true);
+                }}>このまま保存</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

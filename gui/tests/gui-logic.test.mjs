@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -39,7 +39,7 @@ const bundle = await build({
 const outDir = mkdtempSync(path.join(tmpdir(), "chouhyo-gui-test-"));
 const outFile = path.join(outDir, "bundle.mjs");
 writeFileSync(outFile, bundle.outputFiles[0].text);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, noticeFor, STATUS_JA } =
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, noticeFor, STATUS_JA } =
   await import(pathToFileURL(outFile).href);
 
 let failed = 0;
@@ -626,20 +626,25 @@ test("resolve: splitY を渡すと保存時の一括解消でも面またぎ切�
 
 // ---------------------------------------------------------------- issue #59 H-9
 test("saveDiffNote: 減少を検知し、不変なら静か（増減なしは単一の数値のまま）", () => {
-  const loaded = { fields: 194, amountCells: 28, exclusions: 9 };
-  const decreased = saveDiffNote(loaded, { fields: 193, amountCells: 28, exclusions: 9 });
+  const loaded = { fields: 194, amountCells: 28, exclusions: 9, columns: 220 };
+  const decreased = saveDiffNote(loaded, { fields: 193, amountCells: 28, exclusions: 9, columns: 220 });
   assert.ok(decreased.text.includes("欄 194 → 193（-1）"), decreased.text);
   assert.ok(decreased.text.includes("金額 28"), decreased.text);
   assert.ok(!decreased.text.includes("金額 28 →"), "不変の項目には矢印を付けない: " + decreased.text);
   assert.deepEqual(decreased.decreasedLabels, ["欄"]);
 
   const quiet = saveDiffNote(loaded, loaded);
-  assert.equal(quiet.text, "欄 194・金額 28・除外 9");
+  assert.equal(quiet.text, "欄 194・金額 28・除外 9・列 220");
   assert.deepEqual(quiet.decreasedLabels, [], "不変時は静か（警告対象なし）");
 
-  const increased = saveDiffNote(loaded, { fields: 195, amountCells: 28, exclusions: 9 });
+  const increased = saveDiffNote(loaded, { fields: 195, amountCells: 28, exclusions: 9, columns: 220 });
   assert.ok(increased.text.includes("欄 194 → 195（+1）"), increased.text);
   assert.deepEqual(increased.decreasedLabels, [], "増加は減少扱いしない");
+
+  // issue #66 段3: 列数も対象に追加。列が減れば decreasedLabels に「列」が乗る
+  const colDecreased = saveDiffNote(loaded, { ...loaded, columns: 218 });
+  assert.ok(colDecreased.text.includes("列 220 → 218（-2）"), colDecreased.text);
+  assert.deepEqual(colDecreased.decreasedLabels, ["列"]);
 });
 
 // ---------------------------------------------------------------- issue #66 段0（F-10 バグ修正・AC-0.2 相当）
@@ -655,16 +660,16 @@ test("saveDiffNote: 両辺を verify 応答（core の cells/amount_cells）に�
   // amount_cells=28・除外9。読み込み時・保存時の両方が同じ verify 応答から
   // 取った数値であれば、テンプレを一切編集していない保存はこの値が
   // そのまま両辺に来る
-  const verifyResponseAtLoad = { fields: 194, amountCells: 28, exclusions: 9 };
-  const verifyResponseAtSave = { fields: 194, amountCells: 28, exclusions: 9 };
+  const verifyResponseAtLoad = { fields: 194, amountCells: 28, exclusions: 9, columns: 220 };
+  const verifyResponseAtSave = { fields: 194, amountCells: 28, exclusions: 9, columns: 220 };
   const diff = saveDiffNote(verifyResponseAtLoad, verifyResponseAtSave);
-  assert.equal(diff.text, "欄 194・金額 28・除外 9",
+  assert.equal(diff.text, "欄 194・金額 28・除外 9・列 220",
     "無編集保存なのに矢印つきの差分が出ている（F-10 の再発）: " + diff.text);
   assert.deepEqual(diff.decreasedLabels, []);
 
   // 対比: 旧実装のように読み込み時だけ「単発欄のみ」の小さい数（例: 14）を
   // 使うと、無編集でも巨大な差分が出ていた——これが直した不具合そのもの
-  const buggyLoadedSnapshot = { fields: 14, amountCells: 1, exclusions: 9 };
+  const buggyLoadedSnapshot = { fields: 14, amountCells: 1, exclusions: 9, columns: 220 };
   const buggyDiff = saveDiffNote(buggyLoadedSnapshot, verifyResponseAtSave);
   assert.ok(buggyDiff.text.includes("欄 14 → 194"),
     "母集団が揃っていなければ巨大な差分になる（旧バグの再現・比較用）: " + buggyDiff.text);
@@ -818,6 +823,93 @@ test("promoteFailureNotice: 復元にも失敗した場合の文言も落とさ�
   assert.ok(n.includes("t.json.saving.json"));
   assert.ok(n.includes("復元にも失敗"), n);
   assert.ok(n.includes("t.json.bak"), "lib.rs 側が案内した .bak の在り処も残るはず: " + n);
+});
+
+// ---------------------------------------------------------------- issue #66 段3（出力列制御 MVP・第1弾UI）
+test("isOutput / outputAttrForJson: output省略・trueは出力する、falseだけ出力しない扱い", () => {
+  assert.equal(isOutput({}), true);
+  assert.equal(isOutput({ output: true }), true);
+  assert.equal(isOutput({ output: false }), false);
+  assert.deepEqual(outputAttrForJson(undefined), {});
+  assert.deepEqual(outputAttrForJson(true), {}, "true でも書かない（省略時trueと同義・B-S4）");
+  assert.deepEqual(outputAttrForJson(false), { output: false });
+});
+
+test("countOutputDisabled: 欄・表の列のうち output:false の総数を数える（タブ見出しバッジ用）", () => {
+  const fields = [{ output: false }, { output: true }, {}];
+  const tables = [{ columns: [{ output: false }, {}] }, { columns: [{ output: false }] }];
+  assert.equal(countOutputDisabled(fields, tables), 3);
+  assert.equal(countOutputDisabled([], []), 0);
+});
+
+test("findColumnPositions: 単発欄の列位置を column_names から探す（見つからなければ null）", () => {
+  const columnNames = [
+    "要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名", "ページ番号", "ステータス",
+    "person_氏名", "person_生年月日_元号", "person_生年月日_年",
+    "person_生年月日_月", "person_生年月日_日",
+  ];
+  assert.deepEqual(findColumnPositions(columnNames, "person_氏名"), { first: 7, last: 7 });
+  assert.deepEqual(findColumnPositions(columnNames, "person_生年月日"), { first: 8, last: 11 },
+    "subfields で複数列に分かれる欄は最初と最後の位置を返す");
+  assert.equal(findColumnPositions(columnNames, "person_住所1"), null,
+    "存在しない（output:false 等の）列は null——出力列タブでは「—」表示になる");
+  assert.equal(findColumnPositions(null, "person_氏名"), null, "column_names 未取得なら null");
+});
+
+test("findTableColumnPositions: 行展開された表の列を table_id と列名から探す", () => {
+  const columnNames = [
+    "要確認セル数", "最低信頼度", "帳票ID", "入力ファイル名", "ページ番号", "ステータス",
+    "family_01_続柄", "family_01_氏名", "family_02_続柄", "family_02_氏名",
+  ];
+  assert.deepEqual(findTableColumnPositions(columnNames, "family", "続柄"), { first: 7, last: 9 });
+  assert.deepEqual(findTableColumnPositions(columnNames, "family", "氏名"), { first: 8, last: 10 });
+  assert.equal(findTableColumnPositions(columnNames, "family", "金額"), null);
+  assert.equal(findTableColumnPositions(null, "family", "続柄"), null);
+});
+
+test("outputCheckboxLabel: accessible name に識別子と現在の状態を含める（AC-1.21・AC-1.25）", () => {
+  assert.equal(outputCheckboxLabel("氏名", false, null), "氏名を出力する（現在: 出力対象外）");
+  assert.equal(outputCheckboxLabel("氏名", true, { first: 9, last: 9 }), "氏名を出力する（現在: 9列目）");
+  assert.equal(outputCheckboxLabel("生年月日", true, { first: 8, last: 11 }),
+    "生年月日を出力する（現在: 8〜11列目）");
+  assert.equal(outputCheckboxLabel("氏名", true, null), "氏名を出力する（現在: 出力する）",
+    "column_names 未取得時は誤った列番号を言わない（FR-0.1: 再導出しない）");
+});
+
+test("outputCheckboxLabel: 欄が違えばラベルも異なる（SR一覧での重複読み上げ防止・AC-1.21）", () => {
+  const a = outputCheckboxLabel("氏名", true, { first: 7, last: 7 });
+  const b = outputCheckboxLabel("住所1", true, { first: 8, last: 8 });
+  assert.notEqual(a, b);
+});
+
+test("saveConfirmWarnings: ⚠が0件ならモーダルを出さない（空配列・C-5 empty）", () => {
+  assert.deepEqual(saveConfirmWarnings({ isShipped: false, imageSizeMismatch: null,
+    exclusionNotice: null, columnDecrease: null }), []);
+});
+
+test("saveConfirmWarnings: 該当する項目だけを順に積む（4種統合・付録A）", () => {
+  const w = saveConfirmWarnings({
+    isShipped: true,
+    imageSizeMismatch: { from: "2490×3510", to: "2480×3500" },
+    exclusionNotice: "除外領域が減っています",
+    columnDecrease: { from: 220, to: 217 },
+  });
+  assert.equal(w.length, 4);
+  assert.deepEqual(w.map((x) => x.key), ["shipped", "image-size", "exclusion", "columns"]);
+  assert.ok(w[0].text.includes("出荷テンプレート"), w[0].text);
+  assert.ok(w[1].text.includes("2490×3510") && w[1].text.includes("2480×3500"), w[1].text);
+  assert.equal(w[2].text, "除外領域が減っています");
+  assert.ok(w[3].text.includes("220 → 217"), w[3].text);
+  assert.ok(w[3].text.includes("枠と読み取りは残ります"),
+    "対象外欄の可逆性（Q-29）を保存前確認にも明示する: " + w[3].text);
+});
+
+test("unclearPopulationNote: 要確認セル数の母集団が縮小したときだけ確定文言を返す（AC-1.16・T-S8）", () => {
+  assert.equal(unclearPopulationNote(214, 214, 0), null, "抽出列数不変なら null");
+  assert.equal(unclearPopulationNote(214, 211, 0), null,
+    "抽出列数は減っても対象外欄が0件なら null（別要因の減少・列並べ替え等は本関数の対象外）");
+  const note = unclearPopulationNote(214, 211, 3);
+  assert.equal(note, "要確認セル数の母集団: 214列 → 211列（出力しない 3 欄を除く）");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

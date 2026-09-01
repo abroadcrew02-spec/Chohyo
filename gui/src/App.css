@@ -144,8 +144,20 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .toolbar .msg { margin-left: auto; color: var(--sub); font-size: 12px; }
 .editor-body { flex: 1; display: flex; min-height: 0; }
 .canvas { flex: 1; min-width: 0; cursor: crosshair; background: #e7ebf1; }
-.panel { width: 320px; border-left: 1px solid var(--line); padding: 14px 18px;
-  overflow-y: auto; background: var(--surface); }
+/* 出力列制御 MVP・段3（issue #66）: 右パネルを「選択中/出力列」の2タブ構成に
+   するための外枠。幅・区切り線はここへ移し、.panel 自体はタブ切替後の
+   中身（パディング・スクロール）だけを持つ */
+.panel-wrap { width: 320px; border-left: 1px solid var(--line);
+  display: flex; flex-direction: column; background: var(--surface); min-height: 0; }
+.panel-tabs { margin-left: 0; padding: 8px 12px 0; flex-shrink: 0; }
+.panel { flex: 1; padding: 14px 18px; overflow-y: auto; background: var(--surface); }
+.panel-outrow { display: flex; align-items: center; gap: 8px; padding: 6px 4px;
+  border-radius: 6px; }
+.panel-outrow:hover, .panel-outrow:focus-within { background: #f0f3f8; }
+.panel-outrow .colpos { font-size: 11px; color: var(--sub); min-width: 34px;
+  text-align: right; font-variant-numeric: tabular-nums; }
+.panel-outrow .name { flex: 1; font-size: 12.5px; }
+.panel-outrow.off .name { color: var(--sub); }
 .panel h3 { margin: 0 0 12px; font-size: 14px; }
 .panel h4 { margin: 12px 0 6px; font-size: 12.5px; color: var(--sub); }
 /* --faint(#99a2b1) は白背景で約2.6:1 と本文基準(4.5:1)割れ。読ませる文字は
