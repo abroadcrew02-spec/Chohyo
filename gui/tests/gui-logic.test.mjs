@@ -930,6 +930,82 @@ test("outputDisabledNotice: N=1・複数のときは欄数を含む1行を返す
   assert.notEqual(one, many, "件数によって文言が変わるはず");
 });
 
+// ---------------------------------------------------------------- 第1弾QA条件付きOK・切替条件①（AC-1.8回帰ガード）
+// P3-a: output は resolveOverlaps の入力に一切影響しない（主張元にも
+// 被切り抜き側にもなる）。§11 NG事項「output の切替で矩形が動くこと」の
+// 見張り。output の有無で結果の rect 群がバイト単位（deepEqual）で
+// 同一であることを固定する
+test("resolveOverlaps: output:false は切り抜き結果（幾何・carved/skipped/warned）に一切影響しない（AC-1.8・P3-a）", () => {
+  // Pair 1: X（output:false）の fallback が A を切り抜く（主張元としての効力）
+  const X = { uid: "x", field_id: "X", kind: "text",
+              rect: { x: 500, y: 500, w: 10, h: 10 }, marks: [],
+              fallback: { x: 100, y: 0, w: 80, h: 40 }, output: false };
+  const A = { uid: "a", field_id: "A", kind: "text",
+              rect: { x: 100, y: 0, w: 300, h: 40 }, marks: [] };
+  // Pair 2: B（output:true）が C（output:false）を切り抜く（被切り抜き側としての効力）
+  const B = { uid: "b", field_id: "B", kind: "text",
+              rect: { x: 0, y: 100, w: 80, h: 40 }, marks: [] };
+  const C = { uid: "c", field_id: "C", kind: "text",
+              rect: { x: 60, y: 100, w: 200, h: 40 }, marks: [], output: false };
+
+  const withOutput = [X, A, B, C];
+  // output キー自体を取り除いた（省略＝出力する、と同義のはずの）同一幾何
+  const withoutOutput = withOutput.map(({ output: _output, ...rest }) => rest);
+
+  const r1 = resolveOverlaps(withOutput);
+  const r2 = resolveOverlaps(withoutOutput);
+  const geom = (r) => r.fields.map((f) => ({ uid: f.uid, rect: f.rect, extras: f.extras ?? [] }));
+
+  assert.deepEqual(geom(r1), geom(r2),
+    "output の有無で切り抜き後の幾何（rect/extras）が変わっている（P3-a・AC-1.8違反）");
+  assert.deepEqual(r1.carved, r2.carved, "output の有無で carved 判定が変わっている");
+  assert.deepEqual(r1.skipped, r2.skipped, "output の有無で skipped 判定が変わっている");
+  assert.deepEqual(r1.warned, r2.warned, "output の有無で warned 判定が変わっている");
+
+  // 「何も起きていないテスト」にならないよう、実際に両方の役割で切り抜きが
+  // 発生していることを確認する
+  assert.ok(r1.carved.includes("A"), "X（output:false）の主張で A が切り抜かれるはず");
+  assert.ok(r1.carved.includes("C"), "C（output:false）自身も被切り抜き側として切り抜かれるはず");
+});
+
+// ---------------------------------------------------------------- 第1弾QA条件付きOK・切替条件②(a)（AC-1.18等価テスト・GUI側）
+// buildTemplate は `{ ...属性, ...outputAttrForJson(f.output) }` という形で
+// 1欄をシリアライズする（Editor.tsx の実装と同じ組み方）。ここでは
+// outputAttrForJson 単体のテストから1段強め、実際の欄オブジェクト全体を
+// 直列化した結果が「手書き JSON と同じ最小形」になる契約を固定する
+// （AC-1.18: JSON 直接編集で output:false を書いたテンプレートの run 出力が
+// 画面経由で作ったものと一致する——その前提となる直列化契約。
+// core 側の対の検証は core/tests/test_output_columns_ac118_equivalence.py）
+test("AC-1.18 (a): 欄オブジェクトの直列化は「false のときだけ output:false」で、他の属性に影響せず手書きJSONと同じ最小形になる", () => {
+  const serializeField = (f) => ({
+    field_id: f.field_id, kind: f.kind, rect: f.rect,
+    ...outputAttrForJson(f.output),
+  });
+
+  // 出力する欄（省略）: GUI は output キー自体を書かない（手書きの最小形と同じ）
+  const enabled = serializeField({ field_id: "person_氏名", kind: "text",
+    rect: { x: 0, y: 0, w: 10, h: 10 }, output: undefined });
+  assert.deepEqual(enabled,
+    { field_id: "person_氏名", kind: "text", rect: { x: 0, y: 0, w: 10, h: 10 } },
+    "output 省略時、GUI が書く JSON に output キーが混ざってはいけない");
+  assert.ok(!("output" in enabled));
+
+  // 出力しない欄: 手書きで "output": false と書いたときと同じ形になる
+  const disabled = serializeField({ field_id: "person_備考", kind: "text",
+    rect: { x: 0, y: 100, w: 10, h: 10 }, output: false });
+  assert.deepEqual(disabled,
+    { field_id: "person_備考", kind: "text", rect: { x: 0, y: 100, w: 10, h: 10 },
+      output: false });
+
+  // output:true を明示された場合も、GUI の直列化規則では省略扱いになる
+  // （B-S4: 無関係な保存で template_hash を動かさない）
+  const explicitTrue = serializeField({ field_id: "person_住所1", kind: "text",
+    rect: { x: 0, y: 200, w: 10, h: 10 }, output: true });
+  assert.deepEqual(explicitTrue,
+    { field_id: "person_住所1", kind: "text", rect: { x: 0, y: 200, w: 10, h: 10 } });
+  assert.ok(!("output" in explicitTrue));
+});
+
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
 // 出す。これが無いと「実行された試験が0件」と判定されて FAIL になる
 const secs = ((Date.now() - t0) / 1000).toFixed(2);
