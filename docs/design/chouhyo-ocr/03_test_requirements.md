@@ -27,7 +27,7 @@
 | L3 手動 | 人の操作・外部環境が必要 | 節目のみ（§6） |
 
 - L1: pytest 405 件（GUI スモーク 5 件は dev サーバー無しでは自動 skip）＋ gui-logic 111 件＋ cargo test 18 件。いずれも `run_all_tests.py` が一括実行する（件数は 2026-09-01 実測・`pytest --collect-only -q` で 405 collected）
-- L2: GUI スモーク（`npm run dev` 起動下で L1 に合流）／release exe の CDP 検証（issue #5/#6/#7 の実機確認・scripts 化はレビュー時に都度）
+- L2: GUI スモーク（`npm run dev` 起動下で L1 に合流）／release exe の CDP 検証（issue #5/#6/#7 の実機確認・scripts 化はレビュー時に都度）。**リポジトリのチェックアウト内で release exe を起動すると、`.git` と `.venv` があるため GUI は同梱 exe ではなく `.venv` のコアを動かす**（2026-09-02 の `resolve_core_program`）。同梱 exe 込みで検証するときは環境変数 `CHOUHYO_CORE=bundled` を付けて起動する。付け忘れると「release exe を検証した」が実質 venv の検証になる
 - L3: §6 の残項目
 
 ## 3. テストスイート一覧（L1）
@@ -58,6 +58,7 @@
 | core/tests/test_adjacent_gap_warnings.py | 8 | 受け皿間の隙間（死角）警告 W-3（#61 L-4） |
 | core/tests/test_review4_ingest.py | 7 | PDF 展開の高速化が出力を変えていないことの回帰（#50） |
 | core/tests/test_api_budget.py | 7 | API 送信ユニットの月次上限（強制停止） |
+| core/tests/test_dist_stamp.py | 13 | core-dist 鮮度検査（`BUILD_STAMP.json` の内容ハッシュ比較・SKIP/PASS/FAIL 判定・追加/削除/サブディレクトリ検出・対象外ファイルの非検出・スタンプ破損時の FAIL・2026-09-02） |
 | core/tests/test_output_columns_stage7.py | 6 | 段7: 並べ替え3閉区間・座標不変（AC-2.x） |
 | core/tests/test_hole_overlap_warnings.py | 6 | 切り抜き穴どうしの重なり警告 W-4（#66 第2弾 段6） |
 | core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
@@ -66,7 +67,7 @@
 | core/tests/test_reuse_guards.py | 5 | 中間データ再利用の歯止め・重複行（#25/#29 B-2）|
 | core/tests/test_output_columns_stage8.py | 5 | 段8: 列名一覧ファイル・列順報告（FR-2.7・AC-2.10） |
 | core/tests/test_leak_guards.py | 5 | 漏出防止の再発防止（issue #2/#3/#4） |
-| core/tests/test_gui_smoke.py | 5 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip） |
+| core/tests/test_gui_smoke.py | 7 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip）。実行タブ表示中の Delete 無効化（#69）・画像なし初期表示（案内の DOM 表示・ツール無効化・キャンバスに表裏分割線色が無いことのピクセル検査・2026-09-02）を含む |
 | core/tests/test_grid.py | 5 | 枠候補生成（罫線検出・等分割、§8-16/17 の土台） |
 | core/tests/test_exclusion_guard.py | 5 | 除外領域の後退検知・verify の exclusions 出力（#55・#59 H-8） |
 | core/tests/test_resume_cap.py | 4 | 再開規則・送信上限（§8-6/7） |
@@ -78,10 +79,10 @@
 | core/tests/test_process_interrupt.py | 1 | 実プロセス強制終了→再開（C10 の自動化可能部分） |
 | core/tests/test_output_columns_ac118_equivalence.py | 1 | AC-1.18: JSON 直接編集と画面経由の run 出力一致 |
 | core/tests/test_charset.py | 1 | 異体字・サロゲートペア保持（§6.4） |
-| gui/tests/gui-logic.test.mjs（node 直実行） | 111 | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブほか） |
-| gui/src-tauri（cargo test） | 18 | サブコマンド白リスト（issue #7）ほか GUI 境界 |
+| gui/tests/gui-logic.test.mjs（node 直実行） | 148 | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブ・画像なし初期表示の案内 `noImageNotice` と操作可否 `canvasInteractionAllowed` ほか） |
+| gui/src-tauri（cargo test） | 61 | サブコマンド白リスト（issue #7）・コア実体の選択規則 `resolve_core_program`（2026-09-02・14件。`CHOUHYO_CORE` の正規化・未知値の拒否・`.git` がファイルの worktree を含む）ほか GUI 境界 |
 
-**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (451 passed, 6 skipped, 182.5s) | gui logic: PASS (145 passed, 0.3s) | cargo test: PASS (47 passed, 2.0s) / total 184.8s`（実行日 2026-09-02・レビュー7巡目（#69）対応後・pytest-xdist `-n auto`。skip 6 件は dev サーバー未起動時の GUI スモーク＝L2 で実走する。参考: 2026-09-01 の 421 passed / gui 115 / cargo 18 から、7巡目で pytest +30・gui-logic +30・cargo +29。並列化前の直列実測は 400 passed / total 490.7s）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。skip 6 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → **6 passed, 8.65s・実行日 2026-09-02**。7巡目で追加した `test_editor_delete_ignored_while_run_tab_active`＝実行タブ表示中の Delete で編集内容が変わらないこと、を含む）。
+**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (471 passed, 115.8s) | gui logic: PASS (148 passed, 0.4s) | cargo test: PASS (61 passed, 2.2s) | core-dist: PASS (built_at 2026-09-02T03:56:15+00:00 と一致) / total 118.4s`（実行日 2026-09-02・同梱 exe 陳腐化対策（`test_dist_stamp.py` +13・`resolve_core_program` +14）と編集画面の画像なし初期表示（gui-logic +3・スモーク +1）とレビュー指摘の反映後・pytest-xdist `-n auto`。dev サーバー起動下で実走したため GUI スモーク 7 件も passed に含まれ skip 0。未起動なら 464 passed / 7 skipped が同値。参考: 同日午前のレビュー7巡目（#69）対応後は 451 passed / 6 skipped・gui 145・cargo 47、2026-09-01 は 421 / 115 / 18。並列化前の直列実測は 400 passed / total 490.7s）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。4項目目の `core-dist` は同梱 exe の鮮度で、`build_dist.py` が書く `BUILD_STAMP.json` と core/・schema/・出荷テンプレートの内容ハッシュを比べる。SKIP は core-dist 未ビルド（開発チェックアウトでは GUI が `.venv` のコアを起動するため任意）、FAIL は再ビルド漏れで、FAIL ならゲート全体を FAIL にする（2026-09-02: 同梱 exe が 8/31 ビルドのまま 17 commit 放置され、編集画面の PDF 展開が `--no-mask` の argparse エラーで落ちた事故の再発防止）。skip 6 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → **6 passed, 8.65s・実行日 2026-09-02**。7巡目で追加した `test_editor_delete_ignored_while_run_tab_active`＝実行タブ表示中の Delete で編集内容が変わらないこと、を含む）。
 
 ## 4. トレーサビリティ（要件 §8 合格条件 ⇔ テスト）
 
