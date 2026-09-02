@@ -7,6 +7,8 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod user_templates;
+
 /// 実行中のコアの PID（中断ボタン用・同時実行は1つの前提）
 pub struct CoreProc(pub Mutex<Option<u32>>);
 
@@ -136,7 +138,7 @@ const TEMPLATE_ACCEPTING_SUBCOMMANDS: &[&str] = &[
 /// 指してしまい、エディタが保存する `<repo>/templates/chouhyo-v1.json` への
 /// 変更が読み取りへ反映されない（テンプレート二重実体）。ここで常に明示指定
 /// することで、GUI からの起動はどのコアバイナリでも同じファイルを読む。
-fn inject_default_template(mut args: Vec<String>, root: &Path) -> Vec<String> {
+fn inject_default_template(mut args: Vec<String>, template_path: &Path) -> Vec<String> {
     let accepts = args
         .first()
         .map(|c| TEMPLATE_ACCEPTING_SUBCOMMANDS.contains(&c.as_str()))
@@ -144,11 +146,27 @@ fn inject_default_template(mut args: Vec<String>, root: &Path) -> Vec<String> {
     // `--template=path`（等号形式）も明示指定として扱う。素通りすると
     // 二重に --template を積んでコアの argparse がエラーになる（issue L-3）
     if accepts && !args.iter().any(|a| a == "--template" || a.starts_with("--template=")) {
-        let tpl = root.join("templates").join("chouhyo-v1.json");
         args.push("--template".to_string());
-        args.push(tpl.to_string_lossy().to_string());
+        args.push(template_path.to_string_lossy().to_string());
     }
     args
+}
+
+/// `last_template` の値から実際に注入するテンプレートパスを決める（issue #72
+/// (t)・08 設計 §3.5.2）。`AppHandle` に依存する glue のため単体テストはしない
+/// （`repo_root`・`allowed_roots` と同じ扱い）——判定ロジック本体は
+/// `user_templates::resolve_last_template_path`（純関数）でテストする。
+///
+/// 読み出し時に毎回 `user_templates_dir` を再検査する（キャッシュしない）。
+/// config は手編集や別プロセスからも書けるため、書き込み時の検証だけでは
+/// 守れない（`workdir_pages_dir` と同じ理由）。
+fn resolve_last_template(app: &AppHandle, root: &Path) -> PathBuf {
+    let last = read_config(app.clone())
+        .ok()
+        .and_then(|c| c.get("last_template").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    let user_dir = user_templates::user_templates_dir(app).ok();
+    user_templates::resolve_last_template_path(&last, root, user_dir.as_deref())
 }
 
 #[cfg(windows)]
@@ -508,7 +526,14 @@ fn resolve_core_program(root: &Path, override_: Option<&str>) -> Result<CoreProg
 /// コア起動コマンドを組み立てる。配布版は同梱 exe、開発版は venv の python -m。
 /// 実体の選択は `resolve_core_program` に委ね、`CHOUHYO_CORE` 環境変数で
 /// `bundled`/`venv` を強制できる（詳細は同関数の doc を参照）。
-fn core_command(root: &PathBuf) -> Result<Command, String> {
+///
+/// `CHOUHYO_USER_DIR`（issue #72 (t)・08 設計 §3.1.3）: 利用者テンプレートの
+/// 保存先を Python 側へ伝える。解決できない環境（`app_data_dir` 不可等）でも
+/// 環境変数を単に付けないだけにする——他のサブコマンド（`status` 等、
+/// templates_user を使わないもの）を巻き添えで落とさない fail-safe。
+/// core 側は環境変数が無ければ `project_root()/templates_user` へ
+/// フォールバックする（08 設計 §3.1.3）。
+fn core_command(app: &AppHandle, root: &Path) -> Result<Command, String> {
     let override_ = std::env::var("CHOUHYO_CORE").ok();
     let program = resolve_core_program(root, override_.as_deref())?;
     let mut cmd = match program {
@@ -523,9 +548,60 @@ fn core_command(root: &PathBuf) -> Result<Command, String> {
     let _ = std::fs::create_dir_all(&cwd); // インストール直後は core/ が無い
     cmd.current_dir(cwd);
     cmd.env("PYTHONUTF8", "1");
+    if let Ok(user_dir) = user_templates::user_templates_dir(app) {
+        cmd.env("CHOUHYO_USER_DIR", user_dir);
+    }
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
     Ok(cmd)
+}
+
+/// コアを起動し stdout を丸ごと返す本体（issue #72 (t)）。`run_core_capture`
+/// （webview 発の args・チェック済み）と `save_user_template`／
+/// `match_templates`（Rust が組み立てた信頼済み args）の3箇所から共有する。
+/// `CoreProc`（`run` の多重起動ロック）はここでは触らない——verify や
+/// match-templates は元々そのロックの対象外（従来の `run_core_capture` も
+/// 同様に `CoreProc` を参照していない）。
+async fn core_output(app: &AppHandle, root: &Path, args: Vec<String>) -> Result<String, String> {
+    let mut cmd = core_command(app, root)?;
+    cmd.args(&args);
+    let out = tauri::async_runtime::spawn_blocking(move || cmd.output())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("コア起動に失敗: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if out.status.success() {
+        Ok(stdout)
+    } else {
+        // detect-grid の不成立などは stdout の JSON にも理由が載る
+        Err(if stdout.trim().is_empty() {
+            String::from_utf8_lossy(&out.stderr).to_string()
+        } else {
+            stdout
+        })
+    }
+}
+
+/// `verify` 専用: プロセス起動そのものの失敗だけを `Err` とし、**終了コードに
+/// 関わらず** stdout を返す（issue #72 (t)・H-1 追補・レビュー AZKi）。
+///
+/// `core_output` は非 0 終了を一律エラー扱いするが、`verify` は資格情報
+/// 未設定・API 残量ゼロ等**テンプレート検証とは無関係な**理由で非 0 終了する
+/// ことがある。`save_user_template` の保存可否判定は必ず
+/// `user_templates::verify_template_ok`（stdout の `event=="verify" &&
+/// check=="template"` 行）で行い、終了コードには依存しない。
+///
+/// エラーメッセージは固定文言＋`ErrorKind` のみ（M-2 追補）——OS エラーの
+/// Display 表現が実行ファイルパスを含みうるため、webview へは種別だけ返す。
+async fn core_output_stdout_only(app: &AppHandle, root: &Path,
+                                 args: Vec<String>) -> Result<String, String> {
+    let mut cmd = core_command(app, root)?;
+    cmd.args(&args);
+    let out = tauri::async_runtime::spawn_blocking(move || cmd.output())
+        .await
+        .map_err(|_| "コアの実行を待機できません".to_string())?
+        .map_err(|e| format!("コアを起動できません（{:?}）", e.kind()))?;
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
 /// 指定 PID を子プロセスごと停止する（`taskkill /T /F`）。Windows は親
@@ -614,8 +690,9 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
         let picked_set = picked.0.lock().unwrap();
         check_arg_scopes(&pairs, &roots, &picked_set)?;
     }
-    let args = inject_default_template(args, &root);
-    let mut cmd = core_command(&root)?;
+    let default_tpl = resolve_last_template(&app, &root);
+    let args = inject_default_template(args, &default_tpl);
+    let mut cmd = core_command(&app, &root)?;
     cmd.args(&args).stdout(Stdio::piped()).stderr(Stdio::piped());
     // 2本目を断る（レビュー M-2）。以前は PID を上書きしていたため、2本目が
     // 終わった時点で 1本目の PID を見失い「中断」ボタンが効かなくなった。
@@ -678,24 +755,9 @@ async fn run_core_capture(app: AppHandle, picked: State<'_, PickedPaths>,
         let picked_set = picked.0.lock().unwrap();
         check_arg_scopes(&pairs, &roots, &picked_set)?;
     }
-    let args = inject_default_template(args, &root);
-    let mut cmd = core_command(&root)?;
-    cmd.args(&args);
-    let out = tauri::async_runtime::spawn_blocking(move || cmd.output())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("コア起動に失敗: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    if out.status.success() {
-        Ok(stdout)
-    } else {
-        // detect-grid の不成立などは stdout の JSON にも理由が載る
-        Err(if stdout.trim().is_empty() {
-            String::from_utf8_lossy(&out.stderr).to_string()
-        } else {
-            stdout
-        })
-    }
+    let default_tpl = resolve_last_template(&app, &root);
+    let args = inject_default_template(args, &default_tpl);
+    core_output(&app, &root, args).await
 }
 
 #[tauri::command]
@@ -794,10 +856,20 @@ fn read_config(app: AppHandle) -> Result<serde_json::Value, String> {
 
 /// config.json が受け付ける既知キー（`core/chouhyo_ocr/config.py:26-40` の
 /// `Config` dataclass フィールドと一致させる・issue Q-MC/S-MA）。
+///
+/// `last_template`（issue #72 (t)・07 FR-F29・08 設計 §3.5.1）は意図的に
+/// `CONFIG_PATH_KEYS` に入れない——パスではなく「区分＋表示名」の文字列
+/// （`"shipped"`（名前なし） | `"user:<name>"`。2026-09-02 coder_backend／
+/// coder_frontend 実装済みの表記を正とする）であり、絶対パスは保存しない。
+/// 型・形式の検証も他キーと同じ設計判断で Rust 側では行わない
+/// （`validate_config_patch` のコメント参照）——不正値は読み出し時に
+/// `resolve_last_template`／`user_templates::resolve_last_template_path` が
+/// 例外を投げずに出荷既定へフォールバックする（AC-F60）。
 const KNOWN_CONFIG_KEYS: &[&str] = &[
     "unclear_threshold", "era_threshold", "send_limit",
     "output_dir", "workdir", "log_dir",
     "api_monthly_cap", "unclear_char_level",
+    "last_template",
 ];
 
 /// パス文字列として安全性検査が要るキー（`is_safe_root` を通す・issue Q-MC/S-MA）。
@@ -911,25 +983,27 @@ fn read_file_b64(app: AppHandle, picked: State<'_, PickedPaths>,
                base64::engine::general_purpose::STANDARD.encode(bytes)))
 }
 
-/// 出荷テンプレート（templates/chouhyo-v1.json）を読む。
+/// 「前回使ったテンプレート」（`config.last_template` の解決結果。無ければ
+/// 出荷テンプレート）を読む（issue #58／#72 (t)・07 FR-F29・08 設計 §3.6）。
 ///
 /// パスは固定で webview から受け取らない。read_text は #49 でダイアログ選択
 /// パスのみに締めたため、エディタ起動時の自動読み込みはこの専用コマンドで
 /// 行う（緩めると responses/ の記入値 JSON が読める穴が戻る）。run が既定で
-/// 使うテンプレートと同じファイルなので、エディタは「1から作る画面」でなく
-/// 「読み取りが実際に使っている欄を直す画面」として開ける——この一致は
-/// inject_default_template（issue #58）が保証している。同梱 exe 優先起動時は
-/// frozen 側の app_root() が core-dist 側の別実体を指すため、注入なしでは
-/// 「read_default_template はここ、run は別ファイル」という二重実体が
-/// 成立していた。
+/// 使うテンプレートと同じ解決規則（`resolve_last_template`）を使うため、
+/// エディタは「1から作る画面」でなく「読み取りが実際に使っている欄を直す
+/// 画面」として開ける——この一致は inject_default_template（issue #58）が
+/// 保証している。同梱 exe 優先起動時は frozen 側の app_root() が core-dist
+/// 側の別実体を指すため、注入なしでは「read_default_template はここ、run は
+/// 別ファイル」という二重実体が成立していた。
 #[tauri::command]
 fn read_default_template(app: AppHandle) -> Result<String, String> {
-    let p = repo_root(&app)?.join("templates").join("chouhyo-v1.json");
+    let root = repo_root(&app)?;
+    let p = resolve_last_template(&app, &root);
     // 絶対パスは webview へ返さない。既存の read_text/write_text と同じ
     // 粒度（固定文言＋OS エラーの Display 表現のみ）に揃える（issue #61 L-2）。
     // 実害は情報開示のみ（CSP で外部送出は塞がれている）だが、他コマンドと
     // 不揃いだった
-    std::fs::read_to_string(&p).map_err(|e| format!("出荷テンプレートを読み込めません: {e}"))
+    std::fs::read_to_string(&p).map_err(|e| format!("既定テンプレートを読み込めません: {e}"))
 }
 
 /// テンプレート JSON の読み出し。**ダイアログで選ばれたパスだけ**に限る。
@@ -1095,6 +1169,158 @@ fn is_shipped_template_path(app: AppHandle, path: String) -> Result<bool, String
     Ok(is_shipped_template(&root, &abs))
 }
 
+// ============================================================================
+// 利用者テンプレート（issue #72 (t)・08 設計 §3.2）
+//
+// `templates_user/` 配下は webview へ絶対パスを一切返さない（表示名のみ）。
+// 列挙・パス検査は Rust に一本化し、Python 側に同じ規則を書かせない
+// （08 設計 §3.2.1）。純関数本体は `user_templates` モジュールへ集約し、
+// ここでは AppHandle からの解決とコマンド境界だけを担う。
+// ============================================================================
+
+/// 保存済み利用者テンプレートの一覧（FR-F28・RunScreen の選択肢・保存時の
+/// 同名検出）。`templates_user/` 直下のみを非再帰で走査する（出荷テンプレは
+/// 列挙しない・07 §7.3）。
+#[tauri::command]
+fn list_user_templates(app: AppHandle) -> Result<serde_json::Value, String> {
+    let dir = user_templates::user_templates_dir(&app)?;
+    let result = user_templates::list_dir(&dir);
+    Ok(serde_json::json!({
+        "templates": result.templates,
+        "excluded": result.excluded,
+    }))
+}
+
+/// 保存済み利用者テンプレートを表示名で読む（編集画面での既定復元・FR-F29）。
+#[tauri::command]
+fn read_user_template(app: AppHandle, name: String) -> Result<String, String> {
+    let dir = user_templates::user_templates_dir(&app)?;
+    let path = user_templates::resolve_existing_entry(&dir, &name)?;
+    std::fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// 利用者テンプレートを任意名で保存する（FR-F26）。
+///
+/// 名前検証（許可リスト方式・07 §7.4）→ staged 書き込み → コア `verify` →
+/// 検証 OK なら promote、を Rust の中で通し切る（#56 T1 の「検証 NG のまま
+/// 上書きしない」不変条件を維持）。同名が既にあり `overwrite=false` の場合は
+/// `"AlreadyExists"` を返す——上書き確認そのものは GUI 側の責務（08 §3.2.3）。
+#[tauri::command]
+async fn save_user_template(app: AppHandle, name: String, content: String,
+                            overwrite: bool) -> Result<String, String> {
+    // M-4 追補（レビュー AZKi）: 書き込み前にサイズ上限を掛ける。
+    if content.len() as u64 > user_templates::MAX_TEMPLATE_BYTES {
+        return Err("テンプレートの内容が大きすぎます".into());
+    }
+    let dir = user_templates::user_templates_dir(&app)?;
+    let root = repo_root(&app)?;
+    // M-1 追補（レビュー AZKi）: 衝突判定は件数上限・内容解析なしの全件
+    // 列挙（list_all_stems）で行う。list_dir ベースだと21件目以降や
+    // 壊れた/大きすぎる同名ファイルを確認なしで上書きしてしまう。
+    let existing = user_templates::list_all_stems(&dir);
+    let shipped = user_templates::list_shipped_stems(&root);
+    let verdict = user_templates::validate_user_template_name(&name, &existing, &shipped)?;
+    let normalized = match verdict {
+        user_templates::NameVerdict::New(n) => n,
+        user_templates::NameVerdict::Overwrites(n) => {
+            if !overwrite {
+                return Err("AlreadyExists".into());
+            }
+            n
+        }
+    };
+    let target = dir.join(format!("{normalized}.json"));
+    // 保存先が再度 templates_user 直下であることを防御的に再検査する
+    // （07 §7.3「canonicalize 後の親一致を再検査する」）。
+    if target.parent() != Some(dir.as_path()) {
+        return Err("保存先がテンプレート保存フォルダの外です".into());
+    }
+    let staged = staged_path(&target);
+    // M-2 追補: OS エラーの Display 表現に絶対パスが混入する余地を断つ
+    // ため、固定文言＋種別のみを返す。
+    std::fs::write(&staged, &content)
+        .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))?;
+
+    // H-1 対応（レビュー AZKi）: verify の判定は終了コードに依存しない
+    // 専用経路（core_output_stdout_only）で行う。core_output は非 0 終了を
+    // 一律エラー扱いするため、資格情報未設定等テンプレート検証と無関係な
+    // 理由で verify が非 0 終了すると、以前の実装は常に「検証失敗」と
+    // 誤判定して staged を破棄していた（利用者の編集が消える）。
+    let verify_args = vec![
+        "verify".to_string(),
+        "--template".to_string(),
+        staged.to_string_lossy().to_string(),
+    ];
+    let stdout = match core_output_stdout_only(&app, &root, verify_args).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = discard_staged_file(&target);
+            return Err(e);
+        }
+    };
+
+    if user_templates::verify_template_ok(&stdout) {
+        promote_staged(&target)
+            // M-2 追補: promote_with の失敗メッセージは staged/target/bak の
+            // 絶対パスを含む（既存の promote_template コマンドは picked＝
+            // 利用者がダイアログで選んだパスなのでこれで問題ないが、
+            // templates_user 配下は webview に絶対パスを返さない方針
+            // （08 §3.2.1）のため、ここでは固定文言に差し替える）。
+            .map_err(|_| "保存の確定に失敗しました。もう一度保存し直してください".to_string())?;
+        // 「promote 後に実ファイルが存在すること」を返り値の前提として保証する。
+        if !target.is_file() {
+            return Err("保存を確定しましたが、ファイルが見つかりません。もう一度お試しください".into());
+        }
+        // L-4 追補: 利用者テンプレートでは .bak を残さない（既存の
+        // promote_template コマンド／picked 経由の保存では復旧用に残す
+        // 設計のままなので backup_path/promote_with 自体は変更しない）。
+        let _ = std::fs::remove_file(backup_path(&target));
+    } else {
+        let _ = discard_staged_file(&target);
+    }
+    // M-2r 追補（レビュー AZKi・実例再確認）: 既知の絶対パス文字列を
+    // 単純置換する mask_known_paths は撤回した。コア側の OSError は
+    // repr() 経由で二重エスケープされたバックスラッシュを伴って JSON
+    // 文字列へ混入し、単純な文字列一致では拾えない（実測: パス区切り
+    // 1文字が stdout 上で `\\\\`（4連）になる）。許可キーだけを通す
+    // sanitize_verify_output へ切り替える。
+    Ok(user_templates::sanitize_verify_output(&stdout))
+}
+
+/// 開いた画像に対し、指定した利用者テンプレート（表示名の一覧）と出荷
+/// テンプレートを照合する（FR-F28・NFR-F09）。
+///
+/// `input` は既存の読み取りルート検査（`workdir/editor_pages` 配下、または
+/// pick 済みパス）を通す。`names` は文字種・実在・エントリ安全性を検査して
+/// 絶対パスへ解決し、解決できないものは `excluded[]` に理由付きで積んで
+/// 続行する（1件の不正で照合ループ全体を止めない）。コアの `results[].name`
+/// は表示名（stem）であり、Rust 側は絶対パスを webview へ一切返さない。
+#[tauri::command]
+async fn match_templates(app: AppHandle, picked: State<'_, PickedPaths>,
+                         input: String, names: Vec<String>) -> Result<String, String> {
+    let root = repo_root(&app)?;
+    let input_abs = normalize_path(&input)?;
+    {
+        let roots = allowed_roots(&app)?;
+        let picked_set = picked.0.lock().unwrap();
+        check_scope(&input_abs, &["png", "jpg", "jpeg"], &roots, &picked_set)?;
+    }
+    let dir = user_templates::user_templates_dir(&app)?;
+    let (candidate_paths, excluded) = user_templates::classify_candidates(&dir, &names);
+
+    let shipped = root.join("templates").join("chouhyo-v1.json");
+    let args = user_templates::build_match_args(&input_abs, &shipped, &candidate_paths);
+
+    let stdout = core_output(&app, &root, args).await?;
+    let value: serde_json::Value = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v.get("event").and_then(|e| e.as_str()) == Some("match_templates"))
+        .ok_or_else(|| "コアからの応答を解釈できません".to_string())?;
+    let merged = user_templates::merge_excluded_into(value, excluded);
+    serde_json::to_string(&merged).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1132,7 +1358,11 @@ pub fn run() {
             write_template_staged,
             promote_template,
             discard_staged,
-            is_shipped_template_path
+            is_shipped_template_path,
+            list_user_templates,
+            read_user_template,
+            save_user_template,
+            match_templates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -1319,31 +1549,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- テンプレート既定値の注入（issue #58）---
+    // --- テンプレート既定値の注入（issue #58・#72 (t) で経路を分離）---
+    // 「どのパスを注入するか」（config の last_template 解決・AppHandle 依存）
+    // と「注入するかどうか」（純関数）を分離した（08 設計 §3.5.2）。
+    // ここは後者のみを検証する——前者は
+    // user_templates::resolve_last_template_path の表駆動テストで担保する。
     use super::inject_default_template;
 
     #[test]
     fn injects_template_for_accepting_subcommand_without_one() {
-        let root = PathBuf::from("C:\\app");
-        let out = inject_default_template(v(&["run", "--input", "x"]), &root);
+        let tpl = PathBuf::from("C:\\app\\templates\\chouhyo-v1.json");
+        let out = inject_default_template(v(&["run", "--input", "x"]), &tpl);
         assert_eq!(out, v(&["run", "--input", "x", "--template",
                             "C:\\app\\templates\\chouhyo-v1.json"]));
     }
 
     #[test]
     fn does_not_override_explicit_template_or_unrelated_subcommand() {
-        let root = PathBuf::from("C:\\app");
+        let tpl = PathBuf::from("C:\\app\\templates\\chouhyo-v1.json");
         // 明示指定済みなら触らない
         let explicit = v(&["render", "--template", "C:\\other\\t.json"]);
-        assert_eq!(inject_default_template(explicit.clone(), &root), explicit);
+        assert_eq!(inject_default_template(explicit.clone(), &tpl), explicit);
         // --template を持たないサブコマンドはそのまま（status・detect-grid 等）
         let status = v(&["status"]);
-        assert_eq!(inject_default_template(status.clone(), &root), status);
+        assert_eq!(inject_default_template(status.clone(), &tpl), status);
         // 空引数は何もしない（check_args_v2 で先に弾かれる想定だが、単体では防御的に）
-        assert_eq!(inject_default_template(v(&[]), &root), v(&[]));
+        assert_eq!(inject_default_template(v(&[]), &tpl), v(&[]));
         // --template=path（等号形式）も明示指定として扱う（issue L-3）
         let eq_form = v(&["render", "--template=C:\\other\\t.json"]);
-        assert_eq!(inject_default_template(eq_form.clone(), &root), eq_form);
+        assert_eq!(inject_default_template(eq_form.clone(), &tpl), eq_form);
     }
 
     // --- staged 保存（issue #56 T1・保存経路のトランザクション化）---
@@ -1781,6 +2015,17 @@ mod tests {
     #[test]
     fn validate_config_patch_rejects_non_string_path_value() {
         assert!(validate_config_patch(&json!({"workdir": 123})).is_err());
+    }
+
+    #[test]
+    fn validate_config_patch_accepts_last_template_without_path_checks() {
+        // issue #72 (t): last_template は CONFIG_PATH_KEYS に含めない
+        // （パスではなく区分＋表示名の文字列のため）。ドライブ直下相当の
+        // 見た目の値でも Rust 側では拒否しない——不正な形式は読み出し時に
+        // resolve_last_template_path が出荷既定へフォールバックする。
+        assert!(validate_config_patch(&json!({"last_template": "user:sample"})).is_ok());
+        assert!(validate_config_patch(&json!({"last_template": ""})).is_ok());
+        assert!(validate_config_patch(&json!({"last_template": "C:\\"})).is_ok());
     }
 
     // --- 壊れた config.json を空扱いにしない（issue N-3）---

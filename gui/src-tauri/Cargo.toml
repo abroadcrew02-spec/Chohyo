@@ -23,4 +23,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.15"
 base64 = "0.22"
+# テンプレート名の NFC 正規化（issue #72 (t)・07 §7.4／08 設計 §3.2.4 B-1）。
+# 供給網レビュー（AZKi・2026-09-02）判断: tauri → url → idna 経由で既に
+# ランタイム依存として解決済みの icu_normalizer を直接依存へ昇格する
+# （新規クレートノードを増やさない）。Unicode-3.0 ライセンス。
+# `default-features = false` + `compiled_data` のみを明示するのは、
+# idna_adapter が要求する構成（default-features = false・compiled_data の
+# み）と完全に一致させるため——素の `icu_normalizer = "2.3"`（既定機能あり）
+# にすると Cargo の機能統合で utf8_iter/utf16_iter が新たに有効化され、
+# utf16_iter・write16 の2ノードが新規に増えてしまう（実測・2026-09-02）。
+# バージョンは `=` 固定しない——Cargo.lock がコミット済みのため、解決結果は
+# 他クレートの要求と同期して動く。
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 
