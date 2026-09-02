@@ -106,6 +106,13 @@ desktop.ini
 # design canvas の seed 済み成果物（再生成可能・~2MB）
 /design/chouhyo-ocr-gui.html
 
-# 検証資産（testdata/）は追跡する。配布物には同梱されない（tauri.conf は templates/ のみ同梱）。
-# 経緯・置き場方針は docs/design/chouhyo-ocr/06_second_form_findings.md §2
-!testdata/**
+# 検証資産（testdata/）のうち合成テンプレート JSON と合成画像 PNG だけを戻す。
+# `!testdata/**` のような丸ごと否定は、上の *.key/*.pem/*.dpapi/*.sqlite/.env/*.pdf の
+# 除外まで testdata 配下で全て打ち消す（2026-09-02 セキュリティレビュー H-1）。
+# 戻す拡張子は最小限にし、鍵 JSON の混入は pre-commit の内容検査に委ねる。
+# 配布物には同梱されない（tauri.conf は templates/ のみ同梱）。経緯は
+# docs/design/chouhyo-ocr/06_second_form_findings.md §2
+!/testdata/**/*.json
+!/testdata/**/*.png
+# 否定行より後ろに置いて打ち消す（:67 の *.saving.json は上の否定に負ける・再検証 LOW）
+/testdata/**/*.saving.json
