@@ -18,7 +18,17 @@ type Verify = { template: boolean; poppler: boolean; cred: string; storage: bool
                 budgetUsed: number; budgetCap: number;
                 // 出力対象外の欄数（issue #66 段4・FR-1.9）。旧コア（フィールド
                 // 欠落）との互換のため undefined を許容する
-                outputDisabledCells?: number };
+                outputDisabledCells?: number;
+                // 認証キーが環境変数（平文）で使われているか（issue S-MB。Wave 2 で
+                // core 側の verify イベントに追加される想定のキー。旧コアでは
+                // undefined のまま——credNotice は cred === "env" 判定だけでも動く）
+                envPresent?: boolean;
+                // event:"verify" 行を1つも見なかった（＝検証自体が実行できなかった）
+                // ことを区別するフラグ（issue Q-ME）。false のとき budgetCap 900 等の
+                // 既定値を「現状」として画面に出してはいけない
+                parsed: boolean;
+                // parsed=false のときだけ設定する、再試行導線に添える生エラーの先頭行
+                rawFirstLine?: string };
 type Failure = { page_id: string; status: string };
 
 // ウィンドウサイズ運用（起動時は小窓・完了サマリ表示で縦に自動拡大）。
@@ -131,6 +141,25 @@ export function counterNotice(ev: Record<string, any>): string | null {
   return segments.length ? segments.join("・") : null;
 }
 
+/** run/remap の完了サマリに中間データの累積量が乗ったら purge を促す1行
+ *  （issue P-H1・レビュー7巡目 Wave 0・らでん逆張り採用分）。
+ *
+ *  total_done_pages・render_seconds は枠D（pipeline 側）が並行で追加中の
+ *  新キーのため、この関数は両方を防御的に扱う——total_done_pages が無い
+ *  （旧コア・追加未完了）なら null、render_seconds だけ無ければ秒数の
+ *  括弧書きを省いて閾値超過の事実だけ伝える。
+ *
+ *  閾値は 1,000 頁（README §10.5 の実測: write_xlsx 7.1ms/行・5,000頁蓄積で
+ *  末尾レンダー約35s、から「体感し始める手前」として設定）。 */
+export function accumulationNotice(ev: Record<string, any>): string | null {
+  const pages = ev.total_done_pages;
+  if (typeof pages !== "number" || pages < 1000) return null;
+  const seconds = ev.render_seconds;
+  const suffix = typeof seconds === "number" ? `（出力の書き出しに ${seconds}秒）` : "";
+  return `中間データに ${pages} ページ蓄積しています${suffix}。`
+    + `提出済みのバッチは purge で削除してください。`;
+}
+
 /** 進捗イベント → 「実行時のお知らせ」1件。該当しないイベントは null。
  *
  *  拾い漏らすと、〓だけの行や増減した行数の**出所が画面から辿れない**。
@@ -174,8 +203,13 @@ export function noticeFor(ev: Record<string, any>): string | null {
     // （#60 M-2 の source_renamed／#66 段2 の片配線と同じ「片方だけ配線」を
     // 繰り返さない）
     case "summary":
-    case "remap_summary":
-      return counterNotice(ev);
+    case "remap_summary": {
+      // P-H1: counterNotice（欠落〓の出所）の隣に accumulationNotice（中間
+      // データの累積警告）を添える。どちらも null なら通知自体を出さない
+      const parts = [counterNotice(ev), accumulationNotice(ev)]
+        .filter((s): s is string => !!s);
+      return parts.length ? parts.join(" ") : null;
+    }
     default:
       return null;
   }
@@ -192,6 +226,60 @@ export function noticeFor(ev: Record<string, any>): string | null {
 export function outputDisabledNotice(n: number | undefined): string | null {
   if (n == null || n <= 0) return null;
   return `このテンプレートは ${n} 欄を出力しません。`;
+}
+
+/** `run_core_capture(["verify"])` の stdout（JSON Lines）を Verify へ変換する。
+ *
+ *  event:"verify" 行を1つも見なかった場合（コア起動自体に失敗・JSON が
+ *  1行も来ない等）を `parsed: false` で区別する（issue Q-ME）。以前は
+ *  この区別が無く、budgetCap 900 等の既定値がそのまま「現状」として
+ *  画面に出ていた——検証が走っていないのに走った体で表示するのは捏造に近い。
+ *
+ *  呼び出し側（runVerify）の try/catch は残す: verify は不備（Poppler欠損等）
+ *  があると終了コード1で失敗するが、その場合も stdout に検証結果の JSON は
+ *  乗っている正常系のため、catch 側でも同じ parseVerify を通す。 */
+export function parseVerify(text: string): Verify {
+  const v: Verify = { template: false, poppler: false, cred: "missing", storage: true,
+                      budgetUsed: 0, budgetCap: 900, parsed: false };
+  let sawVerify = false;
+  for (const line of text.split("\n")) {
+    try {
+      const e = JSON.parse(line);
+      if (e.event !== "verify") continue;
+      sawVerify = true;
+      if (e.check === "template") {
+        v.template = !!e.ok;
+        // 旧コア（フィールド欠落）では undefined のまま——outputDisabledNotice
+        // が非表示に倒す（issue #66 段4）
+        v.outputDisabledCells = typeof e.output_disabled_cells === "number"
+          ? e.output_disabled_cells : undefined;
+      }
+      if (e.check === "poppler") v.poppler = !!e.ok;
+      if (e.check === "credentials") {
+        v.cred = e.state ?? (e.ok ? "env" : "missing");
+        // Wave 2（S-MB core側）で追加される env_present。無ければ undefined
+        v.envPresent = typeof e.env_present === "boolean" ? e.env_present : undefined;
+      }
+      if (e.check === "local_storage") v.storage = !!e.ok;
+      if (e.check === "api_budget") {
+        v.budgetUsed = e.used ?? 0; v.budgetCap = e.cap ?? 900;
+      }
+    } catch { /* skip */ }
+  }
+  v.parsed = sawVerify;
+  if (!sawVerify) v.rawFirstLine = (text.split("\n")[0] ?? "").trim();
+  return v;
+}
+
+/** S-MB: 認証キーが環境変数（平文 JSON）で使われている旨の常時警告。
+ *  cred が "env"、または core が明示的に env_present（Wave 2 追加・dpapi と
+ *  env が両方ある場合も env の存在を伝える独立キー）を返した場合に警告文を
+ *  返す。それ以外は null。credentials_state の ok（実行可否）はここでは
+ *  変えない——env でも実行は許可する設計（プラン確定）。 */
+export function credNotice(cred: string, envPresent?: boolean): string | null {
+  if (cred !== "env" && envPresent !== true) return null;
+  return "認証キーが平文（環境変数 GOOGLE_APPLICATION_CREDENTIALS）で使われています。"
+    + "取り込むと DPAPI で暗号化されます。";
 }
 
 const FolderIcon = ({ c }: { c: string }) => (
@@ -220,33 +308,10 @@ export default function RunScreen(
   const [notice, setNotice] = useState("");
   const [notices, setNotices] = useState<string[]>([]);  // 実行時の警告（M-2・#28）
   const [refused, setRefused] = useState("");  // 業務的な拒否（H-C）
+  const [loadError, setLoadError] = useState("");  // 設定読み込み失敗（issue Q-MF）
   const logRef = useRef<HTMLPreElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
 
-  const parseVerify = (text: string): Verify => {
-    const v: Verify = { template: false, poppler: false, cred: "missing", storage: true,
-                        budgetUsed: 0, budgetCap: 900 };
-    for (const line of text.split("\n")) {
-      try {
-        const e = JSON.parse(line);
-        if (e.event !== "verify") continue;
-        if (e.check === "template") {
-          v.template = !!e.ok;
-          // 旧コア（フィールド欠落）では undefined のまま——outputDisabledNotice
-          // が非表示に倒す（issue #66 段4）
-          v.outputDisabledCells = typeof e.output_disabled_cells === "number"
-            ? e.output_disabled_cells : undefined;
-        }
-        if (e.check === "poppler") v.poppler = !!e.ok;
-        if (e.check === "credentials") v.cred = e.state ?? (e.ok ? "env" : "missing");
-        if (e.check === "local_storage") v.storage = !!e.ok;
-        if (e.check === "api_budget") {
-          v.budgetUsed = e.used ?? 0; v.budgetCap = e.cap ?? 900;
-        }
-      } catch { /* skip */ }
-    }
-    return v;
-  };
   const runVerify = async () => {
     try {
       setVerify(parseVerify(await invoke<string>("run_core_capture", { args: ["verify"] })));
@@ -276,10 +341,13 @@ export default function RunScreen(
 
   useEffect(() => {
     // 設定モーダルで保存されたら読み直す（M-3: 変更後も古いパスを表示し、
-    // 「出力フォルダを開く」が別の場所を開いていた）
+    // 「出力フォルダを開く」が別の場所を開いていた）。
+    // 読み込み失敗を握りつぶさない（issue Q-MF）——出力先が既定値（"output"）
+    // のまま表示され、実際の設定と食い違っていることに気づけなかった
     invoke<Record<string, unknown>>("read_config").then((c) => {
       if (typeof c.output_dir === "string") setOutputDir(c.output_dir);
-    }).catch(() => {});
+      setLoadError("");
+    }).catch((e) => setLoadError(String(e)));
   }, [configRev]);
 
   useEffect(() => {
@@ -294,27 +362,38 @@ export default function RunScreen(
   // なった瞬間（active）と、サマリの有無が変わった瞬間（summary）の両方で
   // 発火させる——手動リサイズの保持はしない。ブラウザのデモモードでは
   // window API が無いため isTauri で no-op にする（bridge.ts と同じ流儀）。
+  //
+  // running を deps に追加し、running===false のときだけ計測する（issue
+  // Q-MD）。完了直後は「summary が入る」「running が false になる」の2つの
+  // 状態更新がほぼ同時に起き、どちらも deps 変化として effect を再発火
+  // させるため、旧実装（deps=[active, summary]）は setSize を2回呼びかねな
+  // かった。running===true の間は何もしない（実行中に options が動くのは
+  // 望ましくない）うえ、実際の計測は rAF 1回分だけ遅らせてまとめる——
+  // ResizeObserver は setSize との相互発火（発振）を招くため使わない。
   useEffect(() => {
-    if (!isTauri || !active) return;
-    (async () => {
-      const win = getCurrentWindow();
-      if (!summary) {
-        await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, RUN_WINDOW_HEIGHT_DEFAULT));
-        return;
-      }
-      const factor = await win.scaleFactor();
-      const contentHeight = screenRef.current?.scrollHeight ?? RUN_WINDOW_HEIGHT_DEFAULT;
-      const appbarHeight = document.querySelector(".appbar")?.getBoundingClientRect().height
-        ?? APPBAR_HEIGHT_FALLBACK;
-      let workAreaHeight = NaN;
-      try {
-        const monitor = await currentMonitor();
-        if (monitor) workAreaHeight = monitor.workArea.size.toLogical(factor).height;
-      } catch { /* 取得失敗時は targetWindowHeight が安全側の上限へフォールバックする */ }
-      const height = targetWindowHeight(contentHeight, appbarHeight, workAreaHeight);
-      await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, height));
-    })().catch(() => { /* デモ/取得失敗時は実行の妨げにしない */ });
-  }, [active, summary]);
+    if (!isTauri || !active || running) return;
+    const raf = requestAnimationFrame(() => {
+      (async () => {
+        const win = getCurrentWindow();
+        if (!summary) {
+          await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, RUN_WINDOW_HEIGHT_DEFAULT));
+          return;
+        }
+        const factor = await win.scaleFactor();
+        const contentHeight = screenRef.current?.scrollHeight ?? RUN_WINDOW_HEIGHT_DEFAULT;
+        const appbarHeight = document.querySelector(".appbar")?.getBoundingClientRect().height
+          ?? APPBAR_HEIGHT_FALLBACK;
+        let workAreaHeight = NaN;
+        try {
+          const monitor = await currentMonitor();
+          if (monitor) workAreaHeight = monitor.workArea.size.toLogical(factor).height;
+        } catch { /* 取得失敗時は targetWindowHeight が安全側の上限へフォールバックする */ }
+        const height = targetWindowHeight(contentHeight, appbarHeight, workAreaHeight);
+        await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, height));
+      })().catch(() => { /* デモ/取得失敗時は実行の妨げにしない */ });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [active, summary, running]);
 
   useEffect(() => {
     const subs: Promise<UnlistenFn>[] = [
@@ -373,7 +452,15 @@ ${ev.hint}` : ""));
           // ドロップすると、画面に何も出ないまま実行対象が書き換わっていた）
           if (!activeRef.current) return;
           const p = e.payload.paths?.[0];
-          if (p) setInputDir(p);
+          if (!p) return;
+          // D&D はダイアログ経由（pick_folder）と違い白リストへ自動登録され
+          // ない別経路のため、run --input のパススコープ検査（issue S-MD）を
+          // 通すにはここで明示的に登録する必要がある——これを忘れると
+          // ドロップで選んだフォルダが「選択されていないフォルダです」で
+          // 拒否される（枠C申し送り）
+          invoke("remember_dropped_path", { path: p })
+            .then(() => setInputDir(p))
+            .catch(() => setError("フォルダを登録できませんでした。フォルダを選び直してください。"));
         }
       })).then((u) => { unlisten = u; });
     return () => unlisten?.();
@@ -382,8 +469,13 @@ ${ev.hint}` : ""));
     const p = await invoke<string | null>("pick_folder");
     if (!p) return;
     setOutputDir(p);
-    // 要件 §5.7: 選んだ値を設定へ保存し次回起動時の既定値にする
-    await invoke("write_config", { patch: { output_dir: p } });
+    // 要件 §5.7: 選んだ値を設定へ保存し次回起動時の既定値にする。
+    // write_config は不正パス等で reject しうる（issue Q-MC/S-MA・枠C申し送り）
+    try {
+      await invoke("write_config", { patch: { output_dir: p } });
+    } catch (e) {
+      setError(`出力先の保存に失敗しました: ${e}`);
+    }
   };
   const start = async () => {
     setRunning(true); setSummary(null); setError(""); setNotice("");
@@ -545,10 +637,21 @@ ${ev.hint}` : ""));
           </div>
         )}
 
+        {/* 検証（verify）自体が実行できなかった場合（issue Q-ME）。event:"verify"
+            行が1つも来ていないので、budgetCap 900 等の既定値を「現状」として
+            出すのは捏造に近い——検証系カードは一切出さず、再試行導線だけ出す */}
+        {!running && verify && !verify.parsed && (
+          <div className="card errbox">
+            <b>検証を実行できませんでした</b>
+            <div>詳細: {verify.rawFirstLine || "（エラー内容を取得できませんでした）"}</div>
+            <button className="btn" style={{ marginTop: 8 }} onClick={runVerify}>再試行</button>
+          </div>
+        )}
+
         {/* API 送信の残量（ユーザー指示 2026-08-28: 請求が立つ前に強制停止）。
             残り0で開始ボタンを止める——押せてしまうとコア側で止まるだけで、
             なぜ進まないのか画面から分からない */}
-        {!running && verify && verify.budgetCap > 0 && (
+        {!running && verify && verify.parsed && verify.budgetCap > 0 && (
           <div className={verify.budgetUsed >= verify.budgetCap
             ? "card warnbox" : "card"} style={{ fontSize: 12.5 }}>
             {verify.budgetUsed >= verify.budgetCap ? (
@@ -567,7 +670,8 @@ ${ev.hint}` : ""));
 
         {/* 実行前の環境チェック（M-1: 旧実装は cred のみ表示で、Poppler 欠損や
             クラウド同期先の警告が画面に出ず、実行して初めて全ページ失敗した） */}
-        {!running && verify && (!verify.template || !verify.poppler || !verify.storage) && (
+        {!running && verify && verify.parsed
+          && (!verify.template || !verify.poppler || !verify.storage) && (
           <div className="card warnbox">
             <b>実行前に確認してください</b>
             {!verify.template && (
@@ -588,15 +692,28 @@ ${ev.hint}` : ""));
         {/* 出力対象外の欄がある旨（issue #66 段4・FR-1.9）。テンプレート編集画面を
             見ない運用者に届く事故防止の最後の砦——実行して初めて「列が足りない」
             と気づくのを防ぐ。エラーではないので実行はブロックしない */}
-        {!running && verify && outputDisabledNotice(verify.outputDisabledCells) && (
+        {!running && verify && verify.parsed && outputDisabledNotice(verify.outputDisabledCells) && (
           <div className="card warnbox" style={{ fontSize: 12.5 }}>
             {outputDisabledNotice(verify.outputDisabledCells)}
             枠・読み取りは維持されます（テンプレート編集画面でいつでも戻せます）。
           </div>
         )}
 
+        {/* 認証キーが環境変数（平文）で使われている旨の常時警告（issue S-MB）。
+            missing とは独立に出す——env は「実行はできるが平文で危険」、missing
+            は「実行そのものができない」で意味が違うため同じカードに混ぜない */}
+        {!running && verify && verify.parsed && credNotice(verify.cred, verify.envPresent) && (
+          <div className="card warnbox" style={{ fontSize: 12.5 }}>
+            <div>{credNotice(verify.cred, verify.envPresent)}</div>
+            <button className="btn primary" style={{ width: "fit-content", marginTop: 8 }}
+              onClick={importCredentials} disabled={importing}>
+              {importing ? "取り込み中…" : "認証キーを選択"}
+            </button>
+          </div>
+        )}
+
         {/* はじめの準備（資格情報が無いときだけ） */}
-        {!running && verify && verify.cred === "missing" && (
+        {!running && verify && verify.parsed && verify.cred === "missing" && (
           <div className="card" style={{ borderColor: "var(--warn-line)", background: "var(--warn-bg)" }}>
             <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8a5a13"
@@ -648,6 +765,15 @@ ${ev.hint}` : ""));
                   <div className="pathbox">{outputDir}</div>
                   <button className="btn" onClick={pickOutput}>変更</button>
                 </div>
+                {loadError && (
+                  // issue Q-MF: 保存済みの設定を読み込めなかった場合、表示中の
+                  // 保存先が既定値の可能性がある旨を伝える（黙って既定値を
+                  // 出すと、実際の設定と違う場所だと気づけない）
+                  <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    設定を読み込めませんでした（詳細: {loadError}）。
+                    表示中の保存先は既定値の可能性があります。
+                  </div>
+                )}
               </div>
             </div>
 
@@ -656,7 +782,8 @@ ${ev.hint}` : ""));
               <div className="body">
                 <button className="btn primary big" style={{ width: "fit-content" }}
                   onClick={start}
-                  disabled={!inputDir || verify?.cred === "missing"
+                  disabled={!inputDir || (!!verify && !verify.parsed)
+                    || verify?.cred === "missing"
                     || (!!verify && verify.budgetUsed >= verify.budgetCap)
                     || (!!verify && !verify.storage)}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="#ffffff">

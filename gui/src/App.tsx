@@ -28,10 +28,16 @@ const EDITOR_WINDOW_SIZE = { width: 1280, height: 860 };
 function Settings({ onClose }: { onClose: () => void }) {
   const [cfg, setCfg] = useState<Cfg>(CFG_DEFAULT);
   const [saved, setSaved] = useState(false);
+  // 読み込み失敗を握りつぶさない（issue Q-MF）。従来は catch(()=>{}) で
+  // 既定値のまま表示していたため、実際の設定内容を知らずに保存すると、
+  // 触っていない項目まで CFG_DEFAULT で上書きされる（例: send_limit が
+  // 既定の100へ戻り、意図せず送信上限が変わる）。読み込めた項目が分から
+  // ない以上、保存自体を止める
+  const [loadError, setLoadError] = useState("");
   useEffect(() => {
     invoke<Partial<Cfg>>("read_config")
-      .then((c) => setCfg({ ...CFG_DEFAULT, ...c }))
-      .catch(() => {});
+      .then((c) => { setCfg({ ...CFG_DEFAULT, ...c }); setLoadError(""); })
+      .catch((e) => setLoadError(String(e)));
   }, []);
   const set = (k: keyof Cfg, v: string | number) => {
     setCfg((c) => ({ ...c, [k]: v })); setSaved(false);
@@ -76,8 +82,15 @@ function Settings({ onClose }: { onClose: () => void }) {
     setCfg(fixed);
     setDraft({});
     setErr("");
-    await invoke("write_config", { patch: fixed as unknown as Record<string, unknown> });
-    setSaved(true);
+    // write_config は未知キー・不正パス（空・ドライブ直下・UNC・.. 等）で
+    // reject するようになった（issue Q-MC/S-MA・枠C申し送り）。reject を
+    // 握りつぶすと「保存しました」の体で実は保存されていない状態になる
+    try {
+      await invoke("write_config", { patch: fixed as unknown as Record<string, unknown> });
+      setSaved(true);
+    } catch (e) {
+      setErr(`設定の保存に失敗しました: ${e}`);
+    }
   };
   return (
     <div className="modal-back" onClick={onClose}>
@@ -86,32 +99,41 @@ function Settings({ onClose }: { onClose: () => void }) {
         <p className="note" style={{ marginTop: -6 }}>
           通常は変更不要です。
         </p>
+        {loadError && (
+          <p className="note" style={{ color: "var(--err-ink)" }}>
+            設定を読み込めませんでした（詳細: {loadError}）。
+            現在の値が不明なため、保存を停止しています。
+          </p>
+        )}
         <label>〓と判定する基準値（0〜1）。大きいほど〓が増え、読み誤りの見落としが減ります
           <input type="number" min={0.01} max={1} step={0.01} value={numValue("unclear_threshold")}
             onChange={(e) => onNumChange("unclear_threshold", e.target.value)}
-            onBlur={() => commitNum("unclear_threshold")} />
+            onBlur={() => commitNum("unclear_threshold")} disabled={!!loadError} />
         </label>
         <label>丸印と判定する基準値（0〜1）
           <input type="number" min={0.01} max={1} step={0.01} value={numValue("era_threshold")}
             onChange={(e) => onNumChange("era_threshold", e.target.value)}
-            onBlur={() => commitNum("era_threshold")} />
+            onBlur={() => commitNum("era_threshold")} disabled={!!loadError} />
         </label>
         <label>1回の実行で送信する上限ページ数
           <input type="number" min={0} step={1} value={numValue("send_limit")}
             onChange={(e) => onNumChange("send_limit", e.target.value)}
-            onBlur={() => commitNum("send_limit", true)} />
+            onBlur={() => commitNum("send_limit", true)} disabled={!!loadError} />
         </label>
         <label>Excel の保存先
-          <input value={cfg.output_dir} onChange={(e) => set("output_dir", e.target.value)} />
+          <input value={cfg.output_dir} onChange={(e) => set("output_dir", e.target.value)}
+            disabled={!!loadError} />
         </label>
         <label>中間データの保存先（個人情報を含むため、クラウド同期されない場所を指定してください）
-          <input value={cfg.workdir} onChange={(e) => set("workdir", e.target.value)} />
+          <input value={cfg.workdir} onChange={(e) => set("workdir", e.target.value)}
+            disabled={!!loadError} />
         </label>
         <label>ログの保存先
-          <input value={cfg.log_dir} onChange={(e) => set("log_dir", e.target.value)} />
+          <input value={cfg.log_dir} onChange={(e) => set("log_dir", e.target.value)}
+            disabled={!!loadError} />
         </label>
         <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
-          <button className="btn primary" onClick={save}>保存</button>
+          <button className="btn primary" onClick={save} disabled={!!loadError}>保存</button>
           <button className="btn" onClick={onClose}>閉じる</button>
           {saved && <span style={{ color: "var(--ok-ink)", fontSize: 12.5 }}>保存しました。次回の読み取りから適用されます。</span>}
           {err && <span style={{ color: "var(--err-ink)", fontSize: 12.5 }}>{err}</span>}

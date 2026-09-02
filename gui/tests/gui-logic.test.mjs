@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } from "./RunScreen.tsx";\n',
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1559,6 +1559,95 @@ test("targetWindowHeight: workAreaHeight が不正値なら安全側の固定上
 
 test("RUN_WINDOW_WIDTH は tauri.conf.json の既定幅（730）と一致する", () => {
   assert.equal(RUN_WINDOW_WIDTH, 730);
+});
+
+// ---------------------------------------------------------------- issue Q-ME
+// parseVerify: event:"verify" 行を1つも見なかった場合を parsed=false で
+// 区別する。以前はこの区別が無く、budgetCap 900 等の既定値がそのまま
+// 「現状」として画面に出ていた（検証が走っていないのに走った体を装う）
+test("parseVerify: 実 core と同型の verify 応答は parsed=true・各値を反映する", () => {
+  const lines = [
+    { event: "verify", check: "template", ok: true, output_disabled_cells: 3 },
+    { event: "verify", check: "poppler", ok: true },
+    { event: "verify", check: "local_storage", ok: true },
+    { event: "verify", check: "api_budget", ok: true, used: 40, cap: 900, free_tier: 1000 },
+    { event: "verify", check: "credentials", ok: true, state: "dpapi" },
+  ].map((e) => JSON.stringify(e)).join("\n");
+  const v = parseVerify(lines);
+  assert.equal(v.parsed, true);
+  assert.equal(v.template, true);
+  assert.equal(v.poppler, true);
+  assert.equal(v.storage, true);
+  assert.equal(v.cred, "dpapi");
+  assert.equal(v.budgetUsed, 40);
+  assert.equal(v.budgetCap, 900);
+  assert.equal(v.outputDisabledCells, 3);
+  assert.equal(v.rawFirstLine, undefined, "parsed=true のときは rawFirstLine を持たない");
+});
+
+test("parseVerify: event:\"verify\" 行が1つも無ければ parsed=false・生エラーの先頭行を保持する", () => {
+  const v = parseVerify("Error: core が見つかりません\n詳細スタックトレース…");
+  assert.equal(v.parsed, false);
+  assert.equal(v.rawFirstLine, "Error: core が見つかりません");
+});
+
+test("parseVerify: 空文字列も parsed=false（budgetCap 900 等の既定値を現状として出さない）", () => {
+  const v = parseVerify("");
+  assert.equal(v.parsed, false);
+  assert.equal(v.budgetCap, 900, "既定値自体はテスト容易性のため保持するが、呼び出し側は parsed で判定する");
+});
+
+// ---------------------------------------------------------------- issue S-MB
+// credNotice: 認証キーが環境変数（平文）で使われている旨の常時警告
+test("credNotice: cred===\"env\" なら警告文を返す", () => {
+  const t = credNotice("env", undefined);
+  assert.ok(t && t.includes("GOOGLE_APPLICATION_CREDENTIALS"), "環境変数名を含む具体的な文言であること");
+  assert.ok(t.includes("DPAPI"), "取り込み後の暗号化方式に触れていること");
+});
+
+test("credNotice: envPresent===true なら cred が \"dpapi\" でも警告文を返す（Wave 2 の env_present 併存ケース）", () => {
+  const t = credNotice("dpapi", true);
+  assert.ok(t !== null);
+});
+
+test("credNotice: cred が env でも env_present でもなければ null（missing/dpapi 単独）", () => {
+  assert.equal(credNotice("dpapi", false), null);
+  assert.equal(credNotice("dpapi", undefined), null);
+  assert.equal(credNotice("missing", undefined), null);
+});
+
+// ---------------------------------------------------------------- issue P-H1
+// accumulationNotice: 中間データの累積が1,000頁を超えたら purge を促す
+// （レビュー7巡目 Wave 0・らでん逆張り採用分）。total_done_pages・
+// render_seconds は枠D が並行で追加中のキーのため、欠落を防御的に扱う
+test("accumulationNotice: 1,000頁以上・render_seconds ありは件数と秒数を含む", () => {
+  const t = accumulationNotice({ total_done_pages: 1500, render_seconds: 12.3 });
+  assert.ok(t.includes("1500"));
+  assert.ok(t.includes("12.3"));
+  assert.ok(t.includes("purge"));
+});
+
+test("accumulationNotice: 999頁は null（閾値未満）", () => {
+  assert.equal(accumulationNotice({ total_done_pages: 999, render_seconds: 5 }), null);
+});
+
+test("accumulationNotice: total_done_pages キー自体が無ければ null（枠D未反映・旧コア互換）", () => {
+  assert.equal(accumulationNotice({}), null);
+  assert.equal(accumulationNotice({ render_seconds: 99 }), null);
+});
+
+test("accumulationNotice: render_seconds が無くても1,000頁以上なら閾値超過の事実だけ伝える", () => {
+  const t = accumulationNotice({ total_done_pages: 1000 });
+  assert.ok(t !== null);
+  assert.ok(t.includes("1000"));
+  assert.ok(!t.includes("秒"), "render_seconds 欠落時は秒数の括弧書きを出さない");
+});
+
+test("noticeFor: summary で accumulationNotice が counterNotice と併記される", () => {
+  const t = noticeFor({ event: "summary", total_done_pages: 2000, render_seconds: 40,
+    fallback_used: 1 });
+  assert.ok(t.includes("採用 1件"), "counterNotice 側の内容が失われていない");
+  assert.ok(t.includes("中間データに 2000 ページ蓄積しています"));
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
