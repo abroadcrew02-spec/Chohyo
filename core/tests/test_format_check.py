@@ -151,6 +151,31 @@ def test_fold_all_match_is_match():
     )
     pv = fold(faces)
     assert pv.verdict == "match" and pv.score == pytest.approx(0.9)
+    # M-5: detected/expected も同じ代表面（back・スコア最小）から取る
+    assert pv.detected == 24 and pv.expected == 26
+
+
+def test_fold_score_detected_expected_come_from_the_same_representative_face():
+    """M-5（2026-09-02 マリン指摘・実証ケースの再現）: 修正前は verdict
+    優先順で選ぶ代表面（worst）と、score の最小値を取る面が別々に計算
+    されており、同順位の面が複数あると score だけ別の面から来て
+    detected/expected と食い違っていた（実証: front score=0.95・
+    detected=20・expected=16／back score=0.88・detected=24・expected=26
+    で fold→score=0.88・detected=20・expected=16 という不整合な組み合わせ
+    が出ていた）。修正後は5値すべてが同一面（この場合はスコア最小の
+    back）から来ることを固定する。
+    """
+    faces = (
+        FaceVerdict(0, "front", "match", "", 0.95, 20, 16),
+        FaceVerdict(1, "back", "match", "", 0.88, 24, 26),
+    )
+    pv = fold(faces)
+    assert pv.score == pytest.approx(0.88)
+    assert pv.detected == 24 and pv.expected == 26  # front(20/16) ではなく back
+    # faces 中の該当面と完全一致することも確認する（同一面由来の実証）
+    back = next(f for f in pv.faces if f.face_id == "back")
+    assert (pv.verdict, pv.reason, pv.score, pv.detected, pv.expected) == (
+        back.verdict, back.reason, back.score, back.detected, back.expected)
 
 
 def test_fold_excludes_unmeasured_score_from_minimum():

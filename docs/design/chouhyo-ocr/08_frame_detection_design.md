@@ -436,6 +436,8 @@ ALTER TABLE page ADD COLUMN status_reason  TEXT NOT NULL DEFAULT '';
 
 #### 2.5.3 ログイベント
 
+> `format_verdict` の 5 値（verdict／reason_code／score／detected／expected）は必ず同一の代表面（verdict 優先順で最悪の面グループのうちスコア最小の面）から取る（M-5・2026-09-02）。`size` 不一致は判定前に落ちるため detected／expected が 0 で出る。score −1.0 は「未計測」の印で、「計測して 0 本」とは score でのみ区別する。
+
 ```
 format_verdict page_id=<id> verdict=match reason_code= score=0.98 detected=30 expected=26
 format_verdict page_id=<id> verdict=mismatch reason_code=lines score=0.18 detected=21 expected=16

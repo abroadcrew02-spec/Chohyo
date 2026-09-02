@@ -193,8 +193,7 @@ class Store:
         で status_reason を立てた後、run 2 で整列に成功して送信されたが
         post-send の map_failed で落ちた場合、status だけ書き換えて reason
         を素通しすると「送信前に止まった」ことを示す frame_lines が誤って
-        残留する——FR-F10 の「送信前/送信後」の区別が壊れる。status_reason
-        だけを単独で更新したい場合は set_status_reason を使う。
+        残留する——FR-F10 の「送信前/送信後」の区別が壊れる。
         """
         self.con.execute(
             "UPDATE page SET status=?, status_reason=?, updated_at=? WHERE page_id=?",
@@ -210,16 +209,6 @@ class Store:
         self.con.execute(
             "UPDATE page SET unassigned_below_table=?, unassigned_other=?, updated_at=? WHERE page_id=?",
             (below, other, time.time(), page_id))
-        self.con.commit()
-
-    def set_status_reason(self, page_id: str, reason: str) -> None:
-        """FR-F09: `page.status` の共用バケツ（様式不一致・位置合わせ失敗）を
-        分離する専用理由コード（`frame_lines`／`map_failed` 等）。`status`
-        自体の値域は増やさない（08 §2.11 不変条件4）。
-        """
-        self.con.execute(
-            "UPDATE page SET status_reason=?, updated_at=? WHERE page_id=?",
-            (reason, time.time(), page_id))
         self.con.commit()
 
     def set_format_result(self, page_id: str, pv) -> None:

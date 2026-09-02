@@ -44,13 +44,14 @@ class FaceVerdict:
 class PageVerdict:
     verdict: Verdict
     reason: str
-    score: float          # 面の最小値（最も悪い面がページを代表する・skipped と
-                          # 未計測(-1.0) は除く。全面が対象外なら -1.0）
+    score: float
     faces: tuple[FaceVerdict, ...]
-    # FR-F12・08 §2.5.3 のログ（format_verdict）用。verdict/reason/score と
-    # 同じ「代表面」（fold が選ぶ最悪面）の detected/expected（08 §2.5.3 の
-    # ログ行が単一の detected=/expected= を持つため、面ごとの内訳ではなく
-    # 代表面の値を1組だけ持つ）
+    # verdict/reason/score/detected/expected の5値は**必ず同一の代表面**
+    # から取る（2026-09-02 マリン指摘 M-5）。代表面は verdict 優先順
+    # （mismatch > undecidable > match）で最も悪い面、同順位なら
+    # スコア最小の面（未計測 -1.0 は他に計測値があれば除く・M-4 と同じ
+    # 扱い）。skipped は対象外。全面が対象外なら score=-1.0・
+    # detected=expected=0（fold() 参照）
     detected: int = 0
     expected: int = 0
 
@@ -107,19 +108,28 @@ def fold(faces: Sequence[FaceVerdict]) -> PageVerdict:
     `skipped` はありえない（1面目で必ず評価が走る）が、防御的に判定不能で
     返す。
 
-    M-4（2026-09-02 マリン指摘）: スコアが -1.0（未計測——`score_of` の
-    分母0や `size` 判定など）の面は最小値の母集団から除く。混ぜると
-    「算出できなかった」という事実上の欠測値が、実際に最も悪い面より
-    小さい数値として勝ってしまう（欠測とワースト値の意味が違う）。
+    M-5（2026-09-02 マリン指摘・実証: front score=0.95/detected=20/
+    expected=16・back score=0.88/detected=24/expected=26 で
+    fold→score=0.88・detected=20・expected=16 という取り違えが発生して
+    いた）: **代表面を1つに決め、verdict/reason/score/detected/expected の
+    5値すべてをその面から取る。** 代表面の選び方は2段階——① verdict 優先順
+    （mismatch > undecidable/unknown > match）で最も悪い面の集合を取る
+    ② 同順位が複数あれば、その中でスコアが最小の面を選ぶ（M-4 と同じく
+    未計測 -1.0 は他に計測値があれば除く）。以前は「worst（優先順で選ぶ）」
+    と「page_score（全面からの最小スコア）」を別々に計算しており、優先順
+    タイの面が複数あるとき score だけ別の面から来て detected/expected と
+    食い違うことがあった。
     """
     judged = [f for f in faces if f.verdict != "skipped"]
     if not judged:
         return PageVerdict("undecidable", "unknown", -1.0, tuple(faces))
-    worst = min(judged, key=lambda f: _PRIORITY.get(f.verdict, 1))
-    scored = [f.score for f in judged if f.score != -1.0]
-    page_score = min(scored) if scored else -1.0
-    return PageVerdict(worst.verdict, worst.reason, page_score, tuple(faces),
-                       detected=worst.detected, expected=worst.expected)
+    best_priority = min(_PRIORITY.get(f.verdict, 1) for f in judged)
+    tied = [f for f in judged if _PRIORITY.get(f.verdict, 1) == best_priority]
+    scored_tied = [f for f in tied if f.score != -1.0]
+    pool = scored_tied if scored_tied else tied
+    rep = min(pool, key=lambda f: f.score)
+    return PageVerdict(rep.verdict, rep.reason, rep.score, tuple(faces),
+                       detected=rep.detected, expected=rep.expected)
 
 
 def from_diag(diag: Sequence[FaceDiag]) -> PageVerdict:

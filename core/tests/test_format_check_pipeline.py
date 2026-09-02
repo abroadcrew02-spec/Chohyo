@@ -130,6 +130,24 @@ def test_ac_f13_all_pages_including_matches_are_recorded(tmp_path):
     assert any("verdict=match" in line and "detected=" in line
                and "expected=" in line and "score=" in line for line in fv_lines)
 
+    # M-5（2026-09-02 マリン指摘）: ログ行の score/detected/expected が
+    # 「同一の代表面」由来であることを実データで固定する。修正前は
+    # verdict 優先順で選ぶ代表面と score 最小の面が別々に計算されており、
+    # 同順位の面が複数あると食い違いうる（synthetic な再現は
+    # test_format_check.py::test_fold_score_detected_expected_come_from_the_same_representative_face
+    # 側）。ここでは実データ（front/back の実測値）で、ログに出た5値の
+    # 組み合わせが format_detail 中のどれか1面と完全一致することを検証する
+    # ログ行は "<asctime> <levelname> format_verdict k=v k=v ..." の形
+    # （logging_safe.init の Formatter）——先頭2トークンは時刻・レベルなので
+    # 決め打ちで数えず、イベント名 "format_verdict" の直後から切り出す
+    after = fv_lines[0].split("format_verdict", 1)[1].strip()
+    kv = dict(p.split("=", 1) for p in after.split())
+    logged = (kv["verdict"], float(kv["score"]), int(kv["detected"]), int(kv["expected"]))
+    assert any(
+        (d["verdict"], d["score"], d["detected"], d["expected"]) == logged
+        for d in detail
+    ), f"logged {kv} は format_detail のどの面とも一致しない: {detail}"
+
 
 @needs_formc
 def test_ac_f14_exception_in_judge_does_not_masquerade_as_format_mismatch(tmp_path, monkeypatch):
