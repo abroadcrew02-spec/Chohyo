@@ -81,7 +81,7 @@
 | gui/tests/gui-logic.test.mjs（node 直実行） | 111 | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブほか） |
 | gui/src-tauri（cargo test） | 18 | サブコマンド白リスト（issue #7）ほか GUI 境界 |
 
-**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (451 passed, 6 skipped, 182.5s) | gui logic: PASS (145 passed, 0.3s) | cargo test: PASS (47 passed, 2.0s) / total 184.8s`（実行日 2026-09-02・レビュー7巡目（#69）対応後・pytest-xdist `-n auto`。skip 6 件は dev サーバー未起動時の GUI スモーク＝L2 で実走する。参考: 2026-09-01 の 421 passed / gui 115 / cargo 18 から、7巡目で pytest +30・gui-logic +30・cargo +29。並列化前の直列実測は 400 passed / total 490.7s）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。skip 5 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → 5 passed, 36.74s・実行日 2026-09-01）。
+**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (451 passed, 6 skipped, 182.5s) | gui logic: PASS (145 passed, 0.3s) | cargo test: PASS (47 passed, 2.0s) / total 184.8s`（実行日 2026-09-02・レビュー7巡目（#69）対応後・pytest-xdist `-n auto`。skip 6 件は dev サーバー未起動時の GUI スモーク＝L2 で実走する。参考: 2026-09-01 の 421 passed / gui 115 / cargo 18 から、7巡目で pytest +30・gui-logic +30・cargo +29。並列化前の直列実測は 400 passed / total 490.7s）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。skip 6 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → **6 passed, 8.65s・実行日 2026-09-02**。7巡目で追加した `test_editor_delete_ignored_while_run_tab_active`＝実行タブ表示中の Delete で編集内容が変わらないこと、を含む）。
 
 ## 4. トレーサビリティ（要件 §8 合格条件 ⇔ テスト）
 
@@ -178,6 +178,9 @@ D-01（金額）・D-06（below_table）・D-14（列導出＝テンプレート
 | インストーラ導入 | 別環境（WebView2 有無）での setup.exe 実行（Q-23/Q-25） | 配布前 |
 | §8-1 本番再検証 | Q-03/Q-12 解消後、実運用データでのパイロット（Q-16）。自作サンプル合格は暫定 | 実データ受領後 |
 | 鍵ローテート | issue #1。GCP コンソールでの旧鍵無効化（ユーザー作業） | 即時 |
+| 7巡目 L3-①: 実行画面のボタンが Space で押せる（#69 Q-H3） | **機械実測済み**（2026-09-02・品質再検証で Playwright により `document.activeElement=BUTTON` 時の Space が `defaultPrevented=false` を確認。実 Tauri 窓での手押しは未実施） | 実機確認は任意 |
+| 7巡目 L3-②: 平文鍵（環境変数）で起動時に実行画面へ警告カードが出る（#69 S-MB） | **未実施**。core 側は `test_credentials_warn.py`、GUI 側は `credNotice` の node テストで固定済みだが、実 Tauri 窓での表示は未確認 | 次回の実機起動時 |
+| 7巡目 L3-③: config.json が壊れている状態で設定モーダルの入力・保存が無効化され理由が出る（#69 Q-MF） | **未実施**。`merge_config` の cargo test と `loadError` の分岐で固定済みだが、実 Tauri 窓での表示は未確認 | 次回の実機起動時 |
 
 ## 7. 実行結果の記録
 
