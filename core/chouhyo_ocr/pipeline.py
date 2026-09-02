@@ -33,6 +33,12 @@ Progress = Callable[[dict], None]
 class Summary:
     pages: int = 0
     rows: int = 0
+    # 実機の通し確認で判明（コーディネーター指示 2026-09-02）。同じ workdir で
+    # 既に done（前回の run で処理・送信済み）なページは todo から外れて無言で
+    # 再利用され、api_calls だけでは「なぜ入力枚数より送信数が少ないか」が
+    # サマリから読めなかった。skip_duplicate 同様の可視化として、今回の run で
+    # 再利用（未送信）だったページ数をここに積む（既存の集計は変えない）
+    reused_pages: int = 0
     align_failed: int = 0
     # 様式不一致（STATUS_FORMAT_MISMATCH）の総件数（原因を問わない・Q-H1）。
     # cli.cmd_run の「全滅なら exit 1」判定の母集団に含める——align_failed だけ
@@ -502,6 +508,14 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         progress({"event": "start", "total": page_count, "todo": len(todo)})
 
         summary = Summary(pages=page_count)
+        # 既に done なページ（todo から外れて無言で再利用される）を可視化する
+        # （コーディネーター指示 2026-09-02）。API へは送らない・状態も動かさない
+        # ——今回の run では何もしていないことをそのまま伝えるだけの通知
+        reused_pages = [p for p in all_pages if p["state"] == "done"]
+        summary.reused_pages = len(reused_pages)
+        for page in reused_pages:
+            progress({"event": "page", "page_id": page["page_id"],
+                      "status": "done", "reused": True})
         sends = 0
         for page in todo:
             pid = page["page_id"]
@@ -747,6 +761,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         from .render_out import scan_risky_prefixes
         risky = scan_risky_prefixes(derive_columns(template), rows)
         progress({"event": "summary", "pages": summary.pages, "rows": summary.rows,
+                  # コーディネーター指示 2026-09-02: 既に done で再利用（未送信）
+                  # だったページ数。api_calls が入力枚数より少ない理由をここで読める
+                  "reused_pages": summary.reused_pages,
                   "align_failed": summary.align_failed,
                   # Q-H1: 様式不一致の総件数（PageSizeMismatch 起因を含む・原因不問）
                   "format_mismatch": summary.format_mismatch,

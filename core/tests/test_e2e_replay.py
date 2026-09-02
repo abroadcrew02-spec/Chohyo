@@ -288,3 +288,37 @@ def test_run_summary_event_reports_fallback_counts(tmp_path):
     assert summary_ev["carve_hole"] == 0
     page_ev = next(e for e in events if e.get("event") == "page" and e.get("status") == "done")
     assert page_ev["fallback_used"] == 2
+
+
+def test_second_run_reports_reused_pages_without_api_calls(tmp_path):
+    """コーディネーター指示（2026-09-02）: 実機の通し確認で見つかった詰まり所。
+
+    同じ workdir で2回 run すると、2回目は前回 done になったページが todo から
+    外れて無言で再利用される（API へ送らない）。summary の reused_pages で
+    件数が読め、api_calls は 0 のまま——「なぜ送信されていないか」がサマリだけで
+    分かることを確認する。
+    """
+    input_dir = tmp_path / "input"; input_dir.mkdir()
+    shutil.copy(PAGE_PNG, input_dir / "sample-1.png")
+    replay_dir = tmp_path / "responses"; replay_dir.mkdir()
+    shutil.copy(RESP, replay_dir / "sample-1_p0001.json")
+    cfg = Config(unclear_threshold=0.85,
+                output_dir=str(tmp_path / "out"), workdir=str(tmp_path / "wd"),
+                log_dir=str(tmp_path / "logs"))
+
+    events1 = []
+    run(input_dir, TPL, cfg, ReplayClient(replay_dir), events1.append)
+    summary_ev1 = next(e for e in events1 if e.get("event") == "summary")
+    # 1回目は新規処理なので送信あり・再利用なし
+    assert summary_ev1["reused_pages"] == 0
+    assert summary_ev1["api_calls"] == 1
+
+    events2 = []
+    run(input_dir, TPL, cfg, ReplayClient(replay_dir), events2.append)
+    summary_ev2 = next(e for e in events2 if e.get("event") == "summary")
+    assert summary_ev2["reused_pages"] == summary_ev2["pages"] == 1
+    assert summary_ev2["api_calls"] == 0
+    reused_page_ev = next(e for e in events2
+                          if e.get("event") == "page" and e.get("reused") is True)
+    assert reused_page_ev["status"] == "done"
+    assert reused_page_ev["page_id"] == "sample-1_p0001"
