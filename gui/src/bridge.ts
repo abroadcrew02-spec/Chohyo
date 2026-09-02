@@ -105,12 +105,62 @@ const DEMO_TEMPLATE = {
   ],
 };
 
+// issue #71 (a') デモ検証用: pick_image が選ぶ疑似パス。1x1透明PNG
+// （read_file_b64 が返す）に DEMO_TEMPLATE を重ねて開く。expand-page の
+// 疑似応答で mismatch/match/undecidable の3値すべてを core なしで手動確認
+// できるよう、pick_image を呼ぶたび（＝「帳票を開く」を押すたび）に
+// mismatch → match → undecidable の順で巡回する（スバル差し戻し4・任意）。
+// **1回目は必ず mismatch**——Playwright スモーク
+// （core/tests/test_gui_smoke.py の test_editor_format_mismatch_*）は
+// 「帳票を開く」を1回しか押さないため、この順序に依存している
+const DEMO_FORMAT_FACE = (verdict: string, reason: string, score: number, detected: number, expected: number) =>
+  ({ verdict, reason, score, detected, expected });
+const DEMO_FORMAT_VARIANTS: Record<string, {
+  aligned: boolean; reason?: "align"; verdict: "mismatch" | "match" | "undecidable"; score: number;
+  faces: { face_id: string; verdict: string; reason: string; score: number; detected: number; expected: number }[];
+}> = {
+  "C:\\デモ\\mismatch.png": {
+    aligned: false, reason: "align", verdict: "mismatch", score: 0.2,
+    faces: [
+      { face_id: "front", ...DEMO_FORMAT_FACE("mismatch", "lines", 0.2, 5, 16) },
+      { face_id: "back", ...DEMO_FORMAT_FACE("match", "", 1, 26, 26) },
+    ],
+  },
+  "C:\\デモ\\match.png": {
+    aligned: true, verdict: "match", score: 0.97,
+    faces: [
+      { face_id: "front", ...DEMO_FORMAT_FACE("match", "", 1, 16, 16) },
+      { face_id: "back", ...DEMO_FORMAT_FACE("match", "", 0.94, 26, 26) },
+    ],
+  },
+  "C:\\デモ\\undecidable.png": {
+    aligned: false, reason: "align", verdict: "undecidable", score: 0.4,
+    faces: [
+      { face_id: "front", ...DEMO_FORMAT_FACE("undecidable", "few_lines", 0.4, 4, 16) },
+      { face_id: "back", ...DEMO_FORMAT_FACE("match", "", 1, 26, 26) },
+    ],
+  },
+};
+const DEMO_FORMAT_PATHS = Object.keys(DEMO_FORMAT_VARIANTS);
+let demoImagePickCount = 0;
+// 最小の 1x1 透明 PNG（広く使われる定数）。ページ座標系（DEMO_TEMPLATE の
+// 欄・表の rect）はこの画像自体の画素とは無関係——draw() は image を
+// (0,0) からそのままの実寸で描くだけで、欄・表は image の外側でも構わず
+// 描かれる（実コアの位置合わせ済み画像と同じ座標系の扱い）
+const DEMO_MISMATCH_IMAGE_B64 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+
 async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
   switch (cmd) {
     case "read_config": return {};
     case "write_config": return null;
     case "pick_folder": return "C:\\デモ\\帳票スキャン";
-    case "pick_image": return null;
+    case "pick_image": {
+      const path = DEMO_FORMAT_PATHS[demoImagePickCount % DEMO_FORMAT_PATHS.length];
+      demoImagePickCount++;
+      return path;
+    }
+    case "read_file_b64": return DEMO_MISMATCH_IMAGE_B64;
     case "pick_json": return "C:\\デモ\\template.json";
     case "read_text": return JSON.stringify(DEMO_TEMPLATE);
     case "read_default_template": return JSON.stringify(DEMO_TEMPLATE);
@@ -143,6 +193,25 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
           } catch { /* staged の内容が壊れていれば静的応答へフォールバック */ }
         }
         return VERIFY_OK;
+      }
+      // issue #71 (a'): Editor.tsx は PDF/画像を問わず expand-page を通す
+      // ようになった。デモモードは pick_image が実体の無い疑似画像パスしか
+      // 返さないため、その --input を DEMO_FORMAT_VARIANTS で引いて
+      // mismatch/match/undecidable のいずれかを返す。core が未対応のキー
+      // （verdict/score/faces）を追加するまでの間も、GUI 側の黄帯・上書き
+      // ボタン・枠の非表示／可視化を core なしで確認できるようにする
+      // （設計08 §2.6 の JSON 契約どおりの疑似応答）
+      if (a[0] === "expand-page") {
+        const inputIdx = a.indexOf("--input");
+        const inputPath = inputIdx >= 0 ? a[inputIdx + 1] : undefined;
+        const variant = inputPath ? DEMO_FORMAT_VARIANTS[inputPath] : undefined;
+        if (variant) {
+          return JSON.stringify({
+            event: "expand_page", ok: true, page_path: inputPath, pages: 1,
+            aligned: variant.aligned, ...(variant.reason ? { reason: variant.reason } : {}),
+            verdict: variant.verdict, score: variant.score, faces: variant.faces,
+          });
+        }
       }
       return "{}";
     }

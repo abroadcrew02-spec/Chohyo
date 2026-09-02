@@ -22,8 +22,8 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } from "./RunScreen.tsx";\n',
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat } from "./Editor.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -877,6 +877,121 @@ test("expandAlignNotice: reason=image/other は中立文言で自動補正を主
   }
 });
 
+// ------------------------------------------------------------- issue #71 (a')
+// expandAlignNotice: verdict（3値・FR-F02）の追加。優先順は
+// template > size > mismatch > undecidable > match（07 FR-F07）
+test("expandAlignNotice: verdict=mismatch は黄帯・上書き案内つき・テンプレ名を含む（FR-F04/FR-F05）", () => {
+  const r = expandAlignNotice(false, "align", "", "mismatch", "chouhyo-v1");
+  assert.equal(r.level, "warn", r.text);
+  assert.equal(r.isError, false, "黄帯は errMsg（赤帯）に出してはいけない");
+  assert.ok(r.text.includes("chouhyo-v1"), r.text);
+  assert.ok(r.text.includes("様式が合いません"), r.text);
+  assert.ok(r.text.includes("それでもこのテンプレートで開く"), r.text);
+});
+
+test("expandAlignNotice: verdict=mismatch はテンプレ破損(template)・寸法不一致(size)より優先度が低い", () => {
+  const t = expandAlignNotice(false, "template", "", "mismatch");
+  assert.equal(t.level, "error", "template が最優先のはず: " + t.text);
+  const s = expandAlignNotice(false, "size", "", "mismatch");
+  assert.equal(s.level, "error", "size が mismatch より優先のはず: " + s.text);
+});
+
+test("expandAlignNotice: verdict=undecidable は現行の align 文言を維持する（枠を消さない）", () => {
+  const r = expandAlignNotice(false, "align", "", "undecidable");
+  assert.equal(r.level, "info");
+  assert.equal(r.isError, false);
+  assert.ok(r.text.includes("自動補正されるため枠は動かさないでください"), r.text);
+});
+
+test("expandAlignNotice: verdict=match は成功文言と同じ（level=info）", () => {
+  const r = expandAlignNotice(true, undefined, "", "match");
+  assert.equal(r.level, "info");
+  assert.ok(r.text.includes("位置合わせ済み"), r.text);
+});
+
+test("expandAlignNotice: verdict 未提供（旧コア）は3値経路に入らず従来分岐のまま", () => {
+  const r = expandAlignNotice(false, "align", "PDF の 1/2 ページ目・");
+  assert.equal(r.level, "info");
+  assert.ok(!r.text.includes("様式が合いません"), r.text);
+});
+
+// hiddenFaces / visibleFields / visibleTables / visibleExcls（issue #71 (a')・
+// FR-F04・設計08 §2.7.3）。draw() とヒットテストが同じ可視集合を見るための
+// 純関数——述語を2つ持たない（L-Q1 の教訓と同型）
+const FMT_FACES = [
+  { face_id: "front", verdict: "mismatch" },
+  { face_id: "back", verdict: "match" },
+];
+test("hiddenFaces: verdict=mismatch の面だけを集める", () => {
+  const h = hiddenFaces(FMT_FACES, false);
+  assert.deepEqual([...h], ["front"]);
+});
+test("hiddenFaces: override=true は常に空集合（上書き中は全て可視）", () => {
+  assert.equal(hiddenFaces(FMT_FACES, true).size, 0);
+});
+test("hiddenFaces: faces 未提供（旧コア）は空集合——現行どおり全て描く", () => {
+  assert.equal(hiddenFaces(undefined, false).size, 0);
+});
+
+const SPLIT_Y = 1880, IMG_H = 3510;
+const mkField = (uid, y) => ({ uid, field_id: uid, kind: "text", rect: { x: 0, y, w: 10, h: 10 }, marks: [] });
+const mkTable = (uid, y) => ({ uid, table_id: uid, row_pitch: 10, row_height: 8,
+  blocks: [{ x: 0, y, rows: 1 }], columns: [] });
+const mkExcl = (uid, y) => ({ uid, id: uid, rect: { x: 0, y, w: 10, h: 10 } });
+
+test("visibleFields: front が hidden なら front の欄だけ落ちる（back は残る）", () => {
+  const fields = [mkField("f1", 300), mkField("f2", 2000)];
+  const vis = visibleFields(fields, new Set(["front"]), SPLIT_Y, IMG_H);
+  assert.deepEqual(vis.map((f) => f.uid), ["f2"]);
+});
+test("visibleTables / visibleExcls: 同じ面判定で表・除外も落ちる", () => {
+  const tables = [mkTable("t1", 300), mkTable("t2", 2000)];
+  const excls = [mkExcl("e1", 300), mkExcl("e2", 2000)];
+  const hidden = new Set(["front"]);
+  assert.deepEqual(visibleTables(tables, hidden, SPLIT_Y, IMG_H).map((t) => t.uid), ["t2"]);
+  assert.deepEqual(visibleExcls(excls, hidden, SPLIT_Y, IMG_H).map((e) => e.uid), ["e2"]);
+});
+test("visibleFields: hidden が空集合なら配列をそのまま返す（一致・旧コア・上書き中）", () => {
+  const fields = [mkField("f1", 300), mkField("f2", 2000)];
+  assert.equal(visibleFields(fields, new Set(), SPLIT_Y, IMG_H), fields);
+});
+
+// selHiddenByFormat（issue #71 (a')・スバル差し戻し2）: 出力列タブの一覧経由で
+// 選ばれた sel が、隠れている面（不一致）に属していないかを判定する純関数。
+// nudge／削除の入口・出力列タブの選択不可表示の両方がこの1関数を通る
+test("selHiddenByFormat: 隠れた面（front）の欄を選んでいれば true", () => {
+  const fields = [mkField("f1", 300)];
+  const sel = { type: "field", uid: "f1" };
+  const hidden = new Set(["front"]);
+  assert.equal(selHiddenByFormat(sel, fields, [], [], hidden, SPLIT_Y, IMG_H), true);
+});
+test("selHiddenByFormat: 可視面（back）の欄を選んでいれば false", () => {
+  const fields = [mkField("f2", 2000)];
+  const sel = { type: "field", uid: "f2" };
+  const hidden = new Set(["front"]);
+  assert.equal(selHiddenByFormat(sel, fields, [], [], hidden, SPLIT_Y, IMG_H), false);
+});
+test("selHiddenByFormat: table／excl も同じ判定になる", () => {
+  const tables = [mkTable("t1", 300)];
+  const excls = [mkExcl("e1", 300)];
+  const hidden = new Set(["front"]);
+  assert.equal(
+    selHiddenByFormat({ type: "table", uid: "t1" }, [], tables, [], hidden, SPLIT_Y, IMG_H), true);
+  assert.equal(
+    selHiddenByFormat({ type: "excl", uid: "e1" }, [], [], excls, hidden, SPLIT_Y, IMG_H), true);
+});
+test("selHiddenByFormat: sel が null・hidden が空集合なら false", () => {
+  const fields = [mkField("f1", 300)];
+  assert.equal(selHiddenByFormat(null, fields, [], [], new Set(["front"]), SPLIT_Y, IMG_H), false);
+  assert.equal(
+    selHiddenByFormat({ type: "field", uid: "f1" }, fields, [], [], new Set(), SPLIT_Y, IMG_H), false);
+});
+test("selHiddenByFormat: 選択中の uid が存在しない（既に削除済み等）なら false（安全側）", () => {
+  assert.equal(
+    selHiddenByFormat({ type: "field", uid: "ghost" }, [], [], [], new Set(["front"]), SPLIT_Y, IMG_H),
+    false);
+});
+
 // ---------------------------------------------------------------- マリン最終レビュー H-1
 test("promoteFailureNotice: staged の在り処を必ず案内し、rustError の詳細をそのまま伝える", () => {
   const n = promoteFailureNotice("C:\\app\\templates\\chouhyo-v1.json",
@@ -1699,6 +1814,73 @@ test("completionNotice: format_mismatch が無い旧コアでも中断文言へ�
   const t = completionNotice(old, 1);
   assert.ok(!t.includes("中断"), t);
   assert.ok(t.includes("様式不一致 0 件"), t);
+});
+
+// ------------------------------------------------------------- issue #71 (a')
+// completionNotice: format_mismatch_pre_send が全ページと一致するとき、
+// 「用紙サイズ確認」ではなく「テンプレートを選び直す／作る」へ誘導する
+// （設計08 §2.8）。format_mismatch_pre_send===rows は format_mismatch===rows
+// を含意するため、この分岐を先に見る
+test("completionNotice: 送信前に全ページ様式不一致なら、用紙サイズではなくテンプレの選び直しへ誘導", () => {
+  const t = completionNotice(
+    sum({ rows: 3, format_mismatch: 3, format_mismatch_pre_send: 3 }), 1);
+  assert.ok(!t.includes("中断"), t);
+  assert.ok(!t.includes("用紙サイズ"),
+    "送信前に判定できた不一致では用紙サイズ確認ではなくテンプレ選び直しへ誘導すべき: " + t);
+  assert.ok(t.includes("テンプレートを選び直す"), t);
+});
+
+test("completionNotice: pre_send が一部のみ（rows と不一致）なら従来の用紙サイズ文言のまま", () => {
+  const t = completionNotice(
+    sum({ rows: 3, format_mismatch: 3, format_mismatch_pre_send: 1 }), 1);
+  assert.ok(t.includes("すべてのページが様式不一致でした"), t);
+  assert.ok(t.includes("用紙サイズ"), t);
+});
+
+test("completionNotice: format_mismatch_pre_send が無い（旧コア）なら従来分岐のまま", () => {
+  const t = completionNotice(sum({ rows: 3, format_mismatch: 3 }), 1);
+  assert.ok(t.includes("すべてのページが様式不一致でした"), t);
+});
+
+// reasonCodeNotice（issue #71 (a')・設計08 §2.4.3・スバル差し戻し1で
+// frame_edge を「位置合わせ失敗」グループへ訂正し frame_check_failed を追加）
+// reason_code → 平易な言葉
+test("reasonCodeNotice: frame_size/frame_lines/frame_ambiguous（様式不一致・送信前）は同じ言葉になる", () => {
+  for (const code of ["frame_size", "frame_lines", "frame_ambiguous"]) {
+    assert.equal(reasonCodeNotice(code), "様式が違うため送信前に止めました", code);
+  }
+});
+test("reasonCodeNotice: map_failed 系（様式不一致・送信後の判定）は別の言葉になる", () => {
+  for (const code of ["map_failed", "outside_ratio", "row_build_failed"]) {
+    assert.equal(reasonCodeNotice(code), "送信後に様式不一致と判定しました", code);
+  }
+});
+test("reasonCodeNotice: frame_few_lines / frame_edge / frame_boundary は位置合わせ失敗の言葉になる（frame_edge は判定不能側）", () => {
+  // frame_edge（edge_mismatch）は07 v1.2/08 ★1 で「不一致」から「判定不能」へ
+  // 訂正された。上端が1本かすれた本物の紙に「様式が違う」と言わないため、
+  // frame_few_lines/frame_boundary と同じ「位置合わせ失敗」グループに入る
+  for (const code of ["frame_few_lines", "frame_edge", "frame_boundary"]) {
+    assert.equal(reasonCodeNotice(code), "罫線が読み取れず位置合わせできませんでした", code);
+  }
+});
+test("reasonCodeNotice: frame_check_failed（AC-F14・判定関数の例外）は専用文言でコード欠陥の可能性に触れる", () => {
+  const t = reasonCodeNotice("frame_check_failed");
+  assert.ok(t.includes("エラーが発生"), t);
+  assert.ok(t.includes("コード欠陥"), t);
+});
+test("reasonCodeNotice: 未知コード・未提供は null（存在しない説明を捏造しない）", () => {
+  assert.equal(reasonCodeNotice(undefined), null);
+  assert.equal(reasonCodeNotice("unknown_code"), null);
+});
+// REASON_CODE_JA のキー集合が 08 §2.4.3 の10コードと完全一致することを機械的
+// に固定する（スバル差し戻し1「表のキー集合と一致を assert」）
+const FRAME_REASON_CODES_08 = [
+  "frame_size", "frame_lines", "frame_ambiguous",
+  "map_failed", "outside_ratio", "row_build_failed",
+  "frame_few_lines", "frame_edge", "frame_boundary", "frame_check_failed",
+];
+test("REASON_CODE_JA: 08 §2.4.3 の10コードとキー集合が完全一致する", () => {
+  assert.deepEqual(Object.keys(REASON_CODE_JA).sort(), [...FRAME_REASON_CODES_08].sort());
 });
 
 // ---------------------------------------------------------------- 2026-09-02

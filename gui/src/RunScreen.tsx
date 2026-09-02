@@ -14,6 +14,11 @@ type Summary = {
   // 様式不一致で失敗したページ数（枠D で pipeline.py が追加したキー。
   // 旧コアでは undefined・issue N-1）
   format_mismatch?: number;
+  // 様式不一致のうち「送信前に止まった」件数（issue #71 (a')・FR-F01由来の
+  // 理由コードで確定したもの・FR-F10）。format_mismatch はマッピング後の
+  // 構造異常や枠外率など送信後の判定も含む総数のため、この値はその内数
+  // （旧コアでは undefined）
+  format_mismatch_pre_send?: number;
   risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
   xlsx?: string; csv?: string;
 };
@@ -32,7 +37,9 @@ type Verify = { template: boolean; poppler: boolean; cred: string; storage: bool
                 parsed: boolean;
                 // parsed=false のときだけ設定する、再試行導線に添える生エラーの先頭行
                 rawFirstLine?: string };
-type Failure = { page_id: string; status: string };
+// reason_code は issue #71 (a') で追加された、様式不一致・位置合わせ失敗の
+// 内訳（旧コアでは undefined・page 進捗イベントに乗る）
+type Failure = { page_id: string; status: string; reason_code?: string };
 
 // ウィンドウサイズ運用（起動時は小窓・完了サマリ表示で縦に自動拡大）。
 // 幅は常に730固定——tauri.conf.json の windows[0].width と一致させる。
@@ -93,6 +100,41 @@ export const STATUS_JA: Record<string, string> = {
   "スキップ（重複）": "同じ内容のファイルが既にあるため送信しませんでした（行全体が〓です）",
   "超過あり": "記入が定義済みの行数を超えています",
 };
+
+/** reason_code（issue #71 (a')・page 進捗イベント）→ 平易な言葉（設計08
+ *  §2.8）。frame_* の様式判定由来は「送信前」、mapping/枠外率由来は
+ *  「送信後」、罫線が読み取れず判定不能だったものは別の言葉にする——同じ
+ *  STATUS_JA（位置合わせ失敗／様式不一致）の中でも原因が違うことを伝える。 */
+// issue #71 (a')・スバル差し戻し1: 08 §2.4.3 の10コードに完全一致させる。
+// `frame_edge`（edge_mismatch 由来）は07 v1.2／08 ★1 で判定不能へ倒された
+// ため「様式不一致」ではなく「位置合わせ失敗」グループに入る——上端が1本
+// かすれただけの本物の紙に「様式が違う」と案内しないため（07 §9.1）。
+// `frame_check_failed`（AC-F14・判定関数の例外）はどちらのグループとも別の
+// 専用文言にする——コード欠陥の可能性を隠さない。
+export const REASON_CODE_JA: Record<string, string> = {
+  // 様式不一致（送信前）
+  frame_size: "様式が違うため送信前に止めました",
+  frame_lines: "様式が違うため送信前に止めました",
+  frame_ambiguous: "様式が違うため送信前に止めました",
+  // 様式不一致（送信後）
+  map_failed: "送信後に様式不一致と判定しました",
+  outside_ratio: "送信後に様式不一致と判定しました",
+  row_build_failed: "送信後に様式不一致と判定しました",
+  // 位置合わせ失敗（罫線が読み取れず判定不能・08 ★1〜★3）
+  frame_few_lines: "罫線が読み取れず位置合わせできませんでした",
+  frame_edge: "罫線が読み取れず位置合わせできませんでした",
+  frame_boundary: "罫線が読み取れず位置合わせできませんでした",
+  // 位置合わせ失敗（判定関数自体の例外・AC-F14）
+  frame_check_failed: "様式判定の処理でエラーが発生したため、"
+    + "位置合わせ失敗として扱いました（コード欠陥の可能性。ログを確認してください）",
+};
+
+/** reason_code が対応表に無い（旧コア・未知コード）場合は null——呼び出し側は
+ *  STATUS_JA だけの表示に留める（存在しない説明を捏造しない）。 */
+export function reasonCodeNotice(reasonCode: string | undefined): string | null {
+  if (!reasonCode) return null;
+  return REASON_CODE_JA[reasonCode] ?? null;
+}
 
 /** run/remap の完了サマリに乗るカウンタ（issue #65-3・S2）を「実行時のお知らせ」
  *  1行にまとめる。対象: fallback_used（参照先の文字を採用した数）・
@@ -185,6 +227,16 @@ export function completionNotice(summary: Summary | null, exitCode: number): str
       + `再度「読み取りを開始」を押すと続きから処理します。`;
   }
   const mismatch = summary.format_mismatch ?? 0;
+  const preSend = summary.format_mismatch_pre_send ?? 0;
+  // issue #71 (a'): 送信前に様式不一致で止まった件数が全ページと一致するなら、
+  // 「用紙サイズ・向きの確認」より具体的な出口（テンプレートを選び直す／
+  // この帳票のテンプレートを作る）へ誘導する。preSend===rows は
+  // mismatch===rows を含意する（preSend は mismatch の内数）ため、この分岐を
+  // 先に見る（設計08 §2.8）
+  if (summary.rows > 0 && preSend === summary.rows) {
+    return "様式が一致しませんでした。テンプレートを選び直すか、この帳票の"
+      + "テンプレートを作成してください（再実行しても同じ結果になります）。";
+  }
   if (summary.rows > 0 && mismatch === summary.rows) {
     return "すべてのページが様式不一致でした。用紙サイズ・向きがテンプレートと"
       + "合っているか確認してください（再実行しても同じ結果になります）。";
@@ -447,7 +499,8 @@ export default function RunScreen(
           if (ev.event === "page") {
             setDone((d) => d + 1);
             if (ev.status && ev.status !== "done") {
-              setFailures((f) => [...f, { page_id: ev.page_id, status: ev.status }]);
+              setFailures((f) => [...f,
+                { page_id: ev.page_id, status: ev.status, reason_code: ev.reason_code }]);
             }
           }
           const n = noticeFor(ev);
@@ -647,6 +700,18 @@ ${ev.hint}` : ""));
             {summary.align_failed > 0 && (
               <div className="errbox">
                 位置合わせに失敗したページが {summary.align_failed} 件あります。該当行はすべて〓のため、原本を参照して直接入力してください。
+              </div>
+            )}
+            {/* 送信前に様式不一致で止まったページ（issue #71 (a')・FR-F09・FR-F10）。
+                API を1回も呼んでいない＝課金が発生していないことを明示し、
+                出口2択（(t) 未実装のため、実行画面のテンプレート選択ではなく
+                現状の導線＝編集画面での開き直しを案内する）を固定文で示す */}
+            {(summary.format_mismatch_pre_send ?? 0) > 0 && (
+              <div className="card warnbox">
+                <b>様式不一致（送信前・課金なし）: {summary.format_mismatch_pre_send} 件</b>
+                <div>次にできること:</div>
+                <div>・別のテンプレートを選ぶ（編集画面で開き直してください）</div>
+                <div>・テンプレート編集でこの紙のテンプレートを作る</div>
               </div>
             )}
           </>
@@ -868,7 +933,9 @@ ${ev.hint}` : ""));
                   paddingTop: i ? 6 : 0 }}>
                   <span style={{ fontFamily: "Consolas, monospace", color: "var(--sub)",
                     flexShrink: 0 }}>{f.page_id}</span>
-                  <span>{STATUS_JA[f.status] ?? f.status}</span>
+                  <span>{STATUS_JA[f.status] ?? f.status}
+                    {reasonCodeNotice(f.reason_code)
+                      ? `（${reasonCodeNotice(f.reason_code)}）` : ""}</span>
                 </div>
               ))}
             </div>

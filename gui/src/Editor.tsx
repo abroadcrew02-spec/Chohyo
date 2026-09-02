@@ -644,6 +644,74 @@ export function outOfFaceElements(input: {
   return out;
 }
 
+/// 不一致（mismatch）と判定された面を集める（issue #71 (a')・FR-F04・
+/// 設計08 §2.7.3）。faces は expand-page の応答（面ごとの verdict）。
+/// override 中（「それでもこのテンプレートで開く」・FR-F05）は空集合を返し
+/// 全枠を可視化する。faces 未提供（旧コア・verdict 無し応答）も空集合——
+/// 現行どおり全て描く（後方互換）。
+export function hiddenFaces(
+  faces: { face_id: string; verdict: string }[] | undefined,
+  override: boolean,
+): Set<string> {
+  if (override || !faces) return new Set();
+  return new Set(faces.filter((f) => f.verdict === "mismatch").map((f) => f.face_id));
+}
+
+function faceIdOf(y: number, splitY: number, imgH: number): "front" | "back" {
+  return faceRangeContains(y, "front", splitY, imgH) ? "front" : "back";
+}
+
+/// 描画（draw）とヒットテスト（onDown の hitAll）の両方が見る唯一の可視集合
+/// （L-Q1 の教訓と同型: 述語を2つ持つと「描かれているのに掴めない／描かれて
+/// いないのに掴める」というズレが起きる）。hidden が空なら配列をそのまま
+/// 返す（旧コア・一致・上書き中の経路で余計な再割当をしない）。
+export function visibleFields(
+  fields: Field[], hidden: Set<string>, splitY: number, imgH: number): Field[] {
+  if (hidden.size === 0) return fields;
+  return fields.filter((f) => !hidden.has(faceIdOf(f.rect.y, splitY, imgH)));
+}
+
+export function visibleTables(
+  tables: Table[], hidden: Set<string>, splitY: number, imgH: number): Table[] {
+  if (hidden.size === 0) return tables;
+  return tables.filter((t) =>
+    !t.blocks[0] || !hidden.has(faceIdOf(t.blocks[0].y, splitY, imgH)));
+}
+
+export function visibleExcls(
+  excls: Excl[], hidden: Set<string>, splitY: number, imgH: number): Excl[] {
+  if (hidden.size === 0) return excls;
+  return excls.filter((e) => !hidden.has(faceIdOf(e.rect.y, splitY, imgH)));
+}
+
+/// sel が指す要素が、様式不一致で隠れている面（hidden）に属していないかを
+/// 判定する（issue #71 (a')・スバル差し戻し1）。canvas 側は hitAll が
+/// visibleFields 等でフィルタ済みなので隠れた要素を選べないが、出力列タブの
+/// 一覧（outputListPanel）は独立した選択経路を持っていたため、そこで選んだ
+/// sel が漏れて nudge／削除に渡っていた。**ガードをこの1関数に集約**し、
+/// 出力列タブ側の選択不可表示（fieldRow/tableRow の disabled）と、
+/// nudge／removeSel／「この欄を削除」の入口の両方から同じ判定を通す。
+export function selHiddenByFormat(
+  sel: { type: "field" | "table" | "excl"; uid: string } | null,
+  fields: Field[], tables: Table[], excls: Excl[],
+  hidden: Set<string>, splitY: number, imgH: number,
+): boolean {
+  if (!sel || hidden.size === 0) return false;
+  if (sel.type === "field") {
+    const f = fields.find((v) => v.uid === sel.uid);
+    return !!f && hidden.has(faceIdOf(f.rect.y, splitY, imgH));
+  }
+  if (sel.type === "table") {
+    const t = tables.find((v) => v.uid === sel.uid);
+    return !!t && !!t.blocks[0] && hidden.has(faceIdOf(t.blocks[0].y, splitY, imgH));
+  }
+  if (sel.type === "excl") {
+    const e = excls.find((v) => v.uid === sel.uid);
+    return !!e && hidden.has(faceIdOf(e.rect.y, splitY, imgH));
+  }
+  return false;
+}
+
 /// buildTemplate の純粋版（issue #69 Q-H2）。画面の state（フック）に依存
 /// しないため node で直接テストできる——1,883行側で唯一テストできなかった
 /// 最重要の直列化ロジックを可視化する。保存直前に outOfFaceElements が
@@ -844,43 +912,68 @@ export function unclearPopulationNote(
 /// 案内が出ていた。
 export type ExpandAlignReason = "template" | "align" | "size" | "image" | "other";
 
-/// PDF/画像を開いた直後の位置合わせ結果から、案内文言を出し分ける
-/// （5巡目レビュー・いろは指摘）。従来は aligned:false を一律「位置合わせ
-/// できませんでした…読み取り時に自動補正されるため枠は動かさないでください」
-/// と案内していたが、これはテンプレート破損由来の失敗にも出てしまい、
-/// 「動かさず待てば直る」という誤った案内になっていた——実際にはテンプレを
-/// 直さない限り読み取りも失敗し続ける。reason で原因を区別し、
-/// テンプレ由来のときだけ赤帯（isError）で「自動補正される」と言わない
-/// 文言に切り替える。align 由来（または reason 欠落＝旧コア互換）は
-/// 現行文言を維持する。
+/// expand-page が新たに返す様式判定の3値（issue #71 (a')・設計08 §2.3.1）。
+/// 未対応の旧コアでは undefined——3値経路には入らず、reason ベースの
+/// 従来分岐（旧コア互換）へフォールバックする。
+export type ExpandVerdict = "match" | "mismatch" | "undecidable";
+
+/// PDF/画像を開いた直後の位置合わせ・様式判定結果から、案内文言を出し分ける
+/// （5巡目レビュー・いろは指摘＋issue #71 (a') で verdict/level を追加）。
+/// 優先順は 07 FR-F07: template（テンプレ破損） > size（寸法不一致） >
+/// mismatch（様式不一致） > undecidable（判定不能） > match（一致）。
+/// 赤帯（isError・level="error"）は template と size のみ。mismatch は
+/// 黄帯（level="warn"）で「それでもこのテンプレートで開く」（FR-F05）を
+/// 案内する。undecidable は現行文言（自動補正されるため枠は動かさない）を
+/// そのまま維持する——線が取れていないだけの紙で枠を消さないため（07 §9.1）。
+/// verdict が渡されない（旧コア）場合は reason だけを見る従来分岐のまま。
 export function expandAlignNotice(
-  aligned: boolean, reason: ExpandAlignReason | undefined, pageNote: string):
-  { text: string; isError: boolean } {
-  if (aligned) {
-    return { text: `（${pageNote}位置合わせ済み・枠が記入欄に重なって表示されます）`,
-             isError: false };
-  }
-  const r = reason ?? "align";
+  aligned: boolean, reason: ExpandAlignReason | undefined, pageNote: string,
+  verdict?: ExpandVerdict, templateId?: string):
+  { text: string; isError: boolean; level: "error" | "warn" | "info" } {
+  const r = reason;
   if (r === "template") {
     return {
       text: `（${pageNote}テンプレートを読み込めないため位置合わせできませんでした。`
         + "テンプレートが壊れている可能性があります。編集を続ける前にテンプレートの検証"
         + "（保存して検証）を行ってください）",
-      isError: true,
+      isError: true, level: "error",
     };
   }
   if (r === "size") {
     return {
       text: `（${pageNote}用紙サイズ／向きがテンプレートと合っていません`
         + "（縦横比の差が 1% 超）。この画像は読み取り時に様式不一致として扱われます）",
-      isError: true,
+      isError: true, level: "error",
     };
   }
-  if (r === "align") {
+  if (verdict === "mismatch") {
+    const id = templateId || "現在のテンプレート";
+    return {
+      text: `（${pageNote}この画像はテンプレート（${id}）と様式が合いません。`
+        + "枠は表示していません。別のテンプレートを開くか、この紙のテンプレートを"
+        + "新しく作ってください。それでもこのテンプレートで開く場合は、下の"
+        + "「それでもこのテンプレートで開く」ボタンを押してください）",
+      isError: false, level: "warn",
+    };
+  }
+  if (verdict === "undecidable") {
     return {
       text: `（${pageNote}位置合わせできませんでした。枠が少しズレて見えても、` +
         "読み取り時に自動補正されるため枠は動かさないでください）",
-      isError: false,
+      isError: false, level: "info",
+    };
+  }
+  if (verdict === "match" || aligned) {
+    return { text: `（${pageNote}位置合わせ済み・枠が記入欄に重なって表示されます）`,
+             isError: false, level: "info" };
+  }
+  // verdict 未提供（旧コア）: reason だけを見る従来分岐にフォールバックする
+  const rr = r ?? "align";
+  if (rr === "align") {
+    return {
+      text: `（${pageNote}位置合わせできませんでした。枠が少しズレて見えても、` +
+        "読み取り時に自動補正されるため枠は動かさないでください）",
+      isError: false, level: "info",
     };
   }
   // image / other: 原因を「テンプレのせい」とも「自動補正される」とも
@@ -888,7 +981,7 @@ export function expandAlignNotice(
   return {
     text: `（${pageNote}位置合わせできませんでした。原因は特定できていません。` +
       "画像やテンプレートの内容を確認してください）",
-    isError: false,
+    isError: false, level: "info",
   };
 }
 
@@ -1141,6 +1234,16 @@ export default function Editor(
   // 警告）。灰色の msg に混ぜると気づかれない（D-7）ため errMsg（赤帯）とは
   // 別チャンネルにする（.warnbox・issue #59 H-4／設計書 U-08・U-09）
   const [warnMsg, setWarnMsg] = useState("");
+  // 様式不一致の黄帯文言（issue #71 (a')・FR-F04）。carve 警告と同じ warnMsg に
+  // 混ぜると、編集操作のたびに carveWarningNotice の setWarnMsg("") 上書きで
+  // 消えてしまう（別の事実なので別チャンネルにする）
+  const [formatWarnMsg, setFormatWarnMsg] = useState("");
+  // expand-page が返した面ごとの様式判定（FR-F04・未対応の旧コアでは空配列の
+  // まま＝現行どおり全て描く）
+  const [formatFaces, setFormatFaces] =
+    useState<{ face_id: string; verdict: string }[]>([]);
+  // 「それでもこのテンプレートで開く」（FR-F05）。画像を開き直すと false に戻す
+  const [formatOverride, setFormatOverride] = useState(false);
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
@@ -1336,10 +1439,20 @@ export default function Editor(
     }
     ctx.drawImage(imgRef.current, 0, 0);
     const W = imgSize?.w ?? 2490;
+    const H = imgSize?.h ?? 0;
 
     // 表裏分割線
     ctx.strokeStyle = "#ff5577"; ctx.lineWidth = 3 * px;
     ctx.beginPath(); ctx.moveTo(0, splitY); ctx.lineTo(W, splitY); ctx.stroke();
+
+    // 様式不一致（mismatch）と判定された面の枠は描かない（issue #71 (a')・
+    // FR-F04）。draw() とヒットテスト（onDown の hitAll）は同じ
+    // hiddenFaces／visibleFields／visibleTables／visibleExcls を見る
+    // （L-Q1 の教訓: 述語を2つ持たない・見えない枠を掴ませない）
+    const hidden = hiddenFaces(formatFaces, formatOverride);
+    const visFields = visibleFields(fields, hidden, splitY, H);
+    const visTables = visibleTables(tables, hidden, splitY, H);
+    const visExcls = visibleExcls(excls, hidden, splitY, H);
 
     const rect = (r: Rect, stroke: string, fill?: string) => {
       if (fill) { ctx.fillStyle = fill; ctx.fillRect(r.x, r.y, r.w, r.h); }
@@ -1400,10 +1513,10 @@ export default function Editor(
       ctx.stroke();
     };
     ctx.lineWidth = 2 * px;
-    for (const e of excls)
+    for (const e of visExcls)
       rect(e.rect, sel?.uid === e.uid ? "#ffd54a" : "#888",
            "rgba(120,120,120,0.35)");
-    for (const f of fields) {
+    for (const f of visFields) {
       rect(f.rect, sel?.uid === f.uid && sel?.part !== "fallback"
         ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
       if (hlFieldUid === f.uid) {
@@ -1446,7 +1559,7 @@ export default function Editor(
               fb.w - 8 * px, fb.h);
       }
     }
-    for (const t of tables) {
+    for (const t of visTables) {
       const totalW = t.columns.length
         ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
       for (const b of t.blocks) {
@@ -1516,7 +1629,8 @@ export default function Editor(
       }
     }
     ctx.restore();
-  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol, hlFieldUid]);
+  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol, hlFieldUid,
+      formatFaces, formatOverride]);
 
   // draw() は全欄のラベルをループで measureText トリムするため、ドラッグ中の
   // mousemove のたびに毎回同期実行すると重い（issue #60 M-3・実測で back面
@@ -1551,47 +1665,55 @@ export default function Editor(
     if (!confirmDiscard()) return;
     const p = await invoke<string | null>("pick_image");
     if (!p) return;
+    const isPdf = p.toLowerCase().endsWith(".pdf");
     let imagePath = p;
     let note = "";
-    // テンプレ破損由来の位置合わせ失敗は赤帯で出す（いろは5巡目指摘）。
-    // im.onload が setErrMsg("") を無条件に呼ぶため、そこで上書きされない
-    // よう変数で持ち回り、onload 側で反映する
+    // テンプレ破損・様式不一致由来の帯は setErrMsg("")／setFormatWarnMsg("")
+    // が im.onload で無条件に呼ばれた後に上書きされないよう変数で持ち回り、
+    // onload 側で反映する（いろは5巡目指摘・issue #71 (a') で黄帯を追加）
     let alignErr = "";
-    if (p.toLowerCase().endsWith(".pdf")) {
-      // スキャン PDF はコアで1ページ目を 300dpi 展開してから表示する
-      //（run と同じ dpi＝テンプレート座標系と一致・issue #19）
-      setMsg("PDF を展開しています…");
-      try {
-        // --no-mask: 除外領域を白塗りしない下地で返す（issue #59 H-8）。
-        // 従来は常に出荷テンプレの除外を焼いた画像が下地になり、除外枠の
-        // 位置調整・取捨の判断材料が画面から見えなかった。除外は既存の
-        // 枠オーバーレイ描画（draw 内の excls ループ）で見えているので、
-        // 下地側は焼かずに済む。--template は今読み込んでいるテンプレを
-        // 明示する（未読込＝tplPath が null のときは省略し、lib.rs の
-        // inject_default_template が出荷テンプレを注入する・第0段の配線）
-        const args = ["expand-page", "--input", p, "--no-mask"];
-        if (tplPath) args.push("--template", tplPath);
-        const out = await invoke<string>("run_core_capture", { args });
-        const ev = out.split("\n")
-          .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-          .find((e) => e && e.event === "expand_page");
-        if (!ev?.ok) {
-          setErrMsg(`PDF を開けませんでした: ${ev?.error ?? "不明"}`);
-          setMsg("");
-          return;
-        }
-        imagePath = ev.page_path;
-        // 位置合わせ済みの画像なら、テンプレートの枠が最初から記入欄の上に
-        // 乗る。合わせられなかった紙は生画像なので、原因（reason）に応じて
-        // 案内を出し分ける（いろは5巡目指摘。expandAlignNotice 参照）
-        const pageNote = ev.pages > 1 ? `PDF の 1/${ev.pages} ページ目・` : "";
-        const align = expandAlignNotice(ev.aligned, ev.reason, pageNote);
-        if (align.isError) alignErr = align.text; else note = align.text;
-      } catch (e) {
-        setErrMsg(`PDF を開けませんでした: ${e}`);
+    let alignWarn = "";
+    let faces: { face_id: string; verdict: string }[] = [];
+    // 画像（PNG/JPG 等）でも expand-page を通す（issue #71 (a')・設計08
+    // §2.7.1・AC-F02 の前提）。ingest.expand は PDF 以外を入力そのまま
+    // 返すため、コア側の変更は不要——PDF 専用だった従来の分岐を外すだけで
+    // 位置合わせ・様式判定の両方が画像にも掛かるようになる
+    setMsg(isPdf ? "PDF を展開しています…" : "画像を確認しています…");
+    try {
+      // --no-mask: 除外領域を白塗りしない下地で返す（issue #59 H-8）。
+      // 従来は常に出荷テンプレの除外を焼いた画像が下地になり、除外枠の
+      // 位置調整・取捨の判断材料が画面から見えなかった。除外は既存の
+      // 枠オーバーレイ描画（draw 内の excls ループ）で見えているので、
+      // 下地側は焼かずに済む。--template は今読み込んでいるテンプレを
+      // 明示する（未読込＝tplPath が null のときは省略し、lib.rs の
+      // inject_default_template が出荷テンプレを注入する・第0段の配線）
+      const args = ["expand-page", "--input", p, "--no-mask"];
+      if (tplPath) args.push("--template", tplPath);
+      const out = await invoke<string>("run_core_capture", { args });
+      const ev = out.split("\n")
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .find((e) => e && e.event === "expand_page");
+      if (!ev?.ok) {
+        setErrMsg(`${isPdf ? "PDF" : "画像"}を開けませんでした: ${ev?.error ?? "不明"}`);
         setMsg("");
         return;
       }
+      imagePath = ev.page_path;
+      // 位置合わせ済みの画像なら、テンプレートの枠が最初から記入欄の上に
+      // 乗る。合わせられなかった紙・様式が違う紙は、原因（reason）・
+      // 様式判定（verdict）に応じて案内を出し分ける
+      // （いろは5巡目指摘＋issue #71 (a')。expandAlignNotice 参照）
+      const pageNote = ev.pages > 1 ? `PDF の 1/${ev.pages} ページ目・` : "";
+      const align = expandAlignNotice(
+        ev.aligned, ev.reason, pageNote, ev.verdict, meta.current.template_id);
+      if (align.level === "error") alignErr = align.text;
+      else if (align.level === "warn") alignWarn = align.text;
+      else note = align.text;
+      faces = Array.isArray(ev.faces) ? ev.faces : [];
+    } catch (e) {
+      setErrMsg(`${isPdf ? "PDF" : "画像"}を開けませんでした: ${e}`);
+      setMsg("");
+      return;
     }
     // 読み込み失敗を try の外に置くと、直前の「展開しています…」表示のまま
     // 黙って止まる（実測・2026-08-28）。必ず catch してエラーを見せる
@@ -1609,8 +1731,14 @@ export default function Editor(
       setImgSize({ w: im.naturalWidth, h: im.naturalHeight });
       setImgPath(imagePath);
       // テンプレ破損由来の位置合わせ失敗（alignErr）があれば赤帯を残す。
-      // 無ければ従来どおりクリアする
+      // 無ければ従来どおりクリアする。様式不一致（alignWarn）は黄帯専用の
+      // formatWarnMsg へ（carve 警告の warnMsg とは別チャンネル）
       setErrMsg(alignErr);
+      setFormatWarnMsg(alignWarn);
+      setFormatFaces(faces);
+      // 新しい画像を開いたら上書き表示（FR-F05）は必ずリセットする
+      // （設計08 §2.7.4「画像を開き直したら false に戻す」）
+      setFormatOverride(false);
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       draw();
     };
@@ -2214,21 +2342,36 @@ export default function Editor(
     return null;
   };
 
+  // selHiddenByFormat（モジュール直下・純関数）の薄いラッパー。現在の
+  // state を閉じ込めるだけで判定ロジックは持たない（1箇所に集約・
+  // 純関数化して gui-logic でテストできるようにした・スバル差し戻し1）
+  const selIsHiddenByFormat = (): boolean =>
+    selHiddenByFormat(sel, fields, tables, excls,
+      hiddenFaces(formatFaces, formatOverride), splitY, imgSize?.h ?? 0);
+
   // 点の下にある要素を**すべて**前面順で返す。先頭が従来の hit() と同じ
   // 最前面。Ctrl+クリックの循環選択（下の要素を選ぶ）が全候補を必要とする
   const hitAll = (p: { x: number; y: number }): NonNullable<Sel>[] => {
     const inR = (r: Rect) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
     const out: NonNullable<Sel>[] = [];
-    for (const f of fields) if (inR(f.rect)) out.push({ type: "field", uid: f.uid });
-    for (const f of fields)
+    // draw() と同じ可視集合を見る（issue #71 (a')・見えない枠を掴ませない・
+    // L-Q1 の教訓）。imgSize?.h が無い（画像未読込）間は hidden が常に空になり
+    // 実害は無い——canvasInteractionAllowed のガードが onDown 側で先に効く
+    const imgH = imgSize?.h ?? 0;
+    const hidden = hiddenFaces(formatFaces, formatOverride);
+    const visFields = visibleFields(fields, hidden, splitY, imgH);
+    const visTables = visibleTables(tables, hidden, splitY, imgH);
+    const visExcls = visibleExcls(excls, hidden, splitY, imgH);
+    for (const f of visFields) if (inR(f.rect)) out.push({ type: "field", uid: f.uid });
+    for (const f of visFields)
       (f.extras ?? []).forEach((ex, i) => {
         if (inR(ex)) out.push({ type: "field", uid: f.uid, part: `extra:${i}` });
       });
-    for (const f of fields)
+    for (const f of visFields)
       if (f.fallback && inR(f.fallback))
         out.push({ type: "field", uid: f.uid, part: "fallback" });
-    for (const e of excls) if (inR(e.rect)) out.push({ type: "excl", uid: e.uid });
-    for (const t of tables) {
+    for (const e of visExcls) if (inR(e.rect)) out.push({ type: "excl", uid: e.uid });
+    for (const t of visTables) {
       const w = t.columns.length ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
       for (const b of t.blocks)
         if (inR({ x: b.x, y: b.y, w, h: t.row_pitch * (b.rows - 1) + t.row_height })) {
@@ -2475,6 +2618,7 @@ export default function Editor(
   };
   const nudge = (dx: number, dy: number) => {
     if (!sel) return;
+    if (selIsHiddenByFormat()) return;   // issue #71 (a')・見えない枠を動かさない
     if (sel.type === "table") {
       const t = tables.find((x) => x.uid === sel.uid);
       if (t && t.blocks[0]) {
@@ -2686,6 +2830,7 @@ export default function Editor(
   };
   const removeSel = () => {
     if (!sel) return;
+    if (selIsHiddenByFormat()) return;   // issue #71 (a')・見えない枠を削除しない
     if (sel.type === "field") {
       if (sel.part === "fallback")
         setFields((fs) => fs.map((f) => f.uid === sel.uid
@@ -2842,8 +2987,14 @@ export default function Editor(
             </>
           )}
           {/* 「参照先を削除」と並ぶため、対象を明示する（誤クリック防止） */}
-          <button onClick={() => {
-            // 参照先を選択中でも「この欄を削除」は欄ごと消す（部位に依らない）
+          <button disabled={selIsHiddenByFormat()}
+            title={selIsHiddenByFormat()
+              ? "様式が違う面の欄のため編集できません（上書き表示中は編集できます）" : undefined}
+            onClick={() => {
+            // 参照先を選択中でも「この欄を削除」は欄ごと消す（部位に依らない）。
+            // removeSel を経由しないため、隠れた面のガードもここで直接効かせる
+            // （issue #71 (a')・スバル差し戻し1）
+            if (selIsHiddenByFormat()) return;
             setFields((fs) => fs.filter((v) => v.uid !== f.uid));
             setSel(null); markDirty(true); }}>この欄を削除</button>
         </div>);
@@ -3002,11 +3153,17 @@ export default function Editor(
   // [↑][↓] は同じ面（表面/裏面）の欄どうしでしか動かない——面をまたぐ隣接ボタンは
   // そもそも存在しない（AC-2.2・UI に存在しない構造で担保）
   const outputListPanel = () => {
+    // issue #71 (a')・スバル差し戻し1: 出力列タブは canvas の hitAll とは別の
+    // 選択経路を持っており、様式不一致で隠れている面の欄・表もクリックで
+    // 選べてしまっていた（→矢印キーで動かせる／削除できる漏れ）。同じ
+    // hiddenFaces を面単位で見て、隠れている面の行は選択不可＋グレー表示にする
+    const hidden = hiddenFaces(formatFaces, formatOverride);
     const front = { fields: fields.filter((f) => f.rect.y < splitY),
                     tables: tables.filter((t) => t.blocks[0] && t.blocks[0].y < splitY) };
     const back = { fields: fields.filter((f) => f.rect.y >= splitY),
                    tables: tables.filter((t) => t.blocks[0] && t.blocks[0].y >= splitY) };
-    const fieldRow = (f: Field) => {
+    const hiddenBadge = <span className="format-hidden-badge">非表示（様式不一致）</span>;
+    const fieldRow = (f: Field, faceHidden: boolean) => {
       const pos = orderChangedSinceLoad ? null : findColumnPositions(columnNames, f.field_id);
       const out = isOutput(f);
       const name = f.field_id || "（名前未設定）";
@@ -3014,7 +3171,8 @@ export default function Editor(
       const canDown = moveFieldOutputOrder(fields, f.uid, "down", splitY) !== null;
       return (
         <div key={f.uid}
-          className={`panel-outrow${out ? "" : " off"}${flashUid === f.uid ? " flash" : ""}`}
+          className={`panel-outrow${out ? "" : " off"}${flashUid === f.uid ? " flash" : ""}${
+            faceHidden ? " format-hidden" : ""}`}
           onMouseEnter={() => setHlFieldUid(f.uid)} onMouseLeave={() => setHlFieldUid(null)}
           onFocus={() => setHlFieldUid(f.uid)} onBlur={() => setHlFieldUid(null)}>
           <span className="reorder-btns">
@@ -3031,38 +3189,52 @@ export default function Editor(
           <input type="checkbox" checked={out}
             aria-label={outputCheckboxLabel(name, out, pos)}
             onChange={(e) => updateField(f.uid, { output: e.target.checked ? undefined : false })} />
-          <button className="name" type="button" style={{ textAlign: "left",
-            background: "none", border: "none", cursor: "pointer", padding: 0, font: "inherit" }}
-            onClick={() => { setSel({ type: "field", uid: f.uid }); setPanelTab("selected"); }}>
+          <button className="name" type="button" disabled={faceHidden}
+            title={faceHidden ? "様式が違う面の欄のため選択できません（上書き表示中は選べます）" : undefined}
+            style={{ textAlign: "left",
+              background: "none", border: "none", cursor: faceHidden ? "not-allowed" : "pointer",
+              padding: 0, font: "inherit" }}
+            onClick={faceHidden ? undefined
+              : () => { setSel({ type: "field", uid: f.uid }); setPanelTab("selected"); }}>
             {name}
           </button>
+          {faceHidden && hiddenBadge}
         </div>);
     };
-    const tableRow = (t: Table) => (
-      <div key={t.uid} className="panel-outrow"
+    const tableRow = (t: Table, faceHidden: boolean) => (
+      <div key={t.uid} className={`panel-outrow${faceHidden ? " format-hidden" : ""}`}
         onMouseEnter={() => setHlFieldUid(t.uid)} onMouseLeave={() => setHlFieldUid(null)}
         onFocus={() => setHlFieldUid(t.uid)} onBlur={() => setHlFieldUid(null)}>
         <span className="reorder-btns" title="表は面のいちばん後ろに出力されます" />
         <span className="colpos" title="表は面のいちばん後ろに出力されます">表</span>
         <span className="name">{t.table_id}（列{t.columns.length}・うち出力
           {t.columns.filter((c) => isOutput(c)).length}）</span>
-        <button className="btn" type="button" style={{ minHeight: 28, padding: "3px 10px" }}
-          onClick={() => { setSel({ type: "table", uid: t.uid }); setPanelTab("selected"); }}>開く</button>
+        {faceHidden && hiddenBadge}
+        <button className="btn" type="button" disabled={faceHidden}
+          title={faceHidden ? "様式が違う面の表のため選択できません（上書き表示中は選べます）" : undefined}
+          style={{ minHeight: 28, padding: "3px 10px" }}
+          onClick={faceHidden ? undefined
+            : () => { setSel({ type: "table", uid: t.uid }); setPanelTab("selected"); }}>開く</button>
       </div>);
-    const faceSection = (label: string, group: { fields: Field[]; tables: Table[] }) => (
-      <div key={label}>
-        <h4>{label}</h4>
-        {group.fields.length === 0 && group.tables.length === 0
-          ? <p className="note">欄がありません</p>
-          : <>{group.fields.map(fieldRow)}{group.tables.map(tableRow)}</>}
-      </div>);
+    const faceSection = (
+      label: string, group: { fields: Field[]; tables: Table[] }, faceId: "front" | "back") => {
+      const faceHidden = hidden.has(faceId);
+      return (
+        <div key={label}>
+          <h4>{label}{faceHidden && <> {hiddenBadge}</>}</h4>
+          {group.fields.length === 0 && group.tables.length === 0
+            ? <p className="note">欄がありません</p>
+            : <>{group.fields.map((f) => fieldRow(f, faceHidden))}
+                {group.tables.map((t) => tableRow(t, faceHidden))}</>}
+        </div>);
+    };
     return (
       <div className="panel">
         <h3>出力列</h3>
         <p className="note">🔒 管理6列（要確認セル数・最低信頼度・帳票ID・入力ファイル名・
           ページ番号・ステータス）は常に先頭固定で出力されます（並べ替え対象外）</p>
-        {faceSection("表面", front)}
-        {faceSection("裏面", back)}
+        {faceSection("表面", front, "front")}
+        {faceSection("裏面", back, "back")}
         <p className="note">[↑][↓] で同じ面（表面/裏面）の欄どうしを並べ替えられます。
           表は面のいちばん後ろに固定され、内部の列は「開く」から並べ替えてください。
           並べ替え後は「保存して検証」で列番号が確定します</p>
@@ -3076,6 +3248,12 @@ export default function Editor(
   // 一時的に省く——並べ替え直後は column_names がまだ古い並びのままなので、
   // 誤った番号を出さないため（FR-0.1）。次の保存成功で解消する
   const orderChangedSinceLoad = outputOrderChanged(loadedOrder, outputOrderSnapshot(fields, tables));
+  // 様式不一致の黄帯（issue #71 (a')・FR-F04・FR-F05）。上書き中は文言を
+  // 差し替え、ボタンは隠す（押し直す必要が無い・押した理由が画面に残る）
+  const hasFormatMismatch = formatFaces.some((f) => f.verdict === "mismatch");
+  const formatBannerText = formatOverride
+    ? "様式判定を無視して枠を表示しています"
+    : formatWarnMsg;
 
   return (
     <div className="editor">
@@ -3103,6 +3281,18 @@ export default function Editor(
           {msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
       {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
+      {formatBannerText && (
+        <div className="warnbox" role="status" aria-live="polite"
+          style={{ margin: "8px 18px", display: "flex",
+          alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <span>{formatBannerText}</span>
+          {hasFormatMismatch && !formatOverride && (
+            <button className="btn" onClick={() => setFormatOverride(true)}>
+              それでもこのテンプレートで開く
+            </button>
+          )}
+        </div>
+      )}
       {warnMsg && <div className="warnbox" style={{ margin: "8px 18px" }}>{warnMsg}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"

@@ -114,7 +114,10 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     page.wait_for_selector("text=管理者向け")
     assert page.get_by_text("帳票の画像か PDF を開くと", exact=False).is_visible()
 
-    # デモモードは pick_image が null を返す（bridge.ts）ため画像は開けない。
+    # このテストは「帳票を開く」を一度もクリックしないため、bridge.ts の
+    # pick_image が何を返すか（issue #71 (a') 以降は固定の疑似画像パス）に
+    # 依存しない。画像を開いた状態の検証は
+    # test_editor_format_mismatch_hides_frames_until_override 側で行う。
     # 出力列タブは id 指定で開く（マリンレビュー LOW: 出力しない欄があると
     # バッジ「⊘N」が名前に付き get_by_role(name=...) が壊れうるため）
     page.locator("#edittab-output").click()
@@ -191,6 +194,55 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     page.mouse.click(box["x"] + 300, box["y"] + 300)
     assert page.get_by_text("要素が選択されていません").is_visible(), \
         "画像なしのキャンバスクリックで選択解除できない（コーディネータ指摘6）"
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")
+
+
+def test_editor_format_mismatch_hides_frames_until_override(page):
+    # issue #71 (a'): expand-page が返す面ごとの様式判定（verdict）が
+    # "mismatch" の面は、「それでもこのテンプレートで開く」（FR-F05）で
+    # 上書きするまで枠を描かず・掴めない（FR-F04・FR-F06・AC-F02/AC-F06/
+    # AC-F07・設計08 §2.7.3「見えない枠を掴ませない」）。
+    # デモモードの pick_image は実ファイルダイアログを持たない（null を
+    # 返すだけだった）ため、bridge.ts のデモ分岐に疑似の expand-page 応答を
+    # 追加してこの経路を検証する。pick_image は1回目に必ず front=mismatch の
+    # 疑似パスを返す（2回目以降は match/undecidable を巡回する・任意対応）
+    # ——core 側の verdict/score/faces 追加が完了していなくても、GUI 側の
+    # 配線（黄帯・上書きボタン・可視集合）を単独で確認できる。
+    #
+    # 枠の可視・不可視は canvas 上の細い矩形ストロークで、低ズーム
+    # （既定 zoom=0.35）ではピクセル走査が不安定になりうるため、より頑健で
+    # 意味も直接的なヒットテスト（クリックで選択できるか）で検証する
+    # （L-Q1 の教訓どおり draw() とヒットテストは同じ可視集合を見るため、
+    # ヒットテストで確認すれば描画も同じ結果になっているはず）。
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=様式が合いません")
+    assert page.get_by_role("button", name="それでもこのテンプレートで開く").is_visible()
+
+    # DEMO_TEMPLATE の front 面にある「person_氏名」欄（page 座標
+    # x:400,y:300,w:600,h:90）の中心を、既定の zoom(0.35)・pan({x:10,y:10})
+    # から画面座標へ逆算する。バナーの高さ変化で canvas の位置がずれても
+    # 追従できるよう、クリックのたびに bounding_box を取り直す
+    def field_center():
+        box = page.locator("canvas.canvas").bounding_box()
+        return box["x"] + 10 + 700 * 0.35, box["y"] + 10 + 345 * 0.35
+
+    fx, fy = field_center()
+    page.mouse.click(fx, fy)
+    assert page.get_by_text("要素が選択されていません").is_visible(), \
+        "不一致面の欄が上書き前なのに選択できてしまった（見えない枠を掴んでいる）"
+
+    # 上書きすると枠が出て掴めるようになる
+    page.get_by_role("button", name="それでもこのテンプレートで開く").click()
+    page.wait_for_selector("text=様式判定を無視して枠を表示しています")
+    fx, fy = field_center()
+    page.mouse.click(fx, fy)
+    assert page.get_by_text("選択中の欄").is_visible(), "上書き後なのに欄を選択できない"
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
