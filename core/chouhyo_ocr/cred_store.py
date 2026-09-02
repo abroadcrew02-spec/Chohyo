@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 _BLOB_NAME = "cred.dpapi"
+_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS"
 
 
 class _DATA_BLOB(ctypes.Structure):
@@ -63,10 +64,21 @@ def load_credentials_info(workdir: str | Path) -> dict | None:
     return json.loads(_crypt(p.read_bytes(), protect=False))
 
 
+def env_credentials_present() -> bool:
+    """環境変数の平文鍵が設定されているか（設定の有無だけ・値もパスも返さない）。
+
+    credentials_state() は dpapi を優先して1つの状態に畳むため、DPAPI 取り込み
+    済みの環境では env 側の平文鍵が state から見えなくなる。「DPAPI があるから
+    緑」で平文鍵の残置を見逃す経路を塞ぐため、dpapi と独立した述語として切り出す
+    （S-MB）。3値契約（dpapi/env/missing）は変えない。
+    """
+    return bool(os.environ.get(_ENV_VAR))
+
+
 def credentials_state(workdir: str | Path) -> str:
     """verify 用の状態表示（値は含めない）。"""
     if (Path(workdir) / _BLOB_NAME).exists():
         return "dpapi"
-    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    if env_credentials_present():
         return "env"
     return "missing"

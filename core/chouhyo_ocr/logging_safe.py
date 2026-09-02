@@ -19,6 +19,9 @@ _ALLOWED_KEYS = {
     # 入力ページの寸法比（Q-H1・align.align_page の page_scale ログ）。
     # 記入値ではなく、幅/高さをテンプレート寸法で割った比率のみ
     "sx", "sy",
+    # purge --include-output の削除実績（S-MC）。件数と、ファイル名の日時部分
+    # （output_<日時>.xlsx の <日時>）のみで記入値は含まない
+    "kept", "failed", "timestamps",
 }
 
 _app: logging.Logger | None = None

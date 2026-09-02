@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -187,8 +188,21 @@ def cmd_verify(args) -> int:
     ok = ok and left > 0
     # 資格情報（値は出さない）
     state = cred_store.credentials_state(cfg.workdir)
-    _progress({"event": "verify", "check": "credentials", "ok": state != "missing",
-               "state": state})
+    # 環境変数の平文鍵は state と独立に見る（S-MB）。state は3値契約
+    # （dpapi/env/missing）のまま dpapi を優先するため、両方ある環境では state
+    # だけでは平文鍵の残置に気づけない。ok は変えない——env でも実行はできる
+    env_present = cred_store.env_credentials_present()
+    cred_event = {"event": "verify", "check": "credentials",
+                  "ok": state != "missing", "state": state,
+                  "env_present": env_present}
+    if state == "env" or env_present:
+        cred_event["warn"] = True
+        cred_event["reason"] = "env_plaintext"
+        # 変数名だけを出す（設定値＝鍵ファイルのパスは出さない・既存方針）
+        print("警告: 環境変数 GOOGLE_APPLICATION_CREDENTIALS の平文の鍵ファイルを"
+              "参照している。import-credentials で取り込み、平文 JSON と環境変数を"
+              "消すこと。", file=sys.stderr)
+    _progress(cred_event)
     ok = ok and state != "missing"
     return 0 if ok else 1
 
@@ -398,6 +412,52 @@ def cmd_detect_grid(args) -> int:
     return 0
 
 
+# 出力先から消してよいのは、このツールが作った命名に一致するファイルだけ
+# （S-MC）。output_dir は GUI で任意のフォルダ（デスクトップ・共有フォルダ等）を
+# 指せるため、rmtree もディレクトリ削除も使わない——1件ずつ unlink する。
+# 命名の正は render_out.write_outputs（`output_<ts>.xlsx` / `.csv` /
+# `_columns.txt`）と、その退避 `+".bak"`・一時ファイル `.xlsx.tmp` /
+# `.csv.tmp` / `.txt.tmp`。ts は pipeline._render_locked の
+# time.strftime("%Y%m%d_%H%M%S")。呼び出し側が渡す形式も受けられるよう
+# 14桁連番（区切りなし）も許容するが、それ以外の任意文字列は受けない
+# （テストが渡す timestamp="g4" のような名前を対象にしない）
+_OUTPUT_TS = r"(?:\d{8}_\d{6}|\d{14})"
+_OUTPUT_NAME_RE = re.compile(
+    rf"^output_{_OUTPUT_TS}(?:\.xlsx|\.csv|_columns\.txt)(?:\.bak|\.tmp)?$")
+_OUTPUT_TS_RE = re.compile(rf"^output_({_OUTPUT_TS})")
+
+
+def _output_purge_targets(out_dir: Path) -> tuple[list[Path], int]:
+    """出力先を走査して (削除対象, 対象外として残るファイル数) を返す。
+
+    走査は out_dir 直下のみ（再帰しない）。ディレクトリは対象にも件数にも
+    含めない——「残るファイル数」は利用者が手で置いたファイルの見える化が
+    目的で、消し忘れの判断材料にする。存在しない・空でも例外にしない。
+    """
+    if not out_dir.is_dir():
+        return [], 0
+    targets: list[Path] = []
+    kept = 0
+    for p in sorted(out_dir.iterdir()):
+        if not p.is_file():
+            continue
+        if _OUTPUT_NAME_RE.match(p.name):
+            targets.append(p)
+        else:
+            kept += 1
+    return targets, kept
+
+
+def _output_timestamps(targets: list[Path]) -> list[str]:
+    """削除対象のファイル名から日時部分だけを取り出す（記入値は含まない）。"""
+    found = set()
+    for p in targets:
+        m = _OUTPUT_TS_RE.match(p.name)
+        if m:
+            found.add(m.group(1))
+    return sorted(found)
+
+
 def cmd_purge(args) -> int:
     cfg = load_config(args.config)
     log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
@@ -408,8 +468,37 @@ def cmd_purge(args) -> int:
     wd = Path(cfg.workdir)
     if wd.exists():
         shutil.rmtree(wd)
-    _progress({"event": "purged", "path": str(wd)})
-    return 0
+    event = {"event": "purged", "path": str(wd)}
+    rc = 0
+    if args.include_output:
+        out_dir = Path(cfg.output_dir)
+        targets, kept = _output_purge_targets(out_dir)
+        # 消す前に何を消すかを残す（S-MC）。出るのはファイル名の日時と件数だけで
+        # 帳票の記入値は含まない。kept は「消したつもり」を防ぐための可視化
+        log.info("purge_output_scan", path=str(out_dir), count=len(targets),
+                 kept=kept, timestamps=",".join(_output_timestamps(targets)))
+        removed = failed = 0
+        for p in targets:
+            try:
+                p.unlink()
+                removed += 1
+            except OSError:
+                # Excel で開いたままだと消せない（PermissionError）。1件の失敗で
+                # 残りを諦めると中途半端に個人情報が残るため、続行して件数で返す
+                failed += 1
+        log.info("purge_output_done", count=removed, failed=failed, kept=kept)
+        event.update({"output_dir": str(out_dir), "output_removed": removed,
+                      "output_kept": kept, "output_failed": failed})
+        # 標準出力の JSON Lines（§7.3）は GUI 用だが、purge は GUI 境界で禁止
+        # されている（lib.rs の check_args_v2）CLI 専用コマンドなので、人が読む
+        # 1行を併記する
+        print(f"削除 {removed} 件／対象外として残したファイル {kept} 件")
+        if failed:
+            print(f"削除できないファイルが {failed} 件ある（Excel などで開かれて"
+                  "いる可能性）。閉じてからやり直す。", file=sys.stderr)
+            rc = 1
+    _progress(event)
+    return rc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -489,6 +578,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("purge", help="中間データの削除（--yes 必須）")
     p.add_argument("--yes", action="store_true")
+    p.add_argument("--include-output", action="store_true",
+                   help="出力先の生成物（output_<日時>.xlsx / .csv / "
+                        "_columns.txt と、その .bak・.tmp）も削除する。"
+                        "フォルダ自体と、この命名に一致しないファイルは残す")
     p.set_defaults(fn=cmd_purge)
 
     args = ap.parse_args(argv)
