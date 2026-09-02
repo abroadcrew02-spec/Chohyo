@@ -457,6 +457,11 @@ def assign(
     # ——column.py 側の「output に出す/出さない」判定とは別で、こちらは
     # 「読み取り上の事実（どの欄で警告が起きたか）」を output で色分けするだけ
     output_by_id = {c.field_id: c.output for c in cells}
+    # 欄名（field_id）はログへ出さない（Q-S1・FR-F50・2026-09-02）。cells は
+    # pipeline.py が template.cells をそのまま渡す（呼び出し元 assign() の
+    # docstring参照）ため、この0始まり序数を template_hash と組の匿名識別子
+    # cell_idx として使う
+    idx_by_field_id = {c.field_id: i for i, c in enumerate(cells)}
 
     for c in cells:
         all_rects = c.all_rects()
@@ -476,7 +481,7 @@ def assign(
                 text=text, conf_min=(min(confs) if confs else None),
                 char_confs=confs, origin="fallback")
             fallback_used += 1
-            log.info("fallback_used", field_id=c.field_id)
+            log.info("fallback_used", cell_idx=idx_by_field_id[c.field_id])
             continue
 
         # 主を採用する（矛盾＝conflict の場合も値は主のまま・U-03）
@@ -486,7 +491,7 @@ def assign(
             text=text, conf_min=(min(confs) if confs else None),
             char_confs=confs, origin=("conflict" if decision == "conflict" else ""))
         if decision == "conflict":
-            log.warn("fallback_conflict", field_id=c.field_id)
+            log.warn("fallback_conflict", cell_idx=idx_by_field_id[c.field_id])
             if not c.output:
                 conflict_excluded_field += 1
 
@@ -495,7 +500,8 @@ def assign(
             # 文字は消えてはならず、必ず穴・枠外のどちらかに分類される
             # （設計 §14 不変条件6・判定表 A）
             fallback_discarded += n_fb
-            log.warn("fallback_discarded", field_id=c.field_id, count=n_fb)
+            log.warn("fallback_discarded",
+                     cell_idx=idx_by_field_id[c.field_id], count=n_fb)
             if not c.output:
                 # fallback_rect は c（この欄）が持つので、発火元の欄は c 自身
                 fallback_discarded_excluded_field += n_fb
@@ -519,7 +525,7 @@ def assign(
         # 位置的に怪しい記入がある事実を無言で隠さない（設計原則）
         contents[fid] = CellContent(text=_UNCLEAR, conf_min=None,
                                     char_confs=(), origin="")
-        log.warn("carve_hole", field_id=fid, count=n)
+        log.warn("carve_hole", cell_idx=idx_by_field_id[fid], count=n)
 
     # 空行判定: 行内の text セルに内容がひとつも無い行（choice の印字は数えない・§6.5）
     rows: dict[tuple[str, int], bool] = {}

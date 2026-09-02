@@ -328,10 +328,18 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
     """
     warnings: list[str] = []
     exclusions_by_face = {f.face_id: f.exclusions for f in faces}
-    for c in cells:
+    # 欄名・面IDの代わりにログへ残す匿名識別子（Q-S1・FR-F50・2026-09-02）:
+    # cell_idx は cells（load_template が Template.cells へそのまま渡す並び
+    # と同一・呼び出し元 load_template を参照）内の0始まり序数、face_idx は
+    # faces（Template.faces と同一の並び）内の0始まり序数。GUI 向けの
+    # warnings（下の f-string）は欄名を含めたまま返す（stdout の JSON Lines
+    # は秘匿対象外・§0.6）
+    face_idx_by_id = {f.face_id: i for i, f in enumerate(faces)}
+    for idx, c in enumerate(cells):
         exclusions = exclusions_by_face.get(c.face_id, ())
         if not exclusions:
             continue
+        face_idx = face_idx_by_id[c.face_id]
         # issue #66 段2（トワ・ぼたん S-8）: 対象の欄が output: false なら、
         # W-1/W-2 の全文言に印を付ける。無改変テンプレート（全欄 output=True）
         # では tag は常に空文字列なので、既存の件数固定テストは影響を受けない
@@ -351,22 +359,22 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
             warnings.append(
                 f"[W-1] {c.field_id} の{label}が除外領域と重なっている"
                 f"（被覆率 約{ratio * 100:.1f}%）{tag}")
-            log.warn("exclusion_overlap_w1", field_id=c.field_id)
+            log.warn("exclusion_overlap_w1", cell_idx=idx, face_idx=face_idx)
             if covered >= area:
                 warnings.append(
                     f"[W-2] {c.field_id} の{label}が除外領域に完全に覆われている"
                     f"（恒久的に空になる）{tag}")
-                log.warn("exclusion_overlap_w2_full", field_id=c.field_id)
+                log.warn("exclusion_overlap_w2_full", cell_idx=idx, face_idx=face_idx)
             if label == "参照先の枠":
                 warnings.append(
                     f"[W-2] {c.field_id} の参照先が除外領域と重なっている"
                     f"（参照先が機能しない可能性がある）{tag}")
-                log.warn("exclusion_overlap_w2_fallback", field_id=c.field_id)
+                log.warn("exclusion_overlap_w2_fallback", cell_idx=idx, face_idx=face_idx)
             elif label == "欄" and c.fallback_rect is not None:
                 warnings.append(
                     f"[W-2] {c.field_id} の主枠が除外領域と重なっている"
                     f"（『主が空』が構造的に成立しやすくなり、参照先が常時採用されうる）{tag}")
-                log.warn("exclusion_overlap_w2_primary", field_id=c.field_id)
+                log.warn("exclusion_overlap_w2_primary", cell_idx=idx, face_idx=face_idx)
     return warnings
 
 
@@ -395,11 +403,18 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
 GAP_MIN_PX = 1  # 0px（接触）は死角ではない。1px 以上を隙間とみなす
 
 
-def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
+def _adjacent_gap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str]:
     # issue #66 段2（FR-1.2・トワ・ぼたん S-8）: 隙間の当事者どちらかが
     # output: false なら「（出力対象外）」を付す（欄単位の属性なので field_id
     # で引く。参照先の枠・追加領域も同じ欄の output に従う）
     output_by_id = {c.field_id: c.output for c in cells}
+    # 欄名・面IDの代わりにログへ残す匿名識別子（Q-S1・FR-F50・2026-09-02）。
+    # 以前は face_id・field_a・field_b がいずれも白リスト外で、adjacent_gap_w3
+    # はイベント名しか記録されていなかった（診断が機能していなかった実害・
+    # 08_frame_detection_design.md §1.1）。今回 face_idx・cell_a・cell_b の
+    # 匿名識別子を新設し、診断を実際に機能させる
+    idx_by_field_id = {c.field_id: i for i, c in enumerate(cells)}
+    face_idx_by_id = {f.face_id: i for i, f in enumerate(faces)}
     by_face: dict[str, list[tuple[str, str, Rect]]] = {}
     for c in cells:
         for r in c.all_rects():
@@ -446,8 +461,9 @@ def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
                     f"[W-3] {id_a}（{label_a}）と {id_b}（{label_b}）の間に"
                     f"{gap}px の隙間がある（面 '{face_id}'）。この隙間に書かれた"
                     f"文字はどの欄にも入らず読み取られない{tag}")
-                log.warn("adjacent_gap_w3", face_id=face_id, field_a=id_a,
-                         field_b=id_b, gap_px=gap)
+                log.warn("adjacent_gap_w3", face_idx=face_idx_by_id[face_id],
+                         cell_a=idx_by_field_id[id_a],
+                         cell_b=idx_by_field_id[id_b], gap_px=gap)
     return warnings
 
 
@@ -463,7 +479,12 @@ def _adjacent_gap_warnings(cells: list[CellSpec]) -> list[str]:
 # 非発火（実測: 穴どうしの y 帯が重ならない）であり、拒否にする実害の裏付けが
 # 無い。切り抜き（extra_rects）の増加で将来発生しうる事象を、W-1/W-2/W-3 と
 # 同じ「見える化のみ」方針で伝える。
-def _hole_overlap_warnings(cells: list[CellSpec]) -> list[str]:
+def _hole_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str]:
+    # 欄名・面IDの代わりにログへ残す匿名識別子（Q-S1・FR-F50・2026-09-02。
+    # 以前は face_id・field_a・field_b が白リスト外で、hole_overlap_w4 は
+    # イベント名しか記録されていなかった実害を修正する・§1.1）
+    idx_by_field_id = {c.field_id: i for i, c in enumerate(cells)}
+    face_idx_by_id = {f.face_id: i for i, f in enumerate(faces)}
     warnings: list[str] = []
     by_face: dict[str, list[tuple[str, Rect]]] = {}
     for c in cells:
@@ -483,8 +504,9 @@ def _hole_overlap_warnings(cells: list[CellSpec]) -> list[str]:
                     f"（面 '{face_id}'）。重なった部分に落ちた文字の割付先は"
                     "テンプレートの配列順（定義順）で決まる——欄・列の並べ替えで"
                     "割付結果が変わりうる")
-                log.warn("hole_overlap_w4", face_id=face_id,
-                         field_a=id_a, field_b=id_b)
+                log.warn("hole_overlap_w4", face_idx=face_idx_by_id[face_id],
+                         cell_a=idx_by_field_id[id_a],
+                         cell_b=idx_by_field_id[id_b])
     return warnings
 
 
@@ -764,6 +786,6 @@ def load_template(path: str | Path) -> Template:
         faces=tuple(faces),
         cells=tuple(cells),
         warnings=tuple(_exclusion_overlap_warnings(faces, cells)
-                       + _adjacent_gap_warnings(cells)
-                       + _hole_overlap_warnings(cells)),
+                       + _adjacent_gap_warnings(faces, cells)
+                       + _hole_overlap_warnings(faces, cells)),
     )

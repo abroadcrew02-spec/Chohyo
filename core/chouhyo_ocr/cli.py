@@ -53,7 +53,12 @@ def _client(cfg: Config, replay_dir: str | None):
 def cmd_run(args) -> int:
     cfg = load_config(args.config)
     log.init(cfg.log_dir)
-    log.info("run_start", path=args.input, template_path=args.template)
+    # テンプレートファイル名はログへ出さない（Q-S1・FR-F50・2026-09-02）。
+    # ここではまだテンプレートを読んでおらずハッシュが分からない——算出のため
+    # だけに二重読みはしない。直後に pipeline._run_locked が
+    # template_loaded template_hash=... を出すので、同じ run の中でテンプレート
+    # の特定はできる（08_frame_detection_design.md §1.5）
+    log.info("run_start", path=args.input)
     from .pipeline import run
     summary = run(args.input, args.template, cfg, _client(cfg, args.replay),
                   _progress,
@@ -115,6 +120,13 @@ def cmd_verify(args) -> int:
         from .columns import amount_cell_count, validate_v1
         from .template import load_template, output_cells
         t = load_template(args.template)
+        # verify は pipeline._load を経由しないため template_loaded を
+        # 自前で出す——出さないと、この経路で書かれる W-1〜W-4 の cell_idx・
+        # face_idx を事後にどのテンプレートのものか特定できない（不変条件A・
+        # Q-S1・FR-F50・08_frame_detection_design.md §1.4）
+        from .align import template_hash as _tpl_hash
+        log.info("template_loaded", template_hash=_tpl_hash(
+            json.loads(Path(args.template).read_text(encoding="utf-8"))))
         cols = validate_v1(t)
         # cells は物理的な欄の数。columns との差は「分割（1欄→複数列）＋管理6列」
         # で、編集画面がこの内訳を表示する（欄数と列数の対応を見えるようにする・
@@ -258,8 +270,14 @@ def cmd_expand_page(args) -> int:
         from PIL import Image
 
         from .align import AlignError, PageSizeMismatch, align_page
+        from .align import template_hash as _tpl_hash
         from .template import TemplateError, load_template
         template = load_template(args.template)
+        # expand-page も pipeline._load を経由しないため template_loaded を
+        # 自前で出す（cmd_verify と同じ理由・不変条件A・Q-S1・FR-F50・
+        # 08_frame_detection_design.md §1.4）
+        log.info("template_loaded", template_hash=_tpl_hash(
+            json.loads(Path(args.template).read_text(encoding="utf-8"))))
         with Image.open(page_path) as img:
             img.load()
             # --no-mask: 除外領域を白塗りしない下地を返す（#59 H-8）。編集画面が
@@ -349,6 +367,10 @@ def cmd_debug_images(args) -> int:
     template = load_template(args.template)
     validate_v1(template)
     raw = json.loads(Path(args.template).read_text(encoding="utf-8"))
+    # debug-images も pipeline._load を経由しないため template_loaded を
+    # 自前で出す（cmd_verify・cmd_expand_page と同じ理由・不変条件A・
+    # Q-S1・FR-F50・08_frame_detection_design.md §1.4）
+    log.info("template_loaded", template_hash=_tpl_hash(raw))
     with Store(wd / "intermediate.sqlite") as store:
         # テンプレート変更後の「旧割付×新枠」の嘘可視化を拒否する（#60 M-1①）。
         # render と同じ整合ゲート——check_template=True で cell の割付内容も

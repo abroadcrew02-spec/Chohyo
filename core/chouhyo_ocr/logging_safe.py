@@ -1,8 +1,28 @@
 """ログ（設計 §8.1）。`import logging` はこのモジュールに限る（§12-C6）。
 
 帳票の記入値は一切書かない。出力してよいのは 入力ファイル名・ページ番号・
-帳票ID・項目ID・処理ステップ名・エラーコード・信頼度の数値・設定値・件数のみ。
-許可キー以外は黙って落とす（型で守れない書き方への最後の網）。
+帳票ID・欄の匿名序数・処理ステップ名・エラーコード・信頼度の数値・設定値・
+件数のみ。許可キー以外は黙って落とす（型で守れない書き方への最後の網）。
+
+2026-09-02（Q-S1・FR-F50・NFR-F05 拡張）: 秘匿対象を「記入値」から
+「記入値＋テンプレートファイル名＋欄名（field_id・列名・table_id）」へ拡張。
+`template_path`・`field_id`・`face_id` は白リストから外した（テンプレート名・
+欄名・面IDが機微情報になりうるため）。代替として `template_hash`（テンプレート
+全体のハッシュ・issue #59 H-7 からの既存キー）と、匿名識別子 `cell_idx`
+（template.cells 内の0始まり序数）・`face_idx`（template.faces 内の0始まり
+序数）・`cell_a`/`cell_b`（欄2つを比較する警告用・値は cell_idx と同じ空間）・
+`col_idx`（出力列（抽出対象列）内の0始まり序数）・`gap_px`（px 値・名前を
+含まない）を残す／追加した。適用範囲はログ（app.log・error.log）のみ——
+GUI 表示・stdout の JSON Lines・出力ファイルは対象外（詳細は
+docs/design/chouhyo-ocr/07_frame_detection_requirements.md §0.6）。
+
+**復号手順**（人が `cell_idx=137` を欄名に戻す方法）: 同じ run のログに残る
+`template_loaded template_hash=...`（または `run_start` 直後の
+`template_loaded`）でテンプレートを特定し、そのテンプレート JSON を
+`template.load_template()` で読み、`template.cells[137].field_id` を見る。
+`cell_idx`・`face_idx`・`cell_a`/`cell_b`・`col_idx` は **template_hash と
+セットでのみ意味を持つ**——テンプレートを1欄でも足すと序数がずれる
+（docs/design/chouhyo-ocr/08_frame_detection_design.md §1.4 不変条件A）。
 """
 from __future__ import annotations
 
@@ -10,12 +30,17 @@ import logging
 from pathlib import Path
 
 _ALLOWED_KEYS = {
-    "source_file", "page_no", "page_id", "field_id", "step", "error_code",
+    "source_file", "page_no", "page_id", "step", "error_code",
     "conf", "count", "duplicate_of", "path", "state", "status", "attempt",
-    # テンプレート由来の追跡用（issue #59 H-7）: パスとハッシュ値のみで
-    # 帳票の記入値は含まない。出力がどのテンプレート由来かを事後特定できる
-    # ようにする
-    "template_path", "template_hash",
+    # テンプレート全体のハッシュ（issue #59 H-7）。帳票の記入値もファイル名も
+    # 含まない。出力がどのテンプレート由来かを事後特定できるようにする
+    "template_hash",
+    # テンプレート内の欄・面・出力列の匿名識別子（Q-S1・FR-F50・2026-09-02）。
+    # 欄名・面ID・列名（field_id・face_id・table_id・列名）はログへ出さない
+    # 代わりに、序数のみを残す——template_hash と組み合わせれば診断先の欄を
+    # 特定できる。cell_a/cell_b は欄2つを比べる警告（W-3・W-4）用で、値の
+    # 空間は cell_idx と同じ。gap_px は px 値のみで名前を含まない
+    "cell_idx", "face_idx", "cell_a", "cell_b", "col_idx", "gap_px",
     # 入力ページの寸法比（Q-H1・align.align_page の page_scale ログ）。
     # 記入値ではなく、幅/高さをテンプレート寸法で割った比率のみ
     "sx", "sy",

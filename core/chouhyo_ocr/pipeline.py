@@ -14,7 +14,7 @@ from PIL import Image
 from . import era, ingest, logging_safe as log, render_rows
 from .align import (AlignedFace, AlignError, PageSizeMismatch, align_page,
                     geometry_hash, page_size_verdict)
-from .columns import derive_columns, validate_v1
+from .columns import META_COLUMNS, derive_columns, validate_v1
 from .config import Config
 from .mapping import assign, symbols_from_response, to_face_local
 from .render_out import write_outputs
@@ -96,17 +96,33 @@ def _load(template_path: str | Path) -> tuple[Template, dict, str]:
     template = load_template(template_path)
     validate_v1(template)
     raw = json.loads(Path(template_path).read_text(encoding="utf-8"))
+    # 3経路（run／render／remap）すべてがここを通るため、ここで一度だけ
+    # template_loaded を出す（以前は _run_locked にしか無く、render・remap の
+    # 経路には無かった——load_template 内部の W-1〜W-4 警告が出す cell_idx・
+    # face_idx を事後にどのテンプレート由来か特定できない穴だった。
+    # Q-S1・FR-F50・08_frame_detection_design.md §1.4 不変条件A）
+    from .align import template_hash as _tpl_hash
+    log.info("template_loaded", template_hash=_tpl_hash(raw))
     return template, raw, geometry_hash(raw)
 
 
-def _warn_risky(risky: list[tuple[str, str]]) -> None:
+def _warn_risky(risky: list[tuple[str, str]], columns: list[str]) -> None:
     """危険接頭セルを app.log へ警告する（D-28）。値は書かない（§8.1）。
+
+    列名も書かない（Q-S1・FR-F50・2026-09-02）——`risky` の各要素は
+    render_out.scan_risky_prefixes が返す (page_id, 列名) だが、列名は
+    出力ファイル・GUI 向けの戻り値としては残る一方、ログには出さない。
+    代わりに抽出対象列（columns から管理6列を除いた列）内の0始まりの
+    序数を col_idx として残す。
 
     出力の内容は一切変えない——CSV を Excel で直接開いたときだけ現れる危険で、
     値を書き換えるのは転記主義（§5.5）と §8-12 の xlsx↔csv 一致に反するため。
     """
-    for page_id, field_id in risky:
-        log.warn("csv_formula_risk", page_id=page_id, field_id=field_id)
+    extract_cols = columns[len(META_COLUMNS):]
+    col_idx_by_name = {name: i for i, name in enumerate(extract_cols)}
+    for page_id, name in risky:
+        log.warn("csv_formula_risk", page_id=page_id,
+                 col_idx=col_idx_by_name[name])
     if risky:
         log.warn("csv_formula_risk_total", count=len(risky))
 
@@ -300,10 +316,11 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     template, raw, geo_hash = _load(template_path)
     from .align import ALGO_VERSION, template_hash as _template_hash
     tpl_hash = _template_hash(raw)
-    # run_start（cli.py）の時点ではテンプレートを読んでおらずハッシュが
-    # 分からないため、算出できたここで別行に残す（issue #59 H-7:
-    # run_start がパスのみで、出力がどのテンプレート由来か事後特定できない）
-    log.info("template_loaded", template_hash=tpl_hash)
+    # template_loaded（template_hash 付き）は _load() が出す（issue #59 H-7・
+    # Q-S1・FR-F50・08_frame_detection_design.md §1.4）。run_start（cli.py）の
+    # 時点ではテンプレートを読んでおらずハッシュが分からないため、算出できた
+    # ここ（_load 経由）で別行に残る——「同じ run の中でテンプレートの特定は
+    # できる」という契約は変えていない
     with Store(_store_path(cfg)) as store:
         store.record_run(time.strftime("%Y%m%d_%H%M%S"), json.dumps(cfg.__dict__))
 
@@ -736,7 +753,7 @@ def _render_locked(template_path: str | Path, cfg: Config,
         # もう要らない
         xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows,
                                           unclear_char_level=cfg.unclear_char_level)
-        _warn_risky(risky)
+        _warn_risky(risky, columns)
         if build_failures:
             # 全ページ破損＝コード／テンプレの問題で、1ページの破損とは意味が違う
             # （レビュー M-1）。旧実装は件数をどこにも出さず exit 0 だった
