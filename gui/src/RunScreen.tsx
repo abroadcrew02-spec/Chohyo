@@ -372,6 +372,63 @@ export function credNotice(cred: string, envPresent?: boolean): string | null {
     + "取り込むと DPAPI で暗号化されます。";
 }
 
+// ---------------------------------------------------------------- issue #72 (t)
+// テンプレート選択（FR-F27・FR-F29・設計08 §3.5.1）。config.json の
+// last_template は「"shipped" = 出荷テンプレート（core/chouhyo_ocr/config.py
+// の既定値・_validate が唯一この文字列と "user:<名前>" しか通さない）」
+// 「"user:<名前>" = 利用者テンプレート」の2値だけを持つ（絶対パスは
+// 保存しない・07 FR-F29）。この画面の <select> の value も同じ表現に
+// 揃えることで、read_config / write_config との往復で形が1つに保たれる。
+
+export type TemplateRef = { kind: "shipped" | "user"; name: string };
+
+/** config.last_template の文字列を解析する。"user:<名前>" 以外（"shipped"・
+ *  空文字・不正な形式）は null——呼び出し側は null を「出荷テンプレート」
+ *  として扱う（AC-F60: 範囲外を手書きしてもフォールバックして起動する、と
+ *  同じ「例外を投げず安全側へ倒す」方針を GUI 側にも揃える）。 */
+export function parseLastTemplate(value: string | undefined | null): TemplateRef | null {
+  if (!value) return null;
+  const m = /^user:(.+)$/.exec(value);
+  return m ? { kind: "user", name: m[1] } : null;
+}
+
+/** parseLastTemplate の逆変換。shipped（または null）は常に "shipped"
+ *  にする——core/chouhyo_ocr/config.py の `_validate` が受け付ける唯一の
+ *  非 user: 値（複数の出荷テンプレートを列挙しない・07 §7.3「固定1件の
+ *  既定候補」）。 */
+export function formatLastTemplate(ref: TemplateRef | null): string {
+  return ref && ref.kind === "user" ? `user:${ref.name}` : "shipped";
+}
+
+/** 選択中のテンプレートが一覧（userNames）からいなくなっていた場合
+ *  （削除された等）、出荷テンプレートへ戻し、その旨の通知を返す
+ *  （設計08 §3.5.3）。出荷選択（"shipped"）・未設定はそのまま素通りする。 */
+export function resolveSelectedTemplate(
+  selected: string, userNames: string[],
+): { value: string; notice: string | null } {
+  const ref = parseLastTemplate(selected);
+  if (!ref) return { value: "shipped", notice: null };
+  if (userNames.includes(ref.name)) return { value: selected, notice: null };
+  return { value: "shipped", notice: `選択していたテンプレート「${ref.name}」が見つからないため、`
+    + "出荷テンプレートに戻しました。" };
+}
+
+/** 「読み取りを開始」が無効の理由（ころね／user_advocate の初見ユーザー
+ *  予測レビュー）。ボタンの disabled 条件（start ボタンの JSX）と同じ判定
+ *  を同じ優先順でなぞり、最初に該当した1件だけを返す——理由が複数重なる
+ *  ケースでも画面に出すのは1行のみ（既存の verify カード群を読めば残りの
+ *  理由も分かる）。inputDir 未選択は既存の「読み取る帳票を選択すると
+ *  実行できます」に任せるため null。verify 未取得（検証中）も一時的な
+ *  状態なので理由を出さない。 */
+export function startDisabledReason(inputDir: string, verify: Verify | null): string | null {
+  if (!inputDir || !verify) return null;
+  if (!verify.parsed) return "検証が実行できていません（再試行してください）";
+  if (verify.cred === "missing") return "認証キーが未設定です（下の「認証キーを選択」から設定してください）";
+  if (verify.budgetUsed >= verify.budgetCap) return "今月の送信上限に達しています";
+  if (!verify.storage) return "保存先がクラウド同期フォルダ等の下にあります（設定で変更してください）";
+  return null;
+}
+
 const FolderIcon = ({ c }: { c: string }) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2"
     strokeLinecap="round" strokeLinejoin="round">
@@ -405,6 +462,12 @@ export default function RunScreen(
   const [loadError, setLoadError] = useState("");  // 設定読み込み失敗（issue Q-MF）
   const logRef = useRef<HTMLPreElement>(null);
   const screenRef = useRef<HTMLDivElement>(null);
+  // issue #72 (t)・FR-F27・設計08 §3.5。テンプレート選択（出荷1件＋利用者
+  // 一覧）。value は parseLastTemplate/formatLastTemplate と同じ表現
+  // （"shipped" = 出荷・"user:<名前>" = 利用者）。GUI は絶対パスを持たない
+  const [templates, setTemplates] = useState<TemplateRef[]>([{ kind: "shipped", name: "chouhyo-v1" }]);
+  const [selectedTemplate, setSelectedTemplate] = useState("shipped");
+  const [templateNotice, setTemplateNotice] = useState("");
 
   const runVerify = async () => {
     try {
@@ -440,9 +503,47 @@ export default function RunScreen(
     // のまま表示され、実際の設定と食い違っていることに気づけなかった
     invoke<Record<string, unknown>>("read_config").then((c) => {
       if (typeof c.output_dir === "string") setOutputDir(c.output_dir);
+      // last_template（issue #72 (t)・設計08 §3.5.1）。不正な形式は
+      // parseLastTemplate が null（出荷扱い）へ倒す——ConfigError で
+      // 起動不能になる他キーとは違う「例外を投げない」キー（AC-F60 と
+      // 同じ方針を GUI 側にも揃える）
+      if (typeof c.last_template === "string") {
+        setSelectedTemplate(formatLastTemplate(parseLastTemplate(c.last_template)));
+      }
       setLoadError("");
     }).catch((e) => setLoadError(String(e)));
   }, [configRev]);
+
+  // 利用者テンプレートの一覧（issue #72 (t)・FR-F27・FR-F28）。RunScreen は
+  // タブ切替でアンマウントされない（App.tsx）ため、タブが表示されるたびに
+  // 読み直す——編集画面で保存した直後に反映されるようにするため
+  const refreshTemplates = async () => {
+    try {
+      // list_user_templates は { templates: [{name,...}], excluded: [...] }
+      // を返す（gui/src-tauri/src/user_templates.rs の UserTemplateInfo/
+      // ExcludedInfo）。ここでは名前だけを使う
+      const list = await invoke<{ templates: { name: string }[] }>("list_user_templates");
+      const userNames = (list?.templates ?? []).map((e) => e.name);
+      setTemplates([{ kind: "shipped", name: "chouhyo-v1" },
+        ...userNames.map((name): TemplateRef => ({ kind: "user", name }))]);
+      setSelectedTemplate((cur) => {
+        const resolved = resolveSelectedTemplate(cur, userNames);
+        setTemplateNotice(resolved.notice ?? "");
+        return resolved.value;
+      });
+    } catch { /* 一覧取得に失敗しても実行画面自体は使える（出荷既定のまま） */ }
+  };
+  useEffect(() => { if (active) refreshTemplates(); }, [active]);
+
+  const onSelectTemplate = async (value: string) => {
+    setSelectedTemplate(value);
+    setTemplateNotice("");
+    try {
+      await invoke("write_config", { patch: { last_template: value } });
+    } catch (e) {
+      setError(`テンプレート選択の保存に失敗しました: ${e}`);
+    }
+  };
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -704,14 +805,17 @@ ${ev.hint}` : ""));
             )}
             {/* 送信前に様式不一致で止まったページ（issue #71 (a')・FR-F09・FR-F10）。
                 API を1回も呼んでいない＝課金が発生していないことを明示し、
-                出口2択（(t) 未実装のため、実行画面のテンプレート選択ではなく
-                現状の導線＝編集画面での開き直しを案内する）を固定文で示す */}
+                出口2択を案内する。issue #72 (t) でテンプレート選択が
+                画面上部（補助カード）に増えたため、出口も編集画面ではなく
+                この選択＋「再度読み取る」を第一に案内する（ころね／
+                user_advocate の初見ユーザー予測レビュー: 旧文言は画面にある
+                実際のボタン（出力フォルダを開く／再度読み取る／条件を変更
+                して読み取る）のどれとも対応していなかった） */}
             {(summary.format_mismatch_pre_send ?? 0) > 0 && (
               <div className="card warnbox">
                 <b>様式不一致（送信前・課金なし）: {summary.format_mismatch_pre_send} 件</b>
-                <div>次にできること:</div>
-                <div>・別のテンプレートを選ぶ（編集画面で開き直してください）</div>
-                <div>・テンプレート編集でこの紙のテンプレートを作る</div>
+                <div>次にできること: テンプレートを選び直して「再度読み取る」か、テンプレート編集タブでこの紙のテンプレートを作ってください
+                  （テンプレート選択は「条件を変更して読み取る」を押すと画面上部に出ます）。</div>
               </div>
             )}
           </>
@@ -853,6 +957,29 @@ ${ev.hint}` : ""));
         {/* 手順 1〜3（完了後は「条件を変更して読み取る」で再表示） */}
         {!running && !summary && (
           <>
+            {/* issue #72 (t)・FR-F27: テンプレート選択。番号付き手順（1〜3）とは
+                別の補助カードとして置く（.step を使わない＝丸数字バッジが
+                付かない・選ばなくても出荷テンプレートで実行できるため必須の
+                手順ではない）。ころね（user_advocate）の初見ユーザー予測
+                レビュー: 見出しと説明を「普段は触らなくてよい」ことが
+                一目で分かる文言にする。選択は即座に config.last_template へ
+                保存する（設計08 §3.5.3） */}
+            <div className="card" style={{ background: "var(--bg)" }}>
+              <div className="body">
+                <div className="t">読み取りに使うテンプレート（通常はこのまま）</div>
+                <div className="d">別の様式を読み取るときだけ変えてください。</div>
+                <select value={selectedTemplate} aria-label="読み取りに使うテンプレート"
+                  onChange={(e) => onSelectTemplate(e.target.value)}>
+                  {templates.map((t) => (
+                    <option key={`${t.kind}:${t.name}`}
+                      value={formatLastTemplate(t.kind === "user" ? t : null)}>
+                      {t.kind === "shipped" ? `${t.name}（出荷）` : t.name}
+                    </option>
+                  ))}
+                </select>
+                {templateNotice && <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>{templateNotice}</div>}
+              </div>
+            </div>
             <div className="card step on">
               <div className="no">1</div>
               <div className="body">
@@ -909,6 +1036,9 @@ ${ev.hint}` : ""));
                   読み取りを開始
                 </button>
                 {!inputDir && <span className="muted">読み取る帳票を選択すると実行できます</span>}
+                {inputDir && startDisabledReason(inputDir, verify) && (
+                  <span className="muted">{startDisabledReason(inputDir, verify)}</span>
+                )}
               </div>
             </div>
 

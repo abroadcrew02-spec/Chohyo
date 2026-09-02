@@ -150,10 +150,59 @@ let demoImagePickCount = 0;
 const DEMO_MISMATCH_IMAGE_B64 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
+// issue #72 (t) デモ検証用: 利用者テンプレートの一覧（Rust list_user_templates
+// の疑似応答・gui/src-tauri/src/user_templates.rs の UserTemplateInfo/
+// ExcludedInfo 実測に合わせる・絶対パスは出さない表示名のみ）。
+// 「壊れたテンプレ」は excluded 配列側に理由付きで返す（一覧に出る・FR-F28）。
+// save_user_template で新規保存されたテンプレートもこの配列に足していく
+// （実ファイルには一切触れない・mockStaged と同じ流儀）
+// issue #72 (t)・マリン core レビュー分: 「欄N・表M」の定義は単発欄数
+// （fields[]・表の列は数えない）と表の個体数（tables[]）に統一する
+// （core 側も合わせる予定）。デモの「帳票B」は DEMO_TEMPLATE と同じ
+// faces（front: 単発欄1件「person_氏名」＋表1件「family」／back: 空）なので
+// fields:1・tables:1 が正しい
+type DemoUserTemplate = { name: string; template_id: string; fields: number; tables: number; updated_at: number };
+type DemoExcluded = { name: string; reason: string };
+const DEMO_USER_TEMPLATES: DemoUserTemplate[] = [
+  { name: "帳票B", template_id: "帳票B", fields: 1, tables: 1,
+    updated_at: Date.parse("2026-09-02T10:14:33+09:00") },
+];
+const DEMO_USER_EXCLUDED: DemoExcluded[] = [
+  { name: "壊れたテンプレ", reason: "parse" },
+];
+const demoUserTemplateContent = new Map<string, string>(
+  [["帳票B", JSON.stringify({ ...DEMO_TEMPLATE, template_id: "帳票B" })]]);
+
+// issue #72 (t)・スバル差し戻し1: config.json の疑似永続化。実物の Rust/Python
+// は config.json（ファイル）に書くため、Editor 再マウント（＝アプリ再起動）を
+// またいで last_template が残る。デモモードのブラウザはページ再読み込みで
+// JS モジュールの状態が丸ごと初期化されるため、`localStorage` を使って
+// 同じ「再起動をまたぐ永続化」を再現する（Playwright の再読み込みテストが
+// これに依存する）。localStorage が使えない環境（一部の私用ブラウザ設定等）
+// では静かに永続化を諦める——デモモードはこの機能の主目的（core なしでの
+// 画面確認）を損なわない範囲の妥協でよい
+const DEMO_CONFIG_STORAGE_KEY = "chouhyo-demo-config";
+function demoConfigRead(): Record<string, unknown> {
+  try {
+    const raw = window.localStorage?.getItem(DEMO_CONFIG_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+function demoConfigWrite(patch: Record<string, unknown>) {
+  try {
+    window.localStorage?.setItem(
+      DEMO_CONFIG_STORAGE_KEY, JSON.stringify({ ...demoConfigRead(), ...patch }));
+  } catch { /* 永続化できなくても書き込み自体は失敗させない（デモの妥協） */ }
+}
+
 async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
   switch (cmd) {
-    case "read_config": return {};
-    case "write_config": return null;
+    case "read_config": return demoConfigRead();
+    case "write_config": {
+      const { patch } = (args ?? {}) as { patch?: Record<string, unknown> };
+      if (patch) demoConfigWrite(patch);
+      return null;
+    }
     case "pick_folder": return "C:\\デモ\\帳票スキャン";
     case "pick_image": {
       const path = DEMO_FORMAT_PATHS[demoImagePickCount % DEMO_FORMAT_PATHS.length];
@@ -163,8 +212,73 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
     case "read_file_b64": return DEMO_MISMATCH_IMAGE_B64;
     case "pick_json": return "C:\\デモ\\template.json";
     case "read_text": return JSON.stringify(DEMO_TEMPLATE);
-    case "read_default_template": return JSON.stringify(DEMO_TEMPLATE);
+    // read_default_template は config.last_template を解決して返す
+    // （実物: gui/src-tauri/src/lib.rs・あくあ実装）。"user:<名前>" が
+    // demoUserTemplateContent に無ければ出荷（DEMO_TEMPLATE）へフォールバック
+    // する（AC-F60 と同じ「例外を投げず安全側へ倒す」方針をデモにも揃える）
+    case "read_default_template": {
+      const lt = demoConfigRead().last_template;
+      const m = typeof lt === "string" ? /^user:(.+)$/.exec(lt) : null;
+      const content = m ? demoUserTemplateContent.get(m[1]) : undefined;
+      return content ?? JSON.stringify(DEMO_TEMPLATE);
+    }
     case "open_folder": return null;
+    // issue #72 (t)・実測（gui/src-tauri/src/lib.rs:list_user_templates）:
+    // { templates: [...], excluded: [...] } を返す（表示名のみ・絶対パスなし）
+    case "list_user_templates":
+      return {
+        templates: DEMO_USER_TEMPLATES.map((t) => ({ ...t })),
+        excluded: DEMO_USER_EXCLUDED.map((e) => ({ ...e })),
+      };
+    case "read_user_template": {
+      const { name } = (args ?? {}) as { name: string };
+      const content = demoUserTemplateContent.get(name);
+      if (content) return content;
+      throw new Error(`利用者テンプレート「${name}」が見つかりません`);
+    }
+    // save_user_template（実測: lib.rs:save_user_template）は
+    // staged→verify→promote を Rust の中で通し切り、`overwrite=false` で
+    // 同名衝突なら Err("AlreadyExists") を返す（上書き確認は GUI 側の
+    // 責務・設計08 §3.2.3）。成功時の戻り値は verify の stdout（JSON Lines）
+    // そのもの——呼び出し側（Editor.tsx の trySaveUserTemplate）が
+    // check:"template" の ok を見て初めて「保存できた」と判断する
+    case "save_user_template": {
+      const { name, content, overwrite } = (args ?? {}) as
+        { name: string; content: string; overwrite: boolean };
+      const existed = demoUserTemplateContent.has(name);
+      if (existed && !overwrite) throw new Error("AlreadyExists");
+      demoUserTemplateContent.set(name, content);
+      if (!existed) {
+        DEMO_USER_TEMPLATES.push({ name, template_id: name, fields: 1, tables: 0,
+          updated_at: Date.now() });
+      }
+      return VERIFY_OK;
+    }
+    // match_templates（実測: core/chouhyo_ocr/cli.py:cmd_match_templates が
+    // 返す event:"match_templates" の1行を Rust がそのまま文字列で返す。
+    // フィールド名は `results`（08 §3.3.2 の例示 `candidates` ではない）。
+    // デモモードは入力に関わらず固定の疑似応答を返し、「この画像に合う
+    // テンプレート」パネルを core なしで確認できるようにする
+    case "match_templates": {
+      return JSON.stringify({
+        event: "match_templates", ok: true, elapsed_ms: 120, truncated: false,
+        results: [
+          // fields は単発欄数（表の列は数えない・マリン core レビュー分）。
+          // 出荷テンプレは家族・明細の2表に加えて氏名・生年月日等の単発欄が
+          // ある想定の代表値（実際の出荷テンプレの正確な件数はここでは検証
+          // 対象ではない・デモの代表形）
+          { name: "chouhyo-v1", kind: "shipped", template_id: "chouhyo-v1", fields: 12, tables: 2,
+            updated_at: "2026-08-31T18:46:02+09:00",
+            verdict: "mismatch", reason: "lines", score: 0.11, detected: 30, expected: 16 },
+          { name: "帳票B", kind: "user", template_id: "帳票B", fields: 1, tables: 1,
+            updated_at: "2026-09-02T10:14:33+09:00",
+            verdict: "match", reason: "", score: 0.97, detected: 18, expected: 16 },
+        ],
+        // core の除外理由は "invalid_json" → "parse" へ統一される予定
+        // （マリン core レビュー分）。デモは統一後の値に揃える
+        excluded: [{ name: "壊れたテンプレ", reason: "parse" }],
+      });
+    }
     case "run_core": {
       const a = (args?.args ?? []) as string[];
       if (a[0] === "run") return mockRun();

@@ -951,8 +951,8 @@ export function expandAlignNotice(
     return {
       text: `（${pageNote}この画像はテンプレート（${id}）と様式が合いません。`
         + "枠は表示していません。別のテンプレートを開くか、この紙のテンプレートを"
-        + "新しく作ってください。それでもこのテンプレートで開く場合は、下の"
-        + "「それでもこのテンプレートで開く」ボタンを押してください）",
+        + "新しく作ってください。それでもこのテンプレートのまま直す場合は、下の"
+        + "「判定を無視して枠を表示する」ボタンを押してください）",
       isError: false, level: "warn",
     };
   }
@@ -1009,6 +1009,44 @@ export function noImageNotice(
   return { line1, line2, text: `${line1}。${line2}` };
 }
 
+/// 起動時の自動読み込み案内（issue #72 (t)・スバル差し戻し1）。
+/// read_default_template は config.last_template を解決して返す
+/// （gui/src-tauri/src/lib.rs・あくあ実装）ため、Editor 起動時に「出荷」と
+/// 「前回使った利用者テンプレート」のどちらが復元されたかが画面から
+/// 分からなかった。判定は template_id の値ではなく last_template 自体で行う
+/// ——デモモードの疑似出荷テンプレートは template_id が "demo" 等の任意値に
+/// なりうり、id を出荷既定（"chouhyo-v1"）と比較すると実物と食い違う。
+/// last_template が "user:<名前>" のときだけ「前回のテンプレート」と明示し、
+/// それ以外（"shipped"・空・未設定・不正値）は従来どおり noImageNotice を使う。
+export function restoredTemplateNotice(
+  lastTemplate: string, templateId: string, fieldCount: number, tableCount: number,
+): { text: string } {
+  const base = noImageNotice(templateId, fieldCount, tableCount);
+  if (!lastTemplate.startsWith("user:") || (fieldCount === 0 && tableCount === 0)) {
+    return { text: base.text };
+  }
+  return { text: `前回のテンプレート（${templateId}）を読み込みました。`
+    + `欄 ${fieldCount}・表 ${tableCount}。${base.line2}` };
+}
+
+/// テンプレート切替時（照合パネルの「開く」・利用者テンプレート一覧から
+/// 開く・取り込み）、表示中の画像の寸法とテンプレートの image 寸法が
+/// 食い違っていたら黄帯へ出す注意（issue #72 (t)・スバル差し戻し2）。
+/// 保存時の寸法不一致確認（saveConfirmWarnings の "image-size"）と同じ
+/// 要点（テンプレの寸法と画像の寸法が違う）を、こちらはブロックせず
+/// 情報として伝えるだけの文言にする。imgSize が無い（画像未表示）・
+/// テンプレの image 未設定・寸法が一致していれば null。
+export function templateSwitchImageSizeNotice(
+  imgSize: { w: number; h: number } | null,
+  templateImage: { width: number; height: number } | null | undefined,
+): string | null {
+  if (!imgSize || !templateImage) return null;
+  if (templateImage.width === imgSize.w && templateImage.height === imgSize.h) return null;
+  return "開いている画像の寸法がこのテンプレートと異なります（"
+    + `テンプレート ${templateImage.width}×${templateImage.height} → `
+    + `画像 ${imgSize.w}×${imgSize.h}）。枠の位置がずれる可能性があります。`;
+}
+
 /// 画像が無い間はキャンバス上の枠操作（選択・追加・ドラッグ・リサイズ・
 /// 除外範囲の作成・表裏境界の移動）を無効化する（同上のユーザー指摘）。
 /// パン（ドラッグ移動）とホイールズームは表示位置の調整に過ぎず誤操作の
@@ -1019,6 +1057,147 @@ export function noImageNotice(
 /// （待ち受け状態が残ったまま次のクリックへ進む等）があり見通しが悪かった）
 export function canvasInteractionAllowed(hasImage: boolean, _tool: string): boolean {
   return hasImage;
+}
+
+// ---------------------------------------------------------------- issue #72 (t)
+// テンプレートの保存・選択・照合提示（設計08 §3）。この画面が持つのは
+// 「一覧・照合結果を並べ替えて見せる」「空のテンプレートを組み立てる」
+// という表示規則の純関数だけ。列挙・パス検査・照合の計算そのものは
+// Rust／core 側の責務（08 §3.10 不変条件3）。
+
+/// match_templates（Rust コマンド。core の match-templates を1プロセスで
+/// 呼ぶ）が返す `results[]` の1件（core/chouhyo_ocr/cli.py:cmd_match_templates
+/// 実測・2026-09-02）。`updated_at` はここでは ISO8601 文字列（cli.py が
+/// `datetime.isoformat()` で整形済み）——list_user_templates の
+/// UserTemplateListEntry（エポックミリ秒の数値）とは型が違う点に注意。
+export type Candidate = {
+  name: string; kind: "shipped" | "user"; template_id: string;
+  fields: number; tables: number; updated_at: string;
+  verdict: "match" | "mismatch" | "undecidable" | "skipped" | "unknown";
+  reason: string; score: number; detected: number; expected: number;
+};
+
+/// list_user_templates（Rust コマンド）が返す一覧1件（UserTemplateInfo・
+/// gui/src-tauri/src/user_templates.rs 実測）。updated_at は UNIX エポック
+/// ミリ秒（UTC）——日付整形は GUI 側の責務（Rust 側の意図的な選択）。
+export type UserTemplateListEntry = {
+  name: string; template_id: string; fields: number; tables: number; updated_at: number;
+};
+export type ExcludedEntry = { name: string; reason: string };
+
+const MATCH_NOTICE =
+  "この判定は罫線の位置関係だけを見ており、中身の同一性は保証しません。";
+
+// issue #72 (t)・ころね（user_advocate）の初見ユーザー予測レビュー: 利用者
+// テンプレートの名前入力（window.prompt）が命名規則を示さないまま送信し、
+// Rust の検証エラーで初めて拒否理由を知る作りだった（07 §7.4・
+// validate_user_template_name の許可リスト方式）。規則を先に見せておく
+const USER_TEMPLATE_NAME_RULE =
+  "使える文字: 日本語・英数字・-・_・スペース（先頭末尾不可）、64文字まで。"
+  + "「.」で終わる名前・CON/NUL などの予約名は使えません。拡張子は付けません。";
+
+/// 照合結果の並び（issue #72 (t)・FR-F46・設計08 §3.4・AC-F53/F54）。
+/// core・Rust は並べ替えない（並び順は表示規則であって判定ではない）ため、
+/// この関数が唯一の並び順の決定箇所になる。
+///   一致候補が1件、または上位2件のスコア差が0.1以上 → スコア降順・その1件を推奨
+///   一致候補が複数・僅差（差<0.1）              → 名前順・推奨なし・スコア非表示
+///   truncated（打ち切りあり）                    → 名前順・推奨なし・スコア非表示
+///   一致候補ゼロ                                  → 名前順・推奨なし・スコアは表示
+/// notice には常に「幾何一致のみを見ている」旨を含める（FR-F46 ③）。
+export function rankCandidates(cands: Candidate[], truncated: boolean):
+  { rows: Candidate[]; recommend: string | null; showScore: boolean; notice: string } {
+  const byName = (a: Candidate, b: Candidate) => a.name.localeCompare(b.name, "ja");
+  const byScoreDesc = (a: Candidate, b: Candidate) => b.score - a.score;
+
+  if (truncated) {
+    return { rows: [...cands].sort(byName), recommend: null, showScore: false,
+      notice: `${MATCH_NOTICE} 一部は照合を打ち切りました（候補が多い・時間切れ）。` };
+  }
+  const matched = cands.filter((c) => c.verdict === "match");
+  if (matched.length === 0) {
+    return { rows: [...cands].sort(byName), recommend: null, showScore: true, notice: MATCH_NOTICE };
+  }
+  const matchedSorted = [...matched].sort(byScoreDesc);
+  const closeCall = matchedSorted.length >= 2
+    && matchedSorted[0].score - matchedSorted[1].score < 0.1;
+  if (closeCall) {
+    return { rows: [...cands].sort(byName), recommend: null, showScore: false, notice: MATCH_NOTICE };
+  }
+  return { rows: [...cands].sort(byScoreDesc), recommend: matchedSorted[0].name,
+    showScore: true, notice: MATCH_NOTICE };
+}
+
+// マリン（reviewer）core レビュー分・issue #72 (t): excluded[].reason の
+// 日本語化。list_user_templates（Rust・gui/src-tauri/src/user_templates.rs）
+// と match_templates（core/chouhyo_ocr/cli.py）の両方が出す理由コードを
+// まとめて1箇所で訳す——訳が2箇所に散ると片方だけ直し忘れるため。
+// core の "invalid_json" は "parse" へ統一される予定（マリン指摘）だが、
+// 移行中の互換のため両方を同じ訳へ倒す。未知のコードは生値をそのまま返す
+// （存在しない訳を捏造しない）
+const EXCLUDED_REASON_JA: Record<string, string> = {
+  parse: "JSON として読めません",
+  invalid_json: "JSON として読めません",   // core 側の呼称統一（parse）までの互換
+  not_found: "ファイルがありません",
+  schema: "テンプレートの形式が不正です",
+  size: "サイズ上限（5MB）超過",
+  limit: "件数上限で未照合",
+  invalid_name: "名前が規則に合いません",
+  check_failed: "照合処理でエラー",
+};
+export function excludedReasonJa(reason: string): string {
+  return EXCLUDED_REASON_JA[reason] ?? reason;
+}
+
+// マリン core レビュー分: match_templates が ok:false を返したとき（core の
+// error は固定コード input_not_found／expand_failed／input_unreadable／
+// internal へ変更予定）に見せる理由。未知のコード・空は生値かフォール
+// バック文言を返す（存在しない訳を捏造しない）
+const MATCH_ERROR_JA: Record<string, string> = {
+  input_not_found: "入力画像が見つかりません",
+  expand_failed: "画像の展開に失敗しました",
+  input_unreadable: "入力画像を読み込めません",
+  internal: "内部エラーが発生しました",
+};
+export function matchErrorJa(code: string | undefined | null): string {
+  if (!code) return "不明なエラー";
+  return MATCH_ERROR_JA[code] ?? code;
+}
+
+/// 不一致・判定不能だった画像用の空テンプレート（issue #72 (t)・FR-F30・
+/// 設計08 §3.6）。image は開いた画像の実寸、faces は現行の表裏境界
+/// （splitY）で front/back の2面に分け、cells・tables・exclusions は空。
+/// toEditorState（このファイル内・コンポーネント内関数）がそのまま読める
+/// 形にする——buildTemplateJson が書き出す face の形と揃える。
+export function emptyTemplateFor(width: number, height: number, splitY: number): {
+  schema_version: number; template_id: string; render_dpi: number;
+  image: { width: number; height: number }; record: { pages: number };
+  faces: { face_id: "front" | "back";
+            source: { page_offset: number; rect: Rect };
+            fields: never[]; tables: never[]; exclusions: never[] }[];
+} {
+  const sy = Math.max(0, Math.min(splitY, height));
+  const face = (id: "front" | "back", y0: number, y1: number) => ({
+    face_id: id,
+    source: { page_offset: 0, rect: { x: 0, y: y0, w: width, h: y1 - y0 } },
+    fields: [] as never[], tables: [] as never[], exclusions: [] as never[],
+  });
+  return {
+    schema_version: 1, template_id: "new-template", render_dpi: 300,
+    image: { width, height }, record: { pages: 1 },
+    faces: [face("front", 0, sy), face("back", sy, height)],
+  };
+}
+
+/// 空のテンプレートを開いた直後の案内（issue #72 (t)・FR-F31・設計08 §3.6）。
+/// (b)（ページ全体からの枠候補生成）は今回未実装のため、hasCandidates は
+/// 現状常に false——将来 (b) が入ったときの分岐だけ先に用意しておく。
+export function newTemplateNotice(hasCandidates: boolean): string {
+  if (hasCandidates) {
+    return "この画像から検出した枠の候補があります。候補を確認して採用してください。";
+  }
+  return "空のテンプレートで開きました。「くり返し行（家族・明細）」で表の外枠を描くと、"
+    + "行と列を自動検出できます（等分割の生成にも切り替えられます）。単発の欄は"
+    + "「欄を追加」で描いてください。";
 }
 
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
@@ -1244,6 +1423,19 @@ export default function Editor(
     useState<{ face_id: string; verdict: string }[]>([]);
   // 「それでもこのテンプレートで開く」（FR-F05）。画像を開き直すと false に戻す
   const [formatOverride, setFormatOverride] = useState(false);
+  // issue #72 (t)・照合提示（FR-F28/F46）。画像を開くたびに match_templates
+  // を呼び直す。結果は「この画像に合うテンプレート」パネルへ出す
+  // （設計08 §3.3・§3.4）
+  const [matchResult, setMatchResult] = useState<null
+    | { candidates: Candidate[]; excluded: ExcludedEntry[]; truncated: boolean }>(null);
+  const [matchLoading, setMatchLoading] = useState(false);
+  const [matchError, setMatchError] = useState("");
+  // 現在開いているテンプレートが一致（match）なら、提示を畳んでおく
+  // （設計08 §3.4「現在開いているテンプレートが match なら提示は畳んでおく」）
+  const [matchCollapsed, setMatchCollapsed] = useState(false);
+  // 利用者テンプレート一覧（「利用者テンプレートから開く」パネル・FR-F27/F29）
+  const [userTplPanel, setUserTplPanel] = useState<null
+    | { templates: UserTemplateListEntry[]; excluded: ExcludedEntry[]; error: string }>(null);
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
@@ -1661,6 +1853,48 @@ export default function Editor(
   }, [draw]);
 
   // ---------- 入出力 ----------
+  // issue #72 (t)・照合提示（FR-F28/F46・設計08 §3.3）。core は列挙を行わない
+  // （§3.10 不変条件3）ため、まず list_user_templates で表示名の一覧を取り、
+  // その名前だけを Rust の match_templates（core の match-templates を1プロセス
+  // で呼ぶ新設 Tauri コマンド・§3.3.1 C-1）へ渡す。GUI は絶対パスを一切
+  // 持たない（07 §7.3・§9.4）ので候補パスの解決は Rust 側の責務。
+  const runMatchTemplates = async (input: string) => {
+    setMatchLoading(true); setMatchError(""); setMatchResult(null);
+    try {
+      let names: string[] = [];
+      try {
+        const list = await invoke<{ templates: UserTemplateListEntry[]; excluded: ExcludedEntry[] }>(
+          "list_user_templates");
+        names = (list?.templates ?? []).map((e) => e.name);
+      } catch { /* 一覧取得の失敗は照合そのものを止めない（出荷1件だけでも試す） */ }
+      // match_templates（Rust）は core の match-templates サブコマンドの
+      // stdout（JSON Lines・match_templates イベント1行）をそのまま文字列で
+      // 返す（run_core_capture と同じ流儀）。核心のキーは `results`（core
+      // 実装名・cli.py:cmd_match_templates 実測。08 §3.3.2 の例示は
+      // `candidates` だが、実装済みの core・Rust は `results` で統一されている）
+      const raw = await invoke<string>("match_templates", { input, names });
+      const parsed = JSON.parse(raw) as { ok?: boolean; error?: string; truncated?: boolean;
+        results?: Candidate[]; excluded?: ExcludedEntry[] };
+      // マリン core レビュー分: ok:false（core が入力を開けなかった等・
+      // event:"match_templates" の失敗応答）を空パネルのまま握り潰さない。
+      // error は固定コード（input_not_found／expand_failed／input_unreadable／
+      // internal・core 側で統一予定）を想定し、未知値は生のコードを見せる
+      if (parsed?.ok === false) {
+        setMatchError(`照合できませんでした（${matchErrorJa(parsed.error)}）`);
+        return;
+      }
+      setMatchResult({
+        candidates: Array.isArray(parsed?.results) ? parsed.results : [],
+        excluded: Array.isArray(parsed?.excluded) ? parsed.excluded : [],
+        truncated: !!parsed?.truncated,
+      });
+    } catch (e) {
+      setMatchError(`テンプレート候補の照合に失敗しました: ${e}`);
+    } finally {
+      setMatchLoading(false);
+    }
+  };
+
   const loadImage = async () => {
     if (!confirmDiscard()) return;
     const p = await invoke<string | null>("pick_image");
@@ -1674,6 +1908,7 @@ export default function Editor(
     let alignErr = "";
     let alignWarn = "";
     let faces: { face_id: string; verdict: string }[] = [];
+    let verdict: string | undefined;
     // 画像（PNG/JPG 等）でも expand-page を通す（issue #71 (a')・設計08
     // §2.7.1・AC-F02 の前提）。ingest.expand は PDF 以外を入力そのまま
     // 返すため、コア側の変更は不要——PDF 専用だった従来の分岐を外すだけで
@@ -1710,6 +1945,7 @@ export default function Editor(
       else if (align.level === "warn") alignWarn = align.text;
       else note = align.text;
       faces = Array.isArray(ev.faces) ? ev.faces : [];
+      verdict = ev.verdict;
     } catch (e) {
       setErrMsg(`${isPdf ? "PDF" : "画像"}を開けませんでした: ${e}`);
       setMsg("");
@@ -1744,6 +1980,11 @@ export default function Editor(
     };
     im.onerror = () => { setErrMsg("画像の表示に失敗しました"); setMsg(""); };
     im.src = src;
+    // 照合提示（issue #72 (t)・FR-F28）。現在開いているテンプレートが一致
+    // 判定なら提示を畳んでおく（設計08 §3.4）。画像の描画（im.onload）を
+    // 待たずに並行して照合する——結果はパネル1つの表示だけに使う
+    setMatchCollapsed(verdict === "match");
+    void runMatchTemplates(imagePath);
   };
 
   const toEditorState = (t: any): { fieldCount: number; tableCount: number } => {
@@ -1846,10 +2087,20 @@ export default function Editor(
         const { fieldCount, tableCount } = toEditorState(parsed);
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
+        // last_template（issue #72 (t)・スバル差し戻し1）: read_default_template
+        // は config.last_template を解決して返すため、「出荷」と「前回使った
+        // 利用者テンプレート」のどちらが復元されたかを画面へ明示する。
+        // last_template 自体が取れなければ従来どおり（noImageNotice 相当）
+        let lastTemplate = "";
+        try {
+          const cfg = await invoke<Record<string, unknown>>("read_config");
+          if (typeof cfg.last_template === "string") lastTemplate = cfg.last_template;
+        } catch { /* 取得できなくても「前回のテンプレート」表示を諦めるだけ */ }
         // 画像を開くまでキャンバスに枠を描かない（2026-09-02 ユーザー指摘）。
         // 案内はキャンバス内の文字（draw()）にも出すが、そちらはスクリーン
         // リーダーに読めないため、同じ内容をこの msg（DOM）にも出す
-        setMsg(noImageNotice(meta.current.template_id, fieldCount, tableCount).text);
+        setMsg(restoredTemplateNotice(
+          lastTemplate, meta.current.template_id, fieldCount, tableCount).text);
         await refreshLoadedCounts(null);
       } catch (e) {
         // 配布物欠損・開発中の白紙スタート。無言のままだと、この白紙が
@@ -1905,6 +2156,167 @@ export default function Editor(
       setMsg(noImageNotice(meta.current.template_id, fieldCount, tableCount).text);
     }
     await refreshLoadedCounts(p);
+  };
+
+  // issue #72 (t)・FR-F26/F27/F29・設計08 §3.2.2/§3.6。利用者テンプレート
+  // （kind="user"）または出荷テンプレート（kind="shipped"）を、名前だけを
+  // 手掛かりに開く。GUI は絶対パスを持たない（07 §7.3）ため、利用者
+  // テンプレートは read_user_template(name)、出荷テンプレートは
+  // last_template を "shipped"（config.py の既定値・唯一の非 user: 有効値）
+  // へ戻したうえで read_default_template（既存の出荷解決経路・§3.5.2）を
+  // 使う——専用の「出荷テンプレートを名前で読む」コマンドは無いため、この
+  // 2既存コマンドの組み合わせで賄う。「利用者テンプレート一覧から開く」
+  // 「照合パネルの『開く』」の両方から呼ぶ。
+  const openMatchedTemplate = async (kind: "shipped" | "user", name: string) => {
+    if (!confirmDiscard()) return;
+    let text: string;
+    try {
+      if (kind === "user") {
+        text = await invoke<string>("read_user_template", { name });
+      } else {
+        await invoke("write_config", { patch: { last_template: "shipped" } });
+        text = await invoke<string>("read_default_template");
+      }
+      const parsed = JSON.parse(text);
+      if (!parsed || !Array.isArray(parsed.faces)) {
+        throw new Error("faces が無い（テンプレート JSON ではありません）");
+      }
+      const { fieldCount, tableCount } = toEditorState(parsed);
+      resetHistory();
+      setTplPath(null);   // 絶対パスを持たないテンプレート（ファイル保存ダイアログの既定にしない）
+      setErrMsg(""); setWarnMsg("");
+      // テンプレートを切り替えたので、直前の画像に対する様式判定（別テンプレ
+      // 基準の mismatch/undecidable）は意味を持たない。ここでは画像の
+      // 再照合まではしない（開き直すと loadImage が再評価する・§3.5.2 注記）。
+      // 代わりに、表示中の画像とこのテンプレートの寸法だけは即座に比較して
+      // 案内する（issue #72 (t)・スバル差し戻し2・ブロックはしない）
+      setFormatFaces([]);
+      setFormatWarnMsg(templateSwitchImageSizeNotice(imgSize, parsed.image) ?? "");
+      setFormatOverride(false);
+      markDirty(false);
+      if (kind === "user") {
+        await invoke("write_config", { patch: { last_template: `user:${name}` } }).catch(() => {});
+      }
+      setMsg(`テンプレート読込: ${name}（欄 ${fieldCount}・表 ${tableCount}）`);
+      await refreshLoadedCounts(null);
+      setMatchResult(null);
+      setUserTplPanel(null);
+    } catch (e) {
+      setErrMsg(`テンプレートを読み込めませんでした: ${e}`);
+    }
+  };
+
+  // 「利用者テンプレートから開く」パネルを開く（一覧を取得するだけ・破壊的操作なし）。
+  // list_user_templates は { templates: [...], excluded: [...] } を返す
+  // （gui/src-tauri/src/user_templates.rs の UserTemplateInfo/ExcludedInfo）
+  const openUserTemplateList = async () => {
+    if (!confirmDiscard()) return;
+    try {
+      const list = await invoke<{ templates: UserTemplateListEntry[]; excluded: ExcludedEntry[] }>(
+        "list_user_templates");
+      setUserTplPanel({ templates: list?.templates ?? [], excluded: list?.excluded ?? [], error: "" });
+    } catch (e) {
+      setUserTplPanel({ templates: [], excluded: [], error: `一覧を取得できませんでした: ${e}` });
+    }
+  };
+
+  // 書き出し（FR-F49・設計08 §3.7）: 既存コマンドの組み合わせだけで成立する
+  // （専用コマンドは増やさない）
+  const exportUserTemplate = async (name: string) => {
+    try {
+      const text = await invoke<string>("read_user_template", { name });
+      const dest = await invoke<string | null>("pick_json",
+        { save: true, defaultPath: `${name}.json` });
+      if (!dest) return;
+      await invoke("write_text", { path: dest, content: text });
+      setMsg(`書き出しました: ${dest}`);
+    } catch (e) {
+      setErrMsg(`書き出しに失敗しました: ${e}`);
+    }
+  };
+
+  // save_user_template(name, content, overwrite) の1回呼び出し（設計08
+  // §3.2.3）。Rust は staged→verify→promote を内部で通し切るため、戻り値
+  // （Ok）は「呼び出し自体が失敗しなかった」ことしか意味しない——検証NGでも
+  // Rust は例外を投げず verify の JSON（stdout）をそのまま返す。保存できた
+  // かどうかは、既存の保存フロー（saveTemplateInner）と同じく stdout を
+  // 自前でパースして check:"template" の ok を見る必要がある。
+  // 同名で overwrite=false のときは Err("AlreadyExists") が返る
+  // （lib.rs:1197）——ここでは真偽だけ返し、確認ダイアログの出し分けは
+  // 呼び出し側に委ねる。
+  const trySaveUserTemplate = async (
+    name: string, content: string, overwrite: boolean,
+  ): Promise<{ ok: true } | { ok: false; alreadyExists: boolean; error: string }> => {
+    let stdout: string;
+    try {
+      stdout = await invoke<string>("save_user_template", { name, content, overwrite });
+    } catch (e) {
+      const msg = String(e);
+      return { ok: false, alreadyExists: msg.includes("AlreadyExists"), error: msg };
+    }
+    const tpl = stdout.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .find((e) => e && e.check === "template");
+    if (!tpl?.ok) {
+      return { ok: false, alreadyExists: false,
+        error: `コアの検証で問題が見つかりました: ${tpl?.error ?? "不明"}` };
+    }
+    return { ok: true };
+  };
+
+  // 取り込み（FR-F49・設計08 §3.7）: pick_json → read_text → 名前確認 →
+  // save_user_template（名前検証＋verify＋promote を通る。「検証なしには
+  // templates_user/ に入らない」という要件をこの1コマンドが担保する）
+  const importUserTemplate = async () => {
+    const p = await invoke<string | null>("pick_json", { save: false });
+    if (!p) return;
+    let text: string;
+    let parsed: any;
+    try {
+      text = await invoke<string>("read_text", { path: p });
+      parsed = JSON.parse(text);
+      if (!parsed || !Array.isArray(parsed.faces)) {
+        throw new Error("faces が無い（テンプレート JSON ではありません）");
+      }
+    } catch (e) {
+      setErrMsg(`取り込むファイルを読み込めませんでした: ${e}`);
+      return;
+    }
+    const base = p.replace(/^.*[\\/]/, "").replace(/\.json$/i, "");
+    const name = window.prompt(
+      `取り込み後のテンプレート名を入力してください。\n${USER_TEMPLATE_NAME_RULE}`, base);
+    if (name === null) return;
+    let res = await trySaveUserTemplate(name, text, false);
+    if (!res.ok && res.alreadyExists) {
+      if (!window.confirm(`同名の利用者テンプレート「${name}」が既にあります。上書きしますか？`)) return;
+      res = await trySaveUserTemplate(name, text, true);
+    }
+    if (!res.ok) {
+      setErrMsg(`取り込みに失敗しました: ${res.error}`);
+      return;
+    }
+    // issue #72 (t)・スバル差し戻し2: 取り込みは編集中のテンプレートを
+    // 差し替えない（保存するだけ）が、表示中の画像があれば寸法差だけは
+    // 情報として伝える（ブロックしない・既存の formatWarnMsg 黄帯を再利用）
+    const sizeNotice = templateSwitchImageSizeNotice(imgSize, parsed.image);
+    if (sizeNotice) setFormatWarnMsg(sizeNotice);
+    setMsg(`取り込みました（利用者テンプレート: ${name}）`);
+  };
+
+  // 不一致時の導線（FR-F30/F31・設計08 §3.6）。(b) 未実装のため到達点は
+  // 「空のテンプレートで開く」まで——枠候補の一括生成はしない
+  const createTemplateForThisImage = () => {
+    if (!confirmDiscard()) return;
+    const { W, H } = curSize();
+    const empty = emptyTemplateFor(W, H, splitY);
+    toEditorState(empty);
+    resetHistory();
+    setTplPath(null);
+    setErrMsg("");
+    // 直前のテンプレートに対する様式判定はもう意味を持たない（新しい
+    // テンプレートは常に「一致」の定義そのものになる）
+    setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
+    markDirty(true);   // 空でも「まだ保存していない」新規状態として扱う
+    setMsg(newTemplateNotice(false));
   };
 
   // 確認ダイアログでキャンセルされたときの共通後始末。ファイルには一切
@@ -2214,6 +2626,84 @@ export default function Editor(
       // 表示の組み立てに失敗しても保存自体は成功している。嘘をつかない
       setMsg(`保存＋コア検証 OK: ${p}（表示の組み立てに失敗しました: ${e}）`);
     }
+  };
+
+  // issue #72 (t)・FR-F26・設計08 §3.2.3。「利用者テンプレートとして保存」。
+  // ファイル保存（saveTemplateInner）と違い保存先を webview は知らない
+  // （絶対パスを持てない・07 §7.3）ため、Rust の save_user_template(name,
+  // content) に任せる。名前検証・staged→verify→promote は Rust の中で完結
+  // する（設計08 §3.2.3 のとおり、GUI 側は保存前の validation と重複
+  // 検出だけを担う）。座標不変ガード（並べ替え中の切り抜き禁止）は
+  // ファイル保存フロー専用として残し、ここでは重複させない——このボタンは
+  // 「新しいテンプレートとして書き出す」操作で、既存ファイルの並べ替え
+  // 保存契約とは別物のため
+  const saveAsUserTemplate = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    try {
+      await saveAsUserTemplateInner();
+    } finally {
+      savingRef.current = false;
+    }
+  };
+
+  const saveAsUserTemplateInner = async () => {
+    const resolved = resolveOverlaps(fields, splitY);
+    const { W, H } = curSize();
+    const outOfFace = outOfFaceElements(
+      { fields: resolved.fields, tables, excls, splitY, H });
+    if (outOfFace.length) {
+      setMsg("");
+      setErrMsg(`保存していません: 面の範囲外にある要素があります: ${outOfFace.join("、")}。`
+        + "画像を開き直すと座標が範囲外になることがあります。位置を修正してから保存してください。");
+      return;
+    }
+    const built = buildTemplateJson(
+      { fields: resolved.fields, tables, excls, splitY, W, H, meta: meta.current });
+    if (built.droppedCount > 0) {
+      setMsg("");
+      setErrMsg(`保存していません: テンプレートの書き出しで ${built.droppedCount} 件の要素が`
+        + "面の範囲外として除外されました（内部不整合のため保存を中止しました）。");
+      return;
+    }
+    if (resolved.carved.length) { setFields(resolved.fields); setSel(null); }
+    const carveNote = resolved.carved.length
+      ? `重なった欄を自動で切り抜きました: ${resolved.carved.join("、")}。` : "";
+    const carveWarnNote = carveWarningNotice(resolved.warned);
+    if (carveWarnNote) setWarnMsg(carveWarnNote);
+
+    const suggestedName = meta.current.template_id && meta.current.template_id !== "chouhyo-v1"
+      ? meta.current.template_id : "";
+    const name = window.prompt(
+      `利用者テンプレートとして保存する名前を入力してください。\n${USER_TEMPLATE_NAME_RULE}`,
+      suggestedName);
+    if (name === null) return;   // キャンセル（pick_json のキャンセルと同じく無言で中止）
+
+    // 上書き確認は GUI 側で先に出す（設計08 §3.2.3「Rust は名前の妥当性
+    // だけを見て、確認は UI の責務」）。save_user_template(name, content,
+    // overwrite=false) を先に投げ、同名が既にあれば Err("AlreadyExists")
+    // が返る（lib.rs:1197）ので、そこで初めて確認ダイアログを出し
+    // overwrite=true で再送する——一覧を別途取得して名寄せする必要は無い
+    // （NFC 正規化・大小無視の同名判定は Rust の validate_user_template_name
+    // が一箇所で担う）
+    const content = JSON.stringify(built.template, null, 2);
+    let res = await trySaveUserTemplate(name, content, false);
+    if (!res.ok && res.alreadyExists) {
+      if (!window.confirm(`同名の利用者テンプレート「${name}」が既にあります。上書きしますか？`)) {
+        abortSave("同名テンプレートの上書きをキャンセル");
+        return;
+      }
+      res = await trySaveUserTemplate(name, content, true);
+    }
+    if (!res.ok) {
+      setMsg("");
+      setErrMsg(`保存していません: ${res.error}`);
+      return;
+    }
+    await invoke("write_config", { patch: { last_template: `user:${name}` } }).catch(() => {});
+    setTplPath(null);
+    markDirty(false);
+    setMsg(carveNote + `利用者テンプレートとして保存しました: ${name}`);
   };
 
   // ---------- 枠候補の生成（detect-grid）----------
@@ -3261,7 +3751,10 @@ export default function Editor(
       <div className="toolbar">
         <button className="btn" onClick={loadImage}>帳票を開く（PDF・画像）</button>
         <button className="btn" onClick={loadTemplate}>テンプレートを開く</button>
+        <button className="btn" onClick={openUserTemplateList}>利用者テンプレートから開く</button>
         <button ref={saveBtnRef} className="btn primary" onClick={saveTemplate}>保存して検証</button>
+        <button className="btn" onClick={saveAsUserTemplate}>利用者テンプレートとして保存</button>
+        <button className="btn" onClick={importUserTemplate}>取り込み</button>
         <span className="sep" />
         {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => {
           // select（一覧・パネルからの操作の起点）は画像なしでも押せるが、
@@ -3286,14 +3779,73 @@ export default function Editor(
           style={{ margin: "8px 18px", display: "flex",
           alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <span>{formatBannerText}</span>
+          {/* ころね（user_advocate）の初見ユーザー予測レビュー: 2つのボタンが
+              何をする操作か区別しにくかった（どちらも似た見た目・似た文言）。
+              ラベルを「操作」→「結果」の形にし、各1行で効果と使いどころを
+              添える（FR-F05・FR-F30/F31） */}
           {hasFormatMismatch && !formatOverride && (
-            <button className="btn" onClick={() => setFormatOverride(true)}>
-              それでもこのテンプレートで開く
-            </button>
+            <span style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <button className="btn" onClick={() => setFormatOverride(true)}>
+                  判定を無視して枠を表示する（このテンプレートのまま直す）
+                </button>
+                <span className="note">枠がズレて見えるときは読み取り時に自動補正されるため、
+                  枠は動かさないでください</span>
+              </span>
+              {/* issue #72 (t)・FR-F30/F31: 不一致時の導線。(b) 未実装のため
+                  到達点は「空のテンプレートで開く」まで（設計08 §3.6） */}
+              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <button className="btn" onClick={createTemplateForThisImage}>
+                  この紙用に新しいテンプレートを作る
+                </button>
+                <span className="note">空のテンプレートから表を描き直します</span>
+              </span>
+            </span>
           )}
         </div>
       )}
       {warnMsg && <div className="warnbox" style={{ margin: "8px 18px" }}>{warnMsg}</div>}
+      {/* issue #72 (t)・FR-F28/F46: 照合提示（「この画像に合うテンプレート」）。
+          画像を開くたびに match_templates を呼び直す（loadImage 参照）。
+          現在開いているテンプレートが一致判定なら畳んでおく（matchCollapsed） */}
+      {(matchLoading || matchError || matchResult) && (
+        <div className="card" style={{ margin: "8px 18px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <b>この画像に合うテンプレート</b>
+            <button type="button" className="btn"
+              onClick={() => setMatchCollapsed((c) => !c)}>
+              {matchCollapsed ? "表示する" : "折りたたむ"}
+            </button>
+          </div>
+          {!matchCollapsed && (matchLoading ? (
+            <p className="note">照合しています…</p>
+          ) : matchError ? (
+            <p className="note" style={{ color: "var(--err-ink)" }}>{matchError}</p>
+          ) : matchResult && (() => {
+            const ranked = rankCandidates(matchResult.candidates, matchResult.truncated);
+            return (
+              <>
+                <p className="note">{ranked.notice}</p>
+                {ranked.rows.map((c) => (
+                  <div key={`${c.kind}:${c.name}`} className="panel-outrow">
+                    <span>{c.name}{c.kind === "shipped" ? "（出荷）" : ""}
+                      {ranked.recommend === c.name && " ★推奨"}</span>
+                    <span className="note">欄{c.fields}・表{c.tables}
+                      {c.updated_at ? `・更新 ${c.updated_at}` : ""}
+                      {ranked.showScore ? `・スコア ${c.score.toFixed(2)}` : ""}</span>
+                    <button className="btn" type="button"
+                      onClick={() => openMatchedTemplate(c.kind, c.name)}>開く</button>
+                  </div>
+                ))}
+                {matchResult.excluded.length > 0 && (
+                  <p className="note">読めないテンプレート {matchResult.excluded.length} 件（
+                    {matchResult.excluded.map((e) => `${e.name}: ${excludedReasonJa(e.reason)}`).join("、")}）</p>
+                )}
+              </>
+            );
+          })())}
+        </div>
+      )}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
           style={spaceHeld ? { cursor: "grab" }
@@ -3343,6 +3895,43 @@ export default function Editor(
                   setConfirmModal((m) => m && { ...m, busy: true });
                   closeConfirmModal(true);
                 }}>このまま保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* issue #72 (t)・FR-F27/F29: 「利用者テンプレートから開く」パネル。
+          list_user_templates の一覧を表示名だけで並べる（絶対パスは持たない） */}
+      {userTplPanel && (
+        <div className="modal-back" onClick={() => setUserTplPanel(null)}>
+          <div className="modal" role="dialog" aria-modal="true"
+            aria-labelledby="user-tpl-list-title" onClick={(e) => e.stopPropagation()}>
+            <h3 id="user-tpl-list-title">利用者テンプレートから開く</h3>
+            {userTplPanel.error && (
+              <p className="note" style={{ color: "var(--err-ink)" }}>{userTplPanel.error}</p>
+            )}
+            {!userTplPanel.error && userTplPanel.templates.length === 0
+              && userTplPanel.excluded.length === 0 && (
+              <p className="note">保存済みの利用者テンプレートはまだありません。</p>
+            )}
+            {userTplPanel.templates.map((e) => (
+              <div key={e.name} className="panel-outrow">
+                <span>{e.name}</span>
+                <span className="note">欄{e.fields}・表{e.tables}
+                  ・更新 {new Date(e.updated_at).toLocaleString()}</span>
+                <button className="btn" type="button"
+                  onClick={() => openMatchedTemplate("user", e.name)}>開く</button>
+                <button className="btn" type="button"
+                  onClick={() => exportUserTemplate(e.name)}>書き出し</button>
+              </div>
+            ))}
+            {userTplPanel.excluded.map((e) => (
+              <div key={e.name} className="panel-outrow">
+                <span>{e.name}<span className="format-hidden-badge">
+                  読み込めません（{excludedReasonJa(e.reason)}）</span></span>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <button type="button" className="btn" onClick={() => setUserTplPanel(null)}>閉じる</button>
             </div>
           </div>
         </div>

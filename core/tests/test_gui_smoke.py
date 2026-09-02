@@ -202,7 +202,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
 
 def test_editor_format_mismatch_hides_frames_until_override(page):
     # issue #71 (a'): expand-page が返す面ごとの様式判定（verdict）が
-    # "mismatch" の面は、「それでもこのテンプレートで開く」（FR-F05）で
+    # "mismatch" の面は、「判定を無視して枠を表示する」（FR-F05）で
     # 上書きするまで枠を描かず・掴めない（FR-F04・FR-F06・AC-F02/AC-F06/
     # AC-F07・設計08 §2.7.3「見えない枠を掴ませない」）。
     # デモモードの pick_image は実ファイルダイアログを持たない（null を
@@ -222,7 +222,7 @@ def test_editor_format_mismatch_hides_frames_until_override(page):
 
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
     page.wait_for_selector("text=様式が合いません")
-    assert page.get_by_role("button", name="それでもこのテンプレートで開く").is_visible()
+    assert page.get_by_role("button", name="判定を無視して枠を表示する", exact=False).is_visible()
 
     # DEMO_TEMPLATE の front 面にある「person_氏名」欄（page 座標
     # x:400,y:300,w:600,h:90）の中心を、既定の zoom(0.35)・pan({x:10,y:10})
@@ -238,7 +238,7 @@ def test_editor_format_mismatch_hides_frames_until_override(page):
         "不一致面の欄が上書き前なのに選択できてしまった（見えない枠を掴んでいる）"
 
     # 上書きすると枠が出て掴めるようになる
-    page.get_by_role("button", name="それでもこのテンプレートで開く").click()
+    page.get_by_role("button", name="判定を無視して枠を表示する", exact=False).click()
     page.wait_for_selector("text=様式判定を無視して枠を表示しています")
     fx, fy = field_center()
     page.mouse.click(fx, fy)
@@ -283,3 +283,127 @@ def test_editor_delete_ignored_while_run_tab_active(page):
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
     page.wait_for_selector("text=次の作業（目視確認）")
+
+
+def test_editor_user_template_list_opens_saved_template(page):
+    # issue #72 (t)・FR-F27/F29: 「利用者テンプレートから開く」は
+    # list_user_templates（表示名のみ・絶対パスなし・設計08 §3.2.2）の一覧を
+    # 出し、読み込めないテンプレートは理由付きで示す（FR-F28「1件の不正で
+    # 一覧全体を止めない」）。開くと read_user_template(name) を経由して
+    # 編集状態が入れ替わる。
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    page.get_by_role("button", name="利用者テンプレートから開く").click()
+    dialog = page.get_by_role("dialog", name="利用者テンプレートから開く")
+    assert dialog.get_by_text("帳票B").is_visible()
+    assert dialog.get_by_text("読み込めません（JSON として読めません）").is_visible(), \
+        "壊れたテンプレートが理由付きで一覧に出ていない（FR-F28）"
+
+    dialog.get_by_role("button", name="開く", exact=True).click()
+    page.wait_for_selector("text=テンプレート読込: 帳票B")
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")
+
+
+def test_editor_match_panel_shows_candidates_after_opening_image(page):
+    # issue #72 (t)・FR-F28/F46: 画像を開くと match_templates（core の
+    # match-templates を1プロセスで呼ぶ Rust コマンド・設計08 §3.3）を呼び、
+    # 「この画像に合うテンプレート」パネルへ候補を並べる（rankCandidates・
+    # 設計08 §3.4）。デモの疑似応答は入力によらず固定candidatesを返すため、
+    # pick_image の疑似パスの巡回（mismatch/match/undecidable）とは独立に
+    # 検証できる。
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=この画像に合うテンプレート")
+    # 現在開いているテンプレートが一致判定の巡回に当たっていると畳まれる
+    # （設計08 §3.4）ため、その場合だけ展開する
+    show_btn = page.get_by_role("button", name="表示する")
+    if show_btn.is_visible():
+        show_btn.click()
+
+    assert page.get_by_text("★推奨").is_visible(), "1件だけの一致候補が推奨されていない"
+    assert page.get_by_text("帳票B", exact=False).first.is_visible()
+    assert page.get_by_text("読めないテンプレート 1 件", exact=False).is_visible(), \
+        "照合できなかったテンプレートの件数・理由が出ていない（FR-F28）"
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")
+
+
+def test_editor_save_as_user_template_confirms_overwrite(page):
+    # issue #72 (t)・FR-F26・設計08 §3.2.3: 「利用者テンプレートとして保存」は
+    # 名前を尋ね（window.prompt）、既存の同名テンプレートがあれば上書き確認
+    # （window.confirm）を GUI 側で先に出す——Rust の save_user_template は
+    # 名前の妥当性だけを見て、確認は UI の責務（設計どおり）。
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    seen_dialog_types = []
+
+    def handle_dialog(dialog):
+        seen_dialog_types.append(dialog.type)
+        if dialog.type == "prompt":
+            # デモの一覧に既にある名前（帳票B）を指定し、上書き確認を発火させる
+            dialog.accept("帳票B")
+        else:
+            dialog.accept()
+
+    page.on("dialog", handle_dialog)
+    try:
+        page.get_by_role("button", name="利用者テンプレートとして保存", exact=True).click()
+        page.wait_for_selector("text=利用者テンプレートとして保存しました")
+    finally:
+        page.remove_listener("dialog", handle_dialog)
+
+    assert "prompt" in seen_dialog_types, "名前入力（window.prompt）が発火していない"
+    assert "confirm" in seen_dialog_types, "同名の上書き確認（window.confirm）が発火していない"
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")
+
+
+def test_editor_restores_last_template_notice_after_reload(page):
+    # issue #72 (t)・スバル差し戻し1: read_default_template は
+    # config.last_template を解決して返す（gui/src-tauri/src/lib.rs・あくあ
+    # 実装）。これまでは「出荷」「前回使った利用者テンプレート」のどちらが
+    # 復元されたかが画面から分からなかった——restoredTemplateNotice
+    # （Editor.tsx）が last_template を読んで「前回のテンプレート（<id>）を
+    # 読み込みました」と明示する。デモモードは write_config を localStorage
+    # へ永続化するため、ページ再読み込み（＝アプリ再起動相当）をまたいで
+    # last_template が残る（AC-F26 と同じ「再起動で前回テンプレートが復元
+    # される」ことの確認）。このテストは最後に実行する——reload でデモの
+    # インメモリ状態（mockStaged 等）が丸ごと初期化されるため。
+    page.locator(".tabs button", has_text="実行").click()
+    # 先行テスト（test_run_flow_shows_progress_and_summary）が完了サマリを
+    # 表示したままの可能性がある（RunScreen はタブをまたいでマウントされ
+    # 続けるため summary state が残る）。テンプレート選択カードはサマリ非
+    # 表示時（手順1〜3と同じ条件）にしか出ないため、必要なら手前へ戻す
+    change_btn = page.get_by_role("button", name="条件を変更して読み取る")
+    if change_btn.is_visible():
+        change_btn.click()
+    page.wait_for_selector("text=読み取る帳票の選択")
+
+    select = page.get_by_label("読み取りに使うテンプレート")
+    select.select_option(label="帳票B")
+    # write_config の呼び出し（localStorage への永続化）は onChange 内の
+    # 非同期処理のため、reload の前に完了させる猶予を与える
+    page.wait_for_timeout(300)
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(500)
+
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=前回のテンプレート（帳票B）を読み込みました")
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）。reload で
+    # summary state も初期化されているため、以前と違い手順1〜3の初期画面へ
+    # 戻る（このテストが最後なので後続テストへの影響はない）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")

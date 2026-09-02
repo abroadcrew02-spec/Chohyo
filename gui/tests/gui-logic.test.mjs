@@ -22,8 +22,8 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA } from "./RunScreen.tsx";\n',
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa } from "./Editor.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -886,7 +886,10 @@ test("expandAlignNotice: verdict=mismatch は黄帯・上書き案内つき・�
   assert.equal(r.isError, false, "黄帯は errMsg（赤帯）に出してはいけない");
   assert.ok(r.text.includes("chouhyo-v1"), r.text);
   assert.ok(r.text.includes("様式が合いません"), r.text);
-  assert.ok(r.text.includes("それでもこのテンプレートで開く"), r.text);
+  // ころね（user_advocate）の初見ユーザー予測レビュー: 案内文が指す先の
+  // ボタン名を新ラベル「判定を無視して枠を表示する」に揃える（旧ラベル
+  // 「それでもこのテンプレートで開く」だとボタンと文言が食い違っていた）
+  assert.ok(r.text.includes("判定を無視して枠を表示する"), r.text);
 });
 
 test("expandAlignNotice: verdict=mismatch はテンプレ破損(template)・寸法不一致(size)より優先度が低い", () => {
@@ -1914,6 +1917,256 @@ test("canvasInteractionAllowed: 画像の有無だけで決まり、tool（pan �
   assert.equal(canvasInteractionAllowed(false, "pan"), false);
   assert.equal(canvasInteractionAllowed(true, "select"), true);
   assert.equal(canvasInteractionAllowed(true, "pan"), true);
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// rankCandidates（設計08 §3.4・AC-F53/F54）。並び順・推奨・スコア表示の
+// 出し分けは core/Rust ではなくこの関数だけが決める（表示規則）
+const cand = (name, kind, verdict, score) =>
+  ({ name, kind, template_id: name, fields: 10, tables: 1, updated_at: "2026-09-01T00:00:00+09:00",
+     verdict, reason: verdict === "match" ? "" : "lines", score, detected: 10, expected: 10 });
+
+test("rankCandidates: 一致候補が1件ならスコア降順・その1件を推奨・スコア表示", () => {
+  const cands = [cand("B", "user", "mismatch", 0.1), cand("A", "shipped", "match", 0.9)];
+  const r = rankCandidates(cands, false);
+  assert.equal(r.recommend, "A");
+  assert.equal(r.showScore, true);
+  assert.deepEqual(r.rows.map((c) => c.name), ["A", "B"]);
+  assert.ok(r.notice.includes("罫線"), r.notice);
+});
+
+test("rankCandidates: 一致候補が複数で差が0.1以上なら最上位を推奨", () => {
+  const cands = [cand("低", "user", "match", 0.5), cand("高", "shipped", "match", 0.9)];
+  const r = rankCandidates(cands, false);
+  assert.equal(r.recommend, "高");
+  assert.equal(r.showScore, true);
+  assert.deepEqual(r.rows.map((c) => c.name), ["高", "低"]);
+});
+
+test("rankCandidates: 一致候補が複数で差が0.1未満なら推奨なし・名前順・スコア非表示", () => {
+  const cands = [cand("Z帳票", "user", "match", 0.90), cand("A帳票", "shipped", "match", 0.85)];
+  const r = rankCandidates(cands, false);
+  assert.equal(r.recommend, null);
+  assert.equal(r.showScore, false);
+  assert.deepEqual(r.rows.map((c) => c.name), ["A帳票", "Z帳票"]);
+});
+
+test("rankCandidates: truncated なら名前順・推奨なし・スコア非表示・打ち切りに触れる", () => {
+  const cands = [cand("Z", "user", "match", 0.9), cand("A", "shipped", "mismatch", 0.1)];
+  const r = rankCandidates(cands, true);
+  assert.equal(r.recommend, null);
+  assert.equal(r.showScore, false);
+  assert.deepEqual(r.rows.map((c) => c.name), ["A", "Z"]);
+  assert.ok(r.notice.includes("打ち切り"), r.notice);
+});
+
+test("rankCandidates: 一致候補ゼロなら名前順・推奨なしだがスコアは表示する", () => {
+  const cands = [cand("Z", "user", "mismatch", 0.3), cand("A", "shipped", "mismatch", 0.1)];
+  const r = rankCandidates(cands, false);
+  assert.equal(r.recommend, null);
+  assert.equal(r.showScore, true);
+  assert.deepEqual(r.rows.map((c) => c.name), ["A", "Z"]);
+});
+
+test("rankCandidates: notice には常に幾何一致のみを見ている旨を含める", () => {
+  for (const [cands, truncated] of [
+    [[cand("A", "shipped", "match", 0.9)], false],
+    [[cand("A", "shipped", "mismatch", 0.1)], false],
+    [[cand("A", "shipped", "match", 0.9)], true],
+  ]) {
+    assert.ok(rankCandidates(cands, truncated).notice.includes("中身の同一性は保証しません"));
+  }
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// emptyTemplateFor / newTemplateNotice（FR-F30/F31・設計08 §3.6）
+test("emptyTemplateFor: 画像の実寸・現在の表裏境界で2面・欄/表/除外は空", () => {
+  const t = emptyTemplateFor(2490, 3510, 1880);
+  assert.equal(t.image.width, 2490);
+  assert.equal(t.image.height, 3510);
+  assert.equal(t.faces.length, 2);
+  const [front, back] = t.faces;
+  assert.equal(front.face_id, "front");
+  assert.equal(front.source.rect.y, 0);
+  assert.equal(front.source.rect.h, 1880);
+  assert.equal(back.face_id, "back");
+  assert.equal(back.source.rect.y, 1880);
+  assert.equal(back.source.rect.h, 3510 - 1880);
+  for (const f of t.faces) {
+    assert.deepEqual(f.fields, []);
+    assert.deepEqual(f.tables, []);
+    assert.deepEqual(f.exclusions, []);
+  }
+});
+
+test("emptyTemplateFor: splitY が画像の高さを超えてもクランプし面の高さが負にならない", () => {
+  const t = emptyTemplateFor(1000, 500, 9999);
+  const [front, back] = t.faces;
+  assert.equal(front.source.rect.h, 500);
+  assert.equal(back.source.rect.h, 0);
+});
+
+test("newTemplateNotice: 候補なし（(b)未実装の現状）は等分割生成と手動作図を案内する", () => {
+  const n = newTemplateNotice(false);
+  assert.ok(n.includes("等分割"), n);
+  assert.ok(n.includes("欄を追加"), n);
+});
+
+test("newTemplateNotice: 候補ありの分岐は候補確認を案内する（将来 (b) 実装後用）", () => {
+  const n = newTemplateNotice(true);
+  assert.ok(n.includes("候補"), n);
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// restoredTemplateNotice（スバル差し戻し1）: read_default_template が
+// config.last_template を解決して返すため、起動時にどちらが復元されたかを
+// last_template の値（"user:<名前>" かどうか）だけで判定する。
+// template_id の値には依存しない（デモの疑似出荷は id が任意になるため）
+test("restoredTemplateNotice: last_template が user:<名前> なら『前回のテンプレート』を明示する", () => {
+  const n = restoredTemplateNotice("user:帳票B", "帳票B", 3, 1);
+  assert.ok(n.text.includes("前回のテンプレート（帳票B）を読み込みました"), n.text);
+  assert.ok(n.text.includes("欄 3"), n.text);
+  assert.ok(n.text.includes("表 1"), n.text);
+});
+test("restoredTemplateNotice: last_template が 'shipped'・空・不正値なら従来の noImageNotice のまま", () => {
+  for (const lt of ["shipped", "", "shipped:chouhyo-v1", "bogus"]) {
+    const n = restoredTemplateNotice(lt, "chouhyo-v1", 220, 2);
+    assert.deepEqual(n, { text: noImageNotice("chouhyo-v1", 220, 2).text }, lt);
+    assert.ok(!n.text.includes("前回のテンプレート"), n.text);
+  }
+});
+test("restoredTemplateNotice: template_id が出荷既定と違う値でも last_template が user: でなければ『前回』と言わない（デモの疑似出荷 id 対策）", () => {
+  const n = restoredTemplateNotice("shipped", "demo", 1, 1);
+  assert.ok(!n.text.includes("前回のテンプレート"), n.text);
+});
+test("restoredTemplateNotice: 欄・表がどちらも0なら（前回の表示でも）未読込文言のまま", () => {
+  const n = restoredTemplateNotice("user:帳票B", "帳票B", 0, 0);
+  assert.ok(n.text.includes("読み込めていません"), n.text);
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// templateSwitchImageSizeNotice（スバル差し戻し2）: テンプレート切替時、
+// 表示中の画像とテンプレートの image 寸法が食い違っていたら黄帯で伝える
+// （ブロックはしない）
+test("templateSwitchImageSizeNotice: 寸法が食い違えば理由付きの注意を返す", () => {
+  const n = templateSwitchImageSizeNotice({ w: 2490, h: 3510 }, { width: 1240, height: 1750 });
+  assert.ok(n, "null が返った");
+  assert.ok(n.includes("1240"), n);
+  assert.ok(n.includes("3510"), n);
+});
+test("templateSwitchImageSizeNotice: 寸法が一致すれば null", () => {
+  assert.equal(templateSwitchImageSizeNotice({ w: 2490, h: 3510 }, { width: 2490, height: 3510 }), null);
+});
+test("templateSwitchImageSizeNotice: 画像未表示・テンプレの image 未設定はどちらも null（比較できないだけで注意ではない）", () => {
+  assert.equal(templateSwitchImageSizeNotice(null, { width: 100, height: 100 }), null);
+  assert.equal(templateSwitchImageSizeNotice({ w: 100, h: 100 }, null), null);
+  assert.equal(templateSwitchImageSizeNotice({ w: 100, h: 100 }, undefined), null);
+});
+test("rankCandidates: truncated の注記は『候補が多い・時間切れ』の文言になる（マリン core レビュー分）", () => {
+  const r = rankCandidates([cand("A", "shipped", "match", 0.9)], true);
+  assert.ok(r.notice.includes("候補が多い・時間切れ"), r.notice);
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// excludedReasonJa / matchErrorJa（マリン core レビュー分）: 除外理由・
+// 照合失敗理由の日本語化。core・Rust の理由コードは複数箇所（list_user_
+// templates と match_templates）から出るため、訳語を1関数に集約する
+test("excludedReasonJa: 既知コードを日本語へ訳す（list_user_templates・match_templates 双方の値）", () => {
+  assert.equal(excludedReasonJa("parse"), "JSON として読めません");
+  assert.equal(excludedReasonJa("invalid_json"), "JSON として読めません",
+    "core の呼称統一（invalid_json→parse）までの互換");
+  assert.equal(excludedReasonJa("not_found"), "ファイルがありません");
+  assert.equal(excludedReasonJa("schema"), "テンプレートの形式が不正です");
+  assert.equal(excludedReasonJa("size"), "サイズ上限（5MB）超過");
+  assert.equal(excludedReasonJa("limit"), "件数上限で未照合");
+  assert.equal(excludedReasonJa("invalid_name"), "名前が規則に合いません");
+  assert.equal(excludedReasonJa("check_failed"), "照合処理でエラー");
+});
+test("excludedReasonJa: 未知のコードは生値をそのまま返す（存在しない訳を捏造しない）", () => {
+  assert.equal(excludedReasonJa("some_future_code"), "some_future_code");
+});
+test("matchErrorJa: match_templates の ok:false・固定コードを日本語へ訳す", () => {
+  assert.equal(matchErrorJa("input_not_found"), "入力画像が見つかりません");
+  assert.equal(matchErrorJa("expand_failed"), "画像の展開に失敗しました");
+  assert.equal(matchErrorJa("input_unreadable"), "入力画像を読み込めません");
+  assert.equal(matchErrorJa("internal"), "内部エラーが発生しました");
+});
+test("matchErrorJa: 未知のコード・未提供でも捏造せず生値／フォールバック文言を返す", () => {
+  assert.equal(matchErrorJa("some_future_code"), "some_future_code");
+  assert.equal(matchErrorJa(undefined), "不明なエラー");
+  assert.equal(matchErrorJa(null), "不明なエラー");
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// startDisabledReason（ころね／user_advocate の初見ユーザー予測レビュー）:
+// 「読み取りを開始」が無効な理由をボタン直下へ1行出す
+const VERIFY_BASE = { template: true, poppler: true, cred: "dpapi", storage: true,
+  budgetUsed: 0, budgetCap: 900, parsed: true };
+test("startDisabledReason: 帳票フォルダ未選択・verify 未取得はどちらも null（別の案内に任せる）", () => {
+  assert.equal(startDisabledReason("", VERIFY_BASE), null);
+  assert.equal(startDisabledReason("C:\\demo", null), null);
+});
+test("startDisabledReason: verify 未実行（parsed:false）を最優先で伝える", () => {
+  assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, parsed: false }),
+    "検証が実行できていません（再試行してください）");
+});
+test("startDisabledReason: 認証キー未設定・送信上限到達・保存先NGをそれぞれ伝える", () => {
+  assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, cred: "missing" }),
+    "認証キーが未設定です（下の「認証キーを選択」から設定してください）");
+  assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, budgetUsed: 900, budgetCap: 900 }),
+    "今月の送信上限に達しています");
+  assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, storage: false }),
+    "保存先がクラウド同期フォルダ等の下にあります（設定で変更してください）");
+});
+test("startDisabledReason: すべて問題なければ null", () => {
+  assert.equal(startDisabledReason("C:\\demo", VERIFY_BASE), null);
+});
+
+// ---------------------------------------------------------------- issue #72 (t)
+// parseLastTemplate / formatLastTemplate / resolveSelectedTemplate
+// （FR-F27・FR-F29・設計08 §3.5）
+test("parseLastTemplate: user:<名前> を分解する", () => {
+  assert.deepEqual(parseLastTemplate("user:帳票B"), { kind: "user", name: "帳票B" });
+});
+test("parseLastTemplate: 'shipped'・空文字・未設定・不正な形式（shipped: 等）は null", () => {
+  // core/chouhyo_ocr/config.py の _validate が受け付ける非 user: 値はリテラル
+  // "shipped" のみ（既定値）。"" や "shipped:<名前>" は同じく null（出荷扱い）
+  // に倒す——Rust 側の resolve_last_template_path はこれらも許容するが、
+  // GUI が書き戻す値は "shipped" に統一する（形を1つに保つ）
+  assert.equal(parseLastTemplate("shipped"), null);
+  assert.equal(parseLastTemplate(""), null);
+  assert.equal(parseLastTemplate(undefined), null);
+  assert.equal(parseLastTemplate("shipped:chouhyo-v1"), null);
+  assert.equal(parseLastTemplate("bogus"), null);
+});
+test("formatLastTemplate: parseLastTemplate の逆変換になる（user）", () => {
+  const ref = { kind: "user", name: "帳票B" };
+  assert.equal(formatLastTemplate(ref), "user:帳票B");
+  assert.deepEqual(parseLastTemplate(formatLastTemplate(ref)), ref);
+});
+test("formatLastTemplate: shipped・null はどちらも 'shipped'（config.py の既定値・出荷は列挙しない）", () => {
+  assert.equal(formatLastTemplate({ kind: "shipped", name: "chouhyo-v1" }), "shipped");
+  assert.equal(formatLastTemplate(null), "shipped");
+});
+test("resolveSelectedTemplate: 選択中の利用者テンプレートが一覧にあればそのまま", () => {
+  const r = resolveSelectedTemplate("user:帳票B", ["帳票B", "帳票C"]);
+  assert.equal(r.value, "user:帳票B");
+  assert.equal(r.notice, null);
+});
+test("resolveSelectedTemplate: 一覧から消えていれば出荷へ戻し通知を返す（削除された等）", () => {
+  const r = resolveSelectedTemplate("user:帳票B", ["帳票C"]);
+  assert.equal(r.value, "shipped");
+  assert.ok(r.notice && r.notice.includes("帳票B"), r.notice);
+});
+test("resolveSelectedTemplate: 出荷選択（'shipped'）はそのまま・通知なし", () => {
+  const r = resolveSelectedTemplate("shipped", ["帳票B"]);
+  assert.equal(r.value, "shipped");
+  assert.equal(r.notice, null);
+});
+test("resolveSelectedTemplate: 空文字（未設定・旧値）も出荷へ倒す・通知なし", () => {
+  const r = resolveSelectedTemplate("", ["帳票B"]);
+  assert.equal(r.value, "shipped");
+  assert.equal(r.notice, null);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
