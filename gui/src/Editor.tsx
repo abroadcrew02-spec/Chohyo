@@ -892,6 +892,42 @@ export function expandAlignNotice(
   };
 }
 
+/// 画像を開く前のキャンバス案内（2026-09-02 ユーザー指摘）。出荷テンプレの
+/// 自動読み込み（issue #56 T1-4・2026-08-31 対応）はそのまま維持しつつ、
+/// 画像の無い暗いキャンバスにその座標の枠だけが浮いて見えるのは誤解を招く
+/// ため、枠の代わりにこの案内を描く。キャンバス内の文字（draw()）と、
+/// スクリーンリーダー向けの DOM 表示（msg）の両方から呼ぶので、行ごとの
+/// テキストと結合済みテキストの両方を返す。
+/// 欄・表がどちらも0のとき（自動読み込み失敗・loadTemplate 前）は「読み込み
+/// 済み」と嘘をつかず、未読込であることを案内する（マリンレビュー M-2）
+export function noImageNotice(
+  templateId: string, fieldCount: number, tableCount: number):
+  { line1: string; line2: string; text: string } {
+  const line2 = "帳票の画像か PDF を開くと、枠が記入欄に重ねて表示されます";
+  if (fieldCount === 0 && tableCount === 0) {
+    const line1 = "テンプレートを読み込めていません。"
+      + "「テンプレートを開く」で読み込むか、帳票を開いて枠を作成してください";
+    return { line1, line2, text: `${line1}。${line2}` };
+  }
+  // 「出荷」を付けると、自動読み込みされた出荷テンプレでなく利用者自身の
+  // JSON（loadTemplate 経由）を開いた場合にも「出荷テンプレート」と表示され
+  // 誤解を招く（マリンレビュー M-1）ため、由来を問わない中立な言い方にする
+  const line1 = `テンプレート（${templateId}）を読み込み済み・欄 ${fieldCount}・表 ${tableCount}`;
+  return { line1, line2, text: `${line1}。${line2}` };
+}
+
+/// 画像が無い間はキャンバス上の枠操作（選択・追加・ドラッグ・リサイズ・
+/// 除外範囲の作成・表裏境界の移動）を無効化する（同上のユーザー指摘）。
+/// パン（ドラッグ移動）とホイールズームは表示位置の調整に過ぎず誤操作の
+/// 実害が無いため画像の有無に関わらず許可するが、その判定は呼び出し側
+/// （onDown）の分岐順（パン判定がこの関数の呼び出しより前）で担保する——
+/// ここでは tool を問わず画像の有無だけを見る（マリンレビュー H-1: 以前は
+/// "pan" という仮のツール名をここへ渡す小細工をしていたが、渡し忘れる経路
+/// （待ち受け状態が残ったまま次のクリックへ進む等）があり見通しが悪かった）
+export function canvasInteractionAllowed(hasImage: boolean, _tool: string): boolean {
+  return hasImage;
+}
+
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
 /// 成功なら結合後の A を、できない場合は理由の文字列を返す。
 export function absorbField(a: Field, b: Field): Field | string {
@@ -1028,11 +1064,59 @@ export function keyAction(
   return null;
 }
 
+/// 画像なしキャンバスの案内文を、幅 maxWidth（CSS px・現在の ctx.font 基準）に
+/// 収まるよう複数行へ折り返す（2026-09-02 コーディネータ指摘1: 下限フォント
+/// サイズまで縮めても収まらない長文がプレート外へはみ出していた）。
+/// 「。」「、」の直後を優先した文節区切りで改行し、1文節がそれでも幅を
+/// 超える場合だけ文字単位で強制的に詰める。CanvasRenderingContext2D 依存で
+/// 純関数のテスト対象にならないため export しない（gui-logic のテストは
+/// draw() のスクリーンショット確認で代替する）
+function wrapNoticeText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+  const chunks: string[] = [];
+  let cur = "";
+  for (const ch of text) {
+    cur += ch;
+    if (ch === "。" || ch === "、") { chunks.push(cur); cur = ""; }
+  }
+  if (cur) chunks.push(cur);
+
+  const lines: string[] = [];
+  let line = "";
+  for (const chunk of chunks) {
+    if (line && ctx.measureText(line + chunk).width > maxWidth) {
+      lines.push(line);
+      line = "";
+    }
+    if (ctx.measureText(chunk).width <= maxWidth) {
+      line += chunk;
+      continue;
+    }
+    // 1文節でも幅を超える→文字単位で詰める（区切りが無い長文への保険）
+    for (const ch of chunk) {
+      if (line && ctx.measureText(line + ch).width > maxWidth) {
+        lines.push(line);
+        line = "";
+      }
+      line += ch;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [text];
+}
+
 export default function Editor(
   { onDirty, active }: { onDirty: (d: boolean) => void; active: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
+  // 画像が読み込まれているか（2026-09-02 ユーザー指摘・マリンレビュー H-1）。
+  // JSX（disabled/title 等）と onDown のガードは、値を変えると必ず再レンダー
+  // させたいので state（imgSize）から導く。draw() だけは rAF から都度呼ばれる
+  // 命令的な描画関数で、im.onload の直後（setImgSize 反映前）にも正しく
+  // 「画像ありで描く/無しで描く」を切り替えたいため、そこでは同じ判定に
+  // imgRef（ref）を直接見る——同じ im.onload 内で両方を同時にセットしている
+  // ので、レンダーのタイミングによる不一致は起きない（コーディネータ指摘7）
+  const hasImage = imgSize !== null;
   const [splitY, setSplitY] = useState(1880);
   const [fields, setFields] = useState<Field[]>([]);
   const [tables, setTables] = useState<Table[]>([]);
@@ -1168,9 +1252,90 @@ export default function Editor(
     ctx.fillStyle = "#1c1f26"; ctx.fillRect(0, 0, width, height);
     ctx.save();
     ctx.translate(pan.x, pan.y); ctx.scale(zoom, zoom);
-    if (imgRef.current) ctx.drawImage(imgRef.current, 0, 0);
-    const W = imgSize?.w ?? 2490;
     const px = 1 / zoom;
+    if (!imgRef.current) {
+      // 画像を開くまで枠を描かない（2026-09-02 ユーザー指摘）。8/31 対応の
+      // 出荷テンプレ自動読み込みはそのまま活かしつつ、画像の無い暗い
+      // キャンバスにその座標の枠だけが浮くのは誤解を招く——用紙サイズの
+      // 白い下地だけは、通常と同じパン／ズーム変換の内側（用紙座標）で描く。
+      // 画像が読み込まれた瞬間は imgSize の変化で draw() が再実行され、
+      // この分岐を通らなくなり、位置合わせ済み画像と枠が同時に出る
+      const { W: nw, H: nh } = curSize();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, nw, nh);
+      ctx.restore();
+
+      // 案内2行は変換の外＝画面座標（CSS px）で描く（2026-09-02 コーディネータ
+      // 指摘）。用紙座標のまま描くと、縮小ズーム時は画面下端に半分だけ・
+      // パン位置次第では白い下地の外の暗い背景にはみ出して読めなくなる
+      // （実機スクショで確認）。ズーム・パンに関わらずキャンバス表示領域の
+      // 中央に固定する
+      const notice = noImageNotice(meta.current.template_id, fields.length, tables.length);
+      const pad = 16;
+      const maxW = width - 40;
+      let size1 = 20, size2 = 18;
+      const measureBoth = () => {
+        ctx.font = `bold ${size1}px sans-serif`;
+        const w1 = ctx.measureText(notice.line1).width;
+        ctx.font = `${size2}px sans-serif`;
+        const w2 = ctx.measureText(notice.line2).width;
+        return Math.max(w1, w2);
+      };
+      let textW = measureBoth();
+      // ボックス幅が収まらない間はフォントを1pxずつ縮める（下限14px）。
+      // 極端に長い template_id・欄数でも無限ループにならないよう下限で止める
+      while (textW + pad * 2 > maxW && (size1 > 14 || size2 > 14)) {
+        if (size1 > 14) size1--;
+        if (size2 > 14) size2--;
+        textW = measureBoth();
+      }
+      // 下限フォントでもなお収まらない場合ははみ出す代わりに折り返す
+      // （コーディネータ指摘1: M-2 の未読込文言のような長文が 1000×700 で
+      // プレート幅からはみ出していた）。折り返し後の実測幅でボックス幅を
+      // 決め直す——常に maxW いっぱいのボックスにはしない
+      const innerW = maxW - pad * 2;
+      ctx.font = `bold ${size1}px sans-serif`;
+      const rows1 = wrapNoticeText(ctx, notice.line1, innerW);
+      ctx.font = `${size2}px sans-serif`;
+      const rows2 = wrapNoticeText(ctx, notice.line2, innerW);
+      const measureRows = (rows: string[], font: string) => {
+        ctx.font = font;
+        return rows.reduce((m, r) => Math.max(m, ctx.measureText(r).width), 0);
+      };
+      const rowsW = Math.max(
+        measureRows(rows1, `bold ${size1}px sans-serif`),
+        measureRows(rows2, `${size2}px sans-serif`));
+      const rowH1 = size1 * 1.3, rowH2 = size2 * 1.3;
+      const boxW = Math.min(maxW, rowsW + pad * 2);
+      const boxH = rows1.length * rowH1 + rows2.length * rowH2 + pad * 2;
+      const boxX = width / 2 - boxW / 2;
+      const boxY = height / 2 - boxH / 2;
+      const r = 8;
+      ctx.beginPath();
+      ctx.moveTo(boxX + r, boxY);
+      ctx.arcTo(boxX + boxW, boxY, boxX + boxW, boxY + boxH, r);
+      ctx.arcTo(boxX + boxW, boxY + boxH, boxX, boxY + boxH, r);
+      ctx.arcTo(boxX, boxY + boxH, boxX, boxY, r);
+      ctx.arcTo(boxX, boxY, boxX + boxW, boxY, r);
+      ctx.closePath();
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#cccccc";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = "#333333";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      let y = boxY + pad + rowH1 / 2;
+      ctx.font = `bold ${size1}px sans-serif`;
+      for (const row of rows1) { ctx.fillText(row, width / 2, y); y += rowH1; }
+      ctx.font = `${size2}px sans-serif`;
+      for (const row of rows2) { ctx.fillText(row, width / 2, y); y += rowH2; }
+      return;
+    }
+    ctx.drawImage(imgRef.current, 0, 0);
+    const W = imgSize?.w ?? 2490;
 
     // 表裏分割線
     ctx.strokeStyle = "#ff5577"; ctx.lineWidth = 3 * px;
@@ -1453,9 +1618,11 @@ export default function Editor(
     im.src = src;
   };
 
-  const toEditorState = (t: any) => {
+  const toEditorState = (t: any): { fieldCount: number; tableCount: number } => {
     meta.current = {
-      template_id: t.template_id ?? "chouhyo-v1",
+      // 空文字の template_id（壊れたテンプレJSON等）を拾い漏らさないよう
+      // ?? ではなく || にする（マリンレビュー LOW）
+      template_id: t.template_id || "chouhyo-v1",
       render_dpi: t.render_dpi ?? 300,
       image: t.image ?? null,
       record: t.record ?? { pages: 1 },
@@ -1501,7 +1668,10 @@ export default function Editor(
     // （auto-load useEffect・loadTemplate）が refreshLoadedCounts で verify
     // 応答から別途取得する。toEditorState 自身は同期関数で verify（非同期）を
     // 呼べないうえ、GUI 側で fs.length 等から再導出すると保存時（core の
-    // verify＝行展開後の全セル数）と母集団がずれる（issue #66 段0・F-10）
+    // verify＝行展開後の全セル数）と母集団がずれる（issue #66 段0・F-10）。
+    // 戻り値の fieldCount/tableCount はこの基準とは別物——画像なしキャンバスの
+    // 案内表示専用の単純な件数であり、差分判定には使わない（2026-09-02）
+    return { fieldCount: fs.length, tableCount: ts.length };
   };
 
   // 読み込み時点の欄数・金額列数・除外数の基準を verify 応答から取得する
@@ -1545,10 +1715,13 @@ export default function Editor(
         const text = await invoke<string>("read_default_template");
         const parsed = JSON.parse(text);
         if (!parsed || !Array.isArray(parsed.faces)) throw new Error("faces が無い");
-        toEditorState(parsed);
+        const { fieldCount, tableCount } = toEditorState(parsed);
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
-        setMsg("出荷テンプレート（chouhyo-v1）を読み込みました。帳票を開いて位置を確認してください");
+        // 画像を開くまでキャンバスに枠を描かない（2026-09-02 ユーザー指摘）。
+        // 案内はキャンバス内の文字（draw()）にも出すが、そちらはスクリーン
+        // リーダーに読めないため、同じ内容をこの msg（DOM）にも出す
+        setMsg(noImageNotice(meta.current.template_id, fieldCount, tableCount).text);
         await refreshLoadedCounts(null);
       } catch (e) {
         // 配布物欠損・開発中の白紙スタート。無言のままだと、この白紙が
@@ -1579,12 +1752,30 @@ export default function Editor(
       setErrMsg(`テンプレートを読み込めませんでした: ${e}`);
       return;
     }
-    toEditorState(parsed);
+    const { fieldCount, tableCount } = toEditorState(parsed);
     resetHistory();   // 別テンプレートをまたぐ Undo は誤操作のもと
     setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
     // 前のファイルの検証エラー・警告を現在の状態と誤読させない（レビュー N-5）
     setErrMsg(""); setWarnMsg("");
-    markDirty(false); setMsg(`テンプレート読込: ${p}`);
+    markDirty(false);
+    // 画像がまだ無ければ、DOM 案内をキャンバスの文字（draw()）と同じ内容に
+    // 揃える（マリンレビュー M-1）。以前は常に「テンプレート読込: <path>」
+    // 固定で、利用者自身の JSON を開いても canvas 側の「出荷テンプレート」
+    // 文言と食い違っていた。画像が既にあればそちらの経路は使わず、
+    // どのファイルを読み込んだかが分かる従来の文言を維持する
+    if (imgRef.current) {
+      setMsg(`テンプレート読込: ${p}`);
+    } else if (fieldCount === 0 && tableCount === 0) {
+      // 欄0・表0は自動読み込み失敗時と同じ判定式だが、ここは「今まさに
+      // 有効な JSON を p から読み込んだ」ことが分かっている経路——
+      // noImageNotice の「テンプレートを読み込めていません」をそのまま出すと
+      // 直前に選んだファイルが読み込めなかったかのように誤解される
+      // （コーディネータ指摘5）。パスと件数を残した専用の文言にする
+      setMsg(`テンプレート読込: ${p}（欄 ${fieldCount}・表 ${tableCount}）。`
+        + noImageNotice(meta.current.template_id, fieldCount, tableCount).line2);
+    } else {
+      setMsg(noImageNotice(meta.current.template_id, fieldCount, tableCount).text);
+    }
     await refreshLoadedCounts(p);
   };
 
@@ -2050,9 +2241,29 @@ export default function Editor(
   const hit = (p: { x: number; y: number }): Sel => hitAll(p)[0] ?? null;
   const onDown = (e: React.MouseEvent) => {
     const p = toPage(e);
-    if (e.button === 1 || e.altKey || spaceRef.current) {
+    const isPan = e.button === 1 || e.altKey || spaceRef.current;
+    if (isPan) {
       drag.current = { mode: "pan", start: { x: e.clientX, y: e.clientY },
                        extra: { ...pan } };
+      return;
+    }
+    // 画像が無い間はキャンバス上の枠操作を無効化する（2026-09-02 ユーザー
+    // 指摘・マリンレビュー H-1）。パン判定は上で確定済みなのでここでは
+    // 画像の有無だけを見る。抜けるときに待ち受け状態（領域を追加・別の欄と
+    // 結合・参照先の枠を描く）を必ず畳む——畳まずに return すると、この後
+    // 画像を開いた直後の最初のドラッグが無言で追加領域／参照先枠になる
+    // （待ち受けが残ったまま次のクリックへ進んでしまう再現条件）
+    if (!canvasInteractionAllowed(hasImage, tool)) {
+      setMergeTarget(null); setExTarget(null); setFbTarget(null);
+      // ヒットテストはしない（枠が描かれていないので、見えない枠を当てて
+      // 選ばせない・コーディネータ指摘6）が、select ツールでのクリックは
+      // 選択解除の合図として尊重する。無視すると「選択中」パネルを
+      // クリックだけでは閉じられなくなる
+      if (tool === "select") setSel(null);
+      // 案内文はキャンバスの文字（draw()）・DOM 初期表示と同じ内容にする
+      // （コーディネータ指摘4）。以前の固定文言では読み上げ経路から
+      // template_id・欄数・表数が消えていた
+      setMsg(noImageNotice(meta.current.template_id, fields.length, tables.length).text);
       return;
     }
     if (mergeTarget) {
@@ -2379,7 +2590,12 @@ export default function Editor(
         setExTarget(null); setMergeTarget(null); drag.current = null;
         break;
       case "delete": removeSel(); break;
-      case "nudge": nudge(ka.action.dx, ka.action.dy); break;
+      case "nudge":
+        // 画像なしでは枠が見えない（draw() が案内文言だけを描く）ため、
+        // 矢印キーで見えないまま座標だけ動いて dirty になるのを防ぐ
+        // （マリンレビュー M-3）。削除は一覧からの操作として引き続き許可する
+        if (hasImage) nudge(ka.action.dx, ka.action.dy);
+        break;
     }
   };
   // 実行タブへ切り替わるなど非アクティブ化された瞬間の後始末（issue #69
@@ -2582,11 +2798,19 @@ export default function Editor(
               <p className="note">L字・コの字の欄を作れます。どの領域の文字も
                 この欄の値として読み順でつながります{f.extras?.length
                   ? `（現在 ${f.extras.length + 1} 領域）` : ""}</p>
-              <button onClick={() => {
+              {/* 押しても待ち受け状態が空振りするだけにしないよう、画像が
+                  無い間は無効化する（マリンレビュー H-1）。押せたとしても
+                  onDown 側のガードで次のドラッグは弾かれるが、そもそも
+                  押せないほうが「なぜ効かないのか」を迷わせない */}
+              <button disabled={!hasImage}
+                title={hasImage ? undefined : "帳票の画像か PDF を開くと使えます"}
+                onClick={() => {
                 setExTarget(f.uid);
                 setMsg("追加する領域を帳票上でドラッグして描いてください（Esc で中止）");
               }}>領域を追加</button>
-              <button onClick={() => {
+              <button disabled={!hasImage}
+                title={hasImage ? undefined : "帳票の画像か PDF を開くと使えます"}
+                onClick={() => {
                 setMergeTarget(f.uid);
                 setMsg("結合する欄をクリックしてください（クリックした欄はこの欄に取り込まれます・Esc で中止）");
               }}>別の欄と結合</button>
@@ -2608,7 +2832,9 @@ export default function Editor(
                   }}>参照先を削除</button>
                 </>
               ) : (
-                <button onClick={() => {
+                <button disabled={!hasImage}
+                  title={hasImage ? undefined : "帳票の画像か PDF を開くと使えます"}
+                  onClick={() => {
                   setFbTarget(f.uid);
                   setMsg("参照先の枠を帳票上でドラッグして描いてください（Esc で中止）");
                 }}>参照先の枠を描く</button>
@@ -2859,19 +3085,29 @@ export default function Editor(
         <button className="btn" onClick={loadTemplate}>テンプレートを開く</button>
         <button ref={saveBtnRef} className="btn primary" onClick={saveTemplate}>保存して検証</button>
         <span className="sep" />
-        {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => (
-          <button key={t} className={tool === t ? "btn active" : "btn"}
-            onClick={() => setTool(t)}>
-            {{ select: "選択", field: "欄を追加", excl: "除外範囲",
-               table: "くり返し行（家族・明細）", split: "表裏の境界" }[t]}
-          </button>))}
-        <span className="msg">{msg}{dirtyState ? "（未保存）" : ""}</span>
+        {(["select", "field", "excl", "table", "split"] as Tool[]).map((t) => {
+          // select（一覧・パネルからの操作の起点）は画像なしでも押せるが、
+          // それ以外はキャンバス上に枠を描く／操作するツールなので、押せても
+          // 何も起きない状態を見せないよう画像が無い間は無効化する
+          // （マリンレビュー H-1・onDown 側のガードと二重で塞ぐ）
+          const need = t !== "select" && !hasImage;
+          return (
+            <button key={t} className={tool === t ? "btn active" : "btn"}
+              disabled={need} title={need ? "帳票の画像か PDF を開くと使えます" : undefined}
+              onClick={() => setTool(t)}>
+              {{ select: "選択", field: "欄を追加", excl: "除外範囲",
+                 table: "くり返し行（家族・明細）", split: "表裏の境界" }[t]}
+            </button>);
+        })}
+        <span className="msg" role="status" aria-live="polite">
+          {msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
       {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
       {warnMsg && <div className="warnbox" style={{ margin: "8px 18px" }}>{warnMsg}</div>}
       <div className="editor-body">
         <canvas ref={canvasRef} className="canvas"
           style={spaceHeld ? { cursor: "grab" }
+                 : !hasImage ? { cursor: "not-allowed" }
                  : hoverCursor ? { cursor: hoverCursor } : undefined}
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
           onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />

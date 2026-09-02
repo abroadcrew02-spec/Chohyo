@@ -105,6 +105,98 @@ def test_editor_tab_admin_guardrails(page):
     page.wait_for_selector("text=次の作業（目視確認）")
 
 
+def test_editor_no_image_notice_blocks_canvas_edits(page):
+    # issue 2026-09-02: 出荷テンプレートの自動読み込み（8/31 対応）はそのまま
+    # 維持しつつ、画像を開く前は座標の枠を描かない・キャンバス操作を無効化する。
+    # キャンバス内の文字はスクリーンリーダーに読めないため、同じ案内が
+    # msg（DOM）側にも出ていることをまず確認する
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+    assert page.get_by_text("帳票の画像か PDF を開くと", exact=False).is_visible()
+
+    # デモモードは pick_image が null を返す（bridge.ts）ため画像は開けない。
+    # 出力列タブは id 指定で開く（マリンレビュー LOW: 出力しない欄があると
+    # バッジ「⊘N」が名前に付き get_by_role(name=...) が壊れうるため）
+    page.locator("#edittab-output").click()
+    before = page.locator(".panel-outrow").count()
+    assert before > 0, "デモテンプレートの欄・表が出力列タブに出ていない"
+
+    # ツールボタンは select 以外、画像が無い間 disabled になる
+    # （マリンレビュー H-1・押しても無反応にしない）
+    for tool in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
+        assert page.get_by_role("button", name=tool).is_disabled(), tool
+    assert page.get_by_role("button", name="選択", exact=True).is_enabled()
+
+    # disabled のツールボタンはクリックしても tool が切り替わらない（React の
+    # disabled 属性がそのまま効く前提だが、念のため実際にキャンバスへの
+    # ドラッグでも欄が増えないことを二重に確認する——onDown 側のガードが
+    # 効いているかの回帰検知を兼ねる
+    canvas = page.locator("canvas.canvas")
+    box = canvas.bounding_box()
+    page.mouse.move(box["x"] + 50, box["y"] + 50)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 200, box["y"] + 200, steps=5)
+    page.mouse.up()
+
+    after = page.locator(".panel-outrow").count()
+    assert after == before, "画像を開く前にキャンバス操作で欄が増えてしまった"
+    # コーディネータ指摘2: 上の件数不変チェックは tool="select"（既定）では
+    # ヒットテストが空振りするだけの恒真判定になる（select 経路に欄を増やす
+    # 手段が無いため、ガードが効いていなくても同じ結果になる）。ガード
+    # （onDown 冒頭の canvasInteractionAllowed 分岐）が実際に発火したことは、
+    # そこが出す案内文言（コーディネータ指摘4で template_id・件数入りの
+    # noImageNotice に戻した）が status 領域に出ていることで確認する
+    status = page.locator('[role="status"]')
+    assert status.filter(has_text="テンプレート（demo）を読み込み済み・欄 1・表 1").is_visible(), \
+        f"ガードの案内文言に template_id・件数が出ていない: {status.inner_text()}"
+
+    # マリンレビュー M-4→コーディネータ指摘3: 特定の帯（想定パン/ズーム前提）
+    # だけを見ると帯がずれた場合に偽 PASS するため、キャンバス全体を粗い格子
+    # （40px刻み）で走査し、表裏分割線の色（#ff5577）が1件も無いことを見る。
+    # getImageData は1回で全体を取得し、格子の判定は JS 側で行う
+    hits = page.evaluate("""
+        () => {
+            const cv = document.querySelector('canvas.canvas');
+            const ctx = cv.getContext('2d');
+            const { data, width: w, height: h } = ctx.getImageData(0, 0, cv.width, cv.height);
+            const step = 40;
+            const found = [];
+            for (let y = 0; y < h; y += step) {
+                for (let x = 0; x < w; x += step) {
+                    const i = (y * w + x) * 4;
+                    const r = data[i], g = data[i + 1], b = data[i + 2];
+                    if (Math.abs(r - 255) < 25 && Math.abs(g - 85) < 25 && Math.abs(b - 119) < 25) {
+                        found.push([x, y, r, g, b]);
+                    }
+                }
+            }
+            return found;
+        }
+    """)
+    assert hits == [], f"画像なしなのに表裏分割線の色(#ff5577)近傍が検出された: {hits}"
+
+    # H-1 再現手順: 出力列タブから欄を選んでも「領域を追加」「別の欄と結合」
+    # （どちらもキャンバス操作の待ち受けを立てるボタン）は画像が無い間は
+    # disabled で押せない。押せてしまうと、後で画像を開いた直後の最初の
+    # ドラッグが無言で追加領域／結合になってしまう（マリンレビュー H-1）
+    page.get_by_role("button", name="person_氏名", exact=True).click()
+    assert page.get_by_text("選択中の欄").is_visible()
+    assert page.get_by_role("button", name="領域を追加", exact=True).is_disabled(), \
+        "画像が無いのに「領域を追加」が押せてしまう（H-1）"
+    assert page.get_by_role("button", name="別の欄と結合", exact=True).is_disabled(), \
+        "画像が無いのに「別の欄と結合」が押せてしまう（H-1）"
+
+    # コーディネータ指摘6: 画像が無い間もキャンバスクリックで選択解除だけは
+    # 効く（ヒットテストはしないので、どこをクリックしても解除される）
+    page.mouse.click(box["x"] + 300, box["y"] + 300)
+    assert page.get_by_text("要素が選択されていません").is_visible(), \
+        "画像なしのキャンバスクリックで選択解除できない（コーディネータ指摘6）"
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")
+
+
 def test_editor_delete_ignored_while_run_tab_active(page):
     # issue #69 Q-H3: Editor のグローバル keydown が実行タブ表示中も生きて
     # いたため、実行タブで Delete を押すと編集中の欄が消えていた。テンプレート
@@ -114,7 +206,7 @@ def test_editor_delete_ignored_while_run_tab_active(page):
     page.wait_for_selector("text=管理者向け")
 
     # 出力列タブから出荷（デモ）テンプレートの欄「person_氏名」を選択する
-    page.get_by_role("tab", name="出力列").click()
+    page.locator("#edittab-output").click()
     page.get_by_role("button", name="person_氏名", exact=True).click()
     # 選択すると「選択中」タブへ自動で戻り、欄の詳細（名前入力）が出る
     assert page.get_by_text("選択中の欄").is_visible()
@@ -133,7 +225,7 @@ def test_editor_delete_ignored_while_run_tab_active(page):
     page.locator(".tabs button", has_text="テンプレート編集").click()
     assert page.get_by_text("選択中の欄").is_visible()
     assert page.get_by_label("欄の名前（出力の列名になります）").input_value() == "person_氏名"
-    page.get_by_role("tab", name="出力列").click()
+    page.locator("#edittab-output").click()
     assert page.get_by_role("button", name="person_氏名", exact=True).is_visible()
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）

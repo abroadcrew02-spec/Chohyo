@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1699,6 +1699,39 @@ test("completionNotice: format_mismatch が無い旧コアでも中断文言へ�
   const t = completionNotice(old, 1);
   assert.ok(!t.includes("中断"), t);
   assert.ok(t.includes("様式不一致 0 件"), t);
+});
+
+// ---------------------------------------------------------------- 2026-09-02
+// noImageNotice / canvasInteractionAllowed: 画像を開く前のキャンバス案内と
+// 操作ガード（ユーザー指摘: 出荷テンプレの自動読み込み・8/31 対応 は維持しつつ、
+// 画像の無いキャンバスに枠だけ描かれる・操作できるのは誤解を招く）
+test("noImageNotice: template_id・欄数・表数が反映され、text は line1+句点+line2 に一致する（恒真判定にしない）", () => {
+  const n = noImageNotice("chouhyo-v1", 12, 3);
+  assert.ok(n.line1.includes("chouhyo-v1"), n.line1);
+  assert.ok(n.line1.includes("12"), n.line1);
+  assert.ok(n.line1.includes("3"), n.line1);
+  // マリンレビュー M-1: 自動読み込みされた出荷テンプレか loadTemplate 経由の
+  // 利用者自身の JSON かを区別しない中立な文言にする（「出荷」を含めない）
+  assert.ok(!n.line1.includes("出荷"), n.line1);
+  assert.ok(n.line2.includes("画像") || n.line2.includes("PDF"), n.line2);
+  assert.equal(n.text, `${n.line1}。${n.line2}`, n.text);
+});
+
+test("noImageNotice: 欄数・表数がどちらも0なら『読み込めていません』の未読込文言になる（M-2: 嘘の『読み込み済み』を出さない）", () => {
+  const n = noImageNotice("chouhyo-v1", 0, 0);
+  assert.ok(n.line1.includes("読み込めていません"), n.line1);
+  assert.ok(!n.line1.includes("読み込み済み"), n.line1);
+  assert.equal(n.text, `${n.line1}。${n.line2}`, n.text);
+});
+
+// コーディネータ指摘8: tool は結果に影響しない恒等関数（hasImage を素通し）
+// になったため、複数ツールを回す2件を1件に統合する（gui-logic 総数 -1）。
+// パン許可自体は onDown の分岐順（この関数の呼び出しより前）で担保する
+test("canvasInteractionAllowed: 画像の有無だけで決まり、tool（pan 含む）は結果に影響しない", () => {
+  assert.equal(canvasInteractionAllowed(false, "select"), false);
+  assert.equal(canvasInteractionAllowed(false, "pan"), false);
+  assert.equal(canvasInteractionAllowed(true, "select"), true);
+  assert.equal(canvasInteractionAllowed(true, "pan"), true);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
