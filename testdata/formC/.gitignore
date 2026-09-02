@@ -1,0 +1,6 @@
+# formC-1.png は make_formC.py（同ディレクトリ・コミット対象）が
+# 決定論的に生成する合成画像（記入値なし）。pre-commit フックが
+# gui/src-tauri/icons・gui/public 以外の png を無条件でブロックするため、
+# 画像そのものはコミットしない。使う前に必ず生成する:
+#   .venv\Scripts\python.exe testdata\formC\make_formC.py
+*.png

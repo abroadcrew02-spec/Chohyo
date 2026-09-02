@@ -1,0 +1,25 @@
+{
+  "head": "71384a4372b79b0d7904e1b0a7e8480612c09d18",
+  "head_short": "71384a4",
+  "generated_at": "2026-09-02T07:21:24.608924+00:00",
+  "source": {
+    "template": "templates/chouhyo-v1.json",
+    "page_image": "workdir/pages/sample-1.png（.gitignore 対象・ローカル限定）",
+    "s2_response": "workdir/s2/resp_DOCUMENT_TEXT_DETECTION.json（.gitignore 対象・ローカル限定）",
+    "replay": true,
+    "api_calls": 1
+  },
+  "outputs": {
+    "output.xlsx": {
+      "path": "workdir/golden/71384a4/output.xlsx",
+      "sha256": "4dfff85f0e02a121b2d6a3701632d1fcef60b496449851f73125fbea8cb80066",
+      "rows": 1,
+      "cols": 220
+    },
+    "output.csv": {
+      "path": "workdir/golden/71384a4/output.csv",
+      "sha256": "0956b77709ffcc5baf837fa97101769d4b9b3449a37d3592a99989c397f9669f"
+    }
+  },
+  "note": "記入値（帳票の読取結果そのもの）はこのファイルに含めない。output.xlsx/output.csv 自体は workdir/ 配下（.gitignore 対象）に置きコミットしない。"
+}

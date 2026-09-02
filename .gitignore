@@ -29,6 +29,12 @@ intermediate/
 *.sqlite3
 *.db
 
+# 利用者のテンプレート保存先（templates/ とは別。templates/ は Tauri が
+# 配布物へ丸ごと同梱するため、顧客固有テンプレートの置き場にはできない
+# ——07要件 v0.4 変更点2・AZKi M-6。現状は *.json ルールの副作用で偶然
+# 無視されているだけだったため、明示行として残す）
+/templates_user/
+
 # 出力（帳票の記入値そのもの）
 output/
 output_*.xlsx
