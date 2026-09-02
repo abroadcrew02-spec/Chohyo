@@ -14,8 +14,8 @@
 | 段 | 対象 | 本書の状態 |
 |---|---|---|
 | #77 | ログの匿名化（FR-F50・AC-F65） | **§1 に設計を確定** |
-| #71 (a') | 既存判定の接続・3値化・理由コード分離・記録（FR-F01〜F13・F45／AC-F01〜F15） | **§2 に設計を確定** |
-| #72 (t) | テンプレートの保存・選択・照合提示 | §3・未着手 |
+| #71 (a') | 既存判定の接続・3値化・理由コード分離・記録（FR-F01〜F13・F45／AC-F01〜F15） | **§2 に設計を確定**（実装済み: core 5a3b660 / GUI 1541239） |
+| #72 (t) | テンプレートの保存・選択・照合提示 | **§3 に設計を確定**（保存先の最終決定は §7-5・NFC 依存は §7-6 の判断待ち） |
 | #73 (b) | ページ全体からの枠候補生成 | §4・未着手 |
 | #74 (c) | 位置合わせ残差・吸着量の記録 | §5・未着手 |
 | #75 (f) | 実行時のブロック単位吸着 | §6・未着手 |
@@ -648,7 +648,367 @@ assert all(v == "〓" for v in row.values)
 
 ## 3. (t) テンプレートの保存・選択・照合提示（#72）
 
-**未着手。** 着手条件は 07 §3.4（Q-F16 の確認完了）と §10.2-8。設計は (a') の `check_page` が固まってから書く。
+対象要件: 07 v1.2 §4.1(t)・§5.3（FR-F26〜F31・F46・F49）・§7.3・§7.4・§8.3・NFR-F09・§9.4。
+前提: (a') は `5a3b660`（core）／`1541239`（GUI）で完了済み。`format_check.check_page(page_img, template) -> PageVerdict`（`core/chouhyo_ocr/format_check.py:177`）が使えるため、**照合の計算部分は新規に作らない**。
+
+### 3.1 保存先の決定（Q-F16・07 §10.2-8 の着手条件）
+
+#### 3.1.1 現状（2026-09-02 実測）
+
+| 事実 | 根拠 |
+|---|---|
+| インストーラは NSIS 単体（`installMode` 未指定＝既定 `currentUser`） | `gui/src-tauri/tauri.conf.json:27-28` |
+| `project_root()` は cwd から `templates/chouhyo-v1.json` を遡って探し、無ければ `app_root()`＝frozen なら exe の親 | `core/chouhyo_ocr/paths.py:19-30` |
+| Rust の `repo_root()` は exe 位置 → cwd → resource_dir の順に同じマーカーを探す（開発時は `.git` を持つ祖先を優先） | `lib.rs:161-203` |
+| 配布環境では両者ともインストールディレクトリに解決される | 上記2つの帰結 |
+| **アプリ更新でインストールディレクトリの中身が保持されるかは未実測** | 07 §10.2-8（⏳ 未完了） |
+
+07 FR-F26 の `project_root()/templates_user/` 案は、利用者データを**アプリのインストール先**に置く。07 自身が `templates/` を退けた理由（配布物と同居させない）を、1階層ずらして再現している。FR-F49（書き出し／取り込み）が Must で入っているのは、この不安を**復旧手段で埋め合わせる**ためであって、原因を取り除いてはいない。
+
+#### 3.1.2 2案の比較
+
+| 観点 | A: `project_root()/templates_user/`（07 の記述） | **B: `app_data_dir()/templates_user/`（推奨）** |
+|---|---|---|
+| 実体（配布時） | インストールディレクトリ配下 | `%APPDATA%\com.holodev.chouhyo-ocr\templates_user\`（`identifier` は `tauri.conf.json:5`） |
+| アプリ更新への耐性 | **未実測**（NSIS がインストール先をどう扱うか次第） | **構造的に安全**——インストーラが触らない領域 |
+| アンインストール時 | 一緒に消えうる | 残る（利用者データとして妥当） |
+| 書き込み権限 | インストール先が `Program Files` 系に変わると**非管理者で書けない** | 常に本人の権限内 |
+| 配布物への混入 | `resources` に足さない運用で防ぐ（人の規律に依存） | **構造的にゼロ**（リポジトリの外） |
+| Rust と Python の解決先の一致 | 探索起点が違うため別の場所に解決されうる（FR-F26 の⚠️。AC-F52 で担保する設計） | **Rust が唯一の決定者**で Python は受け取るだけ＝ズレる余地が無い |
+| CLI 単体運用（07 §7.1） | そのまま動く | 環境変数未設定時は A へフォールバックするので動く（§3.1.3） |
+| 開発環境 | リポジトリ直下で見える | 環境変数未設定＝A と同じ（リポジトリ直下） |
+
+**推奨は B。** 決め手は3つ——①更新耐性が実測待ちではなく構造で決まる ②非管理者書き込みが保証される ③FR-F26 の⚠️が指摘した「Rust と Python の解決先がズレうる」問題を、テスト（AC-F52）ではなく**構造**で消せる。A のままだと配布形態が変わるたびに同じ検証をやり直すことになる。
+
+#### 3.1.3 解決経路（B 案の実体）
+
+```
+Rust: app.path().app_data_dir()? / "templates_user"
+        |  （存在しなければ create_dir_all）
+        |  canonicalize -> reparse point 検査 -> is_safe_root
+        +-> template_roots に追加（--template のスコープ検査用・§3.2.5）
+        +-> core_command() の env に CHOUHYO_USER_DIR=<絶対パス> を設定
+                                     |
+Python: paths.user_templates_dir()  <-+
+        1. CHOUHYO_USER_DIR があり、絶対パス・実在するディレクトリ・`..` を含まない なら それ
+        2. 無ければ project_root()/"templates_user"（開発環境・CLI 単体運用）
+```
+
+- **Python 側も受け取った値を検証する。** 環境変数は他プロセスからも渡りうるので信用しない。検証 NG なら 2 へフォールバックし `log.warn("user_dir_fallback")` を残す（エラー停止しない——FR-F29 と同じ「設定1つで起動不能にしない」方針）
+- **`config.json`・`workdir`・`log_dir` は現状どおり**（`project_root()` 基準）。移すのは利用者テンプレートだけ。中間データの置き場を動かすと同期フォルダ検知（issue #8）・purge・verify の前提へ波及する
+- **`.gitignore` の `/templates_user/`（`2cd1c77` で追加済み）は残す。** 開発環境では A の場所が使われるため引き続き必要
+- **移行処理は書かない。** (t) は新機能で、現時点でどの環境にも `templates_user/` は存在しない（`ls templates_user/` → 該当なし・2026-09-02）
+- CLI 単体で GUI と同じ場所を見たいときは `CHOUHYO_USER_DIR` を設定する。**AC-F52（CLI と GUI の出力一致）は `--template <絶対パス>` を明示指定して検証するので、この環境変数に依存しない**
+
+07 §4.1(t)・FR-F26・§7.3・§10.2-8 の書き換えが要る（§7-5）。
+
+### 3.2 Rust 側の新コマンド
+
+#### 3.2.1 方針
+
+- **既存コマンドのスコープを1つも広げない**（07 §9.4）。`write_text`／`write_template_staged`／`promote_template`／`discard_staged` の picked 限定は不変
+- **webview へ絶対パスを返さない**（07 §7.3）。新コマンドの入出力は**表示名（拡張子なしのファイル名）**だけで組む
+- **列挙とパス検査は Rust に一本化する。** 同じ除外規則（`*.saving.json`・`*.bak`・非通常ファイル・reparse point・サイズ上限）を Python にも書くと、セキュリティ上重要な判定が2箇所に割れる
+
+#### 3.2.2 コマンド一覧（新規は3つ）
+
+| コマンド | 引数 | 戻り値 | 用途 |
+|---|---|---|---|
+| `list_user_templates()` | — | `[{name, size, mtime, excluded?}]`（**表示名のみ・絶対パスなし**） | FR-F28 の列挙・RunScreen の選択肢・保存時の同名検出 |
+| `read_user_template(name)` | 表示名 | JSON 文字列 | 編集画面で保存済みテンプレートを開く（FR-F29 の既定復元） |
+| `save_user_template(name, content)` | 表示名＋JSON 文字列 | `verify` の JSON 文字列 | FR-F26。**staged → verify → promote を Rust の中で通し切る**（§3.2.3） |
+
+FR-F49（書き出し／取り込み）は**新コマンドを増やさずに既存の組み合わせで成立する**（§3.7）。
+
+#### 3.2.3 `save_user_template` を1コマンドにまとめる理由
+
+現行の保存は GUI が3手で回している——`write_template_staged(path)` → `verify --template <path>.saving.json` → `promote_template(path)`（`Editor.tsx:1723-1740`）。これは **GUI が保存先の絶対パスを知っている**前提で成り立つ。`templates_user/` ではパスを webview へ渡せない（§3.2.1）ので、同じ3手を回せない。
+
+```
+save_user_template(name, content):
+  1. validate_user_template_name(name, existing, shipped)   -- 純関数・§3.2.4
+  2. dir    = user_templates_dir()          -- canonicalize + reparse 検査
+     target = dir / (name + ".json")        -- 拡張子はシステムが付与（07 §7.4）
+     staged = staged_path(target)           -- 既存の <path>.saving.json 規則を再利用
+     target の親の canonicalize 結果が dir と完全一致することを再検査
+  3. staged へ書き込む
+  4. core を `verify --template <staged>` で起動（run_core_capture の本体を共有）
+  5. verify が ok なら promote_with(staged, target, backup_path(target))
+     ok でなければ staged を消し、verify の JSON をそのまま返す
+```
+
+- **「検証 NG のまま上書きしない」不変条件（#56 T1）を維持する。** 既存の `promote_with`（`lib.rs:997`）・`backup_path`（`lib.rs:970`）をそのまま使う
+- **上書き確認は GUI 側で先に出す。** Rust は名前の妥当性だけを見て、同名の存在は「エラー」ではなく戻り値で区別して返す（確認は UI の責務）
+- ⚠️ 実装上の注意: `run_core_capture` は `#[tauri::command]`（`lib.rs:603`）でプロセススロット管理と一体になっている。**本体を private fn へ切り出して両者から呼ぶ**。切り出しで多重起動制御（`CoreProc`）の扱いを変えないこと
+
+#### 3.2.4 名前検証（Rust の純関数・AC-F51）
+
+```rust
+fn validate_user_template_name(
+    name: &str, existing: &[String], shipped: &[String],
+) -> Result<NameVerdict, String>   // Ok(NameVerdict::New(normalized) | ::Overwrites(normalized))
+```
+
+検査順（すべて許可リスト方式・07 §7.4）:
+
+1. 空でない／長さ 1〜64（**文字数**。バイト数ではない）
+2. 文字集合: 英数・`-`・`_`・**中間の**スペース・Unicode の文字カテゴリに属する文字（日本語等）。制御文字・`:`・パス区切り・`..`・その他の記号は拒否
+3. 末尾がドット・空白でない
+4. 予約デバイス名でない（NFC 正規化後・大小文字無視。`CON`・`NUL`・`PRN`・`AUX`・`COM1`〜`COM9`・`LPT1`〜`LPT9`・`CONIN$`・`CONOUT$`）
+5. 既存名と衝突しない（NFC 正規化後・case-insensitive）。**衝突はエラーではなく上書き確認の対象**として呼び出し側へ区別して返す
+6. 出荷テンプレートのファイル名と衝突しない。判定は **`templates/*.json` の実在ファイル名から動的に**作る（`chouhyo-v1` を直書きしない・07 §7.4）
+
+**⚠️ NFC 正規化に外部クレートが要る。** `gui/src-tauri/Cargo.toml` の依存は `tauri`・`serde`・`serde_json`・`rfd`・`base64` の5つで、Unicode 正規化を持つものは無い（2026-09-02 確認）。
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| **B-1（推奨）** | `unicode-normalization` クレートを追加（MIT/Apache-2.0・実行時依存は `tinyvec` のみ） | 供給網レビュー（AZKi＋ミオ）を通したうえで採用する |
+| B-2 | webview 側で `name.normalize("NFC")` してから渡し、Rust は受け取った文字列をそのまま比較 | **不採用**。レンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる。AC-F51 が「名前検証を Rust の純関数で」と要求した趣旨からも外れる |
+| B-3 | NFC 判定だけ core（Python の `unicodedata`）へ出す | **不採用**。名前検証が Rust と Python に割れる。AC-F51 が `cargo test` の表駆動を求めているのは判定を1箇所へ集めるため |
+
+**B-1 の採否は Orchestrator の判断事項**（依存追加＝供給網リスクの受け入れ）。§7-6 に挙げる。
+
+#### 3.2.5 パススコープ検査（07 §7.3・AC-F59）
+
+`user_templates_dir()` は毎回次を通す（**キャッシュしない**——ディレクトリは実行中に差し替えられうる）:
+
+```
+1. app_data_dir()?.join("templates_user")
+2. create_dir_all（初回のみ実効）
+3. symlink_metadata().file_type().is_symlink() が true なら拒否
+   （Windows のジャンクションもここで true になる）
+4. canonicalize
+5. is_safe_root(canonical) を通す（#69 S-N3 と同じ流儀・生パスだけで判定しない）
+```
+
+個々のエントリ（列挙・読み書き）:
+
+```
+- symlink_metadata().file_type().is_file() が false なら除外（ディレクトリ・リンク）
+- 拡張子が json（小文字化して比較）
+- 名前が *.saving.json（STAGED_SUFFIX）・*.bak（backup_path 規則）で終わらない
+- サイズ 5 MB 以下（07 §7.3・暫定 ※Q-F13）
+- canonicalize 後の parent が user_templates_dir の canonical と完全一致
+```
+
+**`--template` のスコープを2系統に分ける。** `allowed_roots()` に user dir を足すと `--input`／`--image`／`read_file_b64` まで巻き添えで広がる。`check_arg_scopes` へ渡す roots を分離する:
+
+| フラグ | roots |
+|---|---|
+| `--template` | `repo_root` ＋ **`user_templates_dir`** |
+| `--input`・`--image` | `repo_root` ＋ `editor_pages`（現状のまま） |
+| `read_file_b64` | `editor_pages` ＋ picked（**変更しない**・#69） |
+
+staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親が user dir なので、この roots だけで通る。`is_staged_of_picked` の特例（`lib.rs:268`）は触らない。
+
+#### 3.2.6 `cargo test` の許可／拒否表（AC-F51・AC-F59）
+
+| # | 入力 | 期待 |
+|---|---|---|
+| 1 | `CON`・`NUL`・`COM1`・`LPT9`・`CONIN$`（大小混在も） | 拒否 |
+| 2 | `abc.`・`abc `（末尾ドット・空白） | 拒否 |
+| 3 | 既存 `Sample` に対する `sample`・`SAMPLE` | **衝突**（＝上書き確認へ） |
+| 4 | `a:b`（代替データストリーム） | 拒否 |
+| 5 | 制御文字を含む名前 | 拒否 |
+| 6 | 65 文字 → 拒否／64 文字 → 許可 | 境界 |
+| 7 | 空文字・空白のみ | 拒否 |
+| 8 | `chouhyo-v1`（出荷テンプレートと同名） | 拒否 |
+| 9 | `../x`・`a/b`・`a\b` | 拒否 |
+| 10 | `帳票 A_2026-09`（全角＋中間スペース＋`-`＋`_`） | 許可 |
+| 11 | NFD の「が」（か＋濁点）と NFC の「が」 | **衝突として検出**（B-1 採用が前提） |
+| 12 | `user_templates_dir` 自体がジャンクション | 保存・列挙とも拒否（AC-F59） |
+| 13 | user dir 内のエントリが symlink | 列挙から除外・読み取り拒否（AC-F59） |
+| 14 | `x.json.saving.json`・`x.json.bak`・サブディレクトリ | 列挙から除外 |
+| 15 | 5 MB 超のファイル | `excluded:"size"` として列挙結果に現れる |
+
+### 3.3 照合提示（FR-F28・FR-F46・NFR-F09）
+
+#### 3.3.1 経路の決定: 新サブコマンド `match-templates`
+
+| 案 | 内容 | 判断 |
+|---|---|---|
+| **C-1（推奨）** | core に `match-templates --input <img> --candidate <p1> --candidate <p2> ...` を新設。**列挙は Rust が行い、core は渡された絶対パスだけを読む** | 採用。1プロセス起動で N 件を回すので NFR-F09（合計 3.0 秒）の測定単位と一致する。**除外規則（reparse・staged・bak・サイズ）が Rust の1箇所に留まる** |
+| C-2 | `match-templates --candidates <dir>` で core がディレクトリを列挙する | 不採用。§7.3 の除外規則を Python にも実装することになり、セキュリティ判定が2箇所に割れる |
+| C-3 | `expand-page` を拡張して候補照合も返す | 不採用。expand-page は「1ページを展開して返す」責務で、N 件照合を混ぜると失敗時の切り分け（どの候補で落ちたか）が JSON 1つに潰れる。既存契約（GUI が依存）にも触る |
+
+- `--candidate` は反復指定。`check_args_v2`（`lib.rs:70-118`）は同一フラグの重複を弾かないので**そのまま通る**（2026-09-02 コード確認）。20 件 × 260 文字程度＝約 5 KB で、Windows のコマンドライン上限 32 KB に収まる
+- **出荷テンプレートも `--candidate` の1つとして Rust が積む**（列挙はしない・07 §7.3）。core 側に「出荷か利用者か」の区別を持たせないため、`kind` は Rust が付けて GUI へ渡すのではなく、**core が受け取った順序の先頭1件を shipped として扱う**のではなく——**`--shipped <path>` と `--candidate <path>` の2フラグに分ける**。core は前者を `kind:"shipped"`、後者を `kind:"user"` として出力に載せる
+- Rust 側の許可フラグ表（`allowed_flags`）と `ALLOWED_SUBCOMMANDS` に `match-templates` を追加する
+
+#### 3.3.2 JSON 契約
+
+```json
+{"event":"match_templates","ok":true,"elapsed_ms":1840,"truncated":false,
+ "candidates":[
+   {"name":"帳票B","kind":"user","template_id":"formB-v1","cells":42,"tables":1,
+    "mtime":"2026-09-02T10:14:33+09:00",
+    "verdict":"match","reason":"","score":0.97,"detected":18,"expected":16},
+   {"name":"chouhyo-v1","kind":"shipped","template_id":"chouhyo-v1","cells":220,"tables":2,
+    "mtime":"2026-08-31T18:46:02+09:00",
+    "verdict":"mismatch","reason":"lines","score":0.11,"detected":30,"expected":16}],
+ "excluded":[{"name":"壊れたテンプレ","reason":"parse"},
+             {"name":"巨大","reason":"size"}]}
+```
+
+- **`name` は表示名（拡張子なしのファイル名）のみ。絶対パスを出さない**（07 §7.3・§9.4）。core は受け取った絶対パスの `stem` を返す
+- `verdict`／`reason`／`score`／`detected`／`expected` は (a') の `PageVerdict`／`FaceVerdict` の値をそのまま使う。**面ごとの内訳は返さない**（照合提示に要るのはページ単位の1行だけ）
+- `excluded[].reason` は `parse`（JSON として読めない）／`schema`（`load_template`・`validate_v1` が拒否）／`size`（5 MB 超・Rust が付ける）／`limit`（件数上限で照合しなかった）。**1件の不正で照合ループを止めない**（FR-F28）——`try/except` は候補1件ごとに閉じる
+- `truncated` は件数上限（20）または合計時間上限（3.0 秒）で打ち切ったことを示す。打ち切り時点以降の候補は `excluded reason:"limit"` として名前だけ載せる（FR-F46 ⑤）
+- **画像は1回だけ読む。** `check_page` はテンプレートごとに `resize` と面切りを行うため、テンプレートの `image_size` が異なると再 resize が要る。同じ寸法のテンプレートが続く場合に resize 結果を使い回すキャッシュを1段だけ持つ（NFR-F09 の 3.0 秒に効く）
+- `cells`／`tables` は `len(template.cells)` と面をまたいだ `table_id` のユニーク数
+
+#### 3.3.3 時間上限の実装
+
+合計 3.0 秒・1件 1.0 秒・20 件（NFR-F09）。**打ち切りはテンプレート単位**（`check_page` の途中では止めない——面の途中で止めると `fold` が誤った verdict を返す）。1件ごとに経過を測り、次の1件を始める前に合計上限を超えていれば残りを `limit` として積む。
+
+### 3.4 提示の並び（FR-F46・AC-F53・AC-F54）
+
+**GUI の純関数**（gui-logic でテストする）。core は並べ替えない——並び順は表示規則であって判定ではない。
+
+```ts
+export function rankCandidates(cands: Candidate[], truncated: boolean):
+  { rows: Candidate[]; recommend: string | null; showScore: boolean; notice: string }
+```
+
+| 状況 | rows の並び | recommend | showScore |
+|---|---|---|---|
+| 一致候補が1件 | スコア降順 | その1件 | true |
+| 一致候補が複数・最上位と2位のスコア差 **≧ 0.1** | スコア降順 | 最上位 | true |
+| 一致候補が複数・差 **< 0.1**（暫定 ※Q-F13） | **名前順** | **null（推奨を出さない）** | **false** |
+| `truncated` | 名前順 | null | false（各行に「スコア未計算」） |
+| 一致候補ゼロ | 名前順（全件を不一致として並べる） | null | true |
+
+- `notice` には常に「この判定は罫線の幾何一致のみを見ており、中身の同一性は保証しない」を含める（FR-F46 ③）
+- 各行の表示: 表示名・`kind`（出荷／利用者の区分を明示）・`template_id`・欄数／表数・最終更新日時（FR-F46 ④）
+- `excluded` は一覧の下に「読み込めなかったテンプレート: N 件（内訳）」として**必ず出す**（黙って減らさない・FR-F28）
+
+### 3.5 実行画面の選択（FR-F27・FR-F29・AC-F26・AC-F60・AC-F61）
+
+#### 3.5.1 選択値の永続
+
+`config.json` に **1キー** を足す（FR-F29）。
+
+```
+last_template: str  = ""     # "" = 出荷テンプレート
+                             # 形式: "shipped:<name>" | "user:<name>"
+```
+
+- **絶対パスを保存しない**（07 FR-F29）。区分＋表示名のみ
+- **3箇所同時更新**（07 FR-F29 の⚠️）: Rust `KNOWN_CONFIG_KEYS`（`lib.rs:797-802`）／Python `Config` dataclass（`config.py:26-40`）／`config.py:_validate`
+- ⚠️ **`_validate` はこのキーで例外を投げない。** 他のキーは不正値で `ConfigError` を上げるが、それをやると AC-F60（範囲外を手書きしてもフォールバックして起動する）と矛盾する。**型が str でない、または形式・名前検証に通らない場合は `""` へ落とす**（＝出荷テンプレート）。この1キーだけ挙動が違うことを `config.py` のコメントに明記する
+- `CONFIG_PATH_KEYS`（`is_safe_root` を通すキー）には**入れない**——パスではないため
+
+#### 3.5.2 実行時のテンプレート解決
+
+**`inject_default_template`（`lib.rs:139-155`）を拡張する。** GUI は `--template` を渡さない（渡せない——絶対パスを持たないため）。
+
+```
+inject_default_template(args, root, app):
+  --template が既にあれば何もしない（現状どおり）
+  config.last_template を読む
+    "user:<name>"    -> user_templates_dir()/<name>.json
+                        名前検証 + §3.2.5 のエントリ検査を再実行
+                        通らなければ出荷テンプレートへフォールバック（AC-F60）
+    "shipped:<name>" -> templates/<name>.json（実在しなければ出荷既定）
+    ""・未知の形式    -> templates/chouhyo-v1.json（現状どおり）
+```
+
+- **読み出し時に再検査する**のは既存の `workdir_pages_dir`（`lib.rs:356-369`）と同じ流儀。`config.json` は手編集や別プロセスからも書ける
+- この配線により、`run`／`verify`／`expand-page`／`render`／`remap` のすべてが同じ選択値を使う（`TEMPLATE_ACCEPTING_SUBCOMMANDS`・`lib.rs:125-127`）
+- **不変条件**: 「編集画面が開いているテンプレート」と「`config.last_template`」を一致させる。編集画面で保存済みテンプレートを開いたら、その場で `write_config({last_template})` を行う。ズレると expand-page の照合対象と画面の枠が食い違う
+- 代替案（不採用）: `run_core_with_template(args, {kind, name})` という新コマンドで都度渡す。明示的だが、`--template` を受ける5サブコマンドすべてに同じ引き回しが要り、`inject_default_template` と二重の解決経路ができる
+
+#### 3.5.3 RunScreen の UI
+
+- 選択肢 = `[{kind:"shipped", name}] ++ list_user_templates()`。**絶対パスは出さない**
+- 選択を変えたら即 `write_config({last_template})`（読み取り開始ボタンを押す前に確定させる）
+- 選択中のテンプレートが列挙から消えていた場合（削除された）→ 出荷へ戻し、その旨を1行出す
+
+### 3.6 編集画面の起動時既定と導線（FR-F29・FR-F30・FR-F31）
+
+- **起動時**: `config.last_template` を見て、`user:` なら `read_user_template(name)`、それ以外は現行の `read_default_template()`（`Editor.tsx:1843`）。読めなければ出荷へフォールバックし、`noImageNotice` の「読み込めていません」経路へは落とさない
+- **不一致時の導線（FR-F30）**: (a') が出した `verdict:"mismatch"` の案内（黄帯）に「この紙のテンプレートを作る」を足す。押下時:
+  1. 未保存の変更があれば**破棄の確認**（既存 `confirmDiscard()` を使う・`Editor.tsx:1548`）
+  2. 続行で**編集履歴を初期化**する（undo が前テンプレートへ戻らないように）
+  3. **空のテンプレートで開く**——`image` は開いた画像の実寸（`imgSize`）、`faces` は現行の front/back 2面（`splitY` の既定値）、`cells`・`tables`・`exclusions` は空
+- ⚠️ **枠候補の一括生成は (b) の範囲なので今回は作らない。** 導線の到達点は「空のテンプレートで開いた状態」まで。候補ゼロ相当の案内（FR-F31）として、**既存の等分割生成（`detect-grid --mode grid`）と手動作図**を次の手段として示す。07 FR-F31 は「候補ゼロの画面に放置しない」なので、(b) 未実装でもこの案内で満たせる
+- 純関数（gui-logic でテスト）: `emptyTemplateFor(width, height, splitY)`／`newTemplateNotice(hasCandidates: boolean)`
+
+### 3.7 書き出し・取り込み（FR-F49・AC-F63）
+
+**新しい Rust コマンドを増やさない。** 既存の組み合わせで成立する:
+
+| 操作 | 手順 |
+|---|---|
+| 書き出し | `read_user_template(name)` → `pick_json(save=true)`（ダイアログ・選んだ先は `picked` に入る）→ `write_text(path, content)` |
+| 取り込み | `pick_json(save=false)` → `read_text(path)` → 名前を利用者に確認（既定は元ファイルの stem を §7.4 で正規化したもの）→ `save_user_template(name, content)`（＝名前検証＋`verify`＋promote を通る） |
+
+取り込みが `save_user_template` を通ることで、**外部から持ち込んだ JSON も検証なしには `templates_user/` に入らない**（07 FR-F49 の「§7.4 の名前検証と `verify` を通して複製する」）。
+
+### 3.8 テスト計画
+
+| AC | レベル | 落とす場所 |
+|---|---|---|
+| AC-F51 | **unit（`cargo test`）** | `validate_user_template_name` の表駆動15件（§3.2.6）＋ gui-logic（確認ダイアログの分岐） |
+| AC-F59 | **unit（`cargo test`）** | user dir 自体がジャンクション／エントリが symlink → 保存・列挙とも拒否。既存の `check_scope` テスト群と同じ流儀 |
+| AC-F24 | L2 実走 ＋ ビルド成果物確認 | 保存 → RunScreen で選択 → `run` が完走。`tauri.conf.json` の `resources` に `templates_user` が無いこと／`git status` に現れないこと。**B 案では保存先がリポジトリ外なので後者2つは構造的に満たされる** |
+| AC-F52 | integration（Python） | CLI で `--template <user dir の絶対パス>` を指定した `run` が完走し、セル値が GUI 実行と一致 |
+| AC-F25 | gui-logic ＋ L2 | `match-templates` の JSON を食わせた `rankCandidates` が「利用者テンプレートのみ列挙＋出荷1件」を返す／自動で切り替わらない |
+| AC-F53 | **gui-logic（純関数）** | 近接スコア（差 < 0.1）で推奨なし・名前順・スコア非表示。注意書きが必ず含まれる |
+| AC-F54 | 計測（`scripts/perf_check.py`）＋ gui-logic | 21 件 → 20 件で打ち切り・`truncated:true`・残りが `limit`。合計 3.0 秒以内 |
+| AC-F62 | integration（Python）＋ gui-logic | `*.saving.json`・`*.bak`・サブディレクトリ・5 MB 超・不正 JSON を置いて `match-templates` → 照合が完了し `excluded` に理由付きで出る |
+| AC-F60 | integration（Python）＋ gui-logic | `last_template` に範囲外を手書き → 出荷へフォールバックして起動（`ConfigError` を投げない） |
+| AC-F61 | integration（Python） | 新キーを含む `config.json` で `run`／`render`／`remap`／`verify` がすべて起動する（3箇所同時更新の確認） |
+| AC-F26 | gui-logic ＋ L2 | 再起動で前回テンプレートが復元される／履歴なしでは出荷 |
+| AC-F27 | gui-logic | 未保存 + 導線 → 破棄確認 → 履歴初期化 |
+| AC-F28 | gui-logic ＋ L2 | 罫線が取れない画像で導線 → 等分割生成などの次手段が案内される |
+| AC-F63 | L2 実走 | 書き出し → 削除 → 取り込み → 同一内容で復元され `run` が完走 |
+
+**素材**: 07 §10.2-7（`templates_user` に formB を複製）は `37d6e5f` で完了扱いだが、**リポジトリに `templates_user/` は存在しない**（2026-09-02 確認）。B 案では実体がリポジトリ外になるため、**テストは `tmp_path` に user dir を作り `CHOUHYO_USER_DIR` を差して回す**（Python 側）／Rust 側は `tempfile` 相当で dir を作って純関数を回す。素材としての formB は `testdata/formB/formB-v1.json`（コミット済み）をコピーして使う。
+
+### 3.9 変更ファイルと分担
+
+**インターフェース（これが決まれば3者は独立に進められる）**
+
+1. Rust コマンド3つのシグネチャと戻り値の形（§3.2.2）
+2. `match-templates` の JSON 契約（§3.3.2）
+3. `config.json` の `last_template` の形式（§3.5.1）
+4. 環境変数 `CHOUHYO_USER_DIR`（§3.1.3）
+
+| 側 | 担当 | ファイル | 主な変更 |
+|---|---|---|---|
+| Rust | あくあ（`coder_api`） | `gui/src-tauri/src/lib.rs` | `user_templates_dir`／`validate_user_template_name`／新コマンド3つ／`allowed_flags`・`ALLOWED_SUBCOMMANDS` に `match-templates`／`check_arg_scopes` の roots 2系統化／`inject_default_template` の config 解決／`core_command` の env 追加／`KNOWN_CONFIG_KEYS` |
+| Rust | あくあ | `gui/src-tauri/Cargo.toml` | `unicode-normalization`（B-1 採用時のみ・供給網レビュー後） |
+| core | シオン（`coder_backend`） | `core/chouhyo_ocr/paths.py` | `user_templates_dir()`（環境変数＋検証＋フォールバック） |
+| core | シオン | `core/chouhyo_ocr/cli.py` | `match-templates` サブコマンド（`--input`／`--shipped`／`--candidate` 反復） |
+| core | シオン | `core/chouhyo_ocr/config.py` | `last_template` の追加と、**例外を投げない**検証 |
+| core | シオン | `core/tests/` | AC-F52・F60・F61・F62 |
+| GUI | フブキ（`coder_frontend`） | `gui/src/RunScreen.tsx` | テンプレート選択・`write_config` |
+| GUI | フブキ | `gui/src/Editor.tsx` | 起動時既定・照合提示 UI・`rankCandidates`／`emptyTemplateFor`／`newTemplateNotice`・保存ダイアログ（名前入力＋上書き確認）・書き出し／取り込み |
+| GUI | フブキ | `gui/tests/gui-logic.test.mjs` | AC-F25・F26・F27・F28・F53・F54（export リストへの追加が要る） |
+
+### 3.10 守るべき不変条件
+
+1. **webview へ絶対パスを返さない。** 新コマンドの入出力は表示名のみ
+2. **既存コマンドの picked 限定スコープを変えない**（07 §9.4）
+3. **列挙と reparse 検査は Rust の1箇所だけ**に置く。Python 側に同じ規則を書かない
+4. **`user_templates_dir()` の結果をキャッシュしない**（実行中に差し替えられうる）
+5. **検証 NG のテンプレートで既存ファイルを上書きしない**（#56 T1・staged → verify → promote）
+6. **`last_template` は `_validate` で例外を投げない唯一のキー**（AC-F60）
+7. **1件の不正テンプレートで照合ループを止めない**（FR-F28）
+8. **確定は人。** `match-templates` の結果でテンプレートを自動選択しない（07 4.2(h)）
+9. **編集画面が開いているテンプレート＝`config.last_template`** を一致させる（§3.5.2）
+
+### 3.11 リスク
+
+| # | リスク | 影響 | 緩和 |
+|---|---|---|---|
+| T-1 | `app_data_dir()` が使えない環境（ポータブル運用・APPDATA 未設定） | 保存先が決まらず (t) が丸ごと落ちる | Rust 側で `app_data_dir()` が Err なら `repo_root()/templates_user` へフォールバックし、その旨を画面に1行出す（黙って別の場所へ書かない） |
+| T-2 | `unicode-normalization` の追加が供給網レビューで却下される | AC-F51 ⑪（NFD 衝突）が満たせない | B-2 へ後退し、**残存リスクとして「見た目が同じ別名ファイルが作れる」を明記**する。範囲逸脱は起きない（親ディレクトリ一致検査は別レイヤ） |
+| T-3 | `run_core_capture` の本体切り出しで多重起動制御が壊れる | コアの二重起動・`runlock` との競合 | 切り出しは純粋な関数抽出に留め、`CoreProc` の扱いを1行も変えない。既存の cargo test（61 件）で担保 |
+| T-4 | `match-templates` が 20 件 × `check_page` で NFR-F09（3.0 秒）を超える | 画像を開く操作が待たされる | 打ち切りを実装（§3.3.3）。resize 結果の1段キャッシュ。**実測は AC-F54 で取る**——現時点で 1 件あたりの所要は未計測（※要確認） |
+| T-5 | 編集画面の開いているテンプレートと `config.last_template` がズレる | 照合対象と画面の枠が食い違う | 不変条件9。テンプレートを開く経路（起動時・`read_user_template`・`pick_json`）をすべて1つの関数へ集約する |
+| T-6 | B 案で保存先がリポジトリ外になり、開発中に中身を確認しにくい | 開発効率 | 開発環境（`CHOUHYO_USER_DIR` 未設定）ではリポジトリ直下が使われるので影響なし。配布環境の確認は `%APPDATA%` を開く |
 
 ## 4. (b) ページ全体からの枠候補生成（#73）
 
@@ -677,9 +1037,11 @@ assert all(v == "〓" for v in row.values)
 
 ## 7. 要件側の修正提案（07 v1.2 との差分）
 
-実装を確定させる前に、07 側で判断が要る4件。**7-1 は 07 §4.1 の対応表そのものを変える提案**で、(a') の中核に触る。
+**7-1〜7-4 は (a') の設計時に出したもので、07 v1.2 で反映済み**（各項の冒頭に反映先を記す）。履歴として残す。**判断が要るのは 7-5〜7-9 の5件**で、うち 7-5（保存先）と 7-6（依存追加）は (t) の実装着手前に結論が要る。
 
 ### 7-1. `edge_mismatch` を「不一致」から「判定不能」へ倒す（最優先）
+
+> **状態: 反映済み**（07 v1.2 §0.7 訂正1・FR-F02。実装は `5a3b660` の `format_check.classify`）
 
 - **問題**: 07 §4.1 の対応表は `edge_mismatch` を「不一致」に置き、根拠を「端の線は周期の外にあり、1行ズレでは必ず落ちる。端が合わないのは別の紙の可能性が高い」としている。しかし実測（`testdata/formC/README.md` §3・2026-09-02）は逆を示した——**本物の紙（sample-1）の上端の水平罫線を1本消しただけで `edge_mismatch` に転じる**（N=1 で matched 36/42・det_h 24 と、他はほぼ健全）
 - 07 のままだと、**上端が1本かすれた本物の紙で編集画面の枠が消える**。07 §9.1 が「判定不能は不一致ではない——線が取れていないだけの状態で枠を消すと、罫線がかすれた本物の紙で作業ができなくなる」と書いて最も避けたかった事態
@@ -689,11 +1051,15 @@ assert all(v == "〓" for v in row.values)
 
 ### 7-2. `few_lines` の二分を軸別にし、残存リスクを明記する
 
+> **状態: 反映済み**（(a) 軸別化 → 07 FR-F45／(c) 探索境界の分岐 → `format_check.py:95`。(b) 残存リスク（かすれが進んだ紙が不一致に落ちる帯）の 07 本文への明記は ※要確認）
+
 - **(a) 軸別化**: 07 FR-F45 は検出線を両軸合算（`len(det_h) + len(det_v)`）で数える。しかし `det` にはテンプレートに無い線も入り（formC front は det 30 vs 期待 16＝187%）、かすれ実験では `det_v` が不変なので**合算比は 50% を割りにくい**。AC-F03 が要求する「50% を下回る最小の N」は、軸別なら **N=12（det_h=7 < 15×0.5）** と確定できるが、合算では成立しない見込み（`det_v` の実測は未取得）。**FR-F45 の比較を軸別（h 軸・v 軸のどちらかが 50% を割れば「乏しい」）に改めたい**
 - **(b) 残存リスクの明記**: ★1（7-1）を入れても、**かすれが進んだ本物の紙（sample-1 の N=8〜11）は `few_lines` かつ検出十分に分類され、「不一致」＝枠が消える**。検出線の本数は「線が見えているか」の代理指標として弱い。一致率（スコア）なら分離できる（formC 9〜17% 対 かすれ 24〜86%）が、07 FR-F01 が「スコアは判定に使わない」と定めている（較正の母集団が無いため）。**この帯を 07 §3.5 と同じ形で「残存リスク」として明記し、Q-F6 の較正で解く対象に積みたい**
 - **(c) ★3 の追加**: `few_lines` かつ検出十分でも、最良シフトが**探索境界に張り付いている**ときは判定不能へ倒す。07 が `boundary` を判定不能に置いた理由（「大きくズレただけの正しい紙で枠が消える」）は、`few_lines` が先に発火するため対応表のままでは機能しない。`at_boundary` は `_axis_shift` が既に計算しており取得は無料
 
 ### 7-3. 既存テストの期待値変更が2件目として必要になりうる（07 §7.2-4）
+
+> **状態: 反映済み**（07 Q-F21 に「記録済みの例外 2件目: `test_alignment_robustness.py`」として登録）
 
 - 07 は「期待値の書き換えによる緑」を禁じ、例外として **`test_leak_guards.py` の1件だけ**を認めている（§0.6）
 - FR-F09 が要求する「`AlignError` の一部を `様式不一致` へ付け替える」は、`test_alignment_robustness.py:66-77` の期待値に触れうる。1行ズレ（`dy=104`／`dy=113`）は 7-1 の提案を採れば `位置合わせ失敗` のまま影響を受けないが、**`dx=40,dy=40` のケースは reason が未実測**で、`様式不一致` に変わる可能性がある（※未検証）
@@ -702,6 +1068,41 @@ assert all(v == "〓" for v in row.values)
 
 ### 7-4. (f) の刺激 δ と、編集画面が画像でも `expand-page` を通すこと
 
+> **状態: 反映済み**（δ=4 → 07 v1.2 §0.7 訂正2／画像も expand-page を通す → `Editor.tsx:1668-1690`。後者を 07 FR-F04 の付帯条件として明文化するかは ※要確認）
+
 - **AC-F30 の δ**: 07 §0.5-1 は「`SHIFT_RUNNER_DIST = 4`・`SHIFT_GAP_MIN = 2` の制約から成立窓は `2 < δ < 4`＝整数では δ=3 のみ」と書くが、実測（`core/tests/helpers_geom.py`・2026-09-02）は **δ=2〜5 で ok・δ=6 で `ambiguous`**。面の dy が 1 に収束するため block1 の残差は δ−1 になる。**OFF でラベル混入を観測しつつ ON で許容幅 4px に収まる刺激は δ=4（残差 3px）**。AC-F30 の δ を訂正したい
 - **編集画面の入口**: 現状 `Editor.tsx` は **PDF のときだけ** `expand-page` を呼ぶ。PNG／JPG は生画像を直接読み込むため位置合わせも様式判定も走らず、**AC-F01／AC-F02 の素材（PNG）ではこのままだと AC-F02 が成立しない**。「編集画面は画像でも `expand-page` を通す」を FR-F04 の付帯条件として明記したい。副作用として**画像ファイルの下地も位置合わせ後の画像に変わる**（PDF と同じ挙動になる）ので、利用者から見た挙動変更として要件に書いておきたい
 - **`run_start` の入力パス**: `path=<入力フォルダの絶対パス>` はログに残ったままにした。07 §0.6 の秘匿対象は「テンプレート名・欄名」で入力パスを含まない一方、§7.3 は「絶対パスをログへ出さない」と書いており、読み方が割れる。本設計は §0.6 の表に従って**残す**扱いにした（※要確認）
+
+### 7-5. (t) の保存先を `app_data_dir()` 配下へ変える（Q-F16 の結論）
+
+- **問題**: 07 FR-F26 の `project_root()/templates_user/` は、配布環境では**アプリのインストールディレクトリ**に解決される（`paths.py:19-30`・`lib.rs:161-203`）。インストーラは NSIS per-user で、**更新時に中身が保持されるかは未実測**（07 §10.2-8 は ⏳ 未完了のまま）。07 自身が `templates/` を退けた理由（配布物と同居させない）を1階層ずらして再現している
+- **提案**: 保存先を **`app_data_dir()/templates_user/`**（`%APPDATA%\com.holodev.chouhyo-ocr\templates_user\`）に変える。Rust が唯一の決定者となり、環境変数 `CHOUHYO_USER_DIR` で core へ渡す。未設定時（開発環境・CLI 単体）は現行の `project_root()/templates_user/` へフォールバックする（§3.1.3）
+- **得られるもの**: ①更新耐性が実測待ちでなく構造で決まる ②非管理者でも書ける ③配布物混入が構造的にゼロ ④**FR-F26 の⚠️（Rust と Python の解決先がズレうる）が消える**——AC-F52 で担保していた一致が、構造で保証される
+- **書き換えが要る箇所**: 07 §4.1(t) の保存先／FR-F26 の⚠️と保存先／§7.3 の表の「対象」列／§10.2-8（着手条件の解消）／AC-F24 の「保存先が `templates/` ではないこと」の確認手段
+- **採らない場合**: §10.2-8 の実測（NSIS 更新でインストールディレクトリの中身が保持されるか・ACL）を先に済ませる必要があり、(t) の着手条件が残ったままになる
+
+### 7-6. 名前の NFC 正規化に外部クレートが要る（供給網の判断）
+
+- 07 §7.4 は「**NFC 正規化後**に予約名と一致しない」「**NFC 正規化後に case-insensitive** で比較する」を要求している。AC-F51 はこの検証を **Rust の純関数として `cargo test` で表駆動**することを求める
+- `gui/src-tauri/Cargo.toml` の依存は `tauri`・`serde`・`serde_json`・`rfd`・`base64` の5つで、**Unicode 正規化を持つものは無い**（2026-09-02 確認）
+- **提案**: `unicode-normalization`（MIT/Apache-2.0・実行時依存は `tinyvec` のみ）を追加し、**供給網レビュー（AZKi＋ミオ）を通す**。代替（webview 側で正規化して渡す）はレンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる
+- 却下される場合は、**「見た目が同じ別名ファイルが作れる」を残存リスクとして 07 §7.4 に明記**したうえで比較を case-insensitive のみに落とす。範囲逸脱（`templates_user/` の外へ書く）は別レイヤ（親ディレクトリ一致検査）で塞がれているため、影響は重複ファイルに留まる
+
+### 7-7. 照合の列挙責務を Rust に一本化する（FR-F28 の表現）
+
+- 07 §4.1(t) は「**`templates/` と `templates_user/` の両方**を走査して各テンプレートに判定関数を掛ける」と書き、FR-F28 は「列挙するのは `templates_user/*.json` のみ・出荷は固定1件の候補」と書いている。前者の表現は「core がディレクトリを走査する」とも読める
+- **提案**: 「**列挙とパス検査は Rust が行い、core は渡された絶対パスだけを読む**」を明記する。§7.3 の除外規則（`*.saving.json`・`*.bak`・非通常ファイル・reparse point・サイズ上限）を Python にも実装すると、**セキュリティ判定が2箇所に割れる**
+- 併せて、照合の実行手段を **core の新サブコマンド `match-templates --input <img> --shipped <path> --candidate <path>...`**（1プロセスで N 件）として要件に固定したい。NFR-F09 の「照合全体で 3.0 秒」はプロセス起動を含む合計時間なので、1件ごとにコアを起動する実装だと測定単位が変わる
+
+### 7-8. `last_template` は `_validate` で例外を投げない（AC-F60 との整合）
+
+- AC-F60 は「`config.json` の既定テンプレート項目に範囲外を手書きした状態で起動 → **出荷テンプレートへフォールバックして起動し、エラーで停止しない**」を求める
+- 一方 `config.py:_validate` は不正値に対して `ConfigError` を上げる設計で、`load_config` がそれを投げると **run/render/remap/verify が全部起動不能**になる（07 FR-F29 の⚠️が指摘している経路そのもの）
+- **提案**: 「`last_template` は型が str でない・形式が不正・名前検証に通らない場合、`ConfigError` を投げずに `""`（出荷テンプレート）へ落とす。**`_validate` の中で唯一例外を投げないキーである**」ことを FR-F29 に明記する。`CONFIG_PATH_KEYS`（`is_safe_root` を通すキー群）には入れない——パスではないため
+
+### 7-9. (t) の範囲に関する3点の明確化
+
+- **FR-F49 は新しい Rust コマンドを要さない**。書き出しは `read_user_template` → `pick_json(save=true)` → `write_text`、取り込みは `pick_json` → `read_text` → `save_user_template`（名前検証＋`verify`＋promote を通る）で成立する（§3.7）。07 の書き方は専用コマンドを示唆して読めるので、「既存の選択経路を使う」を明示したい
+- **FR-F31 の到達点**（候補ゼロの案内）は、(b) 未実装の段階では「**空のテンプレートで開く**（画像の実寸から `image` を設定）＋等分割生成・手動作図の案内」までとする。枠候補の一括生成は (b) の範囲であり、(t) の完了条件に含めない
+- **§10.2-7（`templates_user` に formB を複製）は `37d6e5f` で完了扱いだが、リポジトリに `templates_user/` は存在しない**（2026-09-02 確認）。§7-5 を採ると実体はリポジトリ外になるため、**テストは一時ディレクトリに user dir を作り `CHOUHYO_USER_DIR` を差して回す**方式へ読み替える。素材の元は `testdata/formB/formB-v1.json`（コミット済み）
