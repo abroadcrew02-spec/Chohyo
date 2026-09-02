@@ -650,6 +650,8 @@ assert all(v == "〓" for v in row.values)
 
 ## 3. (t) テンプレートの保存・選択・照合提示（#72）
 
+> **実装で確定した契約（2026-09-02・本節の例示より実装を正とする）**: `list_user_templates()` → `{templates:[{name,template_id,fields,tables,updated_at}],excluded:[{name,reason}]}`／`read_user_template(name)` → JSON 文字列／`save_user_template(name, content, overwrite)` → 成功時は verify の JSON Lines 文字列（GUI が `check:"template"` の `ok` を見て真の成否を判定）・同名かつ overwrite=false は `Err("AlreadyExists")`／`match_templates(input, names)` → core の `match_templates` イベント（`results[]{kind,name,template_id,verdict,reason,score,detected,expected,fields,tables,updated_at}`・`excluded[]{name,reason}`・`truncated`・`elapsed_ms`）に Rust 側の除外をマージ／core サブコマンド `match-templates --input --shipped --candidate... --page`（列挙しない・1件の不正で止めない・時間予算 3.0 秒）／`config.last_template` は `"shipped"`（名前なし）または `"user:<名前>"`、それ以外は出荷へフォールバック（`_validate` の特例）／`CHOUHYO_USER_DIR` は Rust が付与し core は検証して使う（不正なら ConfigError で明示失敗・未設定は `project_root()/templates_user/`＝開発・CLI 単体）／NFC は既存依存 `icu_normalizer`（default-features=false, compiled_data）。
+
 対象要件: 07 v1.2 §4.1(t)・§5.3（FR-F26〜F31・F46・F49）・§7.3・§7.4・§8.3・NFR-F09・§9.4。
 前提: (a') は `5a3b660`（core）／`1541239`（GUI）で完了済み。`format_check.check_page(page_img, template) -> PageVerdict`（`core/chouhyo_ocr/format_check.py:177`）が使えるため、**照合の計算部分は新規に作らない**。
 
