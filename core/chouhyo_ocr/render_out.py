@@ -158,14 +158,19 @@ def write_csv(path: Path, columns: list[str], rows: list[Row]) -> None:
     # Q-MH: write_xlsx と同じ多重防御（write_outputs を経由しない直接呼び出し
     # でも列ズレを検知する）。文言も揃える
     n_extract = len(columns) - len(META_COLUMNS)
+    # N-5: write_xlsx と同じく open() の手前で全行を一括検査する。以前は
+    # open() の内側（1行ずつ書きながら）で検査していたため、途中行まで
+    # 書いたファイルを残したまま raise していた（header と一部行だけの
+    # 中途半端な csv が path に残留する）
+    for r in rows:
+        if len(r.values) != n_extract:
+            raise ValueError(
+                f"行の値数({len(r.values)})が抽出列数({n_extract})と一致しない"
+                f"（帳票ID: {r.page_id}）。テンプレートと中間データの整合を確認する")
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
         w.writerow(columns)
         for r in rows:
-            if len(r.values) != n_extract:
-                raise ValueError(
-                    f"行の値数({len(r.values)})が抽出列数({n_extract})と一致しない"
-                    f"（帳票ID: {r.page_id}）。テンプレートと中間データの整合を確認する")
             w.writerow([str(r.unclear_count), r.min_conf, r.page_id,
                         r.source_file, str(r.page_no), r.status]
                        + [str(v) for v in r.values])

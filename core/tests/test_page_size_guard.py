@@ -135,3 +135,61 @@ def test_run_with_distorted_input_reports_format_mismatch_without_sending(tmp_pa
     header = [c.value for c in ws[1]]
     data = [c.value for c in ws[2]]
     assert data[header.index("ステータス")] == "様式不一致"
+
+
+# ---------- N-4: 位置合わせキャッシュ再利用経路でも寸法検査が掛かる ----------
+
+def test_reused_alignment_still_checks_page_size(tmp_path, monkeypatch):
+    """_restore_alignment の再利用経路（align_page を通らない）でも寸法不一致
+    を検知できることを確認する。
+
+    align_page 内の page_size_verdict 検査だけでは、既にキャッシュされた
+    整列結果を再利用する経路（送信上限・月次上限で分割された run の2回目
+    以降）を素通りする。ここでは「寸法検査が導入される前に整列済みキャッシュ
+    が残っている」状況を、1回目の run だけ page_size_verdict を無効化する
+    monkeypatch で再現し、2回目の run（キャッシュ再利用のみで align_page を
+    通らない）が様式不一致へ倒れることを確認する。
+    """
+    import dataclasses
+
+    from PIL import Image
+
+    from chouhyo_ocr import align as align_mod
+    from chouhyo_ocr import pipeline as pipeline_mod
+    from chouhyo_ocr.config import Config
+    from chouhyo_ocr.paths import app_root
+    from chouhyo_ocr.pipeline import run
+    from chouhyo_ocr.vision_client import ReplayClient
+
+    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    tpl = app_root() / "templates" / "chouhyo-v1.json"
+    if not page_png.exists():
+        pytest.skip("展開済みサンプル画像が無い環境")
+
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    im = Image.open(page_png).convert("RGB")
+    w, h = im.size
+    im.resize((w, int(round(h * 1.05)))).save(input_dir / "sample-1.png")
+
+    resp_dir = tmp_path / "responses"  # 送信に到達しないため中身は不要
+    cfg1 = Config(output_dir=str(tmp_path / "out"), workdir=str(tmp_path / "wd"),
+                 log_dir=str(tmp_path / "logs"), send_limit=0)
+
+    # 1回目: page_size_verdict を無効化し、寸法検査が存在しなかった頃の
+    # 整列済みキャッシュを模す（align_page 側・pipeline 側の両方の呼び出しを
+    # 無効化する必要がある——モジュールが直接 import した参照はそれぞれ別）
+    monkeypatch.setattr(align_mod, "page_size_verdict", lambda size, template: None)
+    monkeypatch.setattr(pipeline_mod, "page_size_verdict", lambda size, template: None)
+    first = run(input_dir, tpl, cfg1, ReplayClient(resp_dir))
+    assert first.align_failed == 0
+    assert first.format_mismatch == 0  # 検査無効化中なので、この時点では通る
+
+    # 2回目: monkeypatch を解除して寸法検査を復活させる。送信上限を上げても、
+    # 再利用経路（_restore_alignment 成功）に流れ込む前に弾かれることを確認する
+    monkeypatch.undo()
+    cfg2 = dataclasses.replace(cfg1, send_limit=5)
+    second = run(input_dir, tpl, cfg2, ReplayClient(resp_dir))
+    assert second.api_calls == 0          # 送信前に落ちている（課金なし）
+    assert second.format_mismatch == 1    # 再利用経路でも様式不一致を計上
+    assert second.align_failed == 0       # 「位置合わせ失敗」ではなく様式不一致側

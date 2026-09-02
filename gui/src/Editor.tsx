@@ -838,7 +838,11 @@ export function unclearPopulationNote(
 
 /// expand-page が返す位置合わせ失敗の理由（ぺこら担当・core 側で追加中）。
 /// 欠落時は旧コア互換で "align" 扱いにフォールバックする。
-export type ExpandAlignReason = "template" | "align" | "image" | "other";
+/// "size"（N-2）: PageSizeMismatch（Q-H1・寸法/向き不一致）。従来は
+/// AlignError の基底クラス経由で "align" に潰れており、run では様式不一致で
+/// 弾かれる紙に「枠は動かさないでください（自動補正される）」という誤った
+/// 案内が出ていた。
+export type ExpandAlignReason = "template" | "align" | "size" | "image" | "other";
 
 /// PDF/画像を開いた直後の位置合わせ結果から、案内文言を出し分ける
 /// （5巡目レビュー・いろは指摘）。従来は aligned:false を一律「位置合わせ
@@ -862,6 +866,13 @@ export function expandAlignNotice(
       text: `（${pageNote}テンプレートを読み込めないため位置合わせできませんでした。`
         + "テンプレートが壊れている可能性があります。編集を続ける前にテンプレートの検証"
         + "（保存して検証）を行ってください）",
+      isError: true,
+    };
+  }
+  if (r === "size") {
+    return {
+      text: `（${pageNote}用紙サイズ／向きがテンプレートと合っていません`
+        + "（縦横比の差が 1% 超）。この画像は読み取り時に様式不一致として扱われます）",
       isError: true,
     };
   }

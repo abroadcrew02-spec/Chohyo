@@ -257,7 +257,7 @@ def cmd_expand_page(args) -> int:
     try:
         from PIL import Image
 
-        from .align import AlignError, align_page
+        from .align import AlignError, PageSizeMismatch, align_page
         from .template import TemplateError, load_template
         template = load_template(args.template)
         with Image.open(page_path) as img:
@@ -283,6 +283,12 @@ def cmd_expand_page(args) -> int:
     # 本文は出さない（パスに入力ファイル名が乗りうる・既存方針どおり）
     except TemplateError:
         fail_reason = "template"
+    # N-2: PageSizeMismatch は AlignError のサブクラス（Q-H1）。基底クラスより
+    # 前に置かないと下の except AlignError に落ちて "align"（位置合わせ失敗）
+    # に化ける——run（送信経路）ではこの入力は様式不一致として弾かれるため、
+    # 編集画面には "align" ではなく専用の reason を返して案内を分ける
+    except PageSizeMismatch:
+        fail_reason = "size"
     except AlignError:
         fail_reason = "align"
     except (OSError, ValueError):

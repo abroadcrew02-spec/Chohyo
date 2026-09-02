@@ -301,6 +301,31 @@ def test_expand_page_reason_is_template_on_broken_template(tmp_path, capsys):
     assert "error" not in ev
 
 
+def test_expand_page_reason_is_size_on_page_size_mismatch(tmp_path, capsys):
+    """寸法/向き不一致（Q-H1・PageSizeMismatch）は reason:"size"（N-2）。
+
+    PageSizeMismatch は AlignError のサブクラス。cmd_expand_page の except を
+    AlignError より前に置かないと下の分岐に落ちて reason:"align" に化ける
+    ——編集画面には「読み取り時に自動補正される」という誤った案内が出ていた
+    （実際は run が様式不一致として弾く）。
+    """
+    from PIL import Image
+
+    from chouhyo_ocr import cli
+    src = tmp_path / "sample.pdf"
+    # テンプレート（chouhyo-v1.json・2490x3510・比 約0.7094）に対し、200x250
+    # は比が 0.8 で相対差 約12.8%（1% 閾値を大きく超える）
+    Image.new("L", (200, 250), 255).save(src)
+    cfg_path = _expand_page_cfg(tmp_path)
+    r = cli.main(["--config", str(cfg_path), "expand-page", "--input", str(src)])
+    assert r == 0
+    ev = next(json.loads(l) for l in capsys.readouterr().out.splitlines()
+              if l.strip() and "expand_page" in l)
+    assert ev["ok"] is True and ev["aligned"] is False
+    assert ev["reason"] == "size"
+    assert "error" not in ev
+
+
 def test_choice_with_subfields_keeps_row_length(tmp_path):
     """choice＋subfields のテンプレートでも行の値数＝列数が保たれる（issue #26）。
 

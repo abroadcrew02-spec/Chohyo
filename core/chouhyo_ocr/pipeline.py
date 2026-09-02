@@ -13,7 +13,7 @@ from PIL import Image
 
 from . import era, ingest, logging_safe as log, render_rows
 from .align import (AlignedFace, AlignError, PageSizeMismatch, align_page,
-                    geometry_hash)
+                    geometry_hash, page_size_verdict)
 from .columns import derive_columns, validate_v1
 from .config import Config
 from .mapping import assign, symbols_from_response, to_face_local
@@ -483,37 +483,49 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             # --- F3/F4/F5: 切り出し・位置合わせ・再結合 ---
             # 位置合わせ済みのページは作り直さない（#45）。分割送信（send_limit・
             # 月次上限）が通常運用なので、毎 run の再整列は素の無駄になる
-            reused = (_restore_alignment(store, template, aligned_dir, pid,
-                                         geo_hash, ALGO_VERSION, tpl_hash)
-                      if page["state"] in _ALIGNED_STATES else None)
+            try:
+                # N-4: _restore_alignment が成功する再利用経路は align_page を
+                # 通らないため、align_page 内部の page_size_verdict 検査
+                # （Q-H1）が掛からず、修正前に整列済み・未送信のページが寸法
+                # 未検査のまま送信されうる。reused/align_page のどちらに分岐
+                # するかを決める前に一度だけ検査し、どちらの経路でも同じ
+                # 様式不一致として扱う（ALGO_VERSION は上げない・done ページの
+                # 再送＝再課金を避けるため、この検査は再利用の可否には効かない）
+                reason = page_size_verdict(img.size, template)
+                if reason is not None:
+                    raise PageSizeMismatch(reason)
+                reused = (_restore_alignment(store, template, aligned_dir, pid,
+                                             geo_hash, ALGO_VERSION, tpl_hash)
+                          if page["state"] in _ALIGNED_STATES else None)
+                if reused is None:
+                    faces, composite = align_page(img, template)
+            except PageSizeMismatch:
+                # Q-H1: 入力の寸法がテンプレートと噛み合わない（無検証で
+                # resize すると歪んだ画像がそのまま送信されていた）。
+                # PageSizeMismatch は AlignError のサブクラスなので、この
+                # except を基底クラスより前に置かないと下の分岐に落ちて
+                # 「位置合わせ失敗」に化ける
+                store.set_state(pid, "failed")
+                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
+                summary.format_mismatch += 1
+                log.error("page_size_mismatch", page_id=pid)
+                progress({"event": "page", "page_id": pid,
+                          "status": render_rows.STATUS_FORMAT_MISMATCH})
+                continue
+            except AlignError:
+                store.set_state(pid, "failed")
+                store.set_status(pid, render_rows.STATUS_ALIGN_FAILED)
+                summary.align_failed += 1
+                progress({"event": "page", "page_id": pid,
+                          "status": render_rows.STATUS_ALIGN_FAILED})
+                continue
+
             if reused is not None:
                 # state は動かさない（received を aligned へ戻すと保存済み応答を
                 # 使う条件が消え、再送＝再課金になる・issue #38）
                 faces, composite = reused
                 log.info("reuse_alignment", page_id=pid)
             else:
-                try:
-                    faces, composite = align_page(img, template)
-                except PageSizeMismatch:
-                    # Q-H1: 入力の寸法がテンプレートと噛み合わない（無検証で
-                    # resize すると歪んだ画像がそのまま送信されていた）。
-                    # PageSizeMismatch は AlignError のサブクラスなので、この
-                    # except を基底クラスより前に置かないと下の分岐に落ちて
-                    # 「位置合わせ失敗」に化ける
-                    store.set_state(pid, "failed")
-                    store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
-                    summary.format_mismatch += 1
-                    log.error("page_size_mismatch", page_id=pid)
-                    progress({"event": "page", "page_id": pid,
-                              "status": render_rows.STATUS_FORMAT_MISMATCH})
-                    continue
-                except AlignError:
-                    store.set_state(pid, "failed")
-                    store.set_status(pid, render_rows.STATUS_ALIGN_FAILED)
-                    summary.align_failed += 1
-                    progress({"event": "page", "page_id": pid,
-                              "status": render_rows.STATUS_ALIGN_FAILED})
-                    continue
                 for f in faces:
                     store.upsert_alignment(
                         pid, f.face_id,

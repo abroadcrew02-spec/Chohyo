@@ -185,3 +185,15 @@ def test_write_csv_rejects_row_length_mismatch(tmp_path):
     row = _row(["x", "y", "z", "extra"])  # 抽出列3に対し値4つ
     with pytest.raises(ValueError, match="値数"):
         write_csv(tmp_path / "o.csv", COLS, [row])
+
+
+def test_write_csv_leaves_no_partial_file_on_row_length_mismatch(tmp_path):
+    """N-5: 列数検査は open() の手前で行う——header・途中行を書いた中途半端な
+    csv を残したまま raise しない（write_xlsx と同じ多重防御の流儀に揃える）。
+    """
+    ok_row = _row(["x", "y", "z"])          # 抽出列3・正常
+    bad_row = _row(["x", "y"])              # 抽出列3に対し値2つ
+    out = tmp_path / "o.csv"
+    with pytest.raises(ValueError, match="値数"):
+        write_csv(out, COLS, [ok_row, bad_row])
+    assert not out.exists()
