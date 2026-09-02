@@ -386,6 +386,8 @@ except AlignError as e:
 
 #### 2.4.3 理由コードの一覧（FR-F09 の「分離」）
 
+> `row_build_failed` は**未配線**（2026-09-02・(a') 実装時の判断）: `_render_locked` は `page.status` をローカル辞書にしか書かず DB を更新せず、render 経路にはページ単位の progress イベントも無い。片側だけ永続化すると成功時にクリアする経路が無く新しい残留を生むため、render 側の状態更新設計が別途要る。GUI は未知コードを注記なしで扱うので実害なし。
+
 > 未知の reason（将来 `estimate_shift` に理由が増えた場合）は `classify` が安全側の `undecidable` と `frame_<reason>` で返す。GUI（`REASON_CODE_JA`）は未知コードを注記なしで表示するので壊れない。10 コードの表を更新するのは、理由を追加した本人の責務。
 
 `page.status_reason` に入る値。**`page.status` の既存値（8種）は1つも変えない。**
