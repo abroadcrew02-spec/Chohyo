@@ -20,6 +20,10 @@ type Summary = {
   // （旧コアでは undefined）
   format_mismatch_pre_send?: number;
   risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
+  // 中間データの整列結果を再利用し送信しなかったページ数（issue #72 (t)・
+  // 実機通し確認の指摘。core が summary へ追加中のキー・旧コアでは
+  // undefined）。api_calls が処理枚数より少ない理由をここで説明する
+  reused_pages?: number;
   xlsx?: string; csv?: string;
 };
 type Verify = { template: boolean; poppler: boolean; cred: string; storage: boolean;
@@ -316,6 +320,17 @@ export function noticeFor(ev: Record<string, any>): string | null {
 export function outputDisabledNotice(n: number | undefined): string | null {
   if (n == null || n <= 0) return null;
   return `このテンプレートは ${n} 欄を出力しません。`;
+}
+
+/// 完了サマリの summary.reused_pages（issue #72 (t)・実機通し確認の指摘）
+/// から「既存の読み取り結果を再利用: N ページ（送信なし）」を組み立てる。
+/// api_calls が処理枚数（pages）より少ないと、送信していないのか読み
+/// 落としたのか利用者から区別できない——中間データの整列結果を再利用した
+/// ページ数をここで明示する。core は未提供のキー（旧コア・追加未完了）
+/// なので、undefined・0以下はいずれも null（呼び出し側は何も表示しない）。
+export function reusedPagesNotice(reusedPages: number | undefined): string | null {
+  if (reusedPages == null || reusedPages <= 0) return null;
+  return `既存の読み取り結果を再利用: ${reusedPages} ページ（送信なし）`;
 }
 
 /** `run_core_capture(["verify"])` の stdout（JSON Lines）を Verify へ変換する。
@@ -752,6 +767,15 @@ ${ev.hint}` : ""));
               <span className="v">{summary.align_failed}</span><span className="s">読み取れなかったページ数</span></div>
             <div className="sumcard"><span className="k">行数超過件数</span>
               <span className="v">{summary.overflow}</span><span className="s">行数を超過したページ数</span></div>
+          </div>
+        )}
+        {/* issue #72 (t)・実機通し確認の指摘: 「API送信回数」がページ数より
+            少ない理由（中間データの再利用）を、その項目の直後に説明する。
+            summary6 は要件 §5.9 が固定した6項目のグリッドのため、7件目の
+            カードとしては足さず、グリッドのすぐ下に注記として置く */}
+        {summary && reusedPagesNotice(summary.reused_pages) && (
+          <div className="muted" style={{ fontSize: 12.5, marginTop: -8 }}>
+            {reusedPagesNotice(summary.reused_pages)}
           </div>
         )}
         {summary && (

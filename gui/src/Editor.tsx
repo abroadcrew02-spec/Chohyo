@@ -1047,6 +1047,16 @@ export function templateSwitchImageSizeNotice(
     + `画像 ${imgSize.w}×${imgSize.h}）。枠の位置がずれる可能性があります。`;
 }
 
+/// 「判定を無視して枠を表示する」（formatOverride=true）を押した後の常時
+/// 警告文（issue #72 (t)・実機通し確認の指摘）。押した事実（何を上書きした
+/// か）に加えて、やり直しの導線（別のテンプレートを試す2つの経路）を
+/// 添える——上書き後は判定パネル・黄帯の操作ボタンが消えるため、押した
+/// ことを忘れた利用者が別のテンプレートへ戻る手段を見失わないようにする。
+export function formatOverrideBannerText(): string {
+  return "様式判定を無視して枠を表示しています。別のテンプレートを試すには"
+    + "「帳票を開く」で開き直すか、「この画像に合うテンプレート」の一覧から選んでください。";
+}
+
 /// 画像が無い間はキャンバス上の枠操作（選択・追加・ドラッグ・リサイズ・
 /// 除外範囲の作成・表裏境界の移動）を無効化する（同上のユーザー指摘）。
 /// パン（ドラッグ移動）とホイールズームは表示位置の調整に過ぎず誤操作の
@@ -3742,7 +3752,7 @@ export default function Editor(
   // 差し替え、ボタンは隠す（押し直す必要が無い・押した理由が画面に残る）
   const hasFormatMismatch = formatFaces.some((f) => f.verdict === "mismatch");
   const formatBannerText = formatOverride
-    ? "様式判定を無視して枠を表示しています"
+    ? formatOverrideBannerText()
     : formatWarnMsg;
 
   return (
@@ -3801,6 +3811,15 @@ export default function Editor(
                 <span className="note">空のテンプレートから表を描き直します</span>
               </span>
             </span>
+          )}
+          {/* issue #72 (t)・実機通し確認の指摘: 上書き中（formatOverride）は
+              判定パネルの操作ボタンが消えるため、元の判定表示（不一致面を
+              隠す）へ戻す手段が画面から消えていた。押すと formatOverride を
+              false に戻すだけ——formatFaces（判定結果自体）は変えない */}
+          {formatOverride && (
+            <button className="btn" onClick={() => setFormatOverride(false)}>
+              判定に戻す
+            </button>
           )}
         </div>
       )}
