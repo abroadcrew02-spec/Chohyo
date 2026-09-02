@@ -1,25 +1,55 @@
 {
-  "head": "71384a4372b79b0d7904e1b0a7e8480612c09d18",
-  "head_short": "71384a4",
-  "generated_at": "2026-09-02T07:21:24.608924+00:00",
-  "source": {
-    "template": "templates/chouhyo-v1.json",
-    "page_image": "workdir/pages/sample-1.png（.gitignore 対象・ローカル限定）",
-    "s2_response": "workdir/s2/resp_DOCUMENT_TEXT_DETECTION.json（.gitignore 対象・ローカル限定）",
+  "head": "1541239358f714f44984c812054fa58c0cb10431",
+  "head_short": "1541239",
+  "generated_at": "2026-09-02T08:57:22.638836+00:00",
+  "procedure": {
+    "script": "scripts/make_golden.py",
+    "cwd": "C:\\Users\\user\\Desktop\\workspace20\\chouhyo_tool",
+    "worktree": "メインの作業ツリー（git worktree で分離していない）",
+    "working_tree_dirty_at_generation": true,
+    "dirty_files_at_generation": [
+      "CHANGELOG.md",
+      "README.md",
+      "core/chouhyo_ocr/align.py",
+      "core/chouhyo_ocr/cli.py",
+      "core/chouhyo_ocr/logging_safe.py",
+      "core/chouhyo_ocr/pipeline.py",
+      "core/chouhyo_ocr/render_out.py",
+      "core/chouhyo_ocr/store.py",
+      "core/tests/test_alignment_robustness.py",
+      "core/tests/test_leak_guards.py",
+      "docs/design/chouhyo-ocr/08_frame_detection_design.md",
+      "testdata/golden_manifest.json",
+      "core/chouhyo_ocr/format_check.py",
+      "core/tests/test_format_check.py",
+      "core/tests/test_format_check_pipeline.py",
+      "scripts/make_golden.py"
+    ],
+    "python": "C:\\Users\\user\\Desktop\\workspace20\\chouhyo_tool\\.venv\\Scripts\\python.exe",
+    "template": "templates\\chouhyo-v1.json",
+    "page_png": "workdir\\pages\\sample-1.png（.gitignore 対象・ローカル限定）",
+    "s2_response": "workdir\\s2\\resp_DOCUMENT_TEXT_DETECTION.json（.gitignore 対象・ローカル限定）",
+    "page_id": "sample-1_p0001",
     "replay": true,
-    "api_calls": 1
+    "api_calls": 1,
+    "config": {
+      "unclear_threshold": 0.4,
+      "note": "既定値 0.85 ではなく 0.4 を使用。理由: core/tests/test_e2e_replay.py の outputs fixture と同じ、配置の正しさ（第1層検証）を見るための意図的な低め設定。"
+    },
+    "root_cause_of_2026-09-02_divergence": "最初の golden_manifest.json（HEAD 71384a4）はファイルの sha256 のみを記録し、unclear_threshold=0.4 を使ったことを procedure として残していなかった。第三者が既定値 0.85 で再現した結果、〓化するセルが大幅に増え（実測: 同一入力で threshold=0.4→masked_cells=4 に対し0.85→masked_cells=21・両者の差分18セルのうち17セルが0.4では読める値・0.85では〓）、出力が一致しなくなった。原因はコードの版差ではなく Config の unclear_threshold の取り違えだった——本スクリプトはこの値を procedure.config として必ず manifest に残すことで再発を防ぐ。"
   },
   "outputs": {
     "output.xlsx": {
-      "path": "workdir/golden/71384a4/output.xlsx",
-      "sha256": "4dfff85f0e02a121b2d6a3701632d1fcef60b496449851f73125fbea8cb80066",
+      "path": "workdir/golden/1541239/output.xlsx",
+      "cell_value_sha256": "4030f5e3108b5d84de48eadcf96fca09de794a1cc1f9387f3ca9705cc1b12e6a",
       "rows": 1,
-      "cols": 220
+      "cols": 220,
+      "masked_cells": 4
     },
     "output.csv": {
-      "path": "workdir/golden/71384a4/output.csv",
-      "sha256": "0956b77709ffcc5baf837fa97101769d4b9b3449a37d3592a99989c397f9669f"
+      "path": "workdir/golden/1541239/output.csv",
+      "normalized_sha256": "1ec2ff9cf987095ef6a349e8ab8bd2ed4440475f517941357328c33309934dd9"
     }
   },
-  "note": "記入値（帳票の読取結果そのもの）はこのファイルに含めない。output.xlsx/output.csv 自体は workdir/ 配下（.gitignore 対象）に置きコミットしない。"
+  "note": "記入値（帳票の読取結果そのもの）はこのファイルに含めない。output.xlsx/output.csv 自体は workdir/ 配下（.gitignore 対象）に置きコミットしない。ハッシュはファイルバイト列ではなくセル値・正規化テキストを対象にしている（procedure 参照）。"
 }
