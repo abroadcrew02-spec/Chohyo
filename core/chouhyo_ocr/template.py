@@ -510,10 +510,32 @@ def _hole_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str
     return warnings
 
 
+# テンプレート JSON Schema のプロセス内キャッシュ（issue #72 (t)・M-3・
+# 2026-09-02 マリン指摘）。match-templates が候補テンプレートごとに
+# load_template を呼ぶため、毎回スキーマファイルを読み直すと（実測 83ms/件）
+# NFR-F09（合計3.0秒）を圧迫する。キーはファイルパス＋mtime——スキーマ
+# ファイル自体が更新されたら（開発中の編集等）取り直す。プロセス内で
+# スキーマファイルは実質1つなので、キー不一致時は総入れ替えでよい
+_schema_cache: dict[tuple[str, float], dict] = {}
+
+
+def _load_schema() -> dict:
+    p = template_schema_path()
+    mtime = p.stat().st_mtime
+    key = (str(p), mtime)
+    cached = _schema_cache.get(key)
+    if cached is not None:
+        return cached
+    schema = json.loads(p.read_text(encoding="utf-8"))
+    _schema_cache.clear()
+    _schema_cache[key] = schema
+    return schema
+
+
 def load_template(path: str | Path) -> Template:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
 
-    schema = json.loads(template_schema_path().read_text(encoding="utf-8"))
+    schema = _load_schema()
     try:
         jsonschema.validate(raw, schema)
     except jsonschema.ValidationError as e:

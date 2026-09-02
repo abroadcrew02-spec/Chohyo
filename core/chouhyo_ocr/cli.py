@@ -26,6 +26,26 @@ def _progress(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def _load_config_and_init_log(config_path) -> Config:
+    """load_config + log.init を1箇所にまとめる（issue #72 (t)・M-1・
+    2026-09-02 マリン指摘）。
+
+    本番の呼び出し順は「load_config → log.init」——Config._validate は
+    last_template のフォールバックが起きても例外を投げず（AC-F60）、
+    Config.last_template_fallback_reason へ理由コードを積むだけでログは
+    出さない。_validate の時点ではまだ log.init が呼ばれておらず、そこで
+    warn しても logging_safe が未初期化（_app/_err が None）で黙って
+    消える。ここで load_config の直後に log.init し、その直後に warn する
+    ことで、フォールバックが起きたことを確実にログへ残す。
+    """
+    cfg = load_config(config_path)
+    log.init(cfg.log_dir)
+    if cfg.last_template_fallback_reason:
+        log.warn("config_last_template_fallback",
+                 error_code=cfg.last_template_fallback_reason)
+    return cfg
+
+
 def _render_dpi_arg(value: str) -> int:
     """--dpi の範囲検証（S-8）。schema/template.schema.json の render_dpi と
     同じ 72〜1200 を受理範囲とする——detect-grid の --dpi は grid.detect_ruled/
@@ -51,8 +71,7 @@ def _client(cfg: Config, replay_dir: str | None):
 
 
 def cmd_run(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)
+    cfg = _load_config_and_init_log(args.config)
     # テンプレートファイル名はログへ出さない（Q-S1・FR-F50・2026-09-02）。
     # ここではまだテンプレートを読んでおらずハッシュが分からない——算出のため
     # だけに二重読みはしない。直後に pipeline._run_locked が
@@ -77,8 +96,7 @@ def cmd_run(args) -> int:
 
 
 def cmd_render(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)
+    cfg = _load_config_and_init_log(args.config)
     from .pipeline import render
     xlsx, csvp, rows = render(args.template, cfg)
     _progress({"event": "rendered", "rows": len(rows),
@@ -87,8 +105,7 @@ def cmd_render(args) -> int:
 
 
 def cmd_remap(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)
+    cfg = _load_config_and_init_log(args.config)
     from .pipeline import remap, render
     n = remap(args.template, cfg, progress=_progress)
     xlsx, csvp, rows = render(args.template, cfg)
@@ -97,8 +114,7 @@ def cmd_remap(args) -> int:
 
 
 def cmd_status(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
+    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     from .store import Store
     db = Path(cfg.workdir) / "intermediate.sqlite"
     if not db.exists():
@@ -112,8 +128,7 @@ def cmd_status(args) -> int:
 
 
 def cmd_verify(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
+    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     ok = True
     # テンプレート
     try:
@@ -220,8 +235,7 @@ def cmd_verify(args) -> int:
 
 
 def cmd_import_credentials(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
+    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     p = cred_store.import_credentials(args.json_path, cfg.workdir)
     _progress({"event": "credentials_imported", "path": str(p)})
     print("取り込み完了。元の平文 JSON は不要になったら削除すること。", file=sys.stderr)
@@ -236,8 +250,7 @@ def cmd_expand_page(args) -> int:
     run の展開・テンプレート座標系（render_dpi）と同じ。
     """
     from .ingest import IngestError, expand, pdf_page_count
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
+    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     out_dir = Path(cfg.workdir) / "editor_pages"
     out_dir.mkdir(parents=True, exist_ok=True)
     src = Path(args.input)
@@ -382,6 +395,186 @@ def _expand_page_verdict_fields(pv) -> dict:
     }
 
 
+_MATCH_TEMPLATES_TIME_BUDGET_S = 3.0  # NFR-F09（暫定）。合計でこれを超えたら打ち切る
+_MATCH_TEMPLATES_SIZE_LIMIT = 5 * 1024 * 1024  # 07 §7.3 の1件あたり上限（暫定）
+
+
+def cmd_match_templates(args) -> int:
+    """入力1枚に出荷＋候補テンプレートを照合する（issue #72 (t)・08 §3.3）。
+
+    **候補の列挙・パス検査は Rust 側の責務**（08 §3.10 不変条件3）——ここは
+    渡された絶対パスをそのまま読むだけで、ディレクトリ列挙も reparse point
+    検査もしない。1件の不正テンプレートで照合ループを止めない（FR-F28）。
+    ログにはテンプレート名を出さない（Q-S1・FR-F50・#77 の方針）——識別は
+    `template_hash` と序数のみ。stdout の JSON Lines は秘匿対象外（07 §0.6）
+    なので表示名（ファイル名の stem）をそのまま返す。
+
+    `ok:false` の `error` は機械可読な固定コードのみ（2026-09-02 マリン
+    指摘 M-6）——`type(e).__name__` や例外メッセージは出さない（パスや
+    帳票の値が乗りうるため・issue #2 と同じ方針）:
+    `input_not_found` / `expand_failed` / `input_unreadable` / `internal`。
+    """
+    import time as _time
+    from datetime import datetime
+
+    from PIL import Image
+
+    from . import format_check
+    from .align import template_hash as _tpl_hash
+    from .columns import validate_v1
+    from .ingest import IngestError, expand, pdf_page_count
+    from .template import TemplateError, load_template
+
+    t0 = _time.perf_counter()
+    cfg = _load_config_and_init_log(args.config)
+
+    out_dir = Path(cfg.workdir) / "editor_pages"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    src = Path(args.input)
+
+    # LOW（マリン提案）: expand() へ投げる前に存在と --page 範囲を確認する
+    # （cmd_expand_page と同じ流儀）。expand() 自身も範囲外を IngestError で
+    # 弾くが、ここで先に確認すると「無いファイル」「範囲外ページ」を
+    # expand_failed の1コードへ素直に収められる
+    if not src.exists():
+        _progress({"event": "match_templates", "ok": False, "error": "input_not_found"})
+        return 0
+    total = pdf_page_count(src) if src.suffix.lower() == ".pdf" else 1
+    if total is not None and not 1 <= args.page <= total:
+        _progress({"event": "match_templates", "ok": False, "error": "expand_failed"})
+        return 0
+    try:
+        # PDF は該当ページのみ展開（expand-page と同じ経路・PNG/JPG はそのまま
+        # 返る）。300dpi は run/expand-page の既定と同じ（テンプレート側の
+        # render_dpi が違っても check_page が image_size へ resize するので
+        # ここでの dpi は下地画像の解像度を決めるだけ）
+        pages = expand(src, dpi=300, out_dir=out_dir, page=args.page)
+    except IngestError:
+        _progress({"event": "match_templates", "ok": False, "error": "expand_failed"})
+        return 0
+
+    results: list[dict] = []
+    excluded: list[dict] = []
+    truncated = False
+    entries = [("shipped", args.shipped)] + [("user", c) for c in (args.candidate or [])]
+
+    try:
+        img = Image.open(pages[0])
+        img.load()
+    except (OSError, ValueError):
+        _progress({"event": "match_templates", "ok": False, "error": "input_unreadable"})
+        return 0
+
+    try:
+        with img:
+            input_size = [img.width, img.height]
+            # M-3（2026-09-02 マリン指摘）: 予算の起点を画像の読み込み完了後
+            # （候補ループ直前）に移す——展開（PDF ラスタライズ）にかかる時間は
+            # 候補照合そのものではないため、予算から除く。elapsed_ms は
+            # コマンド全体、budget_elapsed_ms は候補ループだけを別に返す
+            budget_t0 = _time.perf_counter()
+            for kind, raw_path in entries:
+                if (_time.perf_counter() - budget_t0) > _MATCH_TEMPLATES_TIME_BUDGET_S:
+                    # 打ち切りはテンプレート単位（08 §3.3.3）——check_page の
+                    # 途中では止めない（面の途中で止めると fold が誤った
+                    # verdict を返す）。次の1件を「始める前」にだけ見る
+                    truncated = True
+                    excluded.append({"name": Path(raw_path).stem, "reason": "limit"})
+                    continue
+
+                p = Path(raw_path)
+                name = p.stem
+                try:
+                    st = p.stat()
+                except OSError as e:
+                    # M-4（マリン指摘）: 語彙を Rust 側と統一（not_found）
+                    excluded.append({"name": name, "reason": "not_found"})
+                    log.warn("match_template_excluded", error_code=type(e).__name__)
+                    continue
+                if st.st_size > _MATCH_TEMPLATES_SIZE_LIMIT:
+                    excluded.append({"name": name, "reason": "size"})
+                    log.warn("match_template_excluded", error_code="TooLarge")
+                    continue
+                try:
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                except Exception as e:  # noqa: BLE001 — 壊れた JSON は候補から外すだけ（FR-F28）
+                    # M-4: 語彙を Rust 側と統一（invalid_json → parse）
+                    excluded.append({"name": name, "reason": "parse"})
+                    log.warn("match_template_excluded", error_code=type(e).__name__)
+                    continue
+                # ここから先はパースできた JSON があるので template_hash で
+                # 識別できる（名前は出さない）
+                tpl_hash = _tpl_hash(raw)
+                try:
+                    template = load_template(p)
+                    validate_v1(template)
+                except TemplateError as e:
+                    excluded.append({"name": name, "reason": "schema"})
+                    log.warn("match_template_excluded", template_hash=tpl_hash,
+                             error_code=type(e).__name__)
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    # M-7（マリン指摘）: TemplateError 以外（想定外）は
+                    # error+トレースを残す（row_build_failed と同型。
+                    # error_trace は format_tb のみ・例外メッセージ本文は
+                    # 値を含みうるため渡さない）
+                    import traceback
+                    excluded.append({"name": name, "reason": "check_failed"})
+                    log.error("match_template_failed", template_hash=tpl_hash,
+                             error_code=type(e).__name__)
+                    log.error_trace(type(e).__name__,
+                                    "".join(traceback.format_tb(e.__traceback__)))
+                    continue
+
+                # M-7: check_page 自体も候補ごとに try で包む——ここで例外が
+                # 起きても、既にできている results／excluded を捨てず次の
+                # 候補へ進む
+                try:
+                    pv = format_check.check_page(img, template)
+                except Exception as e:  # noqa: BLE001
+                    import traceback
+                    excluded.append({"name": name, "reason": "check_failed"})
+                    log.error("match_template_failed", template_hash=tpl_hash,
+                             error_code=type(e).__name__)
+                    log.error_trace(type(e).__name__,
+                                    "".join(traceback.format_tb(e.__traceback__)))
+                    continue
+
+                # M-5（マリン指摘）: fields は単発欄数のみ（table_id が付いた
+                # 表由来のセルを含まない・Rust の一覧（faces[].fields の要素数）
+                # と揃える）。物理セル数（len(template.cells)）は返さない
+                fields = sum(1 for c in template.cells if c.table_id is None)
+                tables = len({c.table_id for c in template.cells if c.table_id is not None})
+                updated_at = datetime.fromtimestamp(
+                    st.st_mtime).astimezone().isoformat(timespec="seconds")
+                # LOW（マリン提案）: 成功時のログを1行残す（診断用・名前は出さない）
+                log.info("template_matched", template_hash=tpl_hash,
+                         verdict=pv.verdict, score=pv.score)
+                results.append({
+                    "kind": kind, "name": name, "template_id": template.template_id,
+                    "verdict": pv.verdict, "reason": pv.reason, "score": pv.score,
+                    "detected": pv.detected, "expected": pv.expected,
+                    "fields": fields, "tables": tables,
+                    "updated_at": updated_at,
+                })
+            budget_elapsed_ms = int((_time.perf_counter() - budget_t0) * 1000)
+    except Exception as e:  # noqa: BLE001 — ループ外枠の想定外failure（internal）
+        import traceback
+        log.error("match_templates_failed", error_code=type(e).__name__)
+        log.error_trace(type(e).__name__, "".join(traceback.format_tb(e.__traceback__)))
+        _progress({"event": "match_templates", "ok": False, "error": "internal"})
+        return 0
+
+    elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+    log.info("match_templates_done", count=len(results), failed=len(excluded))
+    _progress({"event": "match_templates", "ok": True,
+               "input_size": input_size,
+               "results": results, "excluded": excluded,
+               "truncated": truncated, "elapsed_ms": elapsed_ms,
+               "budget_elapsed_ms": budget_elapsed_ms})
+    return 0
+
+
 def cmd_debug_images(args) -> int:
     """読み取りの可視化画像を出力する（開発者モード・API 送信なし）。
 
@@ -406,8 +599,7 @@ def cmd_debug_images(args) -> int:
     from .pipeline import check_reusable
     from .store import Store
     from .template import load_template
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)
+    cfg = _load_config_and_init_log(args.config)
     wd = Path(cfg.workdir)
     out_dir = Path(args.out) if args.out else wd / "debug"
     # --out の同期フォルダ検査（#59 H-5）。既定（workdir/debug）は従来どおり
@@ -473,7 +665,7 @@ def cmd_debug_images(args) -> int:
 def cmd_detect_grid(args) -> int:
     """枠候補の生成（設計 §6.9）。テンプレート編集画面が呼ぶ・GUI なしでも検証可。"""
     from .grid import detect_ruled, make_uniform
-    log.init(load_config(getattr(args, "config", None)).log_dir)  # M-9
+    cfg = _load_config_and_init_log(getattr(args, "config", None))  # M-9
     region = tuple(int(v) for v in args.region.split(","))
     if args.mode == "uniform":
         fit = make_uniform(region, args.rows, args.cols, dpi=args.dpi)   # 画像を読まない
@@ -548,8 +740,7 @@ def _output_timestamps(targets: list[Path]) -> list[str]:
 
 
 def cmd_purge(args) -> int:
-    cfg = load_config(args.config)
-    log.init(cfg.log_dir)  # 監査ログの欠落を防ぐ（M-9）
+    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     if not args.yes:
         print("中間データ削除には --yes が必要（要件 §6.3: 削除は明示操作のみ）",
               file=sys.stderr)
@@ -643,6 +834,16 @@ def main(argv: list[str] | None = None) -> int:
                    help="除外領域を白塗りしない下地を返す（テンプレート編集画面が"
                         "除外枠を調整する用途専用・#59 H-8）。run には無い")
     p.set_defaults(fn=cmd_expand_page)
+
+    p = sub.add_parser("match-templates",
+                       help="入力1枚を出荷＋候補テンプレートへ照合する（編集画面用・issue #72）")
+    p.add_argument("--input", required=True)
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--shipped", required=True, help="出荷テンプレートの絶対パス")
+    p.add_argument("--candidate", action="append",
+                   help="利用者テンプレートの絶対パス（反復指定可）。列挙は呼び出し側"
+                        "（Rust）の責務——ここは渡されたパスをそのまま読む")
+    p.set_defaults(fn=cmd_match_templates)
 
     p = sub.add_parser("debug-images",
                        help="読み取りの可視化画像を出力（開発者モード・API送信なし）")

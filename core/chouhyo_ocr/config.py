@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .paths import project_root
@@ -38,6 +38,20 @@ class Config:
     # （設計 §8.5）。api_monthly_cap と同じ扱いで GUI 設定画面には出さず、
     # 設定6項目（要件 §5.8）にも数えない
     unclear_char_level: bool = False
+    # issue #72 (t)・FR-F29・08 §3.5.1。実行画面・編集画面が最後に使った
+    # テンプレートの区分＋表示名（絶対パスは保存しない）。値は "shipped"
+    # （出荷テンプレート）または "user:<表示名>"（利用者テンプレート）の
+    # いずれかのみ——**_validate はこのキーだけ例外を投げない特例**
+    # （下記 _validate 参照・AC-F60）
+    last_template: str = "shipped"
+    # issue #72 (t)・M-1（2026-09-02 マリン指摘）。last_template を
+    # フォールバックしたときの理由コード（空文字列 = フォールバックなし）。
+    # 本番の呼び出し順（load_config → log.init）では、_validate の時点で
+    # まだ logging_safe が初期化されておらず直接 warn しても消えるため、
+    # ここに理由だけ積んでおき、呼び出し側（cli._load_config_and_init_log）
+    # が log.init の直後に読んで warn する。**config.json には永続化しない**
+    # （save_config が除く・下記参照）——設定ではなく1回限りの診断情報
+    last_template_fallback_reason: str = ""
 
 
 def config_path() -> Path:
@@ -65,6 +79,28 @@ def _validate(cfg: Config) -> Config:
     if not isinstance(cfg.unclear_char_level, bool):
         raise ConfigError(
             f"unclear_char_level は true/false にする（現在: {cfg.unclear_char_level!r}）")
+    # issue #72 (t)・FR-F29・AC-F60: last_template だけは ConfigError を
+    # 投げない。config.json は手編集や別プロセス（GUI）からも書けるため、
+    # 他のキーと同じく例外にすると「last_template の1行が壊れているだけで
+    # run／verify／render／remap すべてが起動不能」になる——FR-F29 が明記する
+    # 「設定1行で起動不能にしない」方針（08 §3.10 不変条件6）。形式・型が
+    # 不正なら黙って "shipped"（出荷テンプレート）へ倒し、名前を出さずに
+    # 警告だけ残す
+    lt = cfg.last_template
+    lt_valid = isinstance(lt, str) and (
+        lt == "shipped" or (lt.startswith("user:") and len(lt) > len("user:")))
+    if lt_valid:
+        # last_template_fallback_reason は「今回の読み込みで実際に
+        # フォールバックしたか」を示す一時情報——config.json を手編集して
+        # この値を紛れ込ませても（本来 save_config は書かない）、正規化
+        # して常に事実と一致させる
+        if cfg.last_template_fallback_reason:
+            cfg = replace(cfg, last_template_fallback_reason="")
+    else:
+        # M-1: ここでは log.warn しない（本番順序では未初期化で消える）。
+        # 理由コードだけ積んで呼び出し側に委ねる
+        cfg = replace(cfg, last_template="shipped",
+                      last_template_fallback_reason="invalid_format")
     return cfg
 
 
@@ -81,4 +117,8 @@ def load_config(path: str | Path | None = None) -> Config:
 
 def save_config(cfg: Config, path: str | Path | None = None) -> None:
     p = Path(path) if path else config_path()
-    p.write_text(json.dumps(asdict(cfg), ensure_ascii=False, indent=2), encoding="utf-8")
+    data = asdict(cfg)
+    # last_template_fallback_reason は1回限りの診断情報であって設定では
+    # ない（M-1）。config.json に書くと利用者設定と混ざって見えるため除く
+    data.pop("last_template_fallback_reason", None)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

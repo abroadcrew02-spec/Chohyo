@@ -523,6 +523,50 @@ def test_wrong_type_rejected(tmp_path):
         load_config(p2)
 
 
+# ---------- issue #72 (t)・FR-F29・AC-F60: last_template だけ例外を投げない ----------
+
+def test_last_template_default_is_shipped(tmp_path):
+    p = _write_cfg(tmp_path, {})
+    assert load_config(p).last_template == "shipped"
+
+
+def test_last_template_accepts_user_prefixed_name(tmp_path):
+    p = _write_cfg(tmp_path, {"last_template": "user:帳票B"})
+    assert load_config(p).last_template == "user:帳票B"
+
+
+def test_last_template_invalid_format_falls_back_without_raising(tmp_path):
+    """他のキーと違い ConfigError を投げない——形式不正は黙って "shipped" へ
+    倒す（08 §3.10 不変条件6・AC-F60: 設定1行で起動不能にしない）。
+    """
+    for bad in ("bogus", "user:", "shipped:extra", "", 123, None, ["shipped"]):
+        p = _write_cfg(tmp_path, {"last_template": bad})
+        cfg = load_config(p)  # 例外を投げないこと自体が検証対象
+        assert cfg.last_template == "shipped"
+
+
+def test_last_template_fallback_logs_warning_without_name(tmp_path):
+    """フォールバック時に警告ログが残るが、テンプレート名は出さない
+    （Q-S1・FR-F50 の方針を踏襲）。値そのものに顧客名を想起させる文字列が
+    入っていても、ログにはイベント名以外の情報を一切載せない。
+
+    M-1（2026-09-02 マリン指摘）: フォールバック警告は `load_config()` 単体
+    では出ない——`_validate()` は理由を `Config.last_template_fallback_reason`
+    に積むだけで、実際に `log.warn()` するのは `cli._load_config_and_init_log`
+    （`log.init` 直後の1回のみ）。本番の呼び出し順（load_config → log.init →
+    警告出力）と揃えるため、ここも直接 `load_config`+`log.init` を呼ぶのではなく
+    `cli._load_config_and_init_log` を通す。
+    """
+    bad_value = "田中様_申込書テンプレート"  # 形式不正（shipped/user: どちらでもない）
+    p = _write_cfg(tmp_path, {"last_template": bad_value,
+                               "log_dir": str(tmp_path / "logs")})
+    cfg = cli._load_config_and_init_log(p)
+    assert cfg.last_template == "shipped"
+    app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "config_last_template_fallback" in app_log
+    assert bad_value not in app_log
+
+
 def test_valid_config_passes(tmp_path):
     p = _write_cfg(tmp_path, {"unclear_threshold": 0.9, "send_limit": 50,
                               "workdir": "wd"})
