@@ -423,19 +423,101 @@ fn remember(picked: &PickedPaths, p: &Path) {
     remember_dropped(picked, std::slice::from_ref(&p.to_path_buf()));
 }
 
-/// コア起動コマンドを組み立てる。配布版は同梱 exe、開発版は venv の python -m。
-fn core_command(root: &PathBuf) -> Result<Command, String> {
+/// コア実体（同梱 exe / venv python）の選択結果。
+#[derive(Debug, PartialEq, Eq)]
+enum CoreProgram {
+    /// 同梱 exe（`core-dist/chouhyo-core/chouhyo-core.exe`）を直接起動する。
+    Bundled(PathBuf),
+    /// venv の python を `-m chouhyo_ocr.cli` で起動する。
+    Venv(PathBuf),
+}
+
+/// コア実体（同梱 exe / venv python）の選択規則。
+///
+/// `override_` は環境変数 `CHOUHYO_CORE` の値を想定する。前後の空白を除き、
+/// 大文字小文字を区別せず判定する：
+/// - 未指定、または空文字（トリム後）: 自動判定する。
+/// - `"bundled"`: 同梱 exe を強制する。存在しなければ Err。
+/// - `"venv"`: venv python を強制する。存在しなければ Err。
+/// - それ以外の空でない値: Err（レビュー指摘 MEDIUM-6）。未知の値を黙って
+///   自動判定へ落とすと、指定したのに効いていないことに利用者が気づけない。
+///   `CHOUHYO_CORE` は配布物を GUI から検証するための逃げ道であり、
+///   「効いていないのに効いたつもりになる」のが一番まずい。
+///
+/// 自動判定は、開発チェックアウト（`root/.git` が存在し、かつ venv python も
+/// 存在する）なら **venv を優先**する。
+///
+/// 2026-09-02 実測: 以前は同梱 exe が存在すれば `tauri dev`（開発起動）でも
+/// 無条件にそちらを使っていたため、同梱 exe が 2026-08-31 16:45 ビルドの
+/// まま更新されず、その後の core 側 17 commit（`--no-mask` フラグ追加を
+/// 含む）を知らない状態で編集画面の PDF 展開が
+/// `unrecognized arguments: --no-mask` の argparse エラーで失敗した。
+/// ソース自体にバグは無く、回帰ゲートもソースに対しては緑のまま、GUI だけが
+/// 古い配布物で動いていた。開発チェックアウトでは常にソースと同じ venv を
+/// 使うことで、この種の「配布物の陳腐化」を構造的に防ぐ。
+///
+/// `CHOUHYO_CORE=bundled` は、開発チェックアウトで配布物（同梱 exe）自体を
+/// GUI 経由であえて検証したいときの逃げ道として残す。
+fn resolve_core_program(root: &Path, override_: Option<&str>) -> Result<CoreProgram, String> {
     let bundled = root.join("core-dist").join("chouhyo-core").join("chouhyo-core.exe");
-    let mut cmd = if bundled.exists() {
-        Command::new(bundled)
-    } else {
-        let py = root.join(".venv").join("Scripts").join("python.exe");
-        if !py.exists() {
-            return Err("Python コアが見つからない（.venv 未構築・配布物欠損）".into());
+    let venv = root.join(".venv").join("Scripts").join("python.exe");
+
+    // 空文字（トリム後）は未指定と同じ扱いにする。それ以外の空でない値は
+    // bundled/venv のいずれでもなければ Err にする（自動判定へ黙って
+    // 落とさない）。
+    let normalized = override_
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+
+    match normalized.as_deref() {
+        Some("bundled") => {
+            return if bundled.exists() {
+                Ok(CoreProgram::Bundled(bundled))
+            } else {
+                Err("CHOUHYO_CORE=bundled が指定されていますが、配布物\
+                     （core-dist/chouhyo-core/chouhyo-core.exe）が見つかりません".into())
+            };
         }
-        let mut c = Command::new(py);
-        c.args(["-X", "utf8", "-m", "chouhyo_ocr.cli"]);
-        c
+        Some("venv") => {
+            return if venv.exists() {
+                Ok(CoreProgram::Venv(venv))
+            } else {
+                Err("CHOUHYO_CORE=venv が指定されていますが、.venv が見つかりません".into())
+            };
+        }
+        Some(other) => {
+            return Err(format!(
+                "CHOUHYO_CORE の値 '{other}' は不明です（bundled / venv のいずれか）"
+            ));
+        }
+        None => {}
+    }
+
+    if root.join(".git").exists() && venv.exists() {
+        return Ok(CoreProgram::Venv(venv));
+    }
+    if bundled.exists() {
+        return Ok(CoreProgram::Bundled(bundled));
+    }
+    if venv.exists() {
+        return Ok(CoreProgram::Venv(venv));
+    }
+    Err("Python コアが見つからない（.venv 未構築・配布物欠損）".into())
+}
+
+/// コア起動コマンドを組み立てる。配布版は同梱 exe、開発版は venv の python -m。
+/// 実体の選択は `resolve_core_program` に委ね、`CHOUHYO_CORE` 環境変数で
+/// `bundled`/`venv` を強制できる（詳細は同関数の doc を参照）。
+fn core_command(root: &PathBuf) -> Result<Command, String> {
+    let override_ = std::env::var("CHOUHYO_CORE").ok();
+    let program = resolve_core_program(root, override_.as_deref())?;
+    let mut cmd = match program {
+        CoreProgram::Bundled(exe) => Command::new(exe),
+        CoreProgram::Venv(py) => {
+            let mut c = Command::new(py);
+            c.args(["-X", "utf8", "-m", "chouhyo_ocr.cli"]);
+            c
+        }
     };
     let cwd = root.join("core");
     let _ = std::fs::create_dir_all(&cwd); // インストール直後は core/ が無い
@@ -1763,5 +1845,185 @@ mod tests {
         let mut slot: Option<u32> = None;
         release_slot(&mut slot, 111);
         assert_eq!(slot, None);
+    }
+
+    // --- コア実体の選択（2026-09-02 実測: 同梱 exe の陳腐化事故）---
+    use super::{resolve_core_program, CoreProgram};
+
+    /// resolve_core_program 用の実ファイル環境。.git・venv・同梱 exe を
+    /// 組み合わせて配置する。環境変数は書き換えない
+    /// （resolve_core_program が override を引数で受け取る設計にしてあるのは、
+    /// 並列テスト実行時に env var の競合を避けるため）。
+    struct CoreProgramFixture {
+        root: PathBuf,
+    }
+
+    impl CoreProgramFixture {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("chouhyo_coreprog_{name}_{}", std::process::id()));
+            // 前回異常終了した残骸が残っていると create_dir_all 後もファイルが
+            // 混在しうる（レビュー LOW 指摘）。作成前に必ず一度掃除しておく
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+
+        fn with_git(self) -> Self {
+            std::fs::create_dir_all(self.root.join(".git")).unwrap();
+            self
+        }
+
+        /// `.git` が**ファイル**のケース（worktree・submodule）。`resolve_core_program`
+        /// は `exists()` で判定しておりファイルでも真になるため現状の挙動は
+        /// 正しいが、将来 `is_dir()` 等へ書き換えられて壊れないよう固定する
+        /// （レビュー LOW 指摘）。
+        fn with_git_file(self) -> Self {
+            std::fs::write(self.root.join(".git"), "gitdir: /path/to/real/gitdir").unwrap();
+            self
+        }
+
+        fn with_venv(self) -> Self {
+            std::fs::create_dir_all(self.venv_path().parent().unwrap()).unwrap();
+            std::fs::write(self.venv_path(), "x").unwrap();
+            self
+        }
+
+        fn with_bundled(self) -> Self {
+            std::fs::create_dir_all(self.bundled_path().parent().unwrap()).unwrap();
+            std::fs::write(self.bundled_path(), "x").unwrap();
+            self
+        }
+
+        fn venv_path(&self) -> PathBuf {
+            self.root.join(".venv").join("Scripts").join("python.exe")
+        }
+
+        fn bundled_path(&self) -> PathBuf {
+            self.root.join("core-dist").join("chouhyo-core").join("chouhyo-core.exe")
+        }
+    }
+
+    impl Drop for CoreProgramFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn resolve_core_program_prefers_venv_in_dev_checkout() {
+        // .git + venv + bundled が揃っていても、開発チェックアウトでは
+        // venv を優先する（同梱 exe の陳腐化事故の再発防止）
+        let fx = CoreProgramFixture::new("dev_checkout").with_git().with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, None),
+                   Ok(CoreProgram::Venv(fx.venv_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_uses_bundled_when_not_a_dev_checkout() {
+        // venv があっても .git が無ければ「開発チェックアウト」ではない
+        // （インストール済み配布物のレイアウトを想定）
+        let fx = CoreProgramFixture::new("no_git").with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, None),
+                   Ok(CoreProgram::Bundled(fx.bundled_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_uses_bundled_only() {
+        let fx = CoreProgramFixture::new("bundled_only").with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, None),
+                   Ok(CoreProgram::Bundled(fx.bundled_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_uses_venv_only() {
+        let fx = CoreProgramFixture::new("venv_only").with_venv();
+        assert_eq!(resolve_core_program(&fx.root, None),
+                   Ok(CoreProgram::Venv(fx.venv_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_errs_when_nothing_present() {
+        let fx = CoreProgramFixture::new("nothing");
+        assert!(resolve_core_program(&fx.root, None).is_err());
+    }
+
+    #[test]
+    fn resolve_core_program_override_bundled_wins_over_dev_checkout() {
+        let fx = CoreProgramFixture::new("override_bundled")
+            .with_git().with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, Some("bundled")),
+                   Ok(CoreProgram::Bundled(fx.bundled_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_override_bundled_errs_without_bundled() {
+        let fx = CoreProgramFixture::new("override_bundled_missing")
+            .with_git().with_venv();
+        assert!(resolve_core_program(&fx.root, Some("bundled")).is_err());
+    }
+
+    #[test]
+    fn resolve_core_program_override_venv_errs_without_venv() {
+        let fx = CoreProgramFixture::new("override_venv_missing").with_bundled();
+        assert!(resolve_core_program(&fx.root, Some("venv")).is_err());
+    }
+
+    #[test]
+    fn resolve_core_program_override_venv_succeeds_when_venv_present() {
+        // override "venv" の成功パス（おかゆ提案）
+        let fx = CoreProgramFixture::new("override_venv_ok").with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, Some("venv")),
+                   Ok(CoreProgram::Venv(fx.venv_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_unknown_override_is_err() {
+        // MEDIUM-6: 未知の値を黙って自動判定へ落とさない
+        let fx = CoreProgramFixture::new("unknown_override")
+            .with_git().with_venv().with_bundled();
+        let err = resolve_core_program(&fx.root, Some("foo"))
+            .expect_err("未知の override 値は Err になるべき");
+        assert!(err.contains("foo"), "{err}");
+        assert!(err.contains("bundled") && err.contains("venv"), "{err}");
+    }
+
+    #[test]
+    fn resolve_core_program_override_is_trimmed_and_case_insensitive() {
+        // MEDIUM-6: 前後空白＋大文字混じりでも判定できる
+        let fx = CoreProgramFixture::new("override_whitespace_case")
+            .with_git().with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, Some(" BUNDLED ")),
+                   Ok(CoreProgram::Bundled(fx.bundled_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_empty_override_is_treated_as_unspecified() {
+        // MEDIUM-6: 空文字（トリム後含む）は未指定と同じ扱い＝自動判定
+        let fx = CoreProgramFixture::new("override_empty")
+            .with_git().with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, Some("")),
+                   Ok(CoreProgram::Venv(fx.venv_path())));
+        assert_eq!(resolve_core_program(&fx.root, Some("   ")),
+                   Ok(CoreProgram::Venv(fx.venv_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_treats_git_file_as_dev_checkout() {
+        // LOW: .git がファイル（worktree/submodule）でも開発チェックアウト
+        // 判定は変わらないことを固定する
+        let fx = CoreProgramFixture::new("git_file")
+            .with_git_file().with_venv().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, None),
+                   Ok(CoreProgram::Venv(fx.venv_path())));
+    }
+
+    #[test]
+    fn resolve_core_program_dev_checkout_without_venv_falls_back_to_bundled() {
+        // おかゆ提案: 開発チェックアウトだが venv 未構築の場合のフォールバック
+        let fx = CoreProgramFixture::new("dev_checkout_no_venv")
+            .with_git().with_bundled();
+        assert_eq!(resolve_core_program(&fx.root, None),
+                   Ok(CoreProgram::Bundled(fx.bundled_path())));
     }
 }

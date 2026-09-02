@@ -18,12 +18,23 @@ import subprocess
 import sys
 from pathlib import Path
 
+# python -m scripts.build_dist や PYTHONSAFEPATH=1 で実行すると、このスクリプトの
+# 置き場所（scripts/）が sys.path に自動で入らず兄弟モジュール import が壊れるため
+# 明示しておく
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dist_stamp  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "core-dist"
 APP = DIST / "chouhyo-core"
 
 
 def main() -> int:
+    # 同梱 exe が古いまま放置される事故（2026-09-02）の再発防止: ビルド開始時に
+    # 既存のスタンプを消しておく。この後失敗して return したときに古いスタンプが
+    # 残って「鮮度検査 PASS」と誤判定されるのを防ぐ
+    dist_stamp.stamp_path(APP).unlink(missing_ok=True)
+
     entry = ROOT / "workdir_build" / "core_entry.py"
     entry.parent.mkdir(exist_ok=True)
     entry.write_text(
@@ -97,6 +108,9 @@ def main() -> int:
         if r.stderr.strip():
             print(r.stderr.strip()[:800], flush=True)
         return 1
+
+    # smoke が通ったここで初めてスタンプを書く（鮮度検査の基準点）
+    dist_stamp.write_stamp(ROOT, APP)
     print(f"OK: {APP}")
     return 0
 

@@ -14,6 +14,12 @@ import sys
 import time
 from pathlib import Path
 
+# python -m scripts.run_all_tests や PYTHONSAFEPATH=1 で実行すると、このスクリプト
+# の置き場所（scripts/）が sys.path に自動で入らず兄弟モジュール import が壊れる
+# ため明示しておく
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dist_stamp  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]  # 他の scripts と同じ書き方に揃える
 # 集計行だけを拾うための形。件数で始まり "in <秒>" で終わるものに限る
 SUMMARY_LINE = re.compile(r"^\d+ (passed|failed|skipped|error)\b.*\bin \d")
@@ -68,6 +74,13 @@ def main():
     else:
         results.append(("cargo test", None, 0.0, "cargo 未導入のため SKIP"))
 
+    # 4) core-dist（同梱 exe）の鮮度検査。2026-09-02: GUI が優先起動する同梱
+    # exe が再ビルドされないまま core 側の変更を反映せず配布された事故があった
+    # （同梱物は上の pytest/cargo では一切検査されない）。判定の形が pytest/
+    # cargo と違う（ハッシュ比較で PASS/FAIL/SKIP を返す）ため、下の集計ループ
+    # （"N passed" 拾い）には乗せず個別に扱う
+    dist_status, dist_detail = dist_stamp.check_freshness(ROOT)
+
     fail = False
     lines = []
     for name, code, dt, out in results:
@@ -120,6 +133,13 @@ def main():
             print(f"----- {name} 出力（失敗のため全文） -----")
             print(out)
         lines.append(f"{name}: {status} ({counts}, {dt:.1f}s)")
+
+    if dist_status == "FAIL":
+        fail = True
+        print("----- core-dist 鮮度検査（詳細） -----")
+        print(dist_detail)
+    short_detail = dist_detail if len(dist_detail) <= 80 else dist_detail[:77] + "..."
+    lines.append(f"core-dist: {dist_status} ({short_detail})")
 
     print()
     for l in lines:
