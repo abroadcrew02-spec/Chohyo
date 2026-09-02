@@ -81,7 +81,7 @@
 | gui/tests/gui-logic.test.mjs（node 直実行） | 111 | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブほか） |
 | gui/src-tauri（cargo test） | 18 | サブコマンド白リスト（issue #7）ほか GUI 境界 |
 
-**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (421 passed, 175.6s) | gui logic: PASS (115 passed, 0.7s) | cargo test: PASS (18 passed, 22.0s) / total 198.4s`（実行日 2026-09-01・pytest-xdist `-n auto` 並列化後。421 件には dev サーバー起動下で実走した GUI スモーク5件を含む——サーバー無し環境では 416 passed / 5 skipped になる。参考: 並列化前の直列実測は 400 passed / 5 skipped / total 490.7s＝同日・汎用化第1弾マージ前）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。skip 5 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → 5 passed, 36.74s・実行日 2026-09-01）。
+**回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (451 passed, 6 skipped, 182.5s) | gui logic: PASS (145 passed, 0.3s) | cargo test: PASS (47 passed, 2.0s) / total 184.8s`（実行日 2026-09-02・レビュー7巡目（#69）対応後・pytest-xdist `-n auto`。skip 6 件は dev サーバー未起動時の GUI スモーク＝L2 で実走する。参考: 2026-09-01 の 421 passed / gui 115 / cargo 18 から、7巡目で pytest +30・gui-logic +30・cargo +29。並列化前の直列実測は 400 passed / total 490.7s）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。skip 5 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。直近の L2 実走: `npm run dev` 起動下で `pytest tests/test_gui_smoke.py -v` → 5 passed, 36.74s・実行日 2026-09-01）。
 
 ## 4. トレーサビリティ（要件 §8 合格条件 ⇔ テスト）
 
