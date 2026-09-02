@@ -11,6 +11,9 @@ import { useEffect, useRef, useState } from "react";
 type Summary = {
   pages: number; rows: number; align_failed: number;
   api_calls: number; unclear_cells: number; overflow: number;
+  // 様式不一致で失敗したページ数（枠D で pipeline.py が追加したキー。
+  // 旧コアでは undefined・issue N-1）
+  format_mismatch?: number;
   risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
   xlsx?: string; csv?: string;
 };
@@ -156,8 +159,43 @@ export function accumulationNotice(ev: Record<string, any>): string | null {
   if (typeof pages !== "number" || pages < 1000) return null;
   const seconds = ev.render_seconds;
   const suffix = typeof seconds === "number" ? `（出力の書き出しに ${seconds}秒）` : "";
+  // 削除の導線は GUI に無い（purge は ALLOWED_SUBCOMMANDS 外・要件 §6.3
+  // 「削除は明示操作のみ」）。「purge で削除してください」だけだと画面上の
+  // どこかにボタンがあるように読めるため、コマンドである旨を書く（issue N-6）
   return `中間データに ${pages} ページ蓄積しています${suffix}。`
-    + `提出済みのバッチは purge で削除してください。`;
+    + `提出済みのバッチはコマンド（purge --yes）で削除してください。`;
+}
+
+/** 実行終了時に赤帯へ出す文言（issue N-1）。exit 0 なら null。
+ *
+ *  完了サマリ（event:"summary"）を受け取っているかで意味が違う:
+ *  受け取っていれば**コアは最後まで走り切って Excel も書いた**——「中断」
+ *  ではないので「続きから処理します」も嘘になる。全ページが様式不一致
+ *  （`rows === format_mismatch`・cli.py の exit 判定と同じ母集団）なら、
+ *  同じ入力で再実行しても結果は変わらないため再実行を促さず、用紙サイズ・
+ *  向きの確認へ誘導する。
+ *
+ *  format_mismatch は枠D で追加されたキー。旧コアでは undefined になるので、
+ *  その場合は一致判定が成立せず一般の文言へ落ちる（防御的に扱う）。 */
+export function completionNotice(summary: Summary | null, exitCode: number): string | null {
+  if (exitCode === 0) return null;
+  if (!summary) {
+    // サマリ前に落ちた／中断された。処理済みページは残っており再開できる
+    return `読み取りが中断されました（終了コード ${exitCode}）。`
+      + `再度「読み取りを開始」を押すと続きから処理します。`;
+  }
+  const mismatch = summary.format_mismatch ?? 0;
+  if (summary.rows > 0 && mismatch === summary.rows) {
+    return "すべてのページが様式不一致でした。用紙サイズ・向きがテンプレートと"
+      + "合っているか確認してください（再実行しても同じ結果になります）。";
+  }
+  if (summary.rows === 0) {
+    return `出力できる行がありませんでした（処理 ${summary.pages} ページ）。`
+      + `入力のファイルと、テンプレートが対象の帳票のものかを確認してください。`;
+  }
+  return `読み取れたページがありませんでした（位置合わせ失敗 ${summary.align_failed} 件・`
+    + `様式不一致 ${mismatch} 件）。原本の向き・スキャン品質と、テンプレートが`
+    + `対象の帳票のものかを確認してください。`;
 }
 
 /** 進捗イベント → 「実行時のお知らせ」1件。該当しないイベントは null。
@@ -305,6 +343,10 @@ export default function RunScreen(
   const [failures, setFailures] = useState<Failure[]>([]);
   const interruptedRef = useRef(false);
   const refusedRef = useRef(false);
+  // 終了時の文言判定（completionNotice）で使う最新のサマリ。state の方は
+  // start() のクロージャが古い値を掴むため、interruptedRef と同じ流儀で
+  // ref にも持つ（issue N-1）
+  const summaryRef = useRef<Summary | null>(null);
   const [notice, setNotice] = useState("");
   const [notices, setNotices] = useState<string[]>([]);  // 実行時の警告（M-2・#28）
   const [refused, setRefused] = useState("");  // 業務的な拒否（H-C）
@@ -418,7 +460,10 @@ export default function RunScreen(
             setRefused(ev.error + (ev.hint ? `
 ${ev.hint}` : ""));
           }
-          if (ev.event === "summary") setSummary(ev as Summary);
+          if (ev.event === "summary") {
+            summaryRef.current = ev as Summary;
+            setSummary(ev as Summary);
+          }
         } catch { /* JSON 以外の行は無視 */ }
       }),
       listen<string>("core-err", (e) =>
@@ -453,14 +498,12 @@ ${ev.hint}` : ""));
           if (!activeRef.current) return;
           const p = e.payload.paths?.[0];
           if (!p) return;
-          // D&D はダイアログ経由（pick_folder）と違い白リストへ自動登録され
-          // ない別経路のため、run --input のパススコープ検査（issue S-MD）を
-          // 通すにはここで明示的に登録する必要がある——これを忘れると
-          // ドロップで選んだフォルダが「選択されていないフォルダです」で
-          // 拒否される（枠C申し送り）
-          invoke("remember_dropped_path", { path: p })
-            .then(() => setInputDir(p))
-            .catch(() => setError("フォルダを登録できませんでした。フォルダを選び直してください。"));
+          // 白リスト（run --input のパススコープ検査・issue S-MD）への登録は
+          // Rust 側が同じドロップを OS のイベントとして受けて行う
+          // （lib.rs の on_window_event → remember_dropped・issue S-N1）。
+          // ここから invoke で登録すると webview が任意パスを白リストへ
+          // 入れられてしまうため、画面側は表示の更新だけに徹する
+          setInputDir(p);
         }
       })).then((u) => { unlisten = u; });
     return () => unlisten?.();
@@ -482,14 +525,19 @@ ${ev.hint}` : ""));
     setLog([]); setDone(0); setTotal(0); setFailures([]); setNotices([]);
     setRefused("");
     interruptedRef.current = false; refusedRef.current = false;
+    summaryRef.current = null;
     try {
       const code = await invoke<number>("run_core", { args: ["run", "--input", inputDir] });
       if (refusedRef.current) {
         // 拒否済み: 固定文言（再実行を促す）を出さない
       } else if (interruptedRef.current) {
         setNotice("中断しました。処理済みの内容は保存されています。再開すると続きから処理します。");
-      } else if (code !== 0) {
-        setError(`読み取りが中断されました（終了コード ${code}）。再度「読み取りを開始」を押すと続きから処理します。`);
+      } else {
+        // exit!=0 でもサマリが届いていれば「中断」ではない（issue N-1）。
+        // 全ページ様式不一致のバッチは再実行しても同じ結果になるため、
+        // 「続きから処理します」ではなく原因の確認へ誘導する
+        const text = completionNotice(summaryRef.current, code);
+        if (text) setError(text);
       }
     } catch (e) {
       if (!interruptedRef.current) setError(String(e));
@@ -763,7 +811,12 @@ ${ev.hint}` : ""));
                 <div className="t">Excel の保存先の確認</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div className="pathbox">{outputDir}</div>
-                  <button className="btn" onClick={pickOutput}>変更</button>
+                  {/* 設定を読めていないときは保存先を変更させない（issue N-3）。
+                      pickOutput は write_config で config.json を書くが、
+                      読めない設定を書き換えると他のキー（送信上限・workdir 等）の
+                      扱いが不確かなまま保存操作だけが走る。設定モーダル側は
+                      枠B で同じ理由で止めてあり、このボタンだけ抜けていた */}
+                  <button className="btn" onClick={pickOutput} disabled={!!loadError}>変更</button>
                 </div>
                 {loadError && (
                   // issue Q-MF: 保存済みの設定を読み込めなかった場合、表示中の

@@ -253,6 +253,60 @@ fn check_scope_dir(abs: &Path, roots: &[PathBuf], picked: &HashSet<PathBuf>) -> 
     }
 }
 
+/// staged 保存で使う一時ファイルの接尾辞（`<path>.saving.json`）。
+const STAGED_SUFFIX: &str = ".saving.json";
+
+/// abs が picked のいずれかに対する staged 一時ファイル（`<picked>.saving.json`）か
+/// （issue S-N2）。
+///
+/// テンプレート保存は `write_template_staged`（保存先は picked 限定）が作った
+/// 一時ファイルを `verify --template <path>.saving.json` に渡して検証する
+/// （`Editor.tsx:1723-1740`）。この一時ファイル自体はダイアログを通らないので
+/// picked には無く、素の `check_scope` では拒否される。接尾辞を外した本体が
+/// picked にあることを条件にすれば、保存フローだけを通しつつ「任意の
+/// `.saving.json` を読ませる」抜け道は作らない。
+fn is_staged_of_picked(abs: &Path, picked: &HashSet<PathBuf>) -> bool {
+    let Some(s) = abs.as_os_str().to_str() else { return false };
+    let Some(base) = s.strip_suffix(STAGED_SUFFIX) else { return false };
+    !base.is_empty() && picked.contains(Path::new(base))
+}
+
+/// `--template` の値のスコープ検査（issue S-N2）。通常の JSON（picked または
+/// roots 配下）に加えて、保存フローの staged 一時ファイルだけを許す。
+fn check_template_scope(abs: &Path, roots: &[PathBuf],
+                        picked: &HashSet<PathBuf>) -> Result<(), String> {
+    if is_staged_of_picked(abs, picked) {
+        return Ok(());
+    }
+    check_scope(abs, &["json"], roots, picked)
+}
+
+/// コアへ渡す引数のうち、パスを値に取るフラグをスコープ検査する
+/// （issue S-MD・S-N2）。`run_core`（run）と `run_core_capture`
+/// （verify / detect-grid / expand-page）で同じ関数を通す。
+///
+/// 以前は run だけを検査していたため、`expand-page --input <任意の PDF>` で
+/// 任意のファイルを読ませ、その展開結果（`editor_pages` の PNG）を
+/// `read_file_b64` で吸い出す連鎖が残っていた——API 送信・課金が無くても
+/// 「webview から任意パスの中身を見る」経路としては成立する。
+fn check_arg_scopes(pairs: &[(String, String)], roots: &[PathBuf],
+                    picked: &HashSet<PathBuf>) -> Result<(), String> {
+    for (flag, value) in pairs {
+        match flag.as_str() {
+            // フォルダ・拡張子なしのファイルもありうる（run --input・#19）
+            "--input" => check_scope_dir(&normalize_path(value)?, roots, picked)?,
+            "--image" => check_scope(&normalize_path(value)?,
+                                     &["png", "jpg", "jpeg"], roots, picked)?,
+            "--template" => check_template_scope(&normalize_path(value)?, roots, picked)?,
+            // import-credentials の json_path は対象外。pick_json が
+            // remember_pick=false で呼ばれ、鍵を picked へ入れない設計
+            // （lib.rs :594 のコメント）と衝突するため
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// output_dir/workdir/log_dir に許すパスの安全性判定（issue Q-MC/S-MA）。
 /// 空・空白のみ／ドライブルート（`C:\`・`C:`・`/`）／UNC（`\\server\share`）／
 /// `..` を含むものを拒否する。判定は `Path::components()` ベースで
@@ -285,9 +339,38 @@ fn is_safe_root(p: &Path) -> bool {
     has_normal
 }
 
+/// 編集画面が読む PDF 展開結果の置き場（`core/chouhyo_ocr/cli.py:229`
+/// `out_dir = Path(cfg.workdir) / "editor_pages"` と一致させる・issue S-N4）。
+const EDITOR_PAGES_DIR: &str = "editor_pages";
+
+/// 設定の workdir から「ダイアログ抜きで読んでよいフォルダ」を導く
+/// （issue S-N4）。返すのは canonicalize 前の絶対パス。
+///
+/// workdir 全体ではなく `<workdir>/editor_pages` に絞る。GUI が workdir 配下で
+/// 読むのは `expand-page` が書く PNG だけ（`Editor.tsx:1424` の
+/// `read_file_b64`・`detect-grid --image`）なのに対し、workdir 直下には
+/// `responses/`（Vision API の生応答＝帳票の記入値そのもの）や
+/// `cred.dpapi`・中間 SQLite が同居する。拡張子制限で今は読めない物も、
+/// 将来 read_text 等の許可拡張子が増えれば射程に入る——読み取りルート自体を
+/// 必要最小の1階層へ落としておく。
+fn workdir_pages_dir(root: &Path, workdir: &str) -> Option<PathBuf> {
+    // 空文字は join で消えて `<root>/core` になり、is_safe_root の空判定を
+    // すり抜ける。設定値そのものの段階で弾く
+    if workdir.trim().is_empty() {
+        return None;
+    }
+    let p = PathBuf::from(workdir);
+    // CLI の相対パス設定は cwd=core 基準（open_folder と同じ流儀）
+    let abs = if p.is_absolute() { p } else { root.join("core").join(p) };
+    // config は手編集や別プロセス（コア側）からも書けるため、write_config の
+    // validate_config_patch だけでは守れない（issue Q-MC/S-MA）。同じ安全性
+    // 判定を canonicalize 前（is_safe_root の要件）にここでも通す。
+    if is_safe_root(&abs) { Some(abs.join(EDITOR_PAGES_DIR)) } else { None }
+}
+
 /// ダイアログを介さずに読み書きしてよいフォルダ。アプリルートに加えて、
-/// 設定の workdir も含める（編集画面の PDF 展開結果はここに出る。
-/// workdir を外部フォルダへ向けた構成でもプレビューを壊さない）。
+/// 設定の workdir 配下の `editor_pages` を含める（編集画面の PDF 展開結果は
+/// ここに出る。workdir を外部フォルダへ向けた構成でもプレビューを壊さない）。
 fn allowed_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     let root = repo_root(app)?;
     let mut roots = vec![root.canonicalize().unwrap_or_else(|_| root.clone())];
@@ -295,18 +378,19 @@ fn allowed_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
         .ok()
         .and_then(|c| c.get("workdir").and_then(|v| v.as_str()).map(str::to_string))
         .unwrap_or_else(|| "workdir".to_string());
-    let p = PathBuf::from(&workdir);
-    // CLI の相対パス設定は cwd=core 基準（open_folder と同じ流儀）
-    let abs = if p.is_absolute() { p } else { root.join("core").join(p) };
-    // config は手編集や別プロセス（コア側）からも書けるため、write_config の
-    // validate_config_patch だけでは守れない（issue Q-MC/S-MA）。同じ安全性
-    // 判定を canonicalize 前（is_safe_root の要件）にここでも通し、不正な
-    // workdir はルートへ足さない——allowed_roots 全体を Err にはせず、
+    // 不正な workdir はルートへ足さない——allowed_roots 全体を Err にはせず、
     // repo_root だけの scope へ縮退させる（fail-safe。他コマンドを巻き込んで
     // 落とさない）
-    if is_safe_root(&abs) {
-        if let Ok(c) = abs.canonicalize() {
-            if !roots.contains(&c) {
+    if let Some(pages) = workdir_pages_dir(&root, &workdir) {
+        if let Ok(c) = pages.canonicalize() {
+            // canonicalize の**結果にも** is_safe_root を通す（issue S-N3）。
+            // ジャンクション（`C:\app\core\toroot → C:\`）を挟むと、生パスは
+            // 「普通のサブフォルダ」として通るのに畳んだ先がドライブ直下に
+            // なりうる。生パスだけの判定では、その1本で読み取りルートが
+            // ドライブ全域へ広がる。verbatim プレフィックス（`\\?\C:\`）は
+            // Prefix + RootDir だけで Normal 成分を持たないため、
+            // components ベースの is_safe_root がそのまま false を返す。
+            if is_safe_root(&c) && !roots.contains(&c) {
                 roots.push(c);
             }
         }
@@ -314,27 +398,29 @@ fn allowed_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
-/// ダイアログで選ばれたパスを白リストへ登録する。
-fn remember(picked: &State<'_, PickedPaths>, p: &Path) {
-    if let Ok(abs) = normalize_path(&p.to_string_lossy()) {
-        picked.0.lock().unwrap().insert(abs);
+/// ドラッグ＆ドロップで OS から渡されたパスを白リストへ登録する（issue S-N1）。
+///
+/// 登録元は **webview が invoke で渡してくる文字列ではなく**、Tauri の
+/// `WindowEvent::DragDrop`（`run()` の `on_window_event`）が持つ `PathBuf` に
+/// 限る。以前は `remember_dropped_path` コマンドとして webview から任意の
+/// パスを登録できたため、レンダラを掌握されると「ダイアログで選ばれた物だけ
+/// 読み書きを許す」という `PickedPaths` の前提そのものを webview 側から
+/// 無効化できた（白リストの自己申告化）。
+///
+/// 正規化に失敗したパス（`..` を含む等）は登録せず読み飛ばす——ドロップは
+/// 複数パスを一度に運ぶので、1つの不正で残りを巻き添えにしない。
+fn remember_dropped(picked: &PickedPaths, paths: &[PathBuf]) {
+    let mut set = picked.0.lock().unwrap();
+    for p in paths {
+        if let Ok(abs) = normalize_path(&p.to_string_lossy()) {
+            set.insert(abs);
+        }
     }
 }
 
-/// ドラッグ＆ドロップで得たパスを白リストへ登録する（issue S-MD）。
-///
-/// `pick_folder`（ダイアログ経由）は呼び出し側で自動的に `remember` するが、
-/// D&D は webview の `onDragDropEvent` が直接パスを渡してくる別経路のため、
-/// 明示的な登録コマンドが要る。`run --input` のパススコープ検査
-/// （`run_core` 内・issue S-MD）を通すには、この登録を経ていないと
-/// 「選択されていないフォルダです」で拒否される——これは想定内の挙動で、
-/// フロント側（RunScreen.tsx の `onDragDropEvent` ハンドラ）がドロップ時に
-/// このコマンドを呼ぶ配線とセットで完成する。
-#[tauri::command]
-fn remember_dropped_path(picked: State<'_, PickedPaths>, path: String) -> Result<(), String> {
-    let abs = normalize_path(&path)?;
-    picked.0.lock().unwrap().insert(abs);
-    Ok(())
+/// ダイアログで選ばれたパスを白リストへ登録する。
+fn remember(picked: &PickedPaths, p: &Path) {
+    remember_dropped(picked, std::slice::from_ref(&p.to_path_buf()));
 }
 
 /// コア起動コマンドを組み立てる。配布版は同梱 exe、開発版は venv の python -m。
@@ -438,26 +524,13 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
                   args: Vec<String>) -> Result<i32, String> {
     let pairs = check_args_v2(&args)?;
     let root = repo_root(&app)?;
-    // run --input/--template だけ、値をパススコープ検査する（issue S-MD）。
-    // render/remap/verify/detect-grid/expand-page は run_core_capture 経由で
-    // check_args_v2 のフラグ表検査のみを受ける（#52 M-7）——API 送信・課金が
-    // 起きるのは run だけなので、値のスコープ検査もそこに絞る。
-    if args.first().map(String::as_str) == Some("run") {
+    // 値のパススコープ検査（issue S-MD・S-N2）。run_core_capture 側と同じ
+    // check_arg_scopes を通す。ロックは await をまたがせない（Send 制約）ため
+    // このブロック内で閉じる
+    {
         let roots = allowed_roots(&app)?;
         let picked_set = picked.0.lock().unwrap();
-        for (flag, value) in &pairs {
-            match flag.as_str() {
-                "--input" => {
-                    let abs = normalize_path(value)?;
-                    check_scope_dir(&abs, &roots, &picked_set)?;
-                }
-                "--template" => {
-                    let abs = normalize_path(value)?;
-                    check_scope(&abs, &["json"], &roots, &picked_set)?;
-                }
-                _ => {}
-            }
-        }
+        check_arg_scopes(&pairs, &roots, &picked_set)?;
     }
     let args = inject_default_template(args, &root);
     let mut cmd = core_command(&root)?;
@@ -512,9 +585,17 @@ fn kill_core(state: State<'_, CoreProc>) -> Result<(), String> {
 
 /// コアを起動し stdout を丸ごと返す（編集画面の detect-grid / verify 用）。
 #[tauri::command]
-async fn run_core_capture(app: AppHandle, args: Vec<String>) -> Result<String, String> {
-    check_args_v2(&args)?;
+async fn run_core_capture(app: AppHandle, picked: State<'_, PickedPaths>,
+                          args: Vec<String>) -> Result<String, String> {
+    let pairs = check_args_v2(&args)?;
     let root = repo_root(&app)?;
+    // run_core と同じ値検査を通す（issue S-N2）。フラグ表検査だけだと
+    // `expand-page --input <任意.pdf>` で任意ファイルを展開させられる
+    {
+        let roots = allowed_roots(&app)?;
+        let picked_set = picked.0.lock().unwrap();
+        check_arg_scopes(&pairs, &roots, &picked_set)?;
+    }
     let args = inject_default_template(args, &root);
     let mut cmd = core_command(&root)?;
     cmd.args(&args);
@@ -677,25 +758,51 @@ fn validate_config_patch(patch: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
-/// 設定の部分更新（要件 §5.7: GUI で選んだ値を保存し次回既定値に）。他キーは保持する。
-#[tauri::command]
-fn write_config(app: AppHandle, patch: serde_json::Value) -> Result<(), String> {
-    validate_config_patch(&patch)?;
-    let p = config_file(&app)?;
-    let mut cur = if p.exists() {
-        serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&p).map_err(|e| e.to_string())?,
-        )
-        .unwrap_or(serde_json::json!({}))
-    } else {
-        serde_json::json!({})
+/// 既存の config.json（未作成なら None）と patch から、書き出す内容を作る
+/// （issue N-3）。
+///
+/// 壊れた config.json を空として作り直さない。以前はパース失敗を
+/// `unwrap_or(json!({}))` で握り潰していたため、既存の workdir・send_limit・
+/// api_monthly_cap 等が patch 以外まとめて消え、しかも「保存しました」と
+/// 表示された——出力先を選び直しただけの操作で送信上限が失われるのは、
+/// 画面からは気づけないうえ復元もできない。読めないときは書かずに理由を
+/// 返し、手で直す（または削除する）判断を利用者へ渡す。
+///
+/// トップレベルがオブジェクトでない JSON（配列・数値等）も同じ扱いにする。
+/// 素通しすると patch がどこにも入らないまま「保存しました」になる。
+fn merge_config(existing: Option<&str>, patch: &serde_json::Value)
+                -> Result<serde_json::Value, String> {
+    validate_config_patch(patch)?;
+    let broken = |detail: String| {
+        format!("設定ファイル（config.json）を読めないため保存できません（{detail}）。\
+                 内容を直すか、ファイルを削除してからやり直してください")
     };
-    if let (Some(obj), Some(add)) = (cur.as_object_mut(), patch.as_object()) {
+    let mut cur = match existing {
+        Some(text) => serde_json::from_str::<serde_json::Value>(text)
+            .map_err(|e| broken(e.to_string()))?,
+        None => serde_json::json!({}),
+    };
+    let obj = cur.as_object_mut()
+        .ok_or_else(|| broken("オブジェクトではありません".to_string()))?;
+    if let Some(add) = patch.as_object() {
         for (k, v) in add {
             obj.insert(k.clone(), v.clone());
         }
     }
-    std::fs::write(&p, serde_json::to_string_pretty(&cur).map_err(|e| e.to_string())?)
+    Ok(cur)
+}
+
+/// 設定の部分更新（要件 §5.7: GUI で選んだ値を保存し次回既定値に）。他キーは保持する。
+#[tauri::command]
+fn write_config(app: AppHandle, patch: serde_json::Value) -> Result<(), String> {
+    let p = config_file(&app)?;
+    let existing = if p.exists() {
+        Some(std::fs::read_to_string(&p).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let merged = merge_config(existing.as_deref(), &patch)?;
+    std::fs::write(&p, serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())
 }
 
@@ -773,7 +880,7 @@ fn write_text(picked: State<'_, PickedPaths>,
 /// 拡張子の形を検査しないため、".json" で終わってさえいれば読める。
 fn staged_path(target: &Path) -> PathBuf {
     let mut s = target.as_os_str().to_os_string();
-    s.push(".saving.json");
+    s.push(STAGED_SUFFIX);
     PathBuf::from(s)
 }
 
@@ -911,6 +1018,18 @@ pub fn run() {
     tauri::Builder::default()
         .manage(CoreProc(Mutex::new(None)))
         .manage(PickedPaths(Mutex::new(HashSet::new())))
+        // ドラッグ＆ドロップのパスは OS のイベントから直接受け取る（issue S-N1）。
+        // webview 側（RunScreen.tsx の onDragDropEvent）は同じドロップを受けて
+        // 入力欄の表示を更新するだけで、白リストへの登録には関与しない——
+        // webview から任意パスを登録できる経路（旧 remember_dropped_path）は
+        // PickedPaths の前提そのものを崩すため削除した。
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(
+                tauri::DragDropEvent::Drop { paths, .. }) = event
+            {
+                remember_dropped(&window.state::<PickedPaths>(), paths);
+            }
+        })
         // opener プラグインは撤去した（issue #49）。gui/src からの呼び出しは
         // 0 件で、IPC 経由で OS のブラウザ・エクスプローラを起動できる分
         // CSP の connect-src では止められない外部送出経路になっていた
@@ -921,7 +1040,6 @@ pub fn run() {
             pick_folder,
             pick_image,
             pick_json,
-            remember_dropped_path,
             read_default_template,
             open_folder,
             read_config,
@@ -1023,7 +1141,7 @@ mod tests {
     // --- パススコープ（issue #49・S-MD）---
     use super::{check_scope, check_scope_dir, normalize_path};
     use std::collections::HashSet;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn normalize_rejects_parent_traversal() {
@@ -1084,6 +1202,39 @@ mod tests {
         picked.insert(outside.clone());
         assert!(check_scope_dir(&outside, &roots, &picked).is_ok(),
                 "ダイアログ or D&D 登録で選ばれたフォルダは通る");
+    }
+
+    // --- D&D パスの登録（issue S-N1）---
+    use super::{remember_dropped, PickedPaths};
+    use std::sync::Mutex;
+
+    #[test]
+    fn remember_dropped_registers_os_paths_and_skips_unresolvable_ones() {
+        // OS のドロップイベントが渡す PathBuf を白リストへ入れる。webview から
+        // 任意パスを登録する経路（旧 remember_dropped_path）は削除済み
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_drop_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("scan.pdf");
+        std::fs::write(&f, "x").unwrap();
+
+        let picked = PickedPaths(Mutex::new(HashSet::new()));
+        // 2件目は `..` を含み normalize_path が拒否する。1件の不正で
+        // 残りを巻き添えにしない（ドロップは複数パスを一度に運ぶ）
+        remember_dropped(&picked, &[f.clone(), dir.join("..").join("etc.json")]);
+
+        let set = picked.0.lock().unwrap();
+        assert_eq!(set.len(), 1, "不正なパスは登録しない");
+        assert!(set.contains(&normalize_path(&f.to_string_lossy()).unwrap()),
+                "ドロップされたファイルは正規化して登録される");
+        drop(set);
+
+        // フォルダのドロップ（run --input の主用途）も同じ経路で通る
+        remember_dropped(&picked, &[dir.clone()]);
+        assert!(picked.0.lock().unwrap()
+                .contains(&normalize_path(&dir.to_string_lossy()).unwrap()));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- テンプレート既定値の注入（issue #58）---
@@ -1352,6 +1503,174 @@ mod tests {
         assert!(is_safe_root(&PathBuf::from("D:\\ChouhyoWorkdir")));
     }
 
+    #[test]
+    fn is_safe_root_rejects_canonicalized_drive_root(){
+        // issue S-N3: allowed_roots は canonicalize の結果にもこの判定を通す。
+        // ジャンクション（`C:\app\core\toroot → C:\`）を挟むと生パスは通るのに
+        // 畳んだ先がドライブ直下になりうるため、verbatim 形（`\\?\C:\`）を
+        // components ベースで拒否できることを固定する
+        assert!(!is_safe_root(&PathBuf::from("\\\\?\\C:\\")),
+                "canonicalize 後のドライブ直下（verbatim）は拒否されるべき");
+        assert!(!is_safe_root(&PathBuf::from("\\\\?\\UNC\\server\\share")),
+                "verbatim UNC も拒否されるべき");
+        // 正常な canonicalize 結果（Normal 成分あり）は通す
+        assert!(is_safe_root(&PathBuf::from("\\\\?\\C:\\app\\workdir\\editor_pages")));
+    }
+
+    // --- 読み取りルートの限定（issue S-N4）---
+    use super::workdir_pages_dir;
+
+    #[test]
+    fn workdir_pages_dir_narrows_root_to_editor_pages() {
+        let root = PathBuf::from("C:\\app");
+        // 相対 workdir は cwd=core 基準（CLI の流儀）
+        assert_eq!(workdir_pages_dir(&root, "workdir"),
+                   Some(PathBuf::from("C:\\app\\core\\workdir\\editor_pages")));
+        // 絶対 workdir はそのまま
+        assert_eq!(workdir_pages_dir(&root, "D:\\ChouhyoWorkdir"),
+                   Some(PathBuf::from("D:\\ChouhyoWorkdir\\editor_pages")));
+        // workdir 直下（responses/ や cred.dpapi が同居する層）は読み取り
+        // ルートに含めない
+        let pages = workdir_pages_dir(&root, "workdir").unwrap();
+        assert!(!pages.starts_with("C:\\app\\core\\workdir\\responses"));
+        assert_ne!(pages, PathBuf::from("C:\\app\\core\\workdir"));
+    }
+
+    #[test]
+    fn workdir_pages_dir_rejects_unsafe_workdir() {
+        let root = PathBuf::from("C:\\app");
+        assert_eq!(workdir_pages_dir(&root, "C:\\"), None);
+        assert_eq!(workdir_pages_dir(&root, "\\\\server\\share"), None);
+        assert_eq!(workdir_pages_dir(&root, "..\\escape"), None);
+        assert_eq!(workdir_pages_dir(&root, ""), None);
+    }
+
+    // --- 引数の値スコープ検査（issue S-N2）---
+    use super::{check_arg_scopes, is_staged_of_picked};
+
+    /// check_arg_scopes 用の実ファイル環境。normalize_path は実在する親を
+    /// 要求するため、架空パスでは「解決できない」で常に Err になり検査の
+    /// 是非を確かめられない
+    struct ScopeFixture {
+        base: PathBuf,
+        root: PathBuf,
+        pages: PathBuf,
+        outside: PathBuf,
+    }
+
+    impl ScopeFixture {
+        fn new(name: &str) -> Self {
+            let base = std::env::temp_dir()
+                .join(format!("chouhyo_argscope_{name}_{}", std::process::id()));
+            let root = base.join("app");
+            let pages = base.join("wd").join("editor_pages");
+            let outside = base.join("outside");
+            for d in [&root, &pages, &outside] {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            std::fs::write(pages.join("page1.png"), "x").unwrap();
+            std::fs::write(outside.join("scan.pdf"), "x").unwrap();
+            std::fs::write(outside.join("t.json"), "{}").unwrap();
+            std::fs::write(outside.join("other.json"), "{}").unwrap();
+            Self { base, root, pages, outside }
+        }
+
+        fn roots(&self) -> Vec<PathBuf> {
+            vec![self.root.canonicalize().unwrap(), self.pages.canonicalize().unwrap()]
+        }
+
+        fn abs(&self, p: &Path) -> PathBuf {
+            normalize_path(&p.to_string_lossy()).unwrap()
+        }
+    }
+
+    impl Drop for ScopeFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.base);
+        }
+    }
+
+    fn pairs(items: &[(&str, &Path)]) -> Vec<(String, String)> {
+        items.iter()
+            .map(|(f, p)| (f.to_string(), p.to_string_lossy().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn arg_scopes_reject_expand_page_input_outside_picked_and_roots() {
+        // issue S-N2: `expand-page --input <任意.pdf>` → editor_pages に PNG が
+        // 出て read_file_b64 で読める連鎖を、入力の時点で止める
+        let fx = ScopeFixture::new("input");
+        let roots = fx.roots();
+        let mut picked = HashSet::new();
+        let pdf = fx.outside.join("scan.pdf");
+
+        assert!(check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked).is_err(),
+                "選ばれていないファイルを展開させてはいけない");
+        picked.insert(fx.abs(&pdf));
+        assert!(check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked).is_ok(),
+                "pick_image で選ばれた PDF は通る（編集画面の正当な用途）");
+    }
+
+    #[test]
+    fn arg_scopes_allow_detect_grid_image_only_from_editor_pages_or_picked() {
+        let fx = ScopeFixture::new("image");
+        let roots = fx.roots();
+        let mut picked = HashSet::new();
+        let page = fx.pages.join("page1.png");
+        let outside_png = fx.outside.join("elsewhere.png");
+
+        assert!(check_arg_scopes(&pairs(&[("--image", &page)]), &roots, &picked).is_ok(),
+                "expand-page が書いた editor_pages の PNG は通る");
+        assert!(check_arg_scopes(&pairs(&[("--image", &outside_png)]), &roots, &picked).is_err());
+        picked.insert(fx.abs(&outside_png));
+        assert!(check_arg_scopes(&pairs(&[("--image", &outside_png)]), &roots, &picked).is_ok());
+        // 拡張子違いは picked でも拒否（画像コマンドで JSON を読ませない）
+        let json = fx.outside.join("t.json");
+        picked.insert(fx.abs(&json));
+        assert!(check_arg_scopes(&pairs(&[("--image", &json)]), &roots, &picked).is_err());
+    }
+
+    #[test]
+    fn arg_scopes_allow_staged_template_of_a_picked_path() {
+        // テンプレート保存フロー: write_template_staged（保存先は picked 限定）が
+        // 作った `<picked>.saving.json` を verify へ渡す（Editor.tsx:1723-1740）。
+        // この一時ファイルはダイアログを通らないので picked には無い
+        let fx = ScopeFixture::new("staged");
+        let roots = fx.roots();
+        let mut picked = HashSet::new();
+        let target = fx.outside.join("t.json");
+        picked.insert(fx.abs(&target));
+        let staged = super::staged_path(&fx.abs(&target));
+        std::fs::write(&staged, "{}").unwrap();
+
+        assert!(check_arg_scopes(&pairs(&[("--template", &staged)]), &roots, &picked).is_ok(),
+                "保存フローの一時ファイルは拒否されてはいけない");
+        assert!(check_arg_scopes(&pairs(&[("--template", &target)]), &roots, &picked).is_ok(),
+                "picked 本体もこれまでどおり通る");
+
+        // 本体が picked に無い `.saving.json` は通さない（任意ファイルを
+        // `.saving.json` という名前で読ませる抜け道を作らない）
+        let orphan = super::staged_path(&fx.abs(&fx.outside.join("other.json")));
+        std::fs::write(&orphan, "{}").unwrap();
+        assert!(check_arg_scopes(&pairs(&[("--template", &orphan)]), &roots, &picked).is_err());
+        assert!(!is_staged_of_picked(&fx.abs(&orphan), &picked));
+    }
+
+    #[test]
+    fn arg_scopes_ignore_flags_without_paths() {
+        let fx = ScopeFixture::new("other");
+        let roots = fx.roots();
+        let picked = HashSet::new();
+        let flags = vec![("--region".to_string(), "1,2,3,4".to_string()),
+                         ("--mode".to_string(), "uniform".to_string()),
+                         ("--dpi".to_string(), "300".to_string()),
+                         // import-credentials の鍵は picked へ入れない設計
+                         // （pick_json remember_pick=false）なので検査対象外
+                         ("json_path".to_string(), "C:\\key.json".to_string())];
+        assert!(check_arg_scopes(&flags, &roots, &picked).is_ok());
+    }
+
     // --- write_config のパッチ検証（issue Q-MC/S-MA）---
     use super::validate_config_patch;
     use serde_json::json;
@@ -1380,6 +1699,44 @@ mod tests {
     #[test]
     fn validate_config_patch_rejects_non_string_path_value() {
         assert!(validate_config_patch(&json!({"workdir": 123})).is_err());
+    }
+
+    // --- 壊れた config.json を空扱いにしない（issue N-3）---
+    use super::merge_config;
+
+    #[test]
+    fn merge_config_keeps_untouched_keys() {
+        let existing = r#"{"workdir":"D:\\wd","send_limit":50,"api_monthly_cap":300}"#;
+        let merged = merge_config(Some(existing), &json!({"output_dir": "out"})).unwrap();
+        assert_eq!(merged["output_dir"], json!("out"));
+        assert_eq!(merged["workdir"], json!("D:\\wd"), "patch 外のキーは保持する");
+        assert_eq!(merged["send_limit"], json!(50));
+        assert_eq!(merged["api_monthly_cap"], json!(300));
+    }
+
+    #[test]
+    fn merge_config_creates_file_content_when_absent() {
+        let merged = merge_config(None, &json!({"output_dir": "out"})).unwrap();
+        assert_eq!(merged, json!({"output_dir": "out"}));
+    }
+
+    #[test]
+    fn merge_config_refuses_to_rebuild_from_broken_file() {
+        // 以前は unwrap_or(json!({})) で空から作り直し、workdir・send_limit を
+        // 黙って既定へ戻したうえで「保存しました」と表示していた
+        let err = merge_config(Some("{ broken json"), &json!({"output_dir": "out"}))
+            .expect_err("パースできない設定を空扱いにしてはいけない");
+        assert!(err.contains("読めないため保存できません"), "{err}");
+        // トップレベルがオブジェクトでない場合も同様（patch がどこにも
+        // 入らないまま成功扱いになるのを防ぐ）
+        assert!(merge_config(Some("[1,2]"), &json!({"output_dir": "out"})).is_err());
+        assert!(merge_config(Some("\"just a string\""), &json!({"output_dir": "out"})).is_err());
+    }
+
+    #[test]
+    fn merge_config_still_validates_the_patch_first() {
+        assert!(merge_config(Some("{}"), &json!({"totally_unknown_key": 1})).is_err());
+        assert!(merge_config(Some("{}"), &json!({"workdir": "C:\\"})).is_err());
     }
 
     // --- PID スロットの解放（issue Q-MB）---

@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice } from "./RunScreen.tsx";\n',
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -858,6 +858,16 @@ test("expandAlignNotice: reason=align・reason欠落（旧コア互換）は現�
   assert.ok(withReason.text.includes("PDF の 1/2 ページ目・"), withReason.text);
 });
 
+test("expandAlignNotice: reason=size は様式不一致を案内する赤帯文言（自動補正とは言わない・N-2）", () => {
+  const r = expandAlignNotice(false, "size", "");
+  assert.equal(r.isError, true, "赤帯（errMsg）に出すべき——run では様式不一致として弾かれるため");
+  assert.ok(r.text.includes("用紙サイズ") && r.text.includes("様式不一致"), r.text);
+  assert.ok(!r.text.includes("自動補正"),
+    "寸法不一致なのに『待てば自動補正される』と誤案内している: " + r.text);
+  const withPageNote = expandAlignNotice(false, "size", "PDF の 1/2 ページ目・");
+  assert.ok(withPageNote.text.includes("PDF の 1/2 ページ目・"), withPageNote.text);
+});
+
 test("expandAlignNotice: reason=image/other は中立文言で自動補正を主張しない・赤帯にもしない", () => {
   for (const reason of ["image", "other"]) {
     const r = expandAlignNotice(false, reason, "");
@@ -1624,7 +1634,9 @@ test("accumulationNotice: 1,000頁以上・render_seconds ありは件数と秒�
   const t = accumulationNotice({ total_done_pages: 1500, render_seconds: 12.3 });
   assert.ok(t.includes("1500"));
   assert.ok(t.includes("12.3"));
-  assert.ok(t.includes("purge"));
+  // issue N-6: purge は GUI から呼べない（ALLOWED_SUBCOMMANDS 外）ので、
+  // 画面のどこかにボタンがあると読める書き方をしない
+  assert.ok(t.includes("コマンド（purge --yes）"), t);
 });
 
 test("accumulationNotice: 999頁は null（閾値未満）", () => {
@@ -1648,6 +1660,45 @@ test("noticeFor: summary で accumulationNotice が counterNotice と併記さ�
     fallback_used: 1 });
   assert.ok(t.includes("採用 1件"), "counterNotice 側の内容が失われていない");
   assert.ok(t.includes("中間データに 2000 ページ蓄積しています"));
+});
+
+// ---------------------------------------------------------------- issue N-1
+// completionNotice: exit!=0 の赤帯文言。サマリを受け取っていれば「中断」では
+// ない（コアは走り切って Excel も書いている）ため、文言と導線を切り替える
+const sum = (over = {}) => ({ pages: 3, rows: 3, align_failed: 0, api_calls: 3,
+  unclear_cells: 0, overflow: 0, format_mismatch: 0, ...over });
+
+test("completionNotice: exit 0 は null（赤帯を出さない）", () => {
+  assert.equal(completionNotice(sum(), 0), null);
+  assert.equal(completionNotice(null, 0), null);
+});
+
+test("completionNotice: サマリ未受信の exit!=0 は従来どおり中断＋続きから", () => {
+  const t = completionNotice(null, 1);
+  assert.ok(t.includes("中断されました（終了コード 1）"), t);
+  assert.ok(t.includes("続きから処理します"), t);
+});
+
+test("completionNotice: 全ページ様式不一致は中断と言わず用紙サイズの確認へ誘導", () => {
+  const t = completionNotice(sum({ rows: 3, format_mismatch: 3 }), 1);
+  assert.ok(!t.includes("中断"), `「中断」を使ってはいけない: ${t}`);
+  assert.ok(!t.includes("続きから"), `再実行を促してはいけない: ${t}`);
+  assert.ok(t.includes("すべてのページが様式不一致でした"), t);
+  assert.ok(t.includes("用紙サイズ"), t);
+});
+
+test("completionNotice: 位置合わせ失敗と様式不一致が混在なら件数を内訳で出す", () => {
+  const t = completionNotice(sum({ rows: 4, align_failed: 3, format_mismatch: 1 }), 1);
+  assert.ok(!t.includes("中断"), t);
+  assert.ok(t.includes("位置合わせ失敗 3 件"), t);
+  assert.ok(t.includes("様式不一致 1 件"), t);
+});
+
+test("completionNotice: format_mismatch が無い旧コアでも中断文言へは戻らない", () => {
+  const { format_mismatch, ...old } = sum({ rows: 2, align_failed: 2 });
+  const t = completionNotice(old, 1);
+  assert.ok(!t.includes("中断"), t);
+  assert.ok(t.includes("様式不一致 0 件"), t);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
