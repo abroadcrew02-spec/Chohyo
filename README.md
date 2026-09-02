@@ -73,7 +73,7 @@ cd gui && npm install
 # コミット前チェックの配線（clone ごとに1度だけ。帳票画像・鍵の commit を止める）
 git config core.hooksPath .githooks
 
-# テスト一括実行（pytest 533件 + cargo test 106件 + GUI ロジック 207件 + core-dist 鮮度検査・2026-09-02 実測。GUI スモーク 12 件は dev サーバー起動中のみ）
+# テスト一括実行（pytest 534件 + cargo test 106件 + GUI ロジック 210件 + core-dist 鮮度検査・2026-09-02 実測。GUI スモーク 12 件は dev サーバー起動中のみ）
 .venv\Scripts\python.exe scripts\run_all_tests.py
 
 # 配布物ビルド（PyInstaller onedir → core-dist/ → NSIS インストーラ）
