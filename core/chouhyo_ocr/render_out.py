@@ -208,8 +208,12 @@ def scan_risky_prefixes(columns: list[str],
     返すのは (page_id, 列名) のみ——**値は返さない**（設計 §8.1: 記入値を
     ログ・イベントへ出さない方針を、型で守る）。値の書き換えも〓化もしない
     （要件 §5.5 転記主義）。CSV の内容はこの検出の有無で1バイトも変わらない。
+
+    抽出対象列の境界は META_COLUMNS の列数で切る（2026-09-02 #77 追補・LOW）
+    ——管理6列を決め打ちの `6` で書いていたのを、pipeline._warn_risky の
+    col_idx 算出（同じ境界を使う）と基準を揃えた。
     """
-    extract_cols = columns[6:]
+    extract_cols = columns[len(META_COLUMNS):]
     hits: list[tuple[str, str]] = []
     for r in rows:
         for name, v in zip(extract_cols, r.values):

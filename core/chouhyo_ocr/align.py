@@ -35,6 +35,10 @@ class AlignedFace:
     dx: int = 0               # 平行移動の推定・補正量（D-25）
     dy: int = 0
     shift_matched: int = 0    # 期待罫線と一致した検出線の本数（診断・較正用）
+    # 成功時の推定結果（記録用・FR-F12・08 §2.2.2）。_restore_alignment が
+    # 保存済み結果から復元する場合（#45 の再利用）は estimate_shift を
+    # 走らせないため None のまま——shift_matched は既存互換のため残す
+    estimate: "ShiftEstimate | None" = None
 
 
 # --- 平行移動推定の採否定数（D-25・※実物で較正・§4.6）---
@@ -50,7 +54,29 @@ class ShiftEstimate:
     matched: int      # 両軸合計の一致本数
     total: int        # 両軸合計の期待線本数
     ok: bool
-    reason: str       # NG のとき: few_lines / boundary / ambiguous
+    reason: str       # NG のとき: few_lines / boundary / ambiguous / edge_mismatch
+    # --- 以下は FR-F45／FR-F01 のスコア用（08 §2.2.1）。判定には一切使わない。
+    # 既存の ok/reason/dx/dy/matched/total の算出経路は1行も変えない（NFR-F08）---
+    det_h_count: int = 0      # len(det_h)（重複排除済みの検出線・水平）
+    det_v_count: int = 0      # len(det_v)
+    exp_h_uniq: int = 0       # len(set(exp_h))（重複排除した期待線・水平）
+    exp_v_uniq: int = 0       # len(set(exp_v))
+    matched_uniq: int = 0     # 重複排除した期待線のうち best shift で当たった本数
+    at_boundary_h: bool = False   # _axis_shift の by（few_lines で早期 return しても保持）
+    at_boundary_v: bool = False   # 同 bx
+
+
+@dataclass(frozen=True)
+class FaceDiag:
+    """面ごとの判定材料（08 §2.2.3）。AlignError.diag の要素。
+
+    estimate が None の面は「評価に至らなかった」（align_page が先行する面の
+    失敗で即 raise したため、この面まで到達しなかった）——黙って欠落させず
+    skipped として記録する。
+    """
+    face_idx: int
+    face_id: str
+    estimate: "ShiftEstimate | None"
 
 
 def _axis_shift(detected: list[int], expected: list[int], n: int,
@@ -113,15 +139,36 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
     dx, sx, rx, bx = _axis_shift(sorted(det_v), exp_v, n_x, runner_dist)
     matched, total = sx + sy, len(exp_h) + len(exp_v)
 
+    # FR-F45／FR-F01 の診断フィールド（08 §2.2.1）。上で確定した
+    # det_h/det_v/exp_h/exp_v/dy/dx から O(n) で導出するだけで、追加の走査・
+    # 画像アクセスはゼロ。**判定条件（need_y/need_x/by/bx/GAP_MIN/edge_mismatch）
+    # には一切使わない**——このブロックの下は元のまま1行も変えていない
+    det_h_count = len(det_h)
+    det_v_count = len(det_v)
+    exp_h_set, exp_v_set = set(exp_h), set(exp_v)
+    exp_h_uniq, exp_v_uniq = len(exp_h_set), len(exp_v_set)
+    matched_uniq = (
+        sum(1 for e in exp_h_set
+            if (e + dy) in det_h or (e + dy - 1) in det_h or (e + dy + 1) in det_h)
+        + sum(1 for e in exp_v_set
+              if (e + dx) in det_v or (e + dx - 1) in det_v or (e + dx + 1) in det_v))
+
+    def _est(ok: bool, reason: str) -> ShiftEstimate:
+        return ShiftEstimate(
+            dx, dy, matched, total, ok, reason,
+            det_h_count=det_h_count, det_v_count=det_v_count,
+            exp_h_uniq=exp_h_uniq, exp_v_uniq=exp_v_uniq,
+            matched_uniq=matched_uniq, at_boundary_h=by, at_boundary_v=bx)
+
     import math
     need_y = max(2, math.ceil(len(exp_h) * SHIFT_MATCH_RATIO))
     need_x = max(2, math.ceil(len(exp_v) * SHIFT_MATCH_RATIO))
     if sy < need_y or sx < need_x:
-        return ShiftEstimate(dx, dy, matched, total, False, "few_lines")
+        return _est(False, "few_lines")
     if by or bx:
-        return ShiftEstimate(dx, dy, matched, total, False, "boundary")
+        return _est(False, "boundary")
     if (sy - ry) < SHIFT_GAP_MIN or (sx - rx) < SHIFT_GAP_MIN:
-        return ShiftEstimate(dx, dy, matched, total, False, "ambiguous")
+        return _est(False, "ambiguous")
     # テーブル外形（上端・下端の横罫線）の一致を要求する。表は行方向に周期
     # 構造なので、丸1行ピッチずれた入力は「シフト0・中間線ほぼ全一致」に見える
     # （エイリアシング・実測: dy=104 で正常顔の誤値）。端の線は周期の外にある
@@ -134,8 +181,8 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
 
     for g in face.table_geoms:
         if not (hit(det_h, g.h_lines[0] + dy) and hit(det_h, g.h_lines[-1] + dy)):
-            return ShiftEstimate(dx, dy, matched, total, False, "edge_mismatch")
-    return ShiftEstimate(dx, dy, matched, total, True, "")
+            return _est(False, "edge_mismatch")
+    return _est(True, "")
 
 
 # 位置合わせ方式の版。処理内容を変えたら上げる（#25: 旧方式で作った中間データを
@@ -251,9 +298,13 @@ def _deskew_angle(binary: "np.ndarray") -> float:
 
 
 class AlignError(RuntimeError):
-    def __init__(self, code: str):
+    def __init__(self, code: str, diag: "tuple[FaceDiag, ...]" = ()):
         super().__init__(code)
         self.code = code
+        # 面ごとの判定材料（08 §2.2.3・format_check.from_diag が読む）。
+        # PageSizeMismatch はテンプレ寸法の入口で送出され面の診断を持たない
+        # ため既定の空タプルのまま
+        self.diag = diag
 
 
 class PageSizeMismatch(AlignError):
@@ -292,6 +343,47 @@ def page_size_verdict(size: tuple[int, int], template: Template) -> str | None:
     return None
 
 
+def _face_estimate(padded: "Image.Image", face: Face, template: Template,
+                   pad: int) -> tuple[ShiftEstimate, "Image.Image", float]:
+    """1面ぶんの「padded crop → 傾き推定 → 回転 → Otsu → 平行移動推定」（08 §2.3.6）。
+
+    align_page（送信経路）と format_check.check_page（判定専用・(t) の複数
+    テンプレート照合）の両方がこの関数を呼ぶ——**推定部分だけ**の共有で、
+    本二値化・マスク・composite への貼り付けはここに含めない。
+
+    align_page はこの後さらに est.dx/est.dy で crop し直す必要があるため、
+    回転補正後の big（傾き補正済みキャンバス）と angle も合わせて返す
+    ——align_page 側が同じ画像処理を二重に行わずに済むようにするための
+    実装上の裁量（設計 08 §2.3.6 は戻り値の型を ShiftEstimate とだけ書くが、
+    align_page の後続手順が big/angle を必要とするためタプルにした）。
+    **NFR-F08 の担保は、この抽出が純粋な関数分割であり、定数・引数・演算の
+    順序を1つも変えていないことによる**（align_page から移した本体はコピー
+    のみ・§2.11 不変条件1）。
+    """
+    r = face.source_rect
+    # COARSE_DILATE は BASE_DPI=300 較正の px 定数（汎用化 A-3）
+    dilate = max(0, round(COARSE_DILATE * template.dpi_scale))
+    # ページ外は白。回転を2回かけないため、シフトはこの padded crop の
+    # 内側の窓取りで行う
+    big = padded.crop((r.x, r.y, r.x + r.w + 2 * pad, r.y + r.h + 2 * pad))
+
+    # 傾き推定は従来どおり中央窓（w×h）で行う
+    gray = np.asarray(big.crop((pad, pad, pad + r.w, pad + r.h)).convert("L"))
+    coarse = _exclusion_mask(face, dilate + pad)  # ズレの分も覆う（D-25）
+    th = _otsu(gray, coarse)
+    angle = _deskew_angle((gray < th) & ~coarse)
+    if angle != 0.0:
+        big = big.rotate(angle, expand=False, fillcolor="white",
+                         resample=Image.BICUBIC)
+        gray = np.asarray(big.crop((pad, pad, pad + r.w, pad + r.h)).convert("L"))
+        th = _otsu(gray, coarse)
+
+    # 平行移動の推定（回転補正後・粗マスク二値。ズレた状態では除外矩形も
+    # 同じだけズレているため、本マスクではなく膨張済みの粗マスクを使う）
+    est = estimate_shift((gray < th) & ~coarse, face, dpi=template.render_dpi)
+    return est, big, angle
+
+
 def align_page(page_img: "Image.Image", template: Template,
                 mask: bool = True) -> tuple[list[AlignedFace], "Image.Image"]:
     """1ページ → 面ごとの位置合わせ結果と、送信用の再結合画像。
@@ -321,40 +413,29 @@ def align_page(page_img: "Image.Image", template: Template,
     composite = Image.new("RGB", (W, H), "white")
     faces: list[AlignedFace] = []
 
-    # COARSE_DILATE は BASE_DPI=300 較正の px 定数（汎用化 A-3）。pad は
-    # face.shift_limits（行ピッチ・列間隔）由来で、既にこのテンプレートの
-    # render_dpi 座標系の値なのでスケール不要——加算する COARSE_DILATE 側だけ
-    # dpi_scale で合わせる
-    dilate = max(0, round(COARSE_DILATE * template.dpi_scale))
-
     # 探索余白つきキャンバスはページ単位で1回だけ作る（面ごとに作り直すと
     # 30MB 規模の確保と貼り付けが面の数だけ走り、実測で align が数倍遅くなる）
     pad = max((max(f.shift_limits) for f in template.faces), default=0)
     padded = Image.new("RGB", (W + 2 * pad, H + 2 * pad), "white")
     padded.paste(page, (pad, pad))
 
-    for face in template.faces:
+    # 面ごとの判定材料（08 §2.2.3）。失敗した面で即 raise する現在の挙動は
+    # 変えない——失敗面が1つ確定した時点でページの判定は「不一致」または
+    # 「判定不能」に確定する（FR-F03 の畳み込みで一致には戻らない）ので、
+    # 残りの面を評価する意味が無く NFR-F01 の予算を使うだけ
+    diag: list[FaceDiag] = []
+    for idx, face in enumerate(template.faces):
         r = face.source_rect
-        # ページ外は白。回転を2回かけないため、シフトはこの padded crop の
-        # 内側の窓取りで行う
-        big = padded.crop((r.x, r.y, r.x + r.w + 2 * pad, r.y + r.h + 2 * pad))
-
-        # 傾き推定は従来どおり中央窓（w×h）で行う
-        gray = np.asarray(big.crop((pad, pad, pad + r.w, pad + r.h)).convert("L"))
-        coarse = _exclusion_mask(face, dilate + pad)  # ズレの分も覆う（D-25）
-        th = _otsu(gray, coarse)
-        angle = _deskew_angle((gray < th) & ~coarse)
-        if angle != 0.0:
-            big = big.rotate(angle, expand=False, fillcolor="white",
-                             resample=Image.BICUBIC)
-            gray = np.asarray(big.crop((pad, pad, pad + r.w, pad + r.h)).convert("L"))
-            th = _otsu(gray, coarse)
-
-        # 平行移動の推定（回転補正後・粗マスク二値。ズレた状態では除外矩形も
-        # 同じだけズレているため、本マスクではなく膨張済みの粗マスクを使う）
-        est = estimate_shift((gray < th) & ~coarse, face, dpi=template.render_dpi)
+        est, big, angle = _face_estimate(padded, face, template, pad)
         if not est.ok:
-            raise AlignError(f"TRANSLATION_UNRELIABLE_{est.reason}")
+            diag.append(FaceDiag(idx, face.face_id, est))
+            # 評価に至らなかった残りの面は skipped として記録する
+            # （黙って欠落させない・08 §2.2.3）
+            diag.extend(FaceDiag(j, f.face_id, None)
+                       for j, f in enumerate(template.faces) if j > idx)
+            raise AlignError(f"TRANSLATION_UNRELIABLE_{est.reason}", diag=tuple(diag))
+        diag.append(FaceDiag(idx, face.face_id, est))
+
         crop = big.crop((pad + est.dx, pad + est.dy,
                          pad + est.dx + r.w, pad + est.dy + r.h))
         gray = np.asarray(crop.convert("L"))
@@ -372,7 +453,8 @@ def align_page(page_img: "Image.Image", template: Template,
             for ex in face.exclusions:
                 drw.rectangle((ex.x, ex.y, ex.x + ex.w - 1, ex.y + ex.h - 1), fill="white")
         faces.append(AlignedFace(face.face_id, masked, binary_fine, angle,
-                                 dx=est.dx, dy=est.dy, shift_matched=est.matched))
+                                 dx=est.dx, dy=est.dy, shift_matched=est.matched,
+                                 estimate=est))
         composite.paste(masked, (r.x, r.y))
 
     return faces, composite

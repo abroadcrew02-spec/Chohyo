@@ -49,13 +49,16 @@ def test_cli_top_level_handler_hides_exception_message(tmp_path):
     err_log = (tmp_path / "logs" / "error.log").read_text(encoding="utf-8")
     assert "unhandled_exception" in err_log
     assert "存在しない入力フォルダ" not in err_log
-    # run_start にテンプレート由来（ハッシュ）が残る（issue #59 H-7）。
-    # 2026-09-02（Q-S1・FR-F50）: テンプレートファイル名は秘匿対象へ拡張した
-    # ため template_path は出さない——追跡目的は template_loaded と同じ
-    # template_hash で満たす。入力フォルダが無くて後段で失敗しても、
-    # テンプレート読み込みまでは進むため両方のログ行は書かれる
+    # run_start は入力パス（path=）のみを残す——テンプレートファイル名は
+    # 出さない（Q-S1・FR-F50・2026-09-02）。**run_start 自身の行にハッシュは
+    # 乗らない**（2026-09-02 マリン指摘・旧コメントの誤り訂正）: cmd_run の
+    # 時点ではまだテンプレートを読んでおらずハッシュが分からないため、算出
+    # できた直後（pipeline._load）に template_loaded が別行としてハッシュを
+    # 残す（issue #59 H-7 の追跡目的は run_start ではなく template_loaded で
+    # 満たす）。入力フォルダが無くて後段で失敗しても、テンプレート読み込み
+    # までは進むため両方のログ行は書かれる
     app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
-    assert "run_start" in app_log and "template_hash=" in app_log
+    assert "run_start" in app_log
     assert "template_path=" not in app_log
     assert "template_loaded" in app_log and "template_hash=" in app_log
 
@@ -206,12 +209,77 @@ def test_ac_f65_template_name_and_field_names_absent_from_logs(tmp_path):
     assert "run_start" in log_text and "template_loaded" in log_text
     assert "exclusion_overlap_w1" in log_text and "cell_idx=" in log_text
     assert "fallback_used" in log_text  # replay サンプルは郵便番号欄で発火する
+    # 不変条件A（cell_idx を template_hash で復号できること）は各経路を単独の
+    # log_dir で走らせて検証する（test_invariant_a_holds_per_command_in_isolation）
 
-    # 不変条件A（08_frame_detection_design.md §1.4）: cell_idx・face_idx は
-    # template_hash とセットでのみ意味を持つ。run/verify/remap/expand-page の
-    # 4経路それぞれが自前で template_loaded を出すことを固定する——そうで
-    # ないと、verify だけを単独実行したときに cell_idx を復号できない穴が残る
-    assert log_text.count("template_loaded") >= 4
+
+def test_invariant_a_holds_per_command_in_isolation(tmp_path):
+    """不変条件A（08_frame_detection_design.md §1.4）: cell_idx・face_idx は
+    template_hash とセットでのみ意味を持つ。run/remap/verify/expand-page の
+    4経路それぞれが**単独で**（他経路のログに頼らず）template_loaded を
+    自前で出し、その経路が書いた cell_idx を復号できることを検証する。
+
+    2026-09-02（マリン指摘）: 以前は4経路の app.log を1本にまとめて
+    「template_loaded が合計4行以上」を見ていたが、これでは経路ごとの
+    自己完結性——verify だけを単独実行したときに、その回の app.log だけで
+    cell_idx を復号できるか——を検証できていなかった（4経路のうち1つでも
+    template_loaded を出し忘れても、他の3経路が出していれば合計4行の条件は
+    満たされてしまう）。ここではコマンドごとに log_dir を分け、各経路が
+    単独で満たすべき条件を個別に確認する。
+    """
+    tpl = tmp_path / "田中様_申込書テンプレート.json"
+    shutil.copy(TPL, tpl)
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    shutil.copy(PAGE_PNG, input_dir / "sample-1.png")
+    replay_dir = tmp_path / "responses"
+    replay_dir.mkdir()
+    shutil.copy(RESP, replay_dir / "sample-1_p0001.json")
+
+    workdir = tmp_path / "wd"       # run と remap で共有（remap は run の中間データが要る）
+    output_dir = tmp_path / "out"
+
+    def _cfg(tag: str) -> Path:
+        cfg_path = tmp_path / f"config_{tag}.json"
+        cfg_path.write_text(json.dumps({
+            "output_dir": str(output_dir),
+            "workdir": str(workdir),
+            "log_dir": str(tmp_path / f"logs_{tag}"),
+        }), encoding="utf-8")
+        return cfg_path
+
+    def _log_text(tag: str) -> str:
+        d = tmp_path / f"logs_{tag}"
+        return "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                         for p in d.glob("*.log"))
+
+    rc_run = cli.main(["--config", str(_cfg("run")), "run",
+                        "--input", str(input_dir), "--template", str(tpl),
+                        "--replay", str(replay_dir)])
+    assert rc_run == 0
+    run_log = _log_text("run")
+    assert run_log.count("template_loaded") >= 1
+
+    rc_remap = cli.main(["--config", str(_cfg("remap")), "remap", "--template", str(tpl)])
+    assert rc_remap == 0
+    remap_log = _log_text("remap")
+    assert remap_log.count("template_loaded") >= 1
+
+    # verify の終了コードは資格情報・API残量など無関係な環境状態にも左右
+    # されるため確認しない（他の AC-F65 テストと同じ方針）
+    cli.main(["--config", str(_cfg("verify")), "verify", "--template", str(tpl)])
+    verify_log = _log_text("verify")
+    assert verify_log.count("template_loaded") >= 1
+    # verify 単独の app.log の中だけで template_hash と cell_idx が両方
+    # 揃っている（他経路のログを合算しなくても復号できる）ことを確認する
+    assert "template_hash=" in verify_log and "cell_idx=" in verify_log
+
+    rc_expand = cli.main(["--config", str(_cfg("expand")), "expand-page",
+                          "--input", str(input_dir / "sample-1.png"),
+                          "--template", str(tpl)])
+    assert rc_expand == 0
+    expand_log = _log_text("expand")
+    assert expand_log.count("template_loaded") >= 1
 
 
 def test_w3_w4_diagnostics_no_longer_silently_dropped(tmp_path):
@@ -264,11 +332,31 @@ def test_w3_w4_diagnostics_no_longer_silently_dropped(tmp_path):
         assert "face_id=" not in line
 
 
-def test_static_check_all_logged_keys_are_allow_listed():
-    """core/chouhyo_ocr/*.py の log.info/warn/error 呼び出しが渡す全キーワード
+def _logging_safe_output_function_names() -> set[str]:
+    """logging_safe の「イベント名＋**fields」形の公開出力関数名を動的に取る
+    （info/warn/error）。
 
-    引数名が logging_safe._ALLOWED_KEYS に含まれることを AST で検査する
-    （AC-F65・T-F65-2 相当・08_frame_detection_design.md §1.6）。
+    ハードコードした固定タプルだと、新しい出力関数が増えたときに静的検査が
+    追随しない（2026-09-02 マリン指摘）。`init`／`error_trace`／`_fmt` は
+    シグネチャが違う（`**fields` を持たない、または非公開）ため自然と除外
+    される。
+    """
+    import inspect
+    names = set()
+    for name, obj in vars(logging_safe).items():
+        if name.startswith("_") or not inspect.isfunction(obj):
+            continue
+        params = inspect.signature(obj).parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            names.add(name)
+    return names
+
+
+def test_static_check_all_logged_keys_are_allow_listed():
+    """core/chouhyo_ocr/**/*.py の logging_safe 出力呼び出し（info/warn/error）
+
+    が渡す全キーワード引数名が logging_safe._ALLOWED_KEYS に含まれることを
+    AST で検査する（AC-F65・T-F65-2 相当・08_frame_detection_design.md §1.6）。
 
     白リストに無いキーは _fmt が例外にならず黙って落とす（型で守れない
     書き方への最後の網・logging_safe.py のモジュール docstring）。この
@@ -277,42 +365,66 @@ def test_static_check_all_logged_keys_are_allow_listed():
     hole_overlap_w4 が face_id・field_a・field_b を渡しながら白リストに無く、
     イベント名しか記録されていなかった（2026-09-02 実測・issue #77・
     08_frame_detection_design.md §1.1）。この検査はその再発を機械的に止める。
+
+    2026-09-02（マリン指摘・#77 追補）の拡張3点:
+    - `from .logging_safe import warn` のような直接名 import（`log.warn(...)`
+      ではなく `warn(...)` の裸呼び出し）も検出対象にする
+    - `**kwargs` 展開はキー名を静的に追えないため、スキップではなく**違反**
+      として扱う（追跡不能な経路を白リストのすり抜けに使わせない）
+    - 出力関数名は `_logging_safe_output_function_names()` で動的に取る
+      （ハードコードした固定タプルにしない）
+    - `glob` ではなく `rglob` で走査する（サブディレクトリが増えても追随する）
     """
+    output_fns = _logging_safe_output_function_names()
     pkg_dir = Path(logging_safe.__file__).resolve().parent
     violations: list[str] = []
-    for py_file in sorted(pkg_dir.glob("*.py")):
+    for py_file in sorted(pkg_dir.rglob("*.py")):
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-        # このファイルで logging_safe が束縛されているローカル名を集める
-        # （慣例は `from . import logging_safe as log` だが、決め打ちにせず
-        # import 文から実際の別名を読む）
-        aliases: set[str] = set()
+        # このファイルで logging_safe が束縛されているローカル名を集める。
+        # module_aliases: `from . import logging_safe as log` 形式
+        # （`log.warn(...)` の `log`）。name_aliases: `from .logging_safe
+        # import warn` 形式の裸呼び出し（`warn(...)`）→ 元の関数名
+        module_aliases: set[str] = set()
+        name_aliases: dict[str, str] = {}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     if alias.name == "logging_safe":
-                        aliases.add(alias.asname or alias.name)
+                        module_aliases.add(alias.asname or alias.name)
+                    elif alias.name in output_fns and (
+                            node.module == "logging_safe"
+                            or (node.module or "").endswith(".logging_safe")):
+                        name_aliases[alias.asname or alias.name] = alias.name
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name in ("logging_safe", "chouhyo_ocr.logging_safe"):
-                        aliases.add(alias.asname or alias.name.split(".")[-1])
-        if not aliases:
+                        module_aliases.add(alias.asname or alias.name.split(".")[-1])
+        if not module_aliases and not name_aliases:
             continue
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Attribute)
-                    and isinstance(func.value, ast.Name)
-                    and func.value.id in aliases
-                    and func.attr in ("info", "warn", "error")):
+            attr: str | None = None
+            if (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+                    and func.value.id in module_aliases and func.attr in output_fns):
+                attr = func.attr
+            elif isinstance(func, ast.Name) and func.id in name_aliases:
+                attr = name_aliases[func.id]
+            if attr is None:
                 continue
+            rel = py_file.relative_to(pkg_dir)
             for kw in node.keywords:
                 if kw.arg is None:
-                    continue  # **kwargs 展開（このコードベースでは使っていない）
+                    violations.append(
+                        f"{rel}:{node.lineno} log.{attr}(..., **...) が "
+                        "**kwargs 展開でキー名を静的検査できない"
+                        "（展開せず個別キーワード引数で渡す）")
+                    continue
                 if kw.arg not in logging_safe._ALLOWED_KEYS:
                     violations.append(
-                        f"{py_file.name}:{node.lineno} "
-                        f"log.{func.attr}(..., {kw.arg}=...) "
+                        f"{rel}:{node.lineno} "
+                        f"log.{attr}(..., {kw.arg}=...) "
                         "が白リストに無いキーを渡している"
                         "（_ALLOWED_KEYS へ追加するか呼び出しを直す）")
     assert not violations, "\n".join(violations)

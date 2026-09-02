@@ -64,8 +64,35 @@ def test_shifted_input_is_realigned():
 
 
 def test_large_shift_fails_instead_of_wrong_values():
-    """探索範囲を超えるズレは「位置合わせ失敗」の全〓行になる（正常顔の誤値ゼロ）。"""
+    """探索範囲を超えるズレは「位置合わせ失敗」または「様式不一致」の全〓行になる
+    （正常顔の誤値ゼロ）。
+
+    2026-09-02（issue #71 (a')・期待値更新・07 v1.2 §10.3 Q-F21）: FR-F09 が
+    「位置合わせ失敗の共用バケツを様式判定由来で分離する」ことを要求した
+    結果、dx=40,dy=40 は `few_lines` かつ軸別で検出十分・探索境界にも
+    張り付かないため `classify()` が「不一致」（様式不一致）と判定する
+    ようになった（実測）。104/113px（行ピッチ＝1行ズレ）は非周期アンカー
+    検査で `edge_mismatch` に倒れ、`classify()` は判定不能（位置合わせ失敗）
+    のまま——このケースは影響を受けない。**引用訂正**（マリン指摘）:
+    07 §7.2-4 は期待値書き換えを**禁じる**条項そのもので、許容の根拠には
+    ならない（同条が明示的に許すのは `ALGO_VERSION` の直値更新のみ）。
+    この更新を認めるのは **07 v1.2 §10.3 Q-F21**——`test_alignment_robustness.py`
+    等の期待値更新を「理由と日付を記録したうえで§7.2-4の例外（2件目）と
+    して認める」と明記した項目（1件目は Q-S1 に伴う `test_leak_guards.py`
+    の `template_path` 期待反転）。
+
+    このテストの本質的な受入条件（関数名・コメントのとおり「正常なのに
+    値が違う」だけは絶対に出さない・全〓）はどちらのバケツでも成立する
+    ため不変条件として残しつつ、どちらのバケツに落ちるかは実測済みなので
+    ケースごとに固定する（緩い `in (...)` のままだと、将来 classify() が
+    変わって別の組み合わせが混入しても検知できない）。
+    """
     base = _run(Image.open(PAGE), "lbase")
+    expected_status = {
+        (40, 40): "様式不一致",     # few_lines・軸別で検出十分・境界に非該当 → mismatch
+        (0, 104): "位置合わせ失敗",  # 行ピッチ=1行ズレ → edge_mismatch（非周期アンカー）
+        (0, 113): "位置合わせ失敗",  # 同上
+    }
     for dx, dy in [(40, 40), (0, 104), (0, 113)]:  # 104/113 は行ピッチ（1行ズレ解）
         row = _run(_shift(Image.open(PAGE), dx, dy), f"l{dx}_{dy}")
         if row.status == "正常":
@@ -73,7 +100,8 @@ def test_large_shift_fails_instead_of_wrong_values():
             assert list(row.values) == list(base.values), \
                 f"shift=({dx},{dy}) が正常顔で誤値を出した"
         else:
-            assert "位置合わせ失敗" in row.status
+            assert row.status == expected_status[(dx, dy)], \
+                f"shift=({dx},{dy}) {row.status}"
             assert all(v == "〓" for v in row.values)
 
 

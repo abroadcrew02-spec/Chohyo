@@ -6,23 +6,30 @@
 
 2026-09-02（Q-S1・FR-F50・NFR-F05 拡張）: 秘匿対象を「記入値」から
 「記入値＋テンプレートファイル名＋欄名（field_id・列名・table_id）」へ拡張。
-`template_path`・`field_id`・`face_id` は白リストから外した（テンプレート名・
-欄名・面IDが機微情報になりうるため）。代替として `template_hash`（テンプレート
-全体のハッシュ・issue #59 H-7 からの既存キー）と、匿名識別子 `cell_idx`
-（template.cells 内の0始まり序数）・`face_idx`（template.faces 内の0始まり
-序数）・`cell_a`/`cell_b`（欄2つを比較する警告用・値は cell_idx と同じ空間）・
-`col_idx`（出力列（抽出対象列）内の0始まり序数）・`gap_px`（px 値・名前を
-含まない）を残す／追加した。適用範囲はログ（app.log・error.log）のみ——
-GUI 表示・stdout の JSON Lines・出力ファイルは対象外（詳細は
-docs/design/chouhyo-ocr/07_frame_detection_requirements.md §0.6）。
+`template_path`・`field_id` は白リストから外した（テンプレート名・欄名が
+機微情報になりうるため）。**`face_id` はこの変更で外したのではなく、元々
+白リストに入っていなかった**——それが `adjacent_gap_w3`／`hole_overlap_w4`
+（template.py の W-3/W-4 警告）が `face_id`／`field_a`／`field_b` を渡しな
+がら実際にはイベント名しかログに残っていなかった原因（診断が黙って死んで
+いた実害・2026-09-02 実測・08_frame_detection_design.md §1.1）。代替として
+`template_hash`（テンプレート全体のハッシュ・issue #59 H-7 からの既存キー）
+と、匿名識別子 `cell_idx`（template.cells 内の0始まり序数）・`face_idx`
+（template.faces 内の0始まり序数）・`cell_a`/`cell_b`（欄2つを比較する警告用・
+値は cell_idx と同じ空間）・`col_idx`（出力列（抽出対象列）内の0始まり序数）・
+`gap_px`（px 値・名前を含まない）を残す／追加した。適用範囲はログ（app.log・
+error.log）のみ——GUI 表示・stdout の JSON Lines・出力ファイルは対象外
+（詳細は docs/design/chouhyo-ocr/07_frame_detection_requirements.md §0.6）。
 
 **復号手順**（人が `cell_idx=137` を欄名に戻す方法）: 同じ run のログに残る
 `template_loaded template_hash=...`（または `run_start` 直後の
 `template_loaded`）でテンプレートを特定し、そのテンプレート JSON を
 `template.load_template()` で読み、`template.cells[137].field_id` を見る。
-`cell_idx`・`face_idx`・`cell_a`/`cell_b`・`col_idx` は **template_hash と
-セットでのみ意味を持つ**——テンプレートを1欄でも足すと序数がずれる
-（docs/design/chouhyo-ocr/08_frame_detection_design.md §1.4 不変条件A）。
+`col_idx=N` を列名に戻すには `columns.extract_columns(template)[N]`
+（＝`columns.derive_columns(template)[len(columns.META_COLUMNS) + N]`。
+抽出対象列は管理6列の後ろに続く）。`cell_idx`・`face_idx`・`cell_a`/`cell_b`・
+`col_idx` は **template_hash とセットでのみ意味を持つ**——テンプレートを
+1欄でも足すと序数がずれる（docs/design/chouhyo-ocr/08_frame_detection_design.md
+§1.4 不変条件A）。
 """
 from __future__ import annotations
 
@@ -41,6 +48,12 @@ _ALLOWED_KEYS = {
     # 特定できる。cell_a/cell_b は欄2つを比べる警告（W-3・W-4）用で、値の
     # 空間は cell_idx と同じ。gap_px は px 値のみで名前を含まない
     "cell_idx", "face_idx", "cell_a", "cell_b", "col_idx", "gap_px",
+    # 様式判定（issue #71 (a')・08 §2.5.3）。verdict は列挙値（match/
+    # mismatch/undecidable/skipped/unknown）、reason_code は理由コード
+    # （lines/ambiguous/edge/few_lines/boundary 等・記入値を含まない固定語彙）、
+    # score は無次元スコア、detected/expected は検出・期待の罫線本数。
+    # いずれも名前・記入値を含まない
+    "verdict", "reason_code", "score", "detected", "expected",
     # 入力ページの寸法比（Q-H1・align.align_page の page_scale ログ）。
     # 記入値ではなく、幅/高さをテンプレート寸法で割った比率のみ
     "sx", "sy",

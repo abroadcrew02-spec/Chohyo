@@ -266,9 +266,11 @@ def cmd_expand_page(args) -> int:
     page_path = pages[0].resolve()
     aligned = False
     fail_reason: str | None = None
+    verdict_fields: dict = {}  # issue #71 (a')・08 §2.6: verdict/score/faces（追加のみ）
     try:
         from PIL import Image
 
+        from . import format_check
         from .align import AlignError, PageSizeMismatch, align_page
         from .align import template_hash as _tpl_hash
         from .template import TemplateError, load_template
@@ -293,6 +295,21 @@ def cmd_expand_page(args) -> int:
         composite.save(out, format="PNG", compress_level=3)
         page_path = out.resolve()
         aligned = True
+        # 成功側の verdict（全面 match のはず・08 §2.6 の例）。
+        # M-3（2026-09-02 マリン指摘）: from_faces 自体を内側 try で囲む。
+        # aligned=True 確定後にここで例外が起きると、囲わない場合は下の
+        # except 節（例: 汎用 Exception → fail_reason="other"）に落ちて
+        # 「aligned:true なのに reason も乗る」という既存契約違反の応答に
+        # なる（aligned:false のときだけ reason を返す契約・テストで固定
+        # 済み）。判定関数の例外は verdict を欠落させるだけに留め、
+        # expand-page 自体（画像は既に保存済み）は成功のまま返す
+        try:
+            verdict_fields = _expand_page_verdict_fields(format_check.from_faces(_faces))
+        except Exception as ex:  # noqa: BLE001
+            import traceback
+            log.error("format_check_failed", error_code=type(ex).__name__)
+            log.error_trace(type(ex).__name__,
+                            "".join(traceback.format_tb(ex.__traceback__)))
     # テンプレート破損・位置合わせ失敗・画像不正のいずれも生画像で続行する
     # （契約は変えない・GUI は aligned:false のまま編集を続けられる）。以前は
     # bare except Exception 一本で全部を同じ aligned:false に潰していたため、
@@ -301,14 +318,35 @@ def cmd_expand_page(args) -> int:
     # 本文は出さない（パスに入力ファイル名が乗りうる・既存方針どおり）
     except TemplateError:
         fail_reason = "template"
+        # テンプレートが読めていないため判定を行わない（verdict は返さない・
+        # 08 §2.6）
     # N-2: PageSizeMismatch は AlignError のサブクラス（Q-H1）。基底クラスより
     # 前に置かないと下の except AlignError に落ちて "align"（位置合わせ失敗）
     # に化ける——run（送信経路）ではこの入力は様式不一致として弾かれるため、
     # 編集画面には "align" ではなく専用の reason を返して案内を分ける
     except PageSizeMismatch:
         fail_reason = "size"
-    except AlignError:
+        # LOW（2026-09-02 マリン指摘）: size 用の PageVerdict を直接組んで
+        # 唯一の整形関数（_expand_page_verdict_fields）へ通す——辞書リテラルを
+        # 個別に持つと、_expand_page_verdict_fields 側のキー構成を変えたときに
+        # ここだけ追随し忘れる二重定義になる（pipeline.py の同種構成と統一）
+        verdict_fields = _expand_page_verdict_fields(
+            format_check.PageVerdict("mismatch", "size", -1.0, ()))
+    except AlignError as e:
         fail_reason = "align"
+        # AC-F14 と同じ歯止め: 判定関数の例外で verdict を欠落させるだけに
+        # 留め、expand-page 自体は生画像＋aligned:false で従来どおり続行する
+        try:
+            pv = format_check.from_diag(e.diag)
+            verdict_fields = _expand_page_verdict_fields(pv)
+        except Exception as ex:  # noqa: BLE001
+            import traceback
+            # error_trace の第1引数は error_code（型名）。format_tb のみ渡す
+            # （例外メッセージ本文は帳票の値を含みうるため出さない・
+            # logging_safe.error_trace の docstring・pipeline.py と同型）
+            log.error("format_check_failed", error_code=type(ex).__name__)
+            log.error_trace(type(ex).__name__,
+                            "".join(traceback.format_tb(ex.__traceback__)))
     except (OSError, ValueError):
         fail_reason = "image"
     except Exception:  # noqa: BLE001
@@ -320,8 +358,28 @@ def cmd_expand_page(args) -> int:
                "page_path": str(page_path),
                "aligned": aligned,
                **({"reason": fail_reason} if fail_reason else {}),
-               **({"pages": total} if total is not None else {})})
+               **({"pages": total} if total is not None else {}),
+               **verdict_fields})
     return 0
+
+
+def _expand_page_verdict_fields(pv) -> dict:
+    """`format_check.PageVerdict` → expand-page の JSON 追加フィールド
+    （issue #71 (a')・08 §2.6）。
+
+    stdout の JSON Lines は秘匿対象外（07 §0.6）——GUI が面を特定するために
+    `face_id`（名前）をそのまま出す。ログ（logging_safe 経由）が使う匿名の
+    `face_idx` とは別の語彙で、ここでは意図して face_id を使う。
+    """
+    return {
+        "verdict": pv.verdict,
+        "score": pv.score,
+        "faces": [
+            {"face_id": f.face_id, "verdict": f.verdict, "reason": f.reason,
+             "score": f.score, "detected": f.detected, "expected": f.expected}
+            for f in pv.faces
+        ],
+    }
 
 
 def cmd_debug_images(args) -> int:
@@ -365,12 +423,15 @@ def cmd_debug_images(args) -> int:
                    "synced_dir": str(out_dir)})
         return 0
     template = load_template(args.template)
-    validate_v1(template)
     raw = json.loads(Path(args.template).read_text(encoding="utf-8"))
     # debug-images も pipeline._load を経由しないため template_loaded を
-    # 自前で出す（cmd_verify・cmd_expand_page と同じ理由・不変条件A・
-    # Q-S1・FR-F50・08_frame_detection_design.md §1.4）
+    # 自前で出す（cmd_verify と同じ理由・不変条件A・Q-S1・FR-F50・
+    # 08_frame_detection_design.md §1.4）。validate_v1 より前に出す
+    # （2026-09-02 #77 追補・マリン指摘）——後ろだと validate_v1 が
+    # TemplateError で落ちたときに「cell_idx はあるが template_hash が無い」
+    # 状態が残る
     log.info("template_loaded", template_hash=_tpl_hash(raw))
+    validate_v1(template)
     with Store(wd / "intermediate.sqlite") as store:
         # テンプレート変更後の「旧割付×新枠」の嘘可視化を拒否する（#60 M-1①）。
         # render と同じ整合ゲート——check_template=True で cell の割付内容も

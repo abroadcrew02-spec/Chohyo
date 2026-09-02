@@ -11,7 +11,7 @@ from typing import Callable
 
 from PIL import Image
 
-from . import era, ingest, logging_safe as log, render_rows
+from . import era, format_check, ingest, logging_safe as log, render_rows
 from .align import (AlignedFace, AlignError, PageSizeMismatch, align_page,
                     geometry_hash, page_size_verdict)
 from .columns import META_COLUMNS, derive_columns, validate_v1
@@ -39,6 +39,10 @@ class Summary:
     # 見ていると、PageSizeMismatch や _map_and_score の構造異常で全ページが
     # 様式不一致に倒れた実行が exit 0（成功扱い）になってしまう
     format_mismatch: int = 0
+    # FR-F10・issue #71 (a')。format_mismatch のうち FR-F01（様式判定）由来で
+    # 送信前に止まった件数の内訳（原因不問の format_mismatch とは別に持つ・
+    # 08 §2.4.3）。GUI（RunScreen.tsx）がこのキー名で参照する
+    format_mismatch_pre_send: int = 0
     api_calls: int = 0
     unclear_total: int = 0
     overflow: int = 0
@@ -94,15 +98,17 @@ def _store_path(cfg: Config) -> Path:
 
 def _load(template_path: str | Path) -> tuple[Template, dict, str]:
     template = load_template(template_path)
-    validate_v1(template)
     raw = json.loads(Path(template_path).read_text(encoding="utf-8"))
-    # 3経路（run／render／remap）すべてがここを通るため、ここで一度だけ
-    # template_loaded を出す（以前は _run_locked にしか無く、render・remap の
-    # 経路には無かった——load_template 内部の W-1〜W-4 警告が出す cell_idx・
-    # face_idx を事後にどのテンプレート由来か特定できない穴だった。
-    # Q-S1・FR-F50・08_frame_detection_design.md §1.4 不変条件A）
+    # load_template 成功直後・validate_v1 より前に出す（2026-09-02 #77 追補・
+    # マリン指摘）。W-1〜W-4 の cell_idx・face_idx は load_template 内部
+    # （validate_v1 より前）で既に発火しているため、ここより後で
+    # template_loaded を出すと validate_v1 が TemplateError で落ちたときに
+    # 「cell_idx はあるが template_hash が無い」状態が残る（不変条件A・
+    # Q-S1・FR-F50・08_frame_detection_design.md §1.4）。3経路（run／render／
+    # remap）すべてがここを通るため一度だけ出せば足りる
     from .align import template_hash as _tpl_hash
     log.info("template_loaded", template_hash=_tpl_hash(raw))
+    validate_v1(template)
     return template, raw, geometry_hash(raw)
 
 
@@ -125,6 +131,24 @@ def _warn_risky(risky: list[tuple[str, str]], columns: list[str]) -> None:
                  col_idx=col_idx_by_name[name])
     if risky:
         log.warn("csv_formula_risk_total", count=len(risky))
+
+
+def _record_format_result(store: Store, page_id: str, pv) -> None:
+    """様式判定結果を中間データへ記録し、同じ内容を1行ログへも残す
+    （FR-F12・AC-F13・08 §2.5.3・2026-09-02 マリン指摘 H-1）。
+
+    永続化は store.set_format_result（DB のみ）に任せ、ここでログ出力の
+    責務を足す——4つの呼び出し点（PageSizeMismatch／AlignError／再利用時の
+    unknown／成功時）すべてがこの1関数を通ることで、ログの書き漏らしを
+    構造的に防ぐ。pv が None（AC-F14: 判定関数自体が壊れた場合）は
+    どちらも行わない。
+    """
+    store.set_format_result(page_id, pv)
+    if pv is None:
+        return
+    log.info("format_verdict", page_id=page_id, verdict=pv.verdict,
+             reason_code=pv.reason, score=pv.score,
+             detected=pv.detected, expected=pv.expected)
 
 
 def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
@@ -522,19 +546,57 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 # PageSizeMismatch は AlignError のサブクラスなので、この
                 # except を基底クラスより前に置かないと下の分岐に落ちて
                 # 「位置合わせ失敗」に化ける
+                # issue #71 (a')・FR-F09/FR-F10: 専用理由コード（frame_size）と
+                # 判定結果（size は 08 §2.3.3 の対応表で不一致・estimate_shift
+                # に到達しないため呼び出し側が PageVerdict を直接組む）を記録する
                 store.set_state(pid, "failed")
-                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
+                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH, reason="frame_size")
                 summary.format_mismatch += 1
+                summary.format_mismatch_pre_send += 1
+                _record_format_result(
+                    store, pid, format_check.PageVerdict("mismatch", "size", -1.0, ()))
                 log.error("page_size_mismatch", page_id=pid)
                 progress({"event": "page", "page_id": pid,
-                          "status": render_rows.STATUS_FORMAT_MISMATCH})
+                          "status": render_rows.STATUS_FORMAT_MISMATCH,
+                          "reason_code": "frame_size"})
                 continue
-            except AlignError:
+            except AlignError as e:
+                # issue #71 (a')・FR-F01/FR-F02/FR-F09（08 §2.4.2）: e.diag
+                # （面ごとの判定材料）を classify へ通し、mismatch のみ
+                # 様式不一致へ付け替える（undecidable は従来どおり
+                # 位置合わせ失敗のまま）。AC-F14: 判定関数自体が壊れても
+                # 「全ページ様式不一致」に化けさせない——例外時は現行バケツ
+                # （位置合わせ失敗）へ落とし、format_check_failed をトレース
+                # 付きで残す（row_build_failed と同型の歯止め）
+                try:
+                    pv = format_check.from_diag(e.diag)
+                except Exception as ex:  # noqa: BLE001
+                    import traceback
+                    # error_trace の第1引数は error_code（型名）——row_build_failed
+                    # と同型（pipeline.py の別箇所参照）。format_tb のみ渡す
+                    # （例外メッセージ本文は帳票の値を含みうるため出さない・
+                    # logging_safe.error_trace の docstring）
+                    log.error("format_check_failed", page_id=pid,
+                              error_code=type(ex).__name__)
+                    log.error_trace(type(ex).__name__,
+                                    "".join(traceback.format_tb(ex.__traceback__)))
+                    pv = None
                 store.set_state(pid, "failed")
-                store.set_status(pid, render_rows.STATUS_ALIGN_FAILED)
-                summary.align_failed += 1
-                progress({"event": "page", "page_id": pid,
-                          "status": render_rows.STATUS_ALIGN_FAILED})
+                if pv is not None and pv.verdict == "mismatch":
+                    store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH,
+                                     reason="frame_" + pv.reason)
+                    summary.format_mismatch += 1
+                    summary.format_mismatch_pre_send += 1
+                    page_status = render_rows.STATUS_FORMAT_MISMATCH
+                else:
+                    store.set_status(
+                        pid, render_rows.STATUS_ALIGN_FAILED,
+                        reason="frame_" + (pv.reason if pv else "check_failed"))
+                    summary.align_failed += 1
+                    page_status = render_rows.STATUS_ALIGN_FAILED
+                _record_format_result(store, pid, pv)  # 判定不能でもスコアは残す（FR-F12）
+                progress({"event": "page", "page_id": pid, "status": page_status,
+                          "reason_code": "frame_" + (pv.reason if pv else "check_failed")})
                 continue
 
             if reused is not None:
@@ -542,6 +604,16 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 # 使う条件が消え、再送＝再課金になる・issue #38）
                 faces, composite = reused
                 log.info("reuse_alignment", page_id=pid)
+                # issue #71 (a')・08 §2.4.2「再利用ページの扱い」: 判定のためだけに
+                # 整列相当の計算を回さない（#45 の再利用は「整列をやり直さない」
+                # ことに価値がある）。前回の run が書いた format_* 列が残って
+                # いればそれを保持し、無ければ（本機能より前に整列済み）unknown を
+                # 記録する
+                existing = store.format_result(pid)
+                if existing is None or not existing[0]:
+                    _record_format_result(
+                        store, pid, format_check.PageVerdict("unknown", "", -1.0, ()))
+                    log.info("format_check_skipped_reuse", page_id=pid)
             else:
                 for f in faces:
                     store.upsert_alignment(
@@ -555,6 +627,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     f.image.save(aligned_dir / f"{pid}_{f.face_id}.png",
                                  compress_level=1)
                 store.set_state(pid, "aligned")
+                # 成功側の記録（FR-F12・AC-F13）。一致ページも記録する——
+                # align_page が例外なく返った以上、全面 match のはず
+                _record_format_result(store, pid, format_check.from_faces(faces))
 
             # --- F6: 送信（上限・1リクエスト=1画像）---
             if sends >= cfg.send_limit:
@@ -595,11 +670,15 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     store, template, pid, resp, faces)
             except Exception as e:  # noqa: BLE001
                 store.set_state(pid, "failed")
-                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
+                # M-2（2026-09-02 マリン指摘）: 送信後3コードにも専用理由コードを
+                # 配線する（FR-F09「pipeline.py の4箇所が共用」の全箇所を分離）
+                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH,
+                                 reason="map_failed")
                 summary.format_mismatch += 1
                 log.error("map_failed", page_id=pid, error_code=type(e).__name__)
                 progress({"event": "page", "page_id": pid,
-                          "status": render_rows.STATUS_FORMAT_MISMATCH})
+                          "status": render_rows.STATUS_FORMAT_MISMATCH,
+                          "reason_code": "map_failed"})
                 continue
 
             # D-15: 配置を信用できないページは様式不一致・全〓行へ（設計 §6.4）。
@@ -612,15 +691,23 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             mismatch = (page_total == 0 or total == 0
                         or other / total > render_rows.FORMAT_MISMATCH_RATIO)
             if mismatch:
-                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH)
+                # M-2（2026-09-02 マリン指摘）: 送信後3コードにも専用理由コードを
+                # 配線する（FR-F09「pipeline.py の4箇所が共用」の全箇所を分離）
+                store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH,
+                                 reason="outside_ratio")
                 store.set_state(pid, "failed")
                 summary.format_mismatch += 1
                 log.error("format_mismatch", page_id=pid, count=other)
                 progress({"event": "page", "page_id": pid,
-                          "status": render_rows.STATUS_FORMAT_MISMATCH})
+                          "status": render_rows.STATUS_FORMAT_MISMATCH,
+                          "reason_code": "outside_ratio"})
                 continue
 
-            store.set_status(pid, "")  # 成功: 失敗系ステータスを剥がす（超過は render で合成）
+            # 成功: 失敗系ステータスを剥がす（超過は render で合成）。
+            # set_status の既定 reason=""（M-2）が status_reason も同時に
+            # 空へ戻す——以前の失敗（frame_lines 等）の理由コードが再送・
+            # 再処理後の成功ページに残留しない
+            store.set_status(pid, "")
             store.set_template_hash(pid, tpl_hash)  # この cell を割り付けた版の印（#25）
             store.set_state(pid, "done")
             if below >= render_rows.OVERFLOW_MIN_SYMBOLS:
@@ -663,6 +750,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                   "align_failed": summary.align_failed,
                   # Q-H1: 様式不一致の総件数（PageSizeMismatch 起因を含む・原因不問）
                   "format_mismatch": summary.format_mismatch,
+                  # FR-F10（issue #71 (a')）: 様式不一致のうち送信前に止まった
+                  # 件数（GUI RunScreen.tsx の出口2択・完了案内が参照するキー名）
+                  "format_mismatch_pre_send": summary.format_mismatch_pre_send,
                   "api_calls": summary.api_calls,
                   "unclear_cells": summary.unclear_total, "overflow": summary.overflow,
                   "risky_cells": len(risky),

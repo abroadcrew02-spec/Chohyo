@@ -106,6 +106,16 @@ class Store:
         # 〓は適用せず欄全体〓、origin='' なら由来印なし（設計 §10.1）
         self._ensure_column("cell", "char_confs", "TEXT NOT NULL DEFAULT ''")
         self._ensure_column("cell", "origin", "TEXT NOT NULL DEFAULT ''")
+        # 様式判定の記録（issue #71 (a')・FR-F12・AC-F13・08 §2.5.2）。
+        # '' / -1 は「未計測（旧版データ・またはこの機能より前に整列済みで
+        # 再計算していないページ）」の印。ALGO_VERSION は上げない——(a') は
+        # 読み取りアルゴリズムを変えないため（08 §2.11 不変条件8）
+        self._ensure_column("page", "format_verdict", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("page", "format_reason", "TEXT NOT NULL DEFAULT ''")
+        self._ensure_column("page", "format_score", "REAL NOT NULL DEFAULT -1")
+        self._ensure_column("page", "format_detail", "TEXT NOT NULL DEFAULT ''")
+        # page.status の既存8値は増やさない。新しい区別（FR-F09）はここで持つ
+        self._ensure_column("page", "status_reason", "TEXT NOT NULL DEFAULT ''")
         self.con.commit()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -172,9 +182,23 @@ class Store:
             (image_path, time.time(), page_id))
         self.con.commit()
 
-    def set_status(self, page_id: str, status: str) -> None:
-        self.con.execute("UPDATE page SET status=?, updated_at=? WHERE page_id=?",
-                         (status, time.time(), page_id))
+    def set_status(self, page_id: str, status: str, reason: str = "") -> None:
+        """page.status（既存8値）と status_reason（FR-F09 の専用理由コード）を
+        同時に更新する。
+
+        reason を明示的に渡さない限り status_reason は空文字列に戻る
+        （2026-09-02 マリン指摘 M-2）——status を書き換える呼び出し側の
+        すべてが reason を意識しなくても、古い理由コードが新しい status に
+        残留しない構造にする。理由: run 1 が frame_lines（送信前に止まった）
+        で status_reason を立てた後、run 2 で整列に成功して送信されたが
+        post-send の map_failed で落ちた場合、status だけ書き換えて reason
+        を素通しすると「送信前に止まった」ことを示す frame_lines が誤って
+        残留する——FR-F10 の「送信前/送信後」の区別が壊れる。status_reason
+        だけを単独で更新したい場合は set_status_reason を使う。
+        """
+        self.con.execute(
+            "UPDATE page SET status=?, status_reason=?, updated_at=? WHERE page_id=?",
+            (status, reason, time.time(), page_id))
         self.con.commit()
 
     def bump_attempt(self, page_id: str) -> None:
@@ -187,6 +211,49 @@ class Store:
             "UPDATE page SET unassigned_below_table=?, unassigned_other=?, updated_at=? WHERE page_id=?",
             (below, other, time.time(), page_id))
         self.con.commit()
+
+    def set_status_reason(self, page_id: str, reason: str) -> None:
+        """FR-F09: `page.status` の共用バケツ（様式不一致・位置合わせ失敗）を
+        分離する専用理由コード（`frame_lines`／`map_failed` 等）。`status`
+        自体の値域は増やさない（08 §2.11 不変条件4）。
+        """
+        self.con.execute(
+            "UPDATE page SET status_reason=?, updated_at=? WHERE page_id=?",
+            (reason, time.time(), page_id))
+        self.con.commit()
+
+    def set_format_result(self, page_id: str, pv) -> None:
+        """様式判定結果を page 行へ記録する（FR-F12・AC-F13・08 §2.5）。
+
+        pv は `format_check.PageVerdict`（verdict/reason/score/faces を持つ
+        オブジェクト）。**None のときは何も書かない**——AC-F14 の例外時、
+        判定関数自体が壊れて結果を作れなかった場合に呼び出し元が None を
+        渡す。`format_detail` は `face_idx` のみを持つ JSON 配列（`face_id`
+        ＝欄名ではなく面名だが、匿名識別子の語彙をログと揃えるため名前は
+        含めない・§1.4）。
+        """
+        if pv is None:
+            return
+        detail = json.dumps([
+            {"face_idx": f.face_idx, "verdict": f.verdict, "reason": f.reason,
+             "score": f.score, "detected": f.detected, "expected": f.expected}
+            for f in pv.faces
+        ], ensure_ascii=False)
+        self.con.execute(
+            """UPDATE page SET format_verdict=?, format_reason=?, format_score=?,
+                              format_detail=?, updated_at=? WHERE page_id=?""",
+            (pv.verdict, pv.reason, pv.score, detail, time.time(), page_id))
+        self.con.commit()
+
+    def format_result(self, page_id: str) -> tuple[str, str, float, str] | None:
+        """記録済みの (format_verdict, format_reason, format_score,
+        format_detail)。行が無ければ None（#45 再利用ページの「既存結果が
+        あるか」判定に使う・08 §2.4.2）。
+        """
+        row = self.con.execute(
+            """SELECT format_verdict, format_reason, format_score, format_detail
+               FROM page WHERE page_id=?""", (page_id,)).fetchone()
+        return tuple(row) if row else None
 
     def _rows(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         """Row 形式で取得する。例外時も row_factory を必ず戻す（レビュー M-21）。
