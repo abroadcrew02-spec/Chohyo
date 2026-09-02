@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1397,6 +1397,133 @@ test("AC-1.18 (a): 欄オブジェクトの直列化は「false のときだけ 
   assert.deepEqual(explicitTrue,
     { field_id: "person_住所1", kind: "text", rect: { x: 0, y: 200, w: 10, h: 10 } });
   assert.ok(!("output" in explicitTrue));
+});
+
+// ---------------------------------------------------------------- issue #69 Q-H3
+// Editor のグローバル keydown は実行タブ表示中も生きていて、Delete で欄が
+// 消える・ボタンにフォーカスがある状態で Space を押すとボタンのクリックが
+// 奪われる事故があった。判定を純関数 keyAction に切り出して固定する
+const keyEv = (over = {}) => ({ code: "", key: "", shiftKey: false,
+  ctrlKey: false, metaKey: false, ...over });
+const keyCtx = (over = {}) => ({ active: true, typing: false,
+  isButtonFocused: false, hasSel: true, ...over });
+
+test("Q-H3: 非アクティブ（実行タブ表示中）は種類を問わず常に null を返す", () => {
+  assert.equal(keyAction(keyEv({ key: "Delete" }), keyCtx({ active: false })), null);
+  assert.equal(keyAction(keyEv({ key: "ArrowLeft" }), keyCtx({ active: false })), null);
+  assert.equal(keyAction(keyEv({ code: "Space" }), keyCtx({ active: false })), null);
+  assert.equal(keyAction(keyEv({ key: "z", ctrlKey: true }), keyCtx({ active: false })), null);
+  assert.equal(keyAction(keyEv({ key: "Escape" }), keyCtx({ active: false })), null);
+});
+
+test("Q-H3: ボタンにフォーカスがある間の Space は null（preventDefault されない＝ボタンのクリックに譲る）", () => {
+  const r = keyAction(keyEv({ code: "Space" }), keyCtx({ isButtonFocused: true }));
+  assert.equal(r, null);
+});
+
+test("Q-H3: 通常入力欄にフォーカスがある間の Space も typing 扱いで null になる（ボタンだけの特例ではない）", () => {
+  const r = keyAction(keyEv({ code: "Space" }), keyCtx({ typing: true, isButtonFocused: false }));
+  assert.equal(r, null);
+});
+
+test("Q-H3: アクティブ・非 typing・選択ありなら Delete は delete アクション（preventDefault: true）", () => {
+  const r = keyAction(keyEv({ key: "Delete" }), keyCtx());
+  assert.deepEqual(r, { action: { type: "delete" }, preventDefault: true });
+});
+
+test("Q-H3: 入力欄にフォーカスがある間の Delete は null（テキスト編集を優先）", () => {
+  const r = keyAction(keyEv({ key: "Delete" }), keyCtx({ typing: true }));
+  assert.equal(r, null);
+});
+
+test("Q-H3: Shift+矢印キーは10pxのnudgeアクションを返す", () => {
+  const r = keyAction(keyEv({ key: "ArrowUp", shiftKey: true }), keyCtx());
+  assert.deepEqual(r, { action: { type: "nudge", dx: 0, dy: -10 }, preventDefault: true });
+});
+
+// ---------------------------------------------------------------- issue #69 Q-H2
+// 編集画面の保存は範囲外（面のどちらにも入らない）欄/表/除外領域を無言で
+// 欠落させていた——画像を開き直すと H が変わり、過去の座標が範囲外に
+// なることがある。① clampRect で移動・リサイズ・新規作成の出口を塞ぎ、
+// ② outOfFaceElements + buildTemplateJson の droppedCount で保存時に
+// 検知できることを固定する
+test("Q-H2 clampRect: 負の座標は 0 へ丸められる", () => {
+  const r = clampRect({ x: -10, y: -20, w: 100, h: 50 }, 1000, 1000);
+  assert.deepEqual(r, { x: 0, y: 0, w: 100, h: 50 });
+});
+
+test("Q-H2 clampRect: 右下へのはみ出しは矩形の大きさを保ったまま位置だけ戻す", () => {
+  const r = clampRect({ x: 950, y: 980, w: 100, h: 50 }, 1000, 1000);
+  assert.deepEqual(r, { x: 900, y: 950, w: 100, h: 50 });
+});
+
+test("Q-H2 clampRect: 面より大きい矩形は面いっぱいまで縮められる", () => {
+  const r = clampRect({ x: 10, y: 10, w: 2000, h: 3000 }, 1000, 1000);
+  assert.deepEqual(r, { x: 0, y: 0, w: 1000, h: 1000 });
+});
+
+test("Q-H2: clampRect を毎回の出口で通すと連続 nudge でも y が 0 未満にならない", () => {
+  const W = 2490, H = 1880;
+  let r = { x: 100, y: 3, w: 50, h: 50 };
+  for (let i = 0; i < 10; i++) r = clampRect({ ...r, y: r.y - 1 }, W, H);
+  assert.equal(r.y, 0, `連続 nudge の末尾で y が負になった: ${r.y}`);
+});
+
+test("Q-H2 outOfFaceElements: y=-5 の欄と y>=H の欄を id で返す", () => {
+  const H = 1880, splitY = 940;
+  const fields = [
+    { uid: "u1", field_id: "f_neg", kind: "text", marks: [],
+      rect: { x: 0, y: -5, w: 10, h: 10 } },
+    { uid: "u2", field_id: "f_over", kind: "text", marks: [],
+      rect: { x: 0, y: H, w: 10, h: 10 } },
+    { uid: "u3", field_id: "f_ok", kind: "text", marks: [],
+      rect: { x: 0, y: 100, w: 10, h: 10 } },
+  ];
+  const out = outOfFaceElements({ fields, tables: [], excls: [], splitY, H });
+  assert.deepEqual(out.slice().sort(), ["f_neg", "f_over"]);
+});
+
+test("Q-H2 buildTemplateJson: clamp 済み入力なら droppedCount=0 で全要素を書く（欠落ゼロ）", () => {
+  const W = 2490, H = 3510, splitY = 1880;
+  const fields = [
+    { uid: "u1", field_id: "f1", kind: "text", marks: [],
+      rect: { x: 10, y: 10, w: 100, h: 50 } },
+    { uid: "u2", field_id: "f2", kind: "text", marks: [],
+      rect: { x: 10, y: 2000, w: 100, h: 50 } },
+  ];
+  const tables = [
+    { uid: "t1", table_id: "tbl1", row_pitch: 100, row_height: 90,
+      blocks: [{ x: 200, y: 600, rows: 3 }],
+      columns: [{ name: "c1", x_offset: 0, width: 100, kind: "text", subfields: "", marks: [] }] },
+  ];
+  const excls = [{ uid: "e1", id: "excl_1", rect: { x: 50, y: 50, w: 100, h: 100 } }];
+  const meta = { template_id: "t", render_dpi: 300, image: null, record: { pages: 1 } };
+  const { template, droppedCount } = buildTemplateJson({ fields, tables, excls, splitY, W, H, meta });
+  assert.equal(droppedCount, 0);
+  assert.equal(template.faces[0].fields.length + template.faces[1].fields.length, fields.length);
+  assert.equal(template.faces[0].tables.length + template.faces[1].tables.length, tables.length);
+  assert.equal(
+    template.faces[0].exclusions.length + template.faces[1].exclusions.length, excls.length);
+});
+
+test("Q-H2 (L-Q1): fieldsForFace と outOfFaceElements の面判定述語が一致する", () => {
+  const H = 1000, splitY = 400;
+  const fields = [
+    { uid: "u1", field_id: "a", kind: "text", marks: [], rect: { x: 0, y: -1, w: 10, h: 10 } },
+    { uid: "u2", field_id: "b", kind: "text", marks: [], rect: { x: 0, y: 0, w: 10, h: 10 } },
+    { uid: "u3", field_id: "c", kind: "text", marks: [], rect: { x: 0, y: 399, w: 10, h: 10 } },
+    { uid: "u4", field_id: "d", kind: "text", marks: [], rect: { x: 0, y: 400, w: 10, h: 10 } },
+    { uid: "u5", field_id: "e", kind: "text", marks: [], rect: { x: 0, y: 999, w: 10, h: 10 } },
+    { uid: "u6", field_id: "f", kind: "text", marks: [], rect: { x: 0, y: 1000, w: 10, h: 10 } },
+  ];
+  const inFront = new Set(fieldsForFace(fields, "front", splitY, H).map((f) => f.field_id));
+  const inBack = new Set(fieldsForFace(fields, "back", splitY, H).map((f) => f.field_id));
+  const outIds = new Set(outOfFaceElements({ fields, tables: [], excls: [], splitY, H }));
+  for (const f of fields) {
+    const coveredByFace = inFront.has(f.field_id) || inBack.has(f.field_id);
+    assert.equal(coveredByFace, !outIds.has(f.field_id),
+      `${f.field_id}: fieldsForFace と outOfFaceElements の判定が食い違う`);
+  }
 });
 
 // ---------------------------------------------------------------- ウィンドウサイズ最終仕様

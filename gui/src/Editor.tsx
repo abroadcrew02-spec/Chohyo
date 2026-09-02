@@ -18,7 +18,7 @@ type Field = { uid: string; field_id: string; kind: "text" | "choice"; rect: Rec
                extras?: Rect[];
                // 出力列に出すか（issue #66 出力列制御 MVP・FR-1.1）。省略/undefined
                // は true と同義（既存テンプレ互換・FR-1.7）。false のときだけ
-               // buildTemplate が JSON に書く。枠・座標・読み取りには影響しない
+               // buildTemplateJson が JSON に書く。枠・座標・読み取りには影響しない
                // （P3-a：resolveOverlaps の入力から外さない）
                output?: boolean };
 type ColMark = { value: string; x_offset: number; width: number; y_offset?: number; height?: number };
@@ -378,7 +378,7 @@ export function extraIndexValid(
 /// 出力する（既存テンプレ互換・FR-1.7）。
 export const isOutput = (item: { output?: boolean }): boolean => item.output !== false;
 
-/// buildTemplate が output 属性を JSON へどう書くかの規則（FR-1.1 B-確定・
+/// buildTemplateJson が output 属性を JSON へどう書くかの規則（FR-1.1 B-確定・
 /// B-S4）。false のときだけ書く（省略時 true＝出力する）——無関係な保存で
 /// template_hash を動かさないため。Field・Column の両シリアライズが同じ
 /// 規則を1箇所から呼ぶことで、書き方が2箇所で食い違う事故を防ぐ。
@@ -592,14 +592,127 @@ export function orderChangeReportNote(
 }
 
 /// ある面（表面/裏面）に属する単発欄だけを、配列順を保ったまま取り出す
-/// （issue #66 段7・AC-2.1）。buildTemplate の face() 内の inFace 判定と
-/// 同じ述語——ここで抽出することで「並べ替え後に buildTemplate が書く
-/// 配列順が実際に変わる」ことをテストできる（buildTemplate 自体はコンポーネント
-/// の閉包状態に依存し export できないため）
+/// （issue #66 段7・AC-2.1）。buildTemplateJson の face() 内の inFace 判定と
+/// 同じ述語——ここで抽出することで「並べ替え後に buildTemplateJson が書く
+/// 配列順が実際に変わる」ことをテストできる
+// fieldsForFace と outOfFaceElements で共有する面range（L-Q1: 両者の面判定が
+// ズレると「fieldsForFace には入るのに outOfFaceElements は範囲外と言う」
+// という矛盾が起きうる。述語を1箇所に集約して同じ計算を使わせることで防ぐ）
+function faceRangeContains(y: number, faceId: "front" | "back",
+  splitY: number, imgH: number): boolean {
+  const [y0, y1] = faceId === "front" ? [0, splitY] : [splitY, imgH];
+  return y >= y0 && y < y1;
+}
+
 export function fieldsForFace(
   fields: Field[], faceId: "front" | "back", splitY: number, imgH: number): Field[] {
-  const [y0, y1] = faceId === "front" ? [0, splitY] : [splitY, imgH];
-  return fields.filter((f) => f.rect.y >= y0 && f.rect.y < y1);
+  return fields.filter((f) => faceRangeContains(f.rect.y, faceId, splitY, imgH));
+}
+
+/// 矩形をページ全体 [0,W)×[0,H) の中へ収める（issue #69 Q-H2）。画像を
+/// 開き直すと過去の座標がキャンバス外へはみ出すことがあり、そのまま保存すると
+/// buildTemplateJson の面 filter に無言で落ちる（欄が保存のたびに勝手に
+/// 消えるのに保存自体は「成功」と表示される）。移動・リサイズ・新規作成の
+/// 出口（applySelRect・nudge・norm・onMove の moveTable）に集約して置くことで、
+/// はみ出しは「その場で見えて直る」形にする——保存時点で初めて気づく事故を防ぐ
+export function clampRect(r: Rect, W: number, H: number): Rect {
+  const w = Math.min(Math.max(r.w, 0), Math.max(W, 0));
+  const h = Math.min(Math.max(r.h, 0), Math.max(H, 0));
+  const x = Math.min(Math.max(r.x, 0), Math.max(W - w, 0));
+  const y = Math.min(Math.max(r.y, 0), Math.max(H - h, 0));
+  return { x, y, w, h };
+}
+
+/// 面（表面/裏面）のどちらにも入らない要素の id を集める（issue #69 Q-H2）。
+/// buildTemplateJson は表面/裏面それぞれの inFace で fields/tables/excls を
+/// フィルタするため、どちらの面にも入らない要素は最終 JSON から**無言で**
+/// 消える。判定は fieldsForFace と同じ面range を使い、述語のズレを起こさない
+/// （L-Q1: fieldsForFace の面判定と一致させる）。保存直前（saveTemplateInner）
+/// で呼び、非空なら保存を止めて id を列挙する——保存前確認モーダルには乗せない
+/// （「承知の上で続行」に安全な続行が存在しないため・reorderCarveBlockedNotice
+/// と同型）
+export function outOfFaceElements(input: {
+  fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number; H: number;
+}): string[] {
+  const { fields, tables, excls, splitY, H } = input;
+  const inAnyFace = (y: number) =>
+    faceRangeContains(y, "front", splitY, H) || faceRangeContains(y, "back", splitY, H);
+  const out: string[] = [];
+  for (const f of fields) if (!inAnyFace(f.rect.y)) out.push(f.field_id);
+  for (const t of tables) if (t.blocks[0] && !inAnyFace(t.blocks[0].y)) out.push(t.table_id);
+  for (const e of excls) if (!inAnyFace(e.rect.y)) out.push(e.id);
+  return out;
+}
+
+/// buildTemplate の純粋版（issue #69 Q-H2）。画面の state（フック）に依存
+/// しないため node で直接テストできる——1,883行側で唯一テストできなかった
+/// 最重要の直列化ロジックを可視化する。保存直前に outOfFaceElements が
+/// 範囲外要素を検知して保存自体を止めるため、ここでの面 filter は通常は
+/// 何も落とさない前提だが、想定外の不整合を握り潰さないよう「落とした件数」を
+/// droppedCount として返す（呼び出し側が無視できない形の二重防御）
+export function buildTemplateJson(input: {
+  fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number;
+  W: number; H: number;
+  meta: { template_id: string; render_dpi: number;
+          image: { width: number; height: number } | null;
+          record: Record<string, unknown> };
+}): { template: unknown; droppedCount: number } {
+  const { fields, tables, excls, splitY, W, H, meta } = input;
+  const face = (id: "front" | "back") => {
+    const [y0, y1] = id === "front" ? [0, splitY] : [splitY, H];
+    const inFace = (y: number) => y >= y0 && y < y1;
+    const facedFields = fieldsForFace(fields, id, splitY, H);
+    const facedExcls = excls.filter((e) => inFace(e.rect.y));
+    const facedTables = tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y));
+    return {
+      face_id: id,
+      source: { page_offset: 0, rect: { x: 0, y: y0, w: W, h: y1 - y0 } },
+      exclusions: facedExcls.map((e) => ({
+        id: e.id, rect: { ...e.rect, y: e.rect.y - y0 } })),
+      // 配列順をそのまま書く（既存挙動・変更なし）。抽出先は fieldsForFace
+      // （issue #66 段7・AC-2.1・付録A・fieldList.filter(inFace) と同じ述語）
+      fields: facedFields.map((f) => ({
+        field_id: f.field_id, kind: f.kind,
+        rect: { ...f.rect, y: f.rect.y - y0 },
+        ...(f.kind === "text" && f.fallback
+          ? { fallback_rect: { ...f.fallback, y: f.fallback.y - y0 } } : {}),
+        ...(f.kind === "text" && f.extras?.length
+          ? { extra_rects: f.extras.map((r) => ({ ...r, y: r.y - y0 })) } : {}),
+        ...(f.normalize && f.kind === "text" ? { normalize: f.normalize } : {}),
+        ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
+          value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}),
+        // false のときだけ書く（省略時 true・FR-1.1 B-確定）。無関係な保存で
+        // template_hash を動かさない（B-S4）
+        ...outputAttrForJson(f.output) })),
+      tables: facedTables.map((t) => ({
+        table_id: t.table_id, row_pitch: t.row_pitch,
+        row_height: t.row_height,
+        blocks: t.blocks.map((b) => ({ origin: { x: b.x, y: b.y - y0 }, rows: b.rows })),
+        columns: t.columns.map((c) => ({
+          name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
+          ...(c.subfields.trim()
+            ? { subfields: c.subfields.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
+          ...(c.normalize && c.kind === "text" && !c.subfields.trim()
+            ? { normalize: c.normalize } : {}),
+          ...(c.kind === "choice" ? { choice_marks: c.marks } : {}),
+          ...outputAttrForJson(c.output) })) })),
+    };
+  };
+  const front = face("front");
+  const back = face("back");
+  const droppedCount =
+    (fields.length - (front.fields.length + back.fields.length))
+    + (excls.length - (front.exclusions.length + back.exclusions.length))
+    + (tables.length - (front.tables.length + back.tables.length));
+  return {
+    template: {
+      schema_version: 1, template_id: meta.template_id,
+      render_dpi: meta.render_dpi,
+      image: { width: W, height: H }, record: meta.record,
+      faces: [front, back],
+    },
+    droppedCount,
+  };
 }
 
 /// 出力列タブでの単発欄の並べ替え（issue #66 段7・FR-2.1・AC-2.1・AC-2.2・
@@ -847,7 +960,65 @@ export function applyRectToField(f: Field, r: Rect): Field {
   return { ...f, rect: r, marks: remapMarks(f, r) };
 }
 
-export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
+// キー入力の実行結果（副作用そのものではなく「何をすべきか」の記述）。
+// keyRef.current 側がこれを見て実際の関数呼び出し・setState を行う
+export type KeyActionType =
+  | { type: "space-down" }
+  | { type: "undo" } | { type: "redo" }
+  | { type: "fit" } | { type: "zoom-reset" } | { type: "zoom-in" } | { type: "zoom-out" }
+  | { type: "escape" }
+  | { type: "delete" }
+  | { type: "nudge"; dx: number; dy: number };
+export type KeyAction = { action: KeyActionType; preventDefault: boolean };
+
+/// キー入力の判定だけを行う純関数（issue #69 Q-H3）。実際の副作用（Undo・
+/// 削除・nudge 等の呼び出し）は keyRef.current 側が返り値の action を見て
+/// 行う。ここを純関数に切り出すことで、フックの外（node）から
+/// 「実行タブ表示中（!active）は常に null」「ボタンにフォーカスがある間の
+/// Space は素通りする（preventDefault されない）」を直接固定できる
+export function keyAction(
+  e: { code: string; key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
+  ctx: { active: boolean; typing: boolean; isButtonFocused: boolean; hasSel: boolean },
+): KeyAction | null {
+  // Editor が表示されていないタブ（実行タブ等）ではキー入力を一切拾わない。
+  // 旧実装はグローバル window リスナーがタブ非表示中も生き続けていたため、
+  // 実行タブで Delete を押すとテンプレートの欄が消える事故があった
+  if (!ctx.active) return null;
+  if (e.code === "Space" && !ctx.typing) {
+    // ボタンにフォーカスがある間の Space はボタン自身のクリック起動に譲る。
+    // ここを typing 扱いにはしない——それだと Delete/矢印キーまで死ぬため、
+    // Space だけをこの1行で除外する
+    if (ctx.isButtonFocused) return null;
+    // ページスクロールとボタンの再押下を防ぐ。押しっぱなしのリピートは
+    // 呼び出し側（spaceRef 済みなら無視）で吸収する
+    return { action: { type: "space-down" }, preventDefault: true };
+  }
+  if (ctx.typing) return null;   // 入力欄では通常のテキスト編集を優先する
+  const ctrl = e.ctrlKey || e.metaKey;
+  if (ctrl && e.key.toLowerCase() === "z")
+    return { action: { type: e.shiftKey ? "redo" : "undo" }, preventDefault: true };
+  if (ctrl && e.key.toLowerCase() === "y")
+    return { action: { type: "redo" }, preventDefault: true };
+  if (ctrl && e.key === "0") return { action: { type: "fit" }, preventDefault: true };
+  if (ctrl && e.key === "1") return { action: { type: "zoom-reset" }, preventDefault: true };
+  if (ctrl && (e.key === "+" || e.key === "="))
+    return { action: { type: "zoom-in" }, preventDefault: true };
+  if (ctrl && e.key === "-") return { action: { type: "zoom-out" }, preventDefault: true };
+  if (e.key === "Escape") return { action: { type: "escape" }, preventDefault: false };
+  if ((e.key === "Delete" || e.key === "Backspace") && ctx.hasSel)
+    return { action: { type: "delete" }, preventDefault: true };
+  if (e.key.startsWith("Arrow") && ctx.hasSel) {
+    const step = e.shiftKey ? 10 : 1;
+    return { action: { type: "nudge",
+      dx: e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0,
+      dy: e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0 },
+      preventDefault: true };
+  }
+  return null;
+}
+
+export default function Editor(
+  { onDirty, active }: { onDirty: (d: boolean) => void; active: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
@@ -952,6 +1123,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
                         image: { width: number; height: number } | null;
                         record: Record<string, unknown> }>({
     template_id: "chouhyo-v1", render_dpi: 300, image: null, record: { pages: 1 } });
+
+  // 現在のキャンバス寸法（優先順: 実際に開いた画像 > 開いたテンプレートの
+  // image > 新規既定値）。座標クランプの全出口とテンプレ書き出しで同じ
+  // 優先順を使うことで、クランプ先と実際に書き出す寸法がずれるのを防ぐ
+  const curSize = (): { W: number; H: number } => ({
+    W: imgSize?.w ?? meta.current.image?.width ?? 2490,
+    H: imgSize?.h ?? meta.current.image?.height ?? 3510,
+  });
 
   const markDirty = useCallback((d: boolean) => { setDirtyState(d); onDirty(d); }, [onDirty]);
   const nextTableId = () => {
@@ -1398,55 +1577,6 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     await refreshLoadedCounts(p);
   };
 
-  const buildTemplate = (fieldList: Field[] = fields) => {
-    // 優先順: 実際に開いた画像の寸法 > 開いたテンプレートの image > 新規既定値
-    const W = imgSize?.w ?? meta.current.image?.width ?? 2490;
-    const H = imgSize?.h ?? meta.current.image?.height ?? 3510;
-    const face = (id: "front" | "back") => {
-      const [y0, y1] = id === "front" ? [0, splitY] : [splitY, H];
-      const inFace = (y: number) => y >= y0 && y < y1;
-      return {
-        face_id: id,
-        source: { page_offset: 0, rect: { x: 0, y: y0, w: W, h: y1 - y0 } },
-        exclusions: excls.filter((e) => inFace(e.rect.y)).map((e) => ({
-          id: e.id, rect: { ...e.rect, y: e.rect.y - y0 } })),
-        // 配列順をそのまま書く（既存挙動・変更なし）。抽出先は fieldsForFace
-        // （issue #66 段7・AC-2.1・付録A・fieldList.filter(inFace) と同じ述語）
-        fields: fieldsForFace(fieldList, id, splitY, H).map((f) => ({
-          field_id: f.field_id, kind: f.kind,
-          rect: { ...f.rect, y: f.rect.y - y0 },
-          ...(f.kind === "text" && f.fallback
-            ? { fallback_rect: { ...f.fallback, y: f.fallback.y - y0 } } : {}),
-          ...(f.kind === "text" && f.extras?.length
-            ? { extra_rects: f.extras.map((r) => ({ ...r, y: r.y - y0 })) } : {}),
-          ...(f.normalize && f.kind === "text" ? { normalize: f.normalize } : {}),
-          ...(f.kind === "choice" ? { choice_marks: f.marks.map((m) => ({
-            value: m.value, rect: { ...m.rect, y: m.rect.y - y0 } })) } : {}),
-          // false のときだけ書く（省略時 true・FR-1.1 B-確定）。無関係な保存で
-          // template_hash を動かさない（B-S4）
-          ...outputAttrForJson(f.output) })),
-        tables: tables.filter((t) => t.blocks[0] && inFace(t.blocks[0].y)).map((t) => ({
-          table_id: t.table_id, row_pitch: t.row_pitch,
-          row_height: t.row_height,
-          blocks: t.blocks.map((b) => ({ origin: { x: b.x, y: b.y - y0 }, rows: b.rows })),
-          columns: t.columns.map((c) => ({
-            name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
-            ...(c.subfields.trim()
-              ? { subfields: c.subfields.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
-            ...(c.normalize && c.kind === "text" && !c.subfields.trim()
-              ? { normalize: c.normalize } : {}),
-            ...(c.kind === "choice" ? { choice_marks: c.marks } : {}),
-            ...outputAttrForJson(c.output) })) })),
-      };
-    };
-    return {
-      schema_version: 1, template_id: meta.current.template_id,
-      render_dpi: meta.current.render_dpi,
-      image: { width: W, height: H }, record: meta.current.record,
-      faces: [face("front"), face("back")],
-    };
-  };
-
   // 確認ダイアログでキャンセルされたときの共通後始末。ファイルには一切
   // 触れていない時点で呼ぶ（issue #56 T1・T3・#59 H-1・#55: 確認なしの
   // 経路では上書きしない）
@@ -1531,6 +1661,22 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return;
     }
 
+    // 面の範囲外に落ちた要素があれば保存を止める（issue #69 Q-H2）。画像を
+    // 開き直すと H が変わり、過去の座標が範囲外になっていることがある——
+    // このまま保存すると buildTemplateJson の面 filter で無言破棄され、
+    // 除外領域（マスク）なら要配慮情報がそのまま Vision へ送られてしまう。
+    // 「承知の上で続行」に安全な続行が無いため、保存前確認モーダルには乗せず
+    // ここで止める（reorderCarveBlockedNotice と同型）
+    const { W, H } = curSize();
+    const outOfFace = outOfFaceElements(
+      { fields: resolved.fields, tables, excls, splitY, H });
+    if (outOfFace.length) {
+      setMsg("");
+      setErrMsg(`保存していません: 面の範囲外にある要素があります: ${outOfFace.join("、")}。`
+        + "画像を開き直すと座標が範囲外になることがあります。位置を修正してから保存してください。");
+      return;
+    }
+
     if (resolved.carved.length) {
       setFields(resolved.fields);
       setSel(null);
@@ -1556,7 +1702,17 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     const currentExclCount = currentExclSnapshot.length;
     const exclNotice = exclusionChangeNotice(loadedExcls, currentExclSnapshot);
 
-    const content = JSON.stringify(buildTemplate(resolved.fields), null, 2);
+    const built = buildTemplateJson({ fields: resolved.fields, tables, excls, splitY,
+      W, H, meta: meta.current });
+    if (built.droppedCount > 0) {
+      // 二重防御: 上の outOfFaceElements を通り抜けたのに面 filter で
+      // 落ちた要素がある——想定外の不整合なので握り潰さず保存を止める
+      setMsg("");
+      setErrMsg(`保存していません: テンプレートの書き出しで ${built.droppedCount} 件の要素が`
+        + "面の範囲外として除外されました（内部不整合のため保存を中止しました）。");
+      return;
+    }
+    const content = JSON.stringify(built.template, null, 2);
 
     // トランザクショナルな保存: まず一時ファイルへ書き、コア検証が ok の
     // ときだけ本番パスへ確定する。以前は検証より先にファイルを書き切って
@@ -1972,9 +2128,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
       return;
     }
     const dx = p.x - d.start.x, dy = p.y - d.start.y;
-    const norm = (a: { x: number; y: number }, b: { x: number; y: number }): Rect => ({
-      x: Math.round(Math.min(a.x, b.x)), y: Math.round(Math.min(a.y, b.y)),
-      w: Math.round(Math.abs(b.x - a.x)), h: Math.round(Math.abs(b.y - a.y)) });
+    const { W, H } = curSize();
+    // 新規に描く矩形はキャンバス範囲へクランプする（issue #69 Q-H2）。
+    // クランプしないと端でドラッグを始めた枠が範囲外のまま作られ、保存時に
+    // 無言で欠落する（出口を集約する4箇所の1つ）
+    const norm = (a: { x: number; y: number }, b: { x: number; y: number }): Rect =>
+      clampRect({
+        x: Math.round(Math.min(a.x, b.x)), y: Math.round(Math.min(a.y, b.y)),
+        w: Math.round(Math.abs(b.x - a.x)), h: Math.round(Math.abs(b.y - a.y)) }, W, H);
     if (d.mode.startsWith("draw-")) { setPending(norm(d.start, p)); return; }
     if (!sel) return;
     if (d.mode === "move" && d.orig) {
@@ -1985,8 +2146,14 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
     } else if (d.mode === "moveTable" && d.extra) {
       const t = tables.find((x) => x.uid === sel.uid);
       if (t) {
-        const ddx = Math.round(d.extra.x + dx) - t.blocks[0].x;
-        const ddy = Math.round(d.extra.y + dy) - t.blocks[0].y;
+        // block[0]（アンカー）をキャンバス範囲へクランプしてから、そこで
+        // 決まった移動量を全 block へ一様に適用する（issue #69 Q-H2）。
+        // block ごとに個別クランプすると行間の相対位置が崩れるため、
+        // アンカー1点をクランプして差分を全体へ伝播させる
+        const target = clampRect(
+          { x: Math.round(d.extra.x + dx), y: Math.round(d.extra.y + dy), w: 1, h: 1 }, W, H);
+        const ddx = target.x - t.blocks[0].x;
+        const ddy = target.y - t.blocks[0].y;
         updateTable(sel.uid, { blocks: t.blocks.map((b) =>
           ({ ...b, x: b.x + ddx, y: b.y + ddy })) });
       }
@@ -2086,31 +2253,32 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   };
   const nudge = (dx: number, dy: number) => {
     if (!sel) return;
-    if (sel.type === "field") {
-      if (sel.part === "fallback")
-        setFields((fs) => fs.map((f) => f.uid === sel.uid && f.fallback
-          ? { ...f, fallback: { ...f.fallback,
-                                x: f.fallback.x + dx, y: f.fallback.y + dy } } : f));
-      else if (sel.part?.startsWith("extra:")) {
-        const i = Number(sel.part.slice(6));
-        // 添字が古いまま（carve で extras が再構築された後）だと存在しない/
-        // 別の領域を指す。無効なら何もしない（issue #60 M-4）
-        if (!extraIndexValid(fields.find((f) => f.uid === sel.uid), i)) return;
-        setFields((fs) => fs.map((f) => f.uid === sel.uid
-          ? { ...f, extras: (f.extras ?? []).map((ex, j) =>
-              j === i ? { ...ex, x: ex.x + dx, y: ex.y + dy } : ex) } : f));
-      } else
-        // マークも一緒に動かす（issue #48 と同じ経路）
-        setFields((fs) => fs.map((f) => f.uid === sel.uid
-          ? applyRectToField(f, { ...f.rect, x: f.rect.x + dx, y: f.rect.y + dy }) : f));
+    if (sel.type === "table") {
+      const t = tables.find((x) => x.uid === sel.uid);
+      if (t && t.blocks[0]) {
+        // block[0]（アンカー）をキャンバス範囲へクランプし、そこで決まった
+        // 移動量を全 block へ一様に適用する（issue #69 Q-H2・onMove の
+        // moveTable と同じ考え方）。block ごとに個別クランプすると行間の
+        // 相対位置が崩れるため、アンカー1点をクランプして差分を伝播させる
+        const { W, H } = curSize();
+        const target = clampRect(
+          { x: t.blocks[0].x + dx, y: t.blocks[0].y + dy, w: 1, h: 1 }, W, H);
+        const ddx = target.x - t.blocks[0].x;
+        const ddy = target.y - t.blocks[0].y;
+        setTables((ts) => ts.map((x) => x.uid === sel.uid
+          ? { ...x, blocks: x.blocks.map((b) => ({ ...b, x: b.x + ddx, y: b.y + ddy })) } : x));
+      }
+      markDirty(true);
+      return;
     }
-    if (sel.type === "excl")
-      setExcls((es) => es.map((x) => x.uid === sel.uid
-        ? { ...x, rect: { ...x.rect, x: x.rect.x + dx, y: x.rect.y + dy } } : x));
-    if (sel.type === "table")
-      setTables((ts) => ts.map((t) => t.uid === sel.uid
-        ? { ...t, blocks: t.blocks.map((b) => ({ ...b, x: b.x + dx, y: b.y + dy })) } : t));
-    markDirty(true);
+    // field（主／参照先／追加領域）・excl は目標矩形を作って applySelRect へ
+    // 委譲する（issue #69 Q-H2）。旧実装はこの分岐を絶対座標の差分適用として
+    // ここへ複製していたが、applySelRect が既に同じ分岐（添字無効チェック
+    // 込み）を持つため重複していた——委譲することで判定を1箇所にまとめ、
+    // クランプ（はみ出し防止）も自動で効くようにする
+    const cur = selectedRect();
+    if (!cur) return;   // 添字が無効な extra 等（旧: extraIndexValid の早期 return）
+    applySelRect({ ...cur, x: cur.x + dx, y: cur.y + dy });
   };
 
   // 履歴: 編集状態が 400ms 静止したら1コマとして積む（ドラッグ1回=1コマ）。
@@ -2171,38 +2339,49 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // ref 経由で最新版を呼ぶ（依存配列で張り直すとキー押下中に外れる）
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
-    const tag = (document.activeElement?.tagName ?? "").toLowerCase();
-    const typing = tag === "input" || tag === "textarea" || tag === "select";
-    if (e.code === "Space" && !typing) {
-      // ページスクロールとボタンの再押下を防ぐ。押しっぱなしのリピートは無視
-      e.preventDefault();
-      if (!spaceRef.current) { spaceRef.current = true; setSpaceHeld(true); }
-      return;
-    }
-    if (typing) return;   // 入力欄では通常のテキスト編集を優先する
-    const ctrl = e.ctrlKey || e.metaKey;
-    if (ctrl && e.key.toLowerCase() === "z") {
-      e.preventDefault(); (e.shiftKey ? redoEdit : undoEdit)(); return;
-    }
-    if (ctrl && e.key.toLowerCase() === "y") { e.preventDefault(); redoEdit(); return; }
-    if (ctrl && e.key === "0") { e.preventDefault(); fitView(); return; }
-    if (ctrl && e.key === "1") { e.preventDefault(); zoomBy(1 / zoom); return; }
-    if (ctrl && (e.key === "+" || e.key === "=")) { e.preventDefault(); zoomBy(1.15); return; }
-    if (ctrl && e.key === "-") { e.preventDefault(); zoomBy(1 / 1.15); return; }
-    if (e.key === "Escape") {
-      setSel(null); setPending(null); setFbTarget(null);
-      setExTarget(null); setMergeTarget(null); drag.current = null; return;
-    }
-    if ((e.key === "Delete" || e.key === "Backspace") && sel) {
-      e.preventDefault(); removeSel(); return;
-    }
-    if (e.key.startsWith("Arrow") && sel) {
-      e.preventDefault();
-      const step = e.shiftKey ? 10 : 1;
-      nudge(e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0,
-            e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0);
+    // 実行タブ表示中などはここで即 return（issue #69 Q-H3）。ref は毎レンダー
+    // 再代入されるため、この時点の `active` は常に最新——追加の ref は不要
+    if (!active) return;
+    const el = document.activeElement as HTMLElement | null;
+    const tag = (el?.tagName ?? "").toLowerCase();
+    // 入力欄相当の判定に isContentEditable を加える（issue #69 Q-H3）。
+    // tag 判定（input/textarea/select）だけでは contentEditable 要素での
+    // 編集中に Delete 等のショートカットが割り込みうる
+    const typing = tag === "input" || tag === "textarea" || tag === "select"
+      || !!el?.isContentEditable;
+    const ka = keyAction(e,
+      { active, typing, isButtonFocused: tag === "button", hasSel: !!sel });
+    if (!ka) return;
+    if (ka.preventDefault) e.preventDefault();
+    switch (ka.action.type) {
+      case "space-down":
+        if (!spaceRef.current) { spaceRef.current = true; setSpaceHeld(true); }
+        break;
+      case "undo": undoEdit(); break;
+      case "redo": redoEdit(); break;
+      case "fit": fitView(); break;
+      case "zoom-reset": zoomBy(1 / zoom); break;
+      case "zoom-in": zoomBy(1.15); break;
+      case "zoom-out": zoomBy(1 / 1.15); break;
+      case "escape":
+        setSel(null); setPending(null); setFbTarget(null);
+        setExTarget(null); setMergeTarget(null); drag.current = null;
+        break;
+      case "delete": removeSel(); break;
+      case "nudge": nudge(ka.action.dx, ka.action.dy); break;
     }
   };
+  // 実行タブへ切り替わるなど非アクティブ化された瞬間の後始末（issue #69
+  // Q-H3）。Space パン中にタブが切り替わると window の keyup を取りこぼし、
+  // 編集タブへ戻ったときに「パン状態が固まって残る」ため、ここで解除する。
+  // ドラッグ中の掴み情報（drag.current）も同様に破棄する
+  useEffect(() => {
+    if (!active) {
+      spaceRef.current = false;
+      setSpaceHeld(false);
+      drag.current = null;
+    }
+  }, [active]);
   useEffect(() => {
     const kd = (ev: KeyboardEvent) => keyRef.current(ev);
     const ku = (ev: KeyboardEvent) => {
@@ -2224,23 +2403,27 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // ---------- 選択対象の更新 ----------
   const applySelRect = (r: Rect) => {
     if (!sel) return;
+    // 座標変更の出口（issue #69 Q-H2）。ここで一度クランプしておけば、
+    // ドラッグ移動・リサイズ・nudge のすべてがキャンバス範囲内に収まる
+    const { W, H } = curSize();
+    const clamped = clampRect(r, W, H);
     if (sel.type === "field") {
       if (sel.part === "fallback")
         setFields((fs) => fs.map((f) => f.uid === sel.uid
-          ? { ...f, fallback: r } : f));
+          ? { ...f, fallback: clamped } : f));
       else if (sel.part?.startsWith("extra:")) {
         const i = Number(sel.part.slice(6));
         // 添字が古いまま（carve 後）だと存在しない/別の領域を指す。
         // 無効なら何もしない（issue #60 M-4）
         if (!extraIndexValid(fields.find((f) => f.uid === sel.uid), i)) return;
         setFields((fs) => fs.map((f) => f.uid === sel.uid
-          ? { ...f, extras: (f.extras ?? []).map((ex, j) => j === i ? r : ex) } : f));
+          ? { ...f, extras: (f.extras ?? []).map((ex, j) => j === i ? clamped : ex) } : f));
       } else
         setFields((fs) => fs.map((f) => f.uid === sel.uid
-          ? applyRectToField(f, r) : f));
+          ? applyRectToField(f, clamped) : f));
     }
     if (sel.type === "excl")
-      setExcls((es) => es.map((x) => x.uid === sel.uid ? { ...x, rect: r } : x));
+      setExcls((es) => es.map((x) => x.uid === sel.uid ? { ...x, rect: clamped } : x));
     markDirty(true);
   };
   const updateField = (u: string, patch: Partial<Field>) => {
@@ -2577,7 +2760,7 @@ export default function Editor({ onDirty }: { onDirty: (d: boolean) => void }) {
   // AC-2.1〜2.3/2.5/2.8〜2.10 で並べ替えボタンを追加）。枠を1つずつクリックしないと
   // 出力対象外が分からない状態にしない。面見出しで区切り、管理6列は固定表示、
   // 表は1行ユニット（並べ替えボタンなし・[開く]のみ——表ユニットは面の
-  // いちばん後ろに固定される。理由は buildTemplate の面オブジェクトが
+  // いちばん後ろに固定される。理由は buildTemplateJson の面オブジェクトが
   // fields→tables の順で JSON を書く構造そのものにある）。対象外行は列番号「—」。
   // [↑][↓] は同じ面（表面/裏面）の欄どうしでしか動かない——面をまたぐ隣接ボタンは
   // そもそも存在しない（AC-2.2・UI に存在しない構造で担保）

@@ -103,3 +103,39 @@ def test_editor_tab_admin_guardrails(page):
     # 実行タブへ戻れる（未保存なしなので確認は出ない）
     page.locator(".tabs button", has_text="実行").click()
     page.wait_for_selector("text=次の作業（目視確認）")
+
+
+def test_editor_delete_ignored_while_run_tab_active(page):
+    # issue #69 Q-H3: Editor のグローバル keydown が実行タブ表示中も生きて
+    # いたため、実行タブで Delete を押すと編集中の欄が消えていた。テンプレート
+    # 編集タブは state を保ったままマウントし続ける（App.tsx）ので、選択状態を
+    # 作ってからタブを切り替え、Delete を押しても欄が残ることを確認する
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    # 出力列タブから出荷（デモ）テンプレートの欄「person_氏名」を選択する
+    page.get_by_role("tab", name="出力列").click()
+    page.get_by_role("button", name="person_氏名", exact=True).click()
+    # 選択すると「選択中」タブへ自動で戻り、欄の詳細（名前入力）が出る
+    assert page.get_by_text("選択中の欄").is_visible()
+    name_input = page.get_by_label("欄の名前（出力の列名になります）")
+    assert name_input.input_value() == "person_氏名"
+
+    # 実行タブへ切り替える（Editor は active=false になり非表示になるが
+    # アンマウントはされない）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")
+    page.keyboard.press("Delete")
+
+    # テンプレート編集タブへ戻り、欄が消えていない（選択も保持されたまま）
+    # ことを確認する。旧実装ならここで「要素が選択されていません」に変わり、
+    # 出力列一覧から person_氏名 が消えている
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    assert page.get_by_text("選択中の欄").is_visible()
+    assert page.get_by_label("欄の名前（出力の列名になります）").input_value() == "person_氏名"
+    page.get_by_role("tab", name="出力列").click()
+    assert page.get_by_role("button", name="person_氏名", exact=True).is_visible()
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=次の作業（目視確認）")

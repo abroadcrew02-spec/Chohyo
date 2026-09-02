@@ -195,7 +195,7 @@ export default function App() {
         <RunScreen active={tab === "run"} configRev={configRev} />
       </div>
       <div className="editor-wrap" style={{ display: tab === "editor" ? "flex" : "none" }}>
-        <Editor onDirty={(d) => { editorDirty.current = d; }} />
+        <Editor active={tab === "editor"} onDirty={(d) => { editorDirty.current = d; }} />
       </div>
       {showSettings && <Settings onClose={() => { setShowSettings(false);
                                                  setConfigRev((r) => r + 1); }} />}
