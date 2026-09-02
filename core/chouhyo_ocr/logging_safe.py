@@ -16,6 +16,9 @@ _ALLOWED_KEYS = {
     # 帳票の記入値は含まない。出力がどのテンプレート由来かを事後特定できる
     # ようにする
     "template_path", "template_hash",
+    # 入力ページの寸法比（Q-H1・align.align_page の page_scale ログ）。
+    # 記入値ではなく、幅/高さをテンプレート寸法で割った比率のみ
+    "sx", "sy",
 }
 
 _app: logging.Logger | None = None

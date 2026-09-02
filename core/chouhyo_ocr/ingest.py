@@ -51,6 +51,19 @@ class IngestError(RuntimeError):
         self.code = code
 
 
+def _safe_path_arg(p: Path) -> str:
+    """外部コマンド（pdftoppm/pdfinfo）へ渡すパス引数を先頭 `-` から守る
+    （L-S2・CWE-88）。
+
+    入力ファイル名が `-` から始まると、getopt 系の引数パーサがオプションと
+    誤認し、後続引数を巻き込んで意図しない動作をしうる。相対パスの先頭に
+    `./` を付けて「オプションではない」ことを明示する——絶対パス
+    （`C:\\...`）は `-` から始まらないため通常は対象外。
+    """
+    s = str(p)
+    return f"./{s}" if s.startswith("-") else s
+
+
 def pdftoppm_path() -> Path:
     return _poppler_tool("pdftoppm.exe")
 
@@ -67,8 +80,9 @@ def _poppler_tool(name: str) -> Path:
 def pdf_page_count(source: Path) -> int | None:
     """総ページ数（pdfinfo）。取得できなければ None（表示・範囲チェック用の補助）。"""
     try:
-        proc = subprocess.run([str(_poppler_tool("pdfinfo.exe")), str(source)],
-                              capture_output=True, timeout=60)
+        proc = subprocess.run(
+            [str(_poppler_tool("pdfinfo.exe")), _safe_path_arg(source)],
+            capture_output=True, timeout=60)
         for line in proc.stdout.decode("utf-8", errors="replace").splitlines():
             if line.lower().startswith("pages:"):
                 return int(line.split(":", 1)[1].strip())
@@ -124,7 +138,7 @@ def _render_page_ppm(source: Path, dpi: int, page_no: int) -> bytes | None:
     """
     exe = pdftoppm_path()
     args = [str(exe), "-r", str(dpi), "-f", str(page_no), "-l", str(page_no),
-            str(source)]
+            _safe_path_arg(source)]
     try:
         proc = subprocess.run(args, capture_output=True, timeout=300)
     except subprocess.TimeoutExpired as e:

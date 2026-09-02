@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
+from . import logging_safe as log
 from .template import BASE_DPI, Face, Template
 
 COARSE_DILATE = 60  # 粗マスクの膨張量（設計 §6.2: ceil(D*sin(2°)) ≈ 53 → 60・300dpi=BASE_DPI 基準値）
@@ -255,14 +256,51 @@ class AlignError(RuntimeError):
         self.code = code
 
 
+class PageSizeMismatch(AlignError):
+    """入力ページの寸法がテンプレートと噛み合わない（Q-H1）。
+
+    AlignError のサブクラス——既存の except AlignError（cli.cmd_expand_page 等）
+    はそのまま拾う。pipeline.py は「様式不一致」へ倒すため、この型専用の
+    except を AlignError より前に置く（先に拾わないと基底クラスの分岐に
+    落ちて「位置合わせ失敗」になってしまう）。
+    """
+
+
+def page_size_verdict(size: tuple[int, int], template: Template) -> str | None:
+    """入力ページの寸法をテンプレート寸法と照合する純関数（Q-H1）。
+
+    完全一致は要求しない——dpi の丸め・PDF 展開の 1px 単位の差を吸収するため
+    （D-25 の端一致要求は縦の平行移動しか受けず、横向きの歪み・用紙違いは
+    無検証で通っていた）。見るのは「等比か」（アスペクト比の相対差 1%以内）
+    のみで、等倍でも等比拡大でも通す。用紙違い（実測差 約8%）・向き違い
+    （約41%）・切れ（約3.4%）といった粗い事故を確実に止めつつ、dpi 差由来の
+    軽微な差は通す帯として 1% を選んだ（着手前実測: 縦だけ 5% 伸ばした入力が
+    無検査のまま resize され、位置合わせが angle=0/dx=0/dy=0 で「成功」した
+    ——歪んだ内容がそのまま送信される）。
+
+    戻り値: 一致なら None、不一致なら reason 文字列（"aspect_mismatch"）。
+    ログ・例外はここでは出さない（呼び出し元の責務）。
+    """
+    w, h = size
+    tw, th = template.image_size
+    if w <= 0 or h <= 0 or tw <= 0 or th <= 0:
+        return "aspect_mismatch"
+    ratio_in = w / h
+    ratio_tpl = tw / th
+    if abs(ratio_in - ratio_tpl) / ratio_tpl > 0.01:
+        return "aspect_mismatch"
+    return None
+
+
 def align_page(page_img: "Image.Image", template: Template,
                 mask: bool = True) -> tuple[list[AlignedFace], "Image.Image"]:
     """1ページ → 面ごとの位置合わせ結果と、送信用の再結合画像。
 
-    手順（D-25）: 面を探索余白つきで切り出し → 傾き推定・回転 → 罫線射影で
-    平行移動を推定（常に補正・信用できなければ位置合わせ失敗）→ 補正済みの
-    窓を取り出し → 本マスク。面が1つでも失敗ならページ全体を失敗にする
-    （半分だけ正しい行を正常顔で出さない）。
+    手順（D-25）: page_size_verdict でテンプレート寸法との噛み合わせを検査
+    （Q-H1・不一致は PageSizeMismatch）→ 面を探索余白つきで切り出し →
+    傾き推定・回転 → 罫線射影で平行移動を推定（常に補正・信用できなければ
+    位置合わせ失敗）→ 補正済みの窓を取り出し → 本マスク。面が1つでも失敗
+    ならページ全体を失敗にする（半分だけ正しい行を正常顔で出さない）。
 
     mask: 除外領域を白塗りするか（既定 True）。要件 §5.2 の送信マスクの
     契約はこの既定に依存しており、run（pipeline.py）は常に既定のまま
@@ -271,6 +309,14 @@ def align_page(page_img: "Image.Image", template: Template,
     下地表示にのみ使う。run からは到達できない。
     """
     W, H = template.image_size
+    in_w, in_h = page_img.size
+    # 寸法は記入値ではない（§8.1 に抵触しない）ので毎ページ記録する。診断用途
+    # ——sx/sy=1.0 が「入力とテンプレートの寸法が一致」の目安（Q-H1）
+    log.info("page_scale", sx=round(in_w / W, 4) if W else 0.0,
+             sy=round(in_h / H, 4) if H else 0.0)
+    reason = page_size_verdict((in_w, in_h), template)
+    if reason is not None:
+        raise PageSizeMismatch(reason)
     page = page_img.convert("RGB").resize((W, H))
     composite = Image.new("RGB", (W, H), "white")
     faces: list[AlignedFace] = []

@@ -59,8 +59,13 @@ def cmd_run(args) -> int:
                   resend_on_template_change=args.resend_on_template_change)
     # 1ページも正常に処理できなかった場合は失敗として返す（レビュー M-11）。
     # 常に 0 を返すとスクリプトから成否を判定できない。部分失敗（一部だけ
-    # 〓行）は 0 のまま——出力は作られており、判断は要確認セル数で行う
-    if summary.rows > 0 and summary.rows == summary.align_failed:
+    # 〓行）は 0 のまま——出力は作られており、判断は要確認セル数で行う。
+    # 母集団は align_failed（位置合わせ失敗）＋format_mismatch（様式不一致・
+    # Q-H1 の PageSizeMismatch を含む）——後者だけを見ていると、寸法不一致や
+    # 応答構造異常で全ページが様式不一致に倒れた実行が exit 0（成功扱い）に
+    # なってしまう（Q-H1 着手時のレビュー指摘）
+    total_failed = summary.align_failed + summary.format_mismatch
+    if summary.rows > 0 and summary.rows == total_failed:
         return 1
     return 0 if summary.rows > 0 or summary.pages == 0 else 1
 
@@ -93,11 +98,10 @@ def cmd_status(args) -> int:
     if not db.exists():
         _progress({"event": "status", "pages": 0})
         return 0
-    store = Store(db)
-    for p in store.pages():
-        _progress({"event": "page", "page_id": p["page_id"], "state": p["state"],
-                   "status": p["status"], "attempt": p["attempt"]})
-    store.close()
+    with Store(db) as store:
+        for p in store.pages():
+            _progress({"event": "page", "page_id": p["page_id"], "state": p["state"],
+                       "status": p["status"], "attempt": p["attempt"]})
     return 0
 
 
@@ -325,27 +329,24 @@ def cmd_debug_images(args) -> int:
     template = load_template(args.template)
     validate_v1(template)
     raw = json.loads(Path(args.template).read_text(encoding="utf-8"))
-    store = Store(wd / "intermediate.sqlite")
-    # テンプレート変更後の「旧割付×新枠」の嘘可視化を拒否する（#60 M-1①）。
-    # render と同じ整合ゲート——check_template=True で cell の割付内容も
-    # テンプレート由来かを見る。不一致なら OperationRefused（main() が拒否
-    # として処理し、store は check_reusable 内で閉じられる）
-    check_reusable(store, geometry_hash(raw), _tpl_hash(raw), check_template=True)
-    all_pages = store.pages()
-    all_ids = {p["page_id"] for p in all_pages}
-    if args.page and args.page not in all_ids:
-        store.close()
-        _progress({"event": "debug_images", "ok": False, "reason": "page_not_found",
-                   "error": f"ページ '{args.page}' が中間データに無い", "count": 0,
-                   "dir": str(out_dir.resolve())})
-        return 0
-    if not all_pages:
-        store.close()
-        _progress({"event": "debug_images", "ok": False, "reason": "no_pages",
-                   "error": "中間データにページが無い（run で処理してから実行する）",
-                   "count": 0, "dir": str(out_dir.resolve())})
-        return 0
-    try:
+    with Store(wd / "intermediate.sqlite") as store:
+        # テンプレート変更後の「旧割付×新枠」の嘘可視化を拒否する（#60 M-1①）。
+        # render と同じ整合ゲート——check_template=True で cell の割付内容も
+        # テンプレート由来かを見る。不一致なら OperationRefused（main() が拒否
+        # として処理し、with が確実に close する・Q-MG「閉じるのは開いた側」）
+        check_reusable(store, geometry_hash(raw), _tpl_hash(raw), check_template=True)
+        all_pages = store.pages()
+        all_ids = {p["page_id"] for p in all_pages}
+        if args.page and args.page not in all_ids:
+            _progress({"event": "debug_images", "ok": False, "reason": "page_not_found",
+                       "error": f"ページ '{args.page}' が中間データに無い", "count": 0,
+                       "dir": str(out_dir.resolve())})
+            return 0
+        if not all_pages:
+            _progress({"event": "debug_images", "ok": False, "reason": "no_pages",
+                       "error": "中間データにページが無い（run で処理してから実行する）",
+                       "count": 0, "dir": str(out_dir.resolve())})
+            return 0
         # cfg 本体を渡す（レビュー差し戻し M-1）。以前は cfg.unclear_threshold
         # のみを渡しており、debug_images 側で Config を組み直すと
         # unclear_char_level が常に既定 False に落ちていた
@@ -353,8 +354,6 @@ def cmd_debug_images(args) -> int:
             store, template, wd / "aligned", out_dir,
             cfg,
             page_ids=[args.page] if args.page else None)
-    finally:
-        store.close()
     if not made:
         _progress({"event": "debug_images", "ok": False, "reason": "no_aligned_images",
                    "error": "位置合わせ済み画像が無い（未処理、または位置合わせ失敗の"

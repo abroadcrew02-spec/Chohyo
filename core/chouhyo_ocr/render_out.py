@@ -81,6 +81,20 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row],
     first = excel_column_letter(len(META_COLUMNS) + 1)          # G
     last = excel_column_letter(len(columns))                    # 220列なら HL
 
+    # Q-MH: 行の値数＝抽出列数は出力の中核不変条件。write_outputs 側の検査
+    # （issue #27）は write_xlsx/write_csv を呼ぶ唯一の経路だが、この2関数は
+    # 公開関数として直接も呼ばれうる（write_outputs を経由しない呼び出しは
+    # 検査を素通りし、列がずれた xlsx が出力されうる）——多重防御としてここでも
+    # 検査する。文言は write_outputs と同じ（page_id のみ・値は出さない・§8.1）。
+    # 書き込み開始前（write_only の Workbook を作る前）に全行を検査する——
+    # 開始後に raise すると、write_only のストリーミング writer が未完了のまま
+    # GC 回収され「I/O operation on closed file」の無害だが煩い警告が出るため
+    for r in rows:
+        if len(r.values) != n_extract:
+            raise ValueError(
+                f"行の値数({len(r.values)})が抽出列数({n_extract})と一致しない"
+                f"（帳票ID: {r.page_id}）。テンプレートと中間データの整合を確認する")
+
     wb = Workbook(write_only=True)
     wb.properties.created = _FIXED_DT
     wb.properties.modified = _FIXED_DT
@@ -141,10 +155,17 @@ def write_xlsx(path: Path, columns: list[str], rows: list[Row],
 
 
 def write_csv(path: Path, columns: list[str], rows: list[Row]) -> None:
+    # Q-MH: write_xlsx と同じ多重防御（write_outputs を経由しない直接呼び出し
+    # でも列ズレを検知する）。文言も揃える
+    n_extract = len(columns) - len(META_COLUMNS)
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
         w.writerow(columns)
         for r in rows:
+            if len(r.values) != n_extract:
+                raise ValueError(
+                    f"行の値数({len(r.values)})が抽出列数({n_extract})と一致しない"
+                    f"（帳票ID: {r.page_id}）。テンプレートと中間データの整合を確認する")
             w.writerow([str(r.unclear_count), r.min_conf, r.page_id,
                         r.source_file, str(r.page_no), r.status]
                        + [str(v) for v in r.values])

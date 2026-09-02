@@ -113,6 +113,43 @@ def test_reject_schema_violation(tmp_path, raw):
         load_template(write(tmp_path, raw))
 
 
+# ---------- Q-MA: render_dpi != BASE_DPI での choice 欄を拒否（らでん逆張り
+# 採用・2026-09-02: 当初案の警告(W-5)から拒否へ格上げ） ----------
+
+def test_reject_choice_field_at_non_base_dpi(tmp_path, raw):
+    """出荷テンプレは choice 欄を持つので、render_dpi=600 に変えるだけで拒否される。
+
+    era の帯定数（era.BAND_PAD/BAND_PAD_IN）は300dpiの実測較正値で、機械的に
+    スケールすると元号丸印の判定が狂う（06_second_form_findings.md §7）。
+    """
+    raw["render_dpi"] = 600
+    with pytest.raises(TemplateError, match="choice"):
+        load_template(write(tmp_path, raw))
+
+
+def test_non_base_dpi_without_choice_fields_is_accepted(tmp_path, raw):
+    """choice 欄が1つも無ければ render_dpi != BASE_DPI でも読み込める。
+
+    era の帯定数が関与するのは choice 欄の判定のみなので、text 欄だけの
+    テンプレートは対象外（過剰拒否にしない）。
+    """
+    raw["render_dpi"] = 600
+    for face in raw["faces"]:
+        face["fields"] = [f for f in face.get("fields", []) if f.get("kind") != "choice"]
+        for table in face.get("tables", []):
+            table["columns"] = [c for c in table.get("columns", [])
+                                if c.get("kind") != "choice"]
+    t = load_template(write(tmp_path, raw))
+    assert not any(c.kind == "choice" for c in t.cells)
+
+
+def test_base_dpi_with_choice_field_is_accepted():
+    """render_dpi==BASE_DPI（300）なら choice 欄があっても従来どおり通る。"""
+    t = load_template(TPL)
+    assert t.render_dpi == 300
+    assert any(c.kind == "choice" for c in t.cells)
+
+
 def test_face_local_rects_within_face(tmp_path):
     """全セル・全マークが面の寸法（source.rect の w×h）に収まる。"""
     t = load_template(TPL)

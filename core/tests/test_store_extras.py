@@ -8,6 +8,8 @@
 """
 import sqlite3
 
+import pytest
+
 from chouhyo_ocr.store import Store
 
 
@@ -79,6 +81,44 @@ def test_cells_and_cell_extras_share_key_set(tmp_path):
         assert set(db.cells("p1")) == set(db.cell_extras("p1"))
     finally:
         db.close()
+
+
+# ---------- Q-MG: with Store(...) as store: の close 契約 ----------
+# pipeline.py の5箇所（_run_locked/_render_locked/remap・cli.cmd_status/
+# cmd_debug_images）を「閉じるのは開いた側」の with 化に揃えた前提として、
+# __enter__/__exit__ が例外経路・正常経路のいずれでも close をちょうど1回
+# だけ呼ぶこと（二重 close も未 close も起きないこと）を monkeypatch で固定する。
+
+class _Boom(Exception):
+    pass
+
+
+def test_context_manager_closes_exactly_once_on_exception(tmp_path, monkeypatch):
+    """with ブロック内で例外が起きても close は1回だけ（早期 return 相当の経路）。"""
+    db = Store(tmp_path / "ctx_exc.sqlite")
+    calls: list[int] = []
+    real_close = db.close
+    monkeypatch.setattr(db, "close", lambda: (calls.append(1), real_close())[0])
+
+    with pytest.raises(_Boom):
+        with db as store:
+            assert store is db
+            raise _Boom("check_reusable の OperationRefused 相当")
+
+    assert calls == [1]
+
+
+def test_context_manager_closes_exactly_once_on_normal_exit(tmp_path, monkeypatch):
+    """例外の無い正常系でも close はちょうど1回。"""
+    db = Store(tmp_path / "ctx_ok.sqlite")
+    calls: list[int] = []
+    real_close = db.close
+    monkeypatch.setattr(db, "close", lambda: (calls.append(1), real_close())[0])
+
+    with db as store:
+        store.upsert_page("p1", "s.png", 1, "expanded")
+
+    assert calls == [1]
 
 
 def test_upsert_cells_does_not_clear_previously_set_extras(tmp_path):

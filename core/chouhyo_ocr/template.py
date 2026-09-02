@@ -32,6 +32,9 @@ CHOICE_MARK_MARGIN_PX = 4
 # template.render_dpi を渡す）——Template インスタンスを直接持つ数少ない
 # 呼び出し元（align.align_page）だけが Template.dpi_scale プロパティを
 # そのまま使う（S-6b・2026-09-01 実態に合わせて訂正）。
+# era の帯定数（era.BAND_PAD/BAND_PAD_IN）は意図的にスケール対象外
+# （D-31 で向きまで実測較正済み・06_second_form_findings.md §7）。
+# render_dpi != BASE_DPI での choice 欄は load_template が拒否する（Q-MA）。
 BASE_DPI = 300
 
 
@@ -580,6 +583,19 @@ def load_template(path: str | Path) -> Template:
     if len(set(ids)) != len(ids):
         dup = sorted({i for i in ids if ids.count(i) > 1})
         raise TemplateError(f"field_id が重複している: {dup[:5]}")
+
+    # Q-MA（らでん逆張り採用・2026-09-02: 警告ではなく拒否へ格上げ）。
+    # era の帯定数（era.BAND_PAD/BAND_PAD_IN）は300dpiの実測較正値で、向きまで
+    # 較正済み（D-31）。render_dpi != BASE_DPI へ機械的にスケールすると元号
+    # 丸印の判定が狂う——警告に留めると気づかず出荷して誤判定が実害化しうる
+    # ため、読み込み時点で拒否する（06_second_form_findings.md §7「意図的に
+    # 除外」・再較正とセットでの対応が前提）
+    if raw["render_dpi"] != BASE_DPI and any(c.kind == "choice" for c in cells):
+        raise TemplateError(
+            f"render_dpi={raw['render_dpi']} のテンプレートで選択式（choice）欄は"
+            "使えない。元号丸印の帯定数（era.BAND_PAD/BAND_PAD_IN）は300dpiの"
+            "実測較正値で、再較正なしに他のdpiへ適用すると判定が狂うため"
+            "（docs/design/chouhyo-ocr/06_second_form_findings.md §7）")
 
     # 選択肢の値が重複していると era.decide の候補が1つに潰れ、共通フロア減算で
     # 自分自身のスコアが消えて**丸印があっても永久に未選択（〓）**になる

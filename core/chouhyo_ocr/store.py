@@ -213,6 +213,17 @@ class Store:
             "SELECT COUNT(*) FROM page WHERE source_file=?",
             (source_file,)).fetchone()[0]
 
+    def done_page_count(self) -> int:
+        """state=='done' の累積ページ数（P-H1 可視化・run/remap 末尾サマリ用）。
+
+        今回の run で処理した件数ではなく、store に蓄積された全体の件数——
+        run 末尾の全件再レンダー（P-H1）のコストは todo（今回分）ではなく
+        累積ページ数に比例するため、可視化には累積側が要る。page_count_of と
+        同じ理由で SQL 側の COUNT に任せる（全行を Python へ運んで数えない）。
+        """
+        return self.con.execute(
+            "SELECT COUNT(*) FROM page WHERE state='done'").fetchone()[0]
+
     def states_of_source(self, source_file: str) -> set[str]:
         """その入力ファイルのページが取っている state 集合（#46 の改名判定）。
 

@@ -6,6 +6,8 @@ openpyxl は数式を評価しないため、COUNTIF・FIND 数式は文字列�
 """
 import zipfile
 
+import pytest
+
 from chouhyo_ocr.columns import META_COLUMNS, excel_column_letter
 from chouhyo_ocr.render_out import (FILL_ORIGIN_FALLBACK, write_csv,
                                     write_outputs, write_xlsx)
@@ -167,3 +169,19 @@ def test_write_outputs_keeps_xlsx_and_csv_unclear_count_consistent_when_off(tmp_
     assert "*〓*" not in sheet
     text = csvp.read_text(encoding="utf-8-sig")
     assert text.splitlines()[1].split(",")[0] == '"1"'
+
+
+# ---------- Q-MH: write_xlsx/write_csv 単体の列数検査（write_outputs を経由
+# しない直接呼び出しへの多重防御。write_outputs 側の検査は issue #27・
+# test_review_fixes.py::test_write_outputs_rejects_row_length_mismatch） ----------
+
+def test_write_xlsx_rejects_row_length_mismatch(tmp_path):
+    row = _row(["x", "y"])  # COLS は抽出列3（a/b/c）に対し値2つ
+    with pytest.raises(ValueError, match="値数"):
+        write_xlsx(tmp_path / "o.xlsx", COLS, [row])
+
+
+def test_write_csv_rejects_row_length_mismatch(tmp_path):
+    row = _row(["x", "y", "z", "extra"])  # 抽出列3に対し値4つ
+    with pytest.raises(ValueError, match="値数"):
+        write_csv(tmp_path / "o.csv", COLS, [row])
