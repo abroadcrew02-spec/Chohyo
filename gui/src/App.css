@@ -144,7 +144,13 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .toolbar .sep { width: 12px; }
 .toolbar .msg { margin-left: auto; color: var(--sub); font-size: 12px; }
 .editor-body { flex: 1; display: flex; min-height: 0; }
-.canvas { flex: 1; min-width: 0; cursor: crosshair; background: #e7ebf1; }
+/* おかゆ実機検証（issue #73 (b)・候補36件）で発覚: 枠候補パネルが編集領域
+   上部の全幅カードだった当時、パネルが伸びると .editor-body の残り空間が
+   ゼロに近づき、canvas が getBoundingClientRect 0px まで潰れていた
+   （draw() が cv.width/height を 0 にし、AC-F22 の同時表示が成立しない）。
+   Orchestrator決定で候補パネル自体は .panel-wrap の第3タブへ移したため
+   構造的には再発しないが、min-height の下限はそのまま残す（保険） */
+.canvas { flex: 1; min-width: 0; min-height: 240px; cursor: crosshair; background: #e7ebf1; }
 /* 出力列制御 MVP・段3（issue #66）: 右パネルを「選択中/出力列」の2タブ構成に
    するための外枠。幅・区切り線はここへ移し、.panel 自体はタブ切替後の
    中身（パディング・スクロール）だけを持つ */

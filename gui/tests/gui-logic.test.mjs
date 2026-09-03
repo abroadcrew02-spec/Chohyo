@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1679,6 +1679,26 @@ test("targetWindowHeight: 通常は本文高+アプリバー高がそのまま�
   assert.ok(h > RUN_WINDOW_HEIGHT_DEFAULT, "既定より小さいケースではない前提が崩れている");
 });
 
+test("targetWindowHeight: テンプレート選択カード込みの実測本文高（issue #72 (t)・実機通し確認）は"
+  + "旧既定（620）を上回り、新しい RUN_WINDOW_HEIGHT_DEFAULT（780）に収まる", () => {
+  // 実機 WebView2（CDP 接続）で実測した .run-screen の scrollHeight
+  // （フォルダ未選択・テンプレート一覧取得済みの初期状態・2026-09-03）。
+  // 修正前はこの状態でも RUN_WINDOW_HEIGHT_DEFAULT（旧620）に固定していた
+  // ため、697px の本文が 555px の表示域に収まらず縦スクロールが出ていた
+  const MEASURED_CONTENT_HEIGHT = 697;
+  const OLD_DEFAULT = 620;
+  const neededWithChrome = MEASURED_CONTENT_HEIGHT + 65;   // = 762
+  assert.ok(neededWithChrome > OLD_DEFAULT,
+    "旧既定のままでは収まらないことを示す前提が崩れている（実測が既定を上回らない）");
+  // 新しい既定値は実測の必要量を安全マージン込みで上回るため、targetWindowHeight
+  // は「既定（下限クランプ）」をそのまま返す——本文がその既定の中に収まり、
+  // 追加の拡大（＝縦スクロールに頼る余地）が発生しない、が実際の確認内容
+  const h = targetWindowHeight(MEASURED_CONTENT_HEIGHT, 65, 1200);
+  assert.equal(h, RUN_WINDOW_HEIGHT_DEFAULT);
+  assert.ok(RUN_WINDOW_HEIGHT_DEFAULT >= neededWithChrome,
+    "新しい既定値がこの実測本文を収めきれていない");
+});
+
 test("targetWindowHeight: 作業領域を超える本文は上限（作業領域）でクランプされる", () => {
   const h = targetWindowHeight(5000, 65, 1000);
   assert.equal(h, 1000, "作業領域の高さでクランプされていない");
@@ -2121,6 +2141,313 @@ test("formatOverrideBannerText: 上書き中である旨と、別テンプレを
   assert.ok(t.includes("様式判定を無視して枠を表示しています"), t);
   assert.ok(t.includes("帳票を開く"), t);
   assert.ok(t.includes("この画像に合うテンプレート"), t);
+});
+
+// ---------------------------------------------------------------- issue #73 (b)
+// 枠候補一括生成（設計08 §4）。candidatesFromDetectFrames / applyCandidates /
+// fieldSpecFromCandidate / tableSpecFromCandidate / renameTableColumnsWithPrefix /
+// zeroReasonNotice / candidateDefaultChecked / candidateOverlapWarning
+const DETECT_FRAMES_EV = {
+  candidates: [
+    { id: "c1", kind: "table", face_id: "front",
+      rect: { x: 100, y: 300, w: 750, h: 400 },
+      blocks: [{ x: 100, y: 300, rows: 5 }],   // 平坦形（core 実測。origin にネストしない）
+      row_pitch: 80, row_height: 70,
+      columns: [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 150 },
+                { x_offset: 350, width: 400 }],
+      residual_px: 0.4, overlaps_existing: false },
+    { id: "c2", kind: "field", face_id: "front",
+      rect: { x: 100, y: 100, w: 400, h: 80 },
+      residual_px: 0.0, overlaps_existing: true },
+    { id: "c3", kind: "field", face_id: "front",
+      rect: { x: 600, y: 100, w: 300, h: 80 },
+      residual_px: 0.2, overlaps_existing: false },
+  ],
+};
+
+test("candidatesFromDetectFrames: JSON を Cand[] へ変換する（表候補の table・欄候補の overlaps を含む）", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  assert.equal(cands.length, 3);
+  assert.equal(cands[0].kind, "table");
+  assert.equal(cands[0].faceHint, "front");
+  assert.equal(cands[0].overlaps, false);
+  assert.ok(cands[0].table);
+  assert.equal(cands[0].table.rows, 5);
+  assert.equal(cands[0].table.columns.length, 3);
+  assert.equal(cands[1].kind, "field");
+  assert.equal(cands[1].overlaps, true);
+  assert.equal(cands[1].table, undefined);
+});
+
+test("candidatesFromDetectFrames: 実装済み core の実際の形（id 無し・blocks[0] は平坦な{x,y,rows}・"
+  + "--template 未指定時 face_id='page'）を正しく解釈する（core/chouhyo_ocr/cli.py 実測・2026-09-03）", () => {
+  const ev = {
+    candidates: [
+      { kind: "table", face_id: "page",
+        rect: { x: 100, y: 300, w: 750, h: 400 },
+        blocks: [{ x: 100, y: 300, rows: 5 }],   // ネストした origin ではなく平坦
+        row_pitch: 80, row_height: 70,
+        columns: [{ x_offset: 0, width: 200 }],
+        residual_px: 0.4, overlaps_existing: false },
+      { kind: "field", face_id: "page",
+        rect: { x: 100, y: 100, w: 400, h: 80 },
+        residual_px: 0.0, overlaps_existing: true },
+    ],
+  };
+  const cands = candidatesFromDetectFrames(ev);
+  assert.equal(cands.length, 2);
+  // id が無いので配列インデックスから振る。かつ2件とも別の id になる（衝突しない）
+  assert.equal(cands[0].id, "c0");
+  assert.equal(cands[1].id, "c1");
+  assert.notEqual(cands[0].id, cands[1].id);
+  // face_id="page" は「面ヒントなし」として null 扱い（§4.2.3: GUI が splitY で判定する）
+  assert.equal(cands[0].faceHint, null);
+  assert.equal(cands[1].faceHint, null);
+  // blocks[0] の平坦な x/y を正しく拾う
+  assert.deepEqual(cands[0].table.origin, { x: 100, y: 300 });
+});
+
+test("candidatesFromDetectFrames: 壊れた/欠落フィールドでも例外を投げず安全側の既定値に倒す", () => {
+  const cands = candidatesFromDetectFrames({ candidates: [{ id: "x" }] });
+  assert.equal(cands.length, 1);
+  assert.equal(cands[0].kind, "field");
+  assert.deepEqual(cands[0].rect, { x: 0, y: 0, w: 0, h: 0 });
+  assert.equal(cands[0].faceHint, null);
+  assert.equal(cands[0].overlaps, false);
+});
+
+test("candidateDefaultChecked: overlaps_existing は既定オフ・それ以外はオン（Orchestrator判断）", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  assert.equal(candidateDefaultChecked(cands[0]), true);
+  assert.equal(candidateDefaultChecked(cands[1]), false);
+  assert.equal(candidateDefaultChecked(cands[2]), true);
+});
+
+test("fieldSpecFromCandidate: 連番仮名を振り、既存 field_id と衝突しない", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  const spec1 = fieldSpecFromCandidate(cands[2], []);
+  assert.equal(spec1.field_id, "field_01");
+  assert.equal(spec1.kind, "text");
+  assert.deepEqual(spec1.rect, cands[2].rect);
+  const spec2 = fieldSpecFromCandidate(cands[2], ["field_01", "field_02"]);
+  assert.equal(spec2.field_id, "field_03");
+});
+
+test("tableSpecFromCandidate: blocks/row_pitch/row_height/columns を template.py の tables[] スキーマへ写す", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  const spec = tableSpecFromCandidate(cands[0], []);
+  assert.ok(spec);
+  assert.equal(spec.table_id, "table_01");
+  assert.equal(spec.row_pitch, 80);
+  assert.equal(spec.row_height, 70);
+  assert.deepEqual(spec.blocks, [{ x: 100, y: 300, rows: 5 }]);
+  assert.deepEqual(spec.columns.map((c) => c.name), ["列1", "列2", "列3"]);
+  assert.equal(spec.columns[1].x_offset, 200);
+  assert.equal(spec.columns[1].width, 150);
+});
+
+test("tableSpecFromCandidate: kind=field（table 情報が無い候補）には null を返す", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  assert.equal(tableSpecFromCandidate(cands[1], []), null);
+});
+
+test("applyCandidates（AC-F19）: 既存の fields/tables を1件も削除・変更せず、選択かつ非overlapsの候補だけ末尾に追加する", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  const existingField = { uid: "u1", field_id: "person_氏名", kind: "text",
+    rect: { x: 0, y: 0, w: 10, h: 10 }, marks: [] };
+  const existingFields = [existingField];
+  const existingTables = [];
+  let n = 0;
+  const makeUid = () => `new${++n}`;
+  const selected = { c1: true, c2: true, c3: true };   // c2 は overlaps なので対象外のはず
+  const result = applyCandidates(existingFields, existingTables, cands, selected, makeUid);
+  // 既存要素は同じ参照のまま1件も減らない
+  assert.equal(result.fields[0], existingField);
+  assert.equal(result.fields.length, 2);   // 既存1 + c3（field）
+  assert.equal(result.tables.length, 1);   // c1（table）
+  assert.equal(result.acceptedCount, 2);
+  // overlaps の c2 は採用されず cands に残る
+  assert.deepEqual(result.cands.map((c) => c.id), ["c2"]);
+});
+
+test("applyCandidates: チェックを外した候補は overlaps でなくても対象外になる", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  const result = applyCandidates([], [], cands, { c1: false, c2: true, c3: false }, () => "u");
+  assert.equal(result.acceptedCount, 0);   // c1/c3はチェック外し・c2はoverlapsで対象外
+  assert.equal(result.cands.length, 3);
+});
+
+test("applyCandidates: 一括採用は carve を経由しない（既存 fields の中身が変更されないことで確認）", () => {
+  const cands = candidatesFromDetectFrames(DETECT_FRAMES_EV);
+  // c3（field候補・(600,100,300,80)）と重なる既存欄を用意する
+  const overlappingExisting = { uid: "u1", field_id: "overlap_target", kind: "text",
+    rect: { x: 650, y: 120, w: 50, h: 20 }, marks: [] };
+  const result = applyCandidates([overlappingExisting], [], cands,
+    { c1: true, c2: true, c3: true }, () => "u2");
+  // 既存欄の rect が carve で切り抜かれていない（そのまま）ことを確認
+  const kept = result.fields.find((f) => f.uid === "u1");
+  assert.deepEqual(kept.rect, overlappingExisting.rect);
+});
+
+test("renameTableColumnsWithPrefix: 列名を「<接頭辞>_1..N」へ一括で変える", () => {
+  const table = { uid: "t1", table_id: "table_01", row_pitch: 80, row_height: 70,
+    blocks: [{ x: 100, y: 300, rows: 5 }],
+    columns: [{ name: "列1", x_offset: 0, width: 200, kind: "text", subfields: "", marks: [] },
+              { name: "列2", x_offset: 200, width: 150, kind: "text", subfields: "", marks: [] }] };
+  const renamed = renameTableColumnsWithPrefix(table, "来場者");
+  assert.deepEqual(renamed.columns.map((c) => c.name), ["来場者_1", "来場者_2"]);
+  // 名前以外（x_offset/width/kind）は変えない
+  assert.equal(renamed.columns[1].x_offset, 200);
+});
+
+test("renameTableColumnsWithPrefix: 接頭辞が空文字なら既定 'field' を使う", () => {
+  const table = { uid: "t1", table_id: "table_01", row_pitch: 1, row_height: 1,
+    blocks: [], columns: [{ name: "列1", x_offset: 0, width: 1, kind: "text", subfields: "", marks: [] }] };
+  const renamed = renameTableColumnsWithPrefix(table, "   ");
+  assert.equal(renamed.columns[0].name, "field_1");
+});
+
+test("zeroReasonNotice: 4つの zero_reason を案内文へ訳す（§4.2.4）", () => {
+  assert.ok(zeroReasonNotice("no_lines").includes("罫線が検出できません"));
+  assert.ok(zeroReasonNotice("no_rect").includes("閉じた枠になっていません"));
+  assert.ok(zeroReasonNotice("all_filtered").includes("用紙の外枠"));
+  assert.ok(zeroReasonNotice("too_many_lines").includes("線が多すぎて"));
+});
+test("zeroReasonNotice: null/undefined は null・未知コードはコードを含めて捏造しない", () => {
+  assert.equal(zeroReasonNotice(null), null);
+  assert.equal(zeroReasonNotice(undefined), null);
+  assert.ok(zeroReasonNotice("future_code").includes("future_code"));
+});
+
+test("candidateOverlapWarning: 実態（切り抜かれる）に合わせた文言になる（スバル差し戻し Must-2）", () => {
+  // 旧文言「保存時の重なり検証で拒否されることがあります」は誤り——実態は
+  // saveTemplateInner の resolveOverlaps が既存枠を無言で切り抜く（拒否ではない）
+  const t = candidateOverlapWarning();
+  assert.ok(t.includes("重な"), t);
+  assert.ok(t.includes("採用"), t);
+  assert.ok(t.includes("切り抜かれ"), t);
+  // スバル再レビューの懸念: 表が絡む重なりは切り抜きではなく保存拒否になる
+  // （core の同一面セル重なり検査・issue #24）。両方の挙動を明記する
+  assert.ok(t.includes("表が絡む"), t);
+  assert.ok(t.includes("拒否"), t);
+});
+
+test("overlapAcceptedNotice: 保存時に既存枠が調整される旨を含む（スバル差し戻し Must-2・保存まで残す注意）", () => {
+  const t = overlapAcceptedNotice();
+  assert.ok(t.includes("採用"), t);
+  assert.ok(t.includes("切り抜"), t);
+  assert.ok(t.includes("表が絡む") && t.includes("拒否"), t);
+});
+
+// ---------------------------------------------------------------- issue #73 (b)
+// candidateOverlapsExisting（スバル差し戻し Must-1）: tplPath が null で
+// --template を渡せない経路でも、GUI 側で独立に重なりを再判定できることを
+// 保証する。field との交差／table block との交差／接するだけ（面積0）は
+// 非重なり、を確認する
+test("candidateOverlapsExisting: 既存 field の rect と交差する候補は重なりと判定する", () => {
+  const cand = { id: "c1", kind: "field", rect: { x: 90, y: 90, w: 50, h: 50 },
+    faceHint: null, residual: 0, overlaps: false };
+  const fields = [{ uid: "u1", field_id: "x", kind: "text",
+    rect: { x: 100, y: 100, w: 50, h: 50 }, marks: [] }];
+  assert.equal(candidateOverlapsExisting(cand, fields, [], 1880), true);
+});
+
+test("candidateOverlapsExisting: 既存 table の block 矩形（x..x+Σwidth, y..y+rows*row_pitch）と交差する候補は重なりと判定する", () => {
+  const cand = { id: "c1", kind: "field", rect: { x: 150, y: 350, w: 50, h: 50 },
+    faceHint: null, residual: 0, overlaps: false };
+  const tables = [{ uid: "t1", table_id: "table_01", row_pitch: 80, row_height: 70,
+    blocks: [{ x: 100, y: 300, rows: 5 }],
+    columns: [{ name: "列1", x_offset: 0, width: 200, kind: "text", subfields: "", marks: [] },
+              { name: "列2", x_offset: 200, width: 150, kind: "text", subfields: "", marks: [] }] }];
+  // block 矩形は x:100..350（200+150）・y:300..300+80*4+70=670 の範囲
+  assert.equal(candidateOverlapsExisting(cand, [], tables, 1880), true);
+});
+
+test("candidateOverlapsExisting: 接するだけ（面積0）は非重なり", () => {
+  const cand = { id: "c1", kind: "field", rect: { x: 50, y: 100, w: 50, h: 50 },
+    faceHint: null, residual: 0, overlaps: false };
+  // cand は x:50..100・既存は x:100..150 -- 辺で接するだけで面積は重ならない
+  const fields = [{ uid: "u1", field_id: "x", kind: "text",
+    rect: { x: 100, y: 100, w: 50, h: 50 }, marks: [] }];
+  assert.equal(candidateOverlapsExisting(cand, fields, [], 1880), false);
+});
+
+test("candidateOverlapsExisting: 何とも交差しなければ false（fields/tables 空も含む）", () => {
+  const cand = { id: "c1", kind: "field", rect: { x: 0, y: 0, w: 10, h: 10 },
+    faceHint: null, residual: 0, overlaps: false };
+  assert.equal(candidateOverlapsExisting(cand, [], [], 1880), false);
+});
+
+test("runDetectFrames 相当（overlaps の OR）: candidatesFromDetectFrames の overlaps が false でも、"
+  + "GUI 側 candidateOverlapsExisting が true を検出したら重なり扱いにする", () => {
+  // tplPath が null で --template を渡せない経路の再現: core は overlaps_existing
+  // を出せず false のまま返す。GUI 側の再判定と OR することで安全網を保つ
+  const cands = candidatesFromDetectFrames({
+    candidates: [{ kind: "field", face_id: "page",
+      rect: { x: 90, y: 90, w: 50, h: 50 }, residual_px: 0, overlaps_existing: false }],
+  });
+  const fields = [{ uid: "u1", field_id: "x", kind: "text",
+    rect: { x: 100, y: 100, w: 50, h: 50 }, marks: [] }];
+  const merged = cands.map((c) => ({
+    ...c, overlaps: c.overlaps || candidateOverlapsExisting(c, fields, [], 1880) }));
+  assert.equal(cands[0].overlaps, false, "前提: core 由来はfalseのまま");
+  assert.equal(merged[0].overlaps, true, "GUI再判定とのORでtrueに確定するはず");
+});
+
+// ---------------------------------------------------------------- issue #73 (b)
+// candidateAriaLabel（ラミィ／accessibility 差し戻し Should）: チェック
+// ボックスの aria-label は可視情報（種別・id・面ヒント・重なり）と同じ
+test("candidateAriaLabel: 種別・id・面ヒント・重なりを可視表示と同じ内容で組み立てる", () => {
+  const table = { id: "c1", kind: "table", rect: { x: 0, y: 0, w: 1, h: 1 },
+    faceHint: "front", residual: 0, overlaps: false };
+  // 依頼文の組み立て仕様どおり、id の直後の可変部と「を選択」の間には
+  // 常に半角スペースが1つ入る（`...${faceHint?...}${overlaps?...} を選択`）
+  assert.equal(candidateAriaLabel(table), "表候補 c1（front） を選択");
+  const field = { id: "c2", kind: "field", rect: { x: 0, y: 0, w: 1, h: 1 },
+    faceHint: null, residual: 0, overlaps: true };
+  assert.equal(candidateAriaLabel(field), "欄候補 c2・既存と重なり を選択");
+});
+
+// ---------------------------------------------------------------- issue #73 (b)
+// excludedSummaryJa（マリン core レビュー由来）: detect-frames の
+// excluded[] を日本語の内訳へ。count<=0 は数えない・未知コードは捏造しない
+test("excludedSummaryJa: count>0 の reason だけを日本語で列挙する", () => {
+  const t = excludedSummaryJa([
+    { reason: "page_outline", count: 2 },
+    { reason: "too_small", count: 5 },
+    { reason: "straddles_face", count: 0 },   // count=0 は数えない
+  ]);
+  assert.equal(t, "候補にしなかった枠: ページ外周 2・小さすぎる 5");
+});
+test("excludedSummaryJa: non_rectangular も訳し、未知コードは生値のまま使う", () => {
+  assert.ok(excludedSummaryJa([{ reason: "non_rectangular", count: 1 }]).includes("長方形でない"));
+  assert.ok(excludedSummaryJa([{ reason: "future_code", count: 1 }]).includes("future_code"));
+});
+test("excludedSummaryJa: 空・undefined・全件count0 は null（表示しない）", () => {
+  assert.equal(excludedSummaryJa([]), null);
+  assert.equal(excludedSummaryJa(undefined), null);
+  assert.equal(excludedSummaryJa([{ reason: "page_outline", count: 0 }]), null);
+});
+
+// ---------------------------------------------------------------- issue #73 (b)
+// templateSkipReasonNotice（マリン core レビュー由来）: --template 指定時に
+// 寸法不一致でテンプレートが適用されなかった旨を伝える
+test("templateSkipReasonNotice: template_applied:false かつ size_mismatch は面割当/重なり判定をしていない旨を伝える", () => {
+  const t = templateSkipReasonNotice(false, "size_mismatch");
+  assert.ok(t.includes("寸法"), t);
+  assert.ok(t.includes("面の割り当て"), t);
+  assert.ok(t.includes("重なり判定"), t);
+});
+test("templateSkipReasonNotice: template_applied:true・undefined（旧コア/未指定）は null", () => {
+  assert.equal(templateSkipReasonNotice(true, null), null);
+  assert.equal(templateSkipReasonNotice(undefined, undefined), null);
+  // 契約は 3 値: --template 未指定は false ではなく null（適用しなかった／対象が
+  // 無かったの区別・08 §4.4）。null を「寸法不一致」と誤読して案内を出さない
+  assert.equal(templateSkipReasonNotice(null, null), null);
+});
+test("templateSkipReasonNotice: 未知の skip_reason でも捏造せず文言化する", () => {
+  assert.ok(templateSkipReasonNotice(false, "future_reason").includes("future_reason"));
+  assert.ok(templateSkipReasonNotice(false, null).length > 0);
 });
 
 // ---------------------------------------------------------------- issue #72 (t)

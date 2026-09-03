@@ -327,6 +327,50 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
           });
         }
       }
+      // issue #73 (b)・設計08 §4.4: detect-frames の疑似応答。実測
+      // （core/chouhyo_ocr/cli.py:cmd_detect_frames・2026-09-03）の形に
+      // 合わせてある——候補に `id` は無い（GUI 側で振る）・`blocks[0]` は
+      // 平坦な {x,y,rows}（origin にネストしない）・face_id は
+      // --template 未指定時 "page"。固定で表1＋欄3（うち1件
+      // overlaps_existing）を返す
+      if (a[0] === "detect-frames") {
+        return JSON.stringify({
+          event: "detect_frames", ok: true, elapsed_ms: 850,
+          input_size: [2490, 3510],
+          stats: { lines_h: 8, lines_v: 6, rects: 10, rails_h: 8, rails_v: 6 },
+          candidates: [
+            // 表候補の位置は DEMO_TEMPLATE の既存要素（person_氏名 x:400-1000,
+            // y:300-390／family x:200-820,y:600-890）と意図せず重ならない
+            // 場所に置く——GUI 側の候補パネル「重なりのため対象外」表示は
+            // c2（欄候補・意図的な overlaps_existing:true）の1件だけを
+            // 検証対象にするため（candidateOverlapsExisting 自体の単体
+            // テストは gui-logic 側で別途行う）
+            { kind: "table", face_id: "page",
+              rect: { x: 100, y: 1000, w: 750, h: 400 },
+              blocks: [{ x: 100, y: 1000, rows: 5 }],
+              row_pitch: 80, row_height: 70,
+              columns: [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 150 },
+                        { x_offset: 350, width: 400 }],
+              residual_px: 0.4, overlaps_existing: false },
+            { kind: "field", face_id: "page",
+              rect: { x: 100, y: 100, w: 400, h: 80 },
+              residual_px: 0.0, overlaps_existing: true },
+            { kind: "field", face_id: "page",
+              rect: { x: 600, y: 100, w: 300, h: 80 },
+              residual_px: 0.2, overlaps_existing: false },
+            { kind: "field", face_id: "page",
+              rect: { x: 100, y: 1950, w: 850, h: 150 },
+              residual_px: 0.6, overlaps_existing: false },
+          ],
+          // マリン core レビュー由来: excluded は {reason,count} の配列
+          // （複数理由・count>0 のみ意味を持つ）。template_applied は
+          // --template 指定時の適用可否（デモは常に寸法一致想定で true）
+          excluded: [{ reason: "page_outline", count: 1 }, { reason: "too_small", count: 2 },
+                     { reason: "straddles_face", count: 0 }],
+          template_applied: true,
+          zero_reason: null,
+        });
+      }
       return "{}";
     }
     case "kill_core": return null;

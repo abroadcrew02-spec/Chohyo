@@ -33,7 +33,10 @@ type Sel = { type: "field" | "table" | "excl"; uid: string;
              part?: string } | null;
 type Tool = "select" | "field" | "excl" | "table" | "split";
 // 元に戻す／やり直しの1コマ。編集対象の4状態をまとめて差し替える
-type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number };
+// issue #73 (b): cands（枠候補）は Snap に含める（生成・採用・除去も
+// Undo の対象にする・FR-F21）が、確定枠（fields/tables/excls）とは別配列
+// のまま——保存対象（buildTemplateJson）には一切含めない
+type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number; cands: Cand[] };
 
 let seq = 0;
 const uid = () => `u${++seq}`;
@@ -1210,6 +1213,268 @@ export function newTemplateNotice(hasCandidates: boolean): string {
     + "「欄を追加」で描いてください。";
 }
 
+// ---------------------------------------------------------------- issue #73 (b)
+// ページ全体からの枠候補一括生成（設計08 §4）。確定枠（fields／tables）とは
+// 別の候補配列（cands）を持ち、採用は「追加のみ」で carve／resolveOverlaps を
+// 通さない（FR-F19・Orchestrator判断: overlaps_existing は一括採用の対象外）。
+
+/// detect-frames が返す表候補1件分の仕様（core の blocks/columns をそのまま
+/// 写せる形・§4.4）。
+export type CandTableSpec = {
+  rowPitch: number; rowHeight: number; rows: number;
+  origin: { x: number; y: number };
+  columns: { xOffset: number; width: number }[];
+};
+
+/// 枠候補1件（確定枠とは別配列で持つ・§4.5.1）。kind="table" のときだけ
+/// table が埋まる。faceHint は --template 指定時のみ core が付ける
+/// face_id（未指定時は null——GUI が splitY から自分で判定する・§4.2.3）。
+export type Cand = {
+  id: string; kind: "table" | "field"; rect: Rect;
+  faceHint: string | null; residual: number; overlaps: boolean;
+  table?: CandTableSpec;
+};
+
+/// 候補パネルのチェックボックス既定値（Orchestrator判断・§4.5.2:
+/// overlaps_existing の候補は一括採用の対象外＝既定でチェックを外す）。
+export function candidateDefaultChecked(cand: Cand): boolean {
+  return !cand.overlaps;
+}
+
+/// 個別採用で重なりがある候補に出す確認文言（§4.5.2-3: carve で自動的に
+/// 切り抜かず、人に決めさせる）。
+/// スバル（reviewer_architecture）差し戻し Must-2: 「保存時の重なり検証で
+/// 拒否される」は誤り——実態は saveTemplateInner の resolveOverlaps が
+/// 既存枠を無言で切り抜く（拒否ではなく改変）。文言を実態に合わせる。
+/// スバル再レビューの懸念: 保存時の挙動は 2 種類ある。欄どうしの重なりは
+/// resolveOverlaps が切り抜く（無言の改変）。表が絡む重なりは resolveOverlaps
+/// の対象外で、core の同一面セル重なり検査（issue #24）が保存自体を拒否する。
+/// 候補の種別だけでは相手（欄か表か）を決められないため、両方を明記する。
+export function candidateOverlapWarning(): string {
+  return "既存の枠と重なっています。採用して保存すると、"
+    + "欄どうしの重なりは重なった分だけ既存の枠が切り抜かれ、"
+    + "表が絡む重なりは保存時の検証で拒否されます。それでも採用しますか？";
+}
+
+/// 採用後、保存するまで消えない注意（スバル差し戻し Must-2 後半）。
+/// 候補パネル上部に置く——保存を終えるまで「既存の枠が変わる予定がある」
+/// ことを利用者が忘れないようにする。
+export function overlapAcceptedNotice(): string {
+  return "重なった候補を採用しました。保存時に既存の欄が切り抜かれるか、"
+    + "表が絡む場合は保存が拒否されます。";
+}
+
+/// GUI 側での重なり再判定（issue #73 (b)・スバル差し戻し Must-1）。
+///
+/// 起動時復元（read_default_template）・(t) の openMatchedTemplate／
+/// createTemplateForThisImage／利用者テンプレート読込のいずれも tplPath を
+/// null のままにする（絶対パスを持たない設計・07 §7.3）ため、これらの
+/// 経路の直後に runDetectFrames を呼ぶと --template が渡らず、core の
+/// overlaps_existing が常に false になる——「重なりのある候補は一括採用の
+/// 対象外」という安全網がまるごと無効化される。
+///
+/// core の判定を信用しつつ、GUI 側でも今の fields／tables に対して同じ
+/// 判定を独立に行い、どちらか一方でも重なりを検出したら overlaps=true に
+/// 確定する（呼び出し側で `overlaps: cand.overlaps || candidateOverlapsExisting(...)`
+/// のように OR する）。
+///
+/// 面（表裏）の判定は行わない——fields／tables／candidate の rect は
+/// いずれも同じページ座標系（07 の統一方針）で持っているため、front 面の
+/// 候補と back 面の既存欄は y レンジがそもそも重ならず、幾何判定だけで
+/// 自然に「同じ面どうし」の比較になる（splitY 引数は将来の面別最適化・
+/// シグネチャ安定のために残すが、現時点の判定には使わない）。
+export function candidateOverlapsExisting(
+  cand: Cand, fields: Field[], tables: Table[], _splitY: number,
+): boolean {
+  for (const f of fields) {
+    if (_rectsTouch(cand.rect, f.rect)) return true;
+  }
+  for (const t of tables) {
+    const totalW = t.columns.length
+      ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
+    for (const b of t.blocks) {
+      const bh = t.row_pitch * (b.rows - 1) + t.row_height;
+      if (_rectsTouch(cand.rect, { x: b.x, y: b.y, w: totalW, h: bh })) return true;
+    }
+  }
+  return false;
+}
+
+/// 候補チェックボックスの aria-label（ラミィ／accessibility 差し戻し
+/// Should）。可視情報（種別・id・面ヒント・重なり）と同じ内容にする——
+/// disabled の理由が title だけに留まらないようにする（スクリーンリーダー
+/// 利用者にも「なぜ選べないか」が伝わる）。
+export function candidateAriaLabel(cand: Cand): string {
+  const kindJa = cand.kind === "table" ? "表" : "欄";
+  const face = cand.faceHint ? `（${cand.faceHint}）` : "";
+  const overlap = cand.overlaps ? "・既存と重なり" : "";
+  return `${kindJa}候補 ${cand.id}${face}${overlap} を選択`;
+}
+
+/// detect-frames の excluded[]（マリン core レビュー由来・契約は
+/// Orchestrator 確定・{"reason":..., "count":N} の配列）を日本語の内訳へ。
+/// count<=0 の項目は数えない（黙って0件を混ぜない）。全体が空/該当なしは
+/// null——呼び出し側は何も表示しない。未知の reason はコードをそのまま
+/// 使う（存在しない訳を捏造しない）。
+const EXCLUDED_SUMMARY_REASON_JA: Record<string, string> = {
+  page_outline: "ページ外周",
+  too_small: "小さすぎる",
+  straddles_face: "面の境界をまたぐ",
+  non_rectangular: "長方形でない",
+};
+export function excludedSummaryJa(
+  excluded: { reason: string; count: number }[] | undefined | null,
+): string | null {
+  const items = (excluded ?? []).filter((e) => e && e.count > 0);
+  if (items.length === 0) return null;
+  const parts = items.map((e) => `${EXCLUDED_SUMMARY_REASON_JA[e.reason] ?? e.reason} ${e.count}`);
+  return `候補にしなかった枠: ${parts.join("・")}`;
+}
+
+/// --template 指定時、入力画像の寸法とテンプレートが違うと core は
+/// template_applied:false・template_skip_reason:"size_mismatch" を返し、
+/// 面割当・重なり判定をしない（face_id は "page" 固定・overlaps_existing
+/// は常に false——GUI 側の candidateOverlapsExisting による再判定は
+/// このときも変わらず行う）。マリン core レビュー由来・契約は Orchestrator
+/// 確定。templateApplied が false 以外（true・undefined＝旧コア/未指定）は
+/// null——呼び出し側は何も表示しない。
+export function templateSkipReasonNotice(
+  templateApplied: boolean | null | undefined, skipReason: string | undefined | null,
+): string | null {
+  if (templateApplied !== false) return null;
+  if (skipReason === "size_mismatch") {
+    return "この画像はテンプレートの寸法と違うため、面の割り当てと重なり判定をしていません。";
+  }
+  return skipReason
+    ? `テンプレートの適用をスキップしました（${skipReason}）。`
+    : "テンプレートの適用をスキップしました。";
+}
+
+/// 連番の仮 ID を、既存 ID と衝突しないように振る（欄候補=field・表候補=table
+/// で共有。§4.5.5「採用時に既存 field_id と衝突しない番号へ自動送り」）。
+function nextSequentialId(existing: string[], prefix: string): string {
+  const used = new Set(existing);
+  let n = 1;
+  let id = `${prefix}_${String(n).padStart(2, "0")}`;
+  while (used.has(id)) { n++; id = `${prefix}_${String(n).padStart(2, "0")}`; }
+  return id;
+}
+
+/// 欄候補 → Field の中身（uid は呼び出し側が採番する・純関数側では持たない）。
+/// kind=text・output は省略（省略=出力する・FR-1.7 と同じ既定）。
+export function fieldSpecFromCandidate(
+  cand: Cand, existingFieldIds: string[]): Omit<Field, "uid"> {
+  return { field_id: nextSequentialId(existingFieldIds, "field"), kind: "text",
+    rect: { ...cand.rect }, marks: [] };
+}
+
+/// 表候補 → Table の中身。列名は「列1」…（§4.5.5。一括リネームは
+/// renameTableColumnsWithPrefix が別途担う）。cand.table が無ければ null
+/// （kind="field" を誤って渡した呼び出し側のバグを想定・防御的）。
+export function tableSpecFromCandidate(
+  cand: Cand, existingTableIds: string[]): Omit<Table, "uid"> | null {
+  if (!cand.table) return null;
+  const t = cand.table;
+  return {
+    table_id: nextSequentialId(existingTableIds, "table"),
+    row_pitch: Math.max(1, Math.round(t.rowPitch)),
+    row_height: Math.max(1, Math.round(t.rowHeight)),
+    blocks: [{ x: t.origin.x, y: t.origin.y, rows: t.rows }],
+    columns: t.columns.map((c, i) => ({
+      name: `列${i + 1}`, x_offset: c.xOffset, width: c.width,
+      kind: "text" as const, subfields: "", marks: [] })),
+  };
+}
+
+/// 一括採用（FR-F20・AC-F19・AC-F20）。selected で選ばれ、かつ重なりが無い
+/// 候補だけを対象にする——overlaps_existing はチェック状態に関わらず対象外
+/// （Orchestrator判断。UI 側は overlaps 候補のチェックボックスを無効化する
+/// ことでこの不変条件を二重に守る）。**carve／resolveOverlaps は一切通さない
+/// ——既存の fields／tables はそのままの参照で残り、末尾に追加するだけ**
+/// （AC-F19: 既存要素を1つも削除・変更しない）。採用された候補は cands から
+/// 除く。重なりのため対象外だった候補は cands に残す（個別採用の対象として）。
+export function applyCandidates(
+  fields: Field[], tables: Table[], cands: Cand[],
+  selected: Record<string, boolean>, makeUid: () => string,
+): { fields: Field[]; tables: Table[]; cands: Cand[]; acceptedCount: number } {
+  let nextFields = fields;
+  let nextTables = tables;
+  let acceptedCount = 0;
+  for (const c of cands) {
+    if (c.overlaps || !selected[c.id]) continue;
+    if (c.kind === "field") {
+      const spec = fieldSpecFromCandidate(c, nextFields.map((f) => f.field_id));
+      nextFields = [...nextFields, { uid: makeUid(), ...spec }];
+    } else {
+      const spec = tableSpecFromCandidate(c, nextTables.map((t) => t.table_id));
+      if (!spec) continue;
+      nextTables = [...nextTables, { uid: makeUid(), ...spec }];
+    }
+    acceptedCount++;
+  }
+  const remaining = cands.filter((c) => c.overlaps || !selected[c.id]);
+  return { fields: nextFields, tables: nextTables, cands: remaining, acceptedCount };
+}
+
+/// 採用済み表の列名を「列1..N」から一括で「<接頭辞>_1..N」に変える簡易操作
+/// （FR-F24。候補パネルの「接頭辞」入力・既定 "field"）。列名を1つずつ
+/// 書き直す手間を省く——任意の名前を個別に付け直したい場合は既存の
+/// 出力列タブの編集機能をそのまま使う。
+export function renameTableColumnsWithPrefix(table: Table, prefix: string): Table {
+  const p = prefix.trim() || "field";
+  return { ...table, columns: table.columns.map((c, i) => ({ ...c, name: `${p}_${i + 1}` })) };
+}
+
+/// detect-frames の zero_reason（§4.2.4）を日本語案内へ。未知の値は
+/// コードをそのまま添えて示す（存在しない訳を捏造しない）。
+const ZERO_REASON_JA: Record<string, string> = {
+  no_lines: "罫線が検出できません。等分割生成で作るか、手で枠を描いてください。",
+  no_rect: "罫線はありますが、閉じた枠になっていません（下線のみの帳票など）。"
+    + "等分割生成か手描きへ切り替えてください。",
+  all_filtered: "検出できた枠が用紙の外枠だけでした。",
+  too_many_lines: "線が多すぎて解析を打ち切りました。領域を指定する既存の生成をお使いください。",
+};
+export function zeroReasonNotice(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return ZERO_REASON_JA[reason] ?? `候補が見つかりませんでした（${reason}）`;
+}
+
+/// detect-frames の JSON（core/chouhyo_ocr/cli.py:cmd_detect_frames 実測・
+/// 2026-09-03）を Cand[] へ変換する。実装済みの core は設計08 §4.4 の例示
+/// と2点違う——①候補に `id` が無い（GUI 側で配列インデックスから振る）
+/// ②`blocks[0]` はネストした `origin` を持たず `{x,y,rows}` の平坦な形。
+/// `face_id` は --template 未指定時 `"page"`（null ではない）が入るため、
+/// 意味のある面ヒントとしては扱わない（§4.2.3: face_id が無いときは GUI が
+/// 自分の splitY で判定する）。壊れた/欠落したフィールドは防御的に既定値へ
+/// 倒す（未知の応答形で例外を投げて画面を止めない）。
+export function candidatesFromDetectFrames(ev: {
+  candidates?: unknown;
+}): Cand[] {
+  const raw = Array.isArray(ev?.candidates) ? ev.candidates as any[] : [];
+  return raw.map((c: any, i: number): Cand => {
+    const kind: "table" | "field" = c?.kind === "table" ? "table" : "field";
+    const block = kind === "table" ? c?.blocks?.[0] : undefined;
+    const faceId = typeof c?.face_id === "string" ? c.face_id : null;
+    return {
+      id: typeof c?.id === "string" && c.id ? c.id : `c${i}`,
+      kind,
+      rect: { x: c?.rect?.x ?? 0, y: c?.rect?.y ?? 0, w: c?.rect?.w ?? 0, h: c?.rect?.h ?? 0 },
+      faceHint: faceId && faceId !== "page" ? faceId : null,
+      residual: typeof c?.residual_px === "number" ? c.residual_px : 0,
+      overlaps: !!c?.overlaps_existing,
+      table: kind === "table" && block
+        ? {
+            rowPitch: c?.row_pitch ?? 0, rowHeight: c?.row_height ?? 0, rows: block?.rows ?? 0,
+            origin: { x: block?.x ?? 0, y: block?.y ?? 0 },
+            columns: Array.isArray(c?.columns)
+              ? c.columns.map((col: any) => ({ xOffset: col?.x_offset ?? 0, width: col?.width ?? 0 }))
+              : [],
+          }
+        : undefined,
+    };
+  });
+}
+
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
 /// 成功なら結合後の A を、できない場合は理由の文字列を返す。
 export function absorbField(a: Field, b: Field): Field | string {
@@ -1458,6 +1723,20 @@ export default function Editor(
   const [genRows, setGenRows] = useState(5);
   const [genCols, setGenCols] = useState(4);
   const [genMode, setGenMode] = useState<"ruled" | "uniform">("ruled");
+  // issue #73 (b)・設計08 §4.5: ページ全体から一括生成した枠候補。確定枠
+  // （fields/tables）とは別配列（保存対象に含めない）
+  const [cands, setCands] = useState<Cand[]>([]);
+  // 候補パネルのチェック状態（id→選択中）。既定値は candidateDefaultChecked
+  // （overlaps_existing は既定オフ）。生成のたびに作り直す
+  const [candSelected, setCandSelected] = useState<Record<string, boolean>>({});
+  const [framesGenerating, setFramesGenerating] = useState(false);
+  const [framesMsg, setFramesMsg] = useState("");
+  // 表候補を採用後に列名を一括で置き換える接頭辞（既定 field・FR-F24）
+  const [candPrefix, setCandPrefix] = useState("field");
+  // スバル差し戻し Must-2: 重なりのある候補を個別採用したら、保存するまで
+  // 消えない注意を候補パネル上部に残す（保存時に既存枠が切り抜かれる予定が
+  // あることを利用者が忘れないため）
+  const [overlapAcceptNotice, setOverlapAcceptNotice] = useState("");
   const [imgPath, setImgPath] = useState("");
   // 現在読み込んでいるテンプレートの絶対パス（保存ダイアログの既定に使う・
   // issue #56 T1-3）。起動時の自動読込では未確定（null）のままにし、
@@ -1482,7 +1761,28 @@ export default function Editor(
   const [loadedOrder, setLoadedOrder] = useState<OutputOrderSnapshot | null>(null);
   // 右パネルのタブ（issue #66 段3・FR-1.7・C-1）。「選択中」欄の詳細か
   // 「出力列」一覧かを切り替える
-  const [panelTab, setPanelTab] = useState<"selected" | "output">("selected");
+  // issue #73 (b)・Orchestrator決定（おかゆ実機検証後）: 枠候補パネルを
+  // 編集領域上部の全幅カードから、右側 .panel-wrap の第3タブへ移した
+  // （候補一覧がキャンバスを 0px まで潰す問題の根治・レイアウトの土台を
+  // 変える）。他タブと同じ role="tab"/aria-selected/aria-controls 規約に揃える
+  const [panelTab, setPanelTab] = useState<"selected" | "output" | "candidates">("selected");
+  // 候補タブへ自動遷移した後、候補が空になったら戻すための「直前のタブ」
+  const lastNonCandTab = useRef<"selected" | "output">("selected");
+  useEffect(() => {
+    if (panelTab !== "candidates") lastNonCandTab.current = panelTab;
+  }, [panelTab]);
+  const prevCandsLenRef = useRef(0);
+  useEffect(() => {
+    if (prevCandsLenRef.current === 0 && cands.length > 0) {
+      // 生成された瞬間だけ自動で切り替える（候補パネル自体は cands.length>0
+      // の間ずっと有効なタブなので、生成直後の1回だけを狙う）
+      setPanelTab("candidates");
+    } else if (prevCandsLenRef.current > 0 && cands.length === 0 && panelTab === "candidates") {
+      // 一括除去・全採用・テンプレ切替で候補が尽きたら直前のタブへ戻す
+      setPanelTab(lastNonCandTab.current);
+    }
+    prevCandsLenRef.current = cands.length;
+  }, [cands.length, panelTab]);
   // 保存前確認モーダル（issue #66 段3・FR-1.6・AC-1.23）。window.confirm の
   // 3連発＋列減少チェックを1枚のモーダルに統合するための Promise ブリッジ。
   // resolve(true)=このまま保存 / resolve(false)=保存しない
@@ -1806,6 +2106,64 @@ export default function Editor(
               totalW - 4 * px, null);
       }
     }
+    // issue #73 (b)・FR-F18・AC-F22・ラミィ（accessibility）差し戻し Must-A:
+    // 枠候補は破線＋隅マーカー＋番号ラベルで確定枠と区別する（色だけに
+    // 依存しない）。候補色（#4fc3f7/#7ce38b/#ff9f43）は白背景に対し単体では
+    // 約1.6〜2.0:1 しかなく WCAG 1.4.11（非テキスト3:1）・1.4.3 未達だった
+    // ——outputBadge と同じ「背景非依存の二重描画」に揃える: 線は白ハロー
+    // →色線の順で重ね描きし、ラベルは色を直書きせず不透明チップ＋白文字に
+    // する。色分け（表／欄／重なり）はチップの縁色に残しつつ、識別は
+    // 「?」（通常）／「!」（重なり）の記号でも行う（色だけに依存しない）
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i];
+      const r = c.rect;
+      const color = c.overlaps ? "#ff9f43" : c.kind === "table" ? "#7ce38b" : "#4fc3f7";
+      ctx.setLineDash([6 * px, 4 * px]);
+      // 暗色ハロー（#1c1f26・線幅 6px）→色線（2px）の順で重ね描きする。候補色は
+      // 明るいパステル系なので下地を暗色にして 3:1 以上を構造的に確保する（白地・黒罫線・画像どれでも）
+      ctx.strokeStyle = "#1c1f26"; ctx.lineWidth = 6 * px;
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+      ctx.strokeStyle = color; ctx.lineWidth = 2 * px;
+      ctx.strokeRect(r.x, r.y, r.w, r.h);
+      ctx.setLineDash([]);
+      // 隅の L字マーカー（同じ暗色ハロー→色線の順。破線が薄く見える
+      // ディスプレイでも実線側で視認できるよう重ね描きする）
+      const m = 10 * px;
+      const corners: [number, number, number, number][] = [
+        [r.x, r.y, 1, 1], [r.x + r.w, r.y, -1, 1],
+        [r.x, r.y + r.h, 1, -1], [r.x + r.w, r.y + r.h, -1, -1],
+      ];
+      const drawCorner = (strokeColor: string, w: number) => {
+        ctx.strokeStyle = strokeColor; ctx.lineWidth = w;
+        for (const [cx, cy, sx, sy] of corners) {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy + m * sy); ctx.lineTo(cx, cy); ctx.lineTo(cx + m * sx, cy);
+          ctx.stroke();
+        }
+      };
+      drawCorner("#1c1f26", 7 * px);
+      drawCorner(color, 3 * px);
+      ctx.lineWidth = 2 * px;
+      // ラベルは色を直書きせず、不透明チップ（#1c1f26）＋白文字（4.5:1以上）
+      // で描く——outputBadge と同じ「背景非依存の自己完結配色」。チップの
+      // 縁を候補色にして色分けは残しつつ、識別の一次情報は文字（番号＋
+      // 「?」＝通常／「!」＝重なり）にする
+      const labelText = `${i + 1}${c.overlaps ? "!" : "?"}`;
+      const chipFont = `bold ${14 * px}px sans-serif`;
+      ctx.font = chipFont;
+      const padX = 6 * px, padY = 4 * px, textH = 14 * px;
+      const textW = ctx.measureText(labelText).width;
+      const chipW = Math.min(r.w, textW + padX * 2);
+      const chipH = textH + padY * 2;
+      const chipX = r.x, chipY = r.y;
+      ctx.fillStyle = "#1c1f26";
+      ctx.fillRect(chipX, chipY, chipW, chipH);
+      ctx.strokeStyle = color; ctx.lineWidth = 1.5 * px;
+      ctx.strokeRect(chipX, chipY, chipW, chipH);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = chipFont;
+      ctx.fillText(labelText, chipX + padX, chipY + padY + textH * 0.78, chipW - padX * 2);
+    }
     if (pending) rect(pending, "#ff9f43");
     // 選択中の矩形にリサイズハンドルを描く（画面上で常に同じ大きさ）。
     // 掴み所が見えないと「リサイズできない」ように見える（ユーザー指摘）
@@ -1832,7 +2190,7 @@ export default function Editor(
     }
     ctx.restore();
   }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol, hlFieldUid,
-      formatFaces, formatOverride]);
+      formatFaces, formatOverride, cands]);
 
   // draw() は全欄のラベルをループで measureText トリムするため、ドラッグ中の
   // mousemove のたびに毎回同期実行すると重い（issue #60 M-3・実測で back面
@@ -1985,6 +2343,9 @@ export default function Editor(
       // 新しい画像を開いたら上書き表示（FR-F05）は必ずリセットする
       // （設計08 §2.7.4「画像を開き直したら false に戻す」）
       setFormatOverride(false);
+      // issue #73 (b): 枠候補は直前の画像の座標に基づくため、別の画像を
+      // 開いたら破棄する（確定済みの fields/tables はそのまま維持）
+      setCands([]); setFramesMsg(""); setRecentCandTableUids([]);
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       draw();
     };
@@ -2146,6 +2507,10 @@ export default function Editor(
     setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
     // 前のファイルの検証エラー・警告を現在の状態と誤読させない（レビュー N-5）
     setErrMsg(""); setWarnMsg("");
+    // スバル差し戻し Should-1: テンプレートが入れ替わったら枠候補も破棄する
+    // （overlaps フラグは切り替え前のテンプレート基準のまま残ってしまうため）
+    setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+    setRecentCandTableUids([]);
     markDirty(false);
     // 画像がまだ無ければ、DOM 案内をキャンバスの文字（draw()）と同じ内容に
     // 揃える（マリンレビュー M-1）。以前は常に「テンプレート読込: <path>」
@@ -2203,6 +2568,11 @@ export default function Editor(
       setFormatFaces([]);
       setFormatWarnMsg(templateSwitchImageSizeNotice(imgSize, parsed.image) ?? "");
       setFormatOverride(false);
+      // スバル差し戻し Should-1: テンプレート切替（照合パネルの「開く」・
+      // 利用者テンプレート一覧から開く・出荷へ戻す、いずれも本関数を通る）
+      // では枠候補を破棄する（重なりフラグが旧テンプレ基準で残るため）
+      setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+      setRecentCandTableUids([]);
       markDirty(false);
       if (kind === "user") {
         await invoke("write_config", { patch: { last_template: `user:${name}` } }).catch(() => {});
@@ -2325,6 +2695,13 @@ export default function Editor(
     // 直前のテンプレートに対する様式判定はもう意味を持たない（新しい
     // テンプレートは常に「一致」の定義そのものになる）
     setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
+    // スバル差し戻し Should-1: 新しいテンプレートは常に空（fields/tables
+    // ゼロ）になるため、直前の枠候補が持つ overlaps フラグは無意味になる
+    // （何とも重ならないので全部 false になるはず）。安全側に倒して破棄する
+    // ——画像は変わっていないので、必要なら「ページ全体から枠候補を生成」を
+    // 押し直せば同じ候補が overlaps=false で即座に取り直せる
+    setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+    setRecentCandTableUids([]);
     markDirty(true);   // 空でも「まだ保存していない」新規状態として扱う
     setMsg(newTemplateNotice(false));
   };
@@ -2557,6 +2934,9 @@ export default function Editor(
     setTplPath(p);
     setLoadedExcls(currentExclSnapshot);
     markDirty(false);
+    // スバル差し戻し Must-2: 保存が完了したので「保存時に既存の枠が
+    // 調整されます」の注意はもう不要
+    setOverlapAcceptNotice("");
     if (!resolved.skipped.length) setErrMsg("");
     try {
       // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
@@ -2713,6 +3093,8 @@ export default function Editor(
     await invoke("write_config", { patch: { last_template: `user:${name}` } }).catch(() => {});
     setTplPath(null);
     markDirty(false);
+    // スバル差し戻し Must-2: 保存が完了したので注意を消す
+    setOverlapAcceptNotice("");
     setMsg(carveNote + `利用者テンプレートとして保存しました: ${name}`);
   };
 
@@ -2755,6 +3137,134 @@ export default function Editor(
       setPending(null); markDirty(true);
       setMsg(`枠候補を生成（${fit.mode}・${fit.rows}行・残差 ${fit.residual_px}px）`);
     } catch (e) { setMsg(`detect-grid 失敗: ${e}`); }
+  };
+
+  // ---------- 枠候補の一括生成（issue #73 (b)・detect-frames・設計08 §4）----------
+  // detect-grid（上記 generate）とは独立の経路。領域指定（pending）は不要——
+  // ページ全体を core が解析する（§4.5.6「2ボタンに分ける」の新設側）
+  const runDetectFrames = async () => {
+    if (!imgPath) { setFramesMsg(""); setErrMsg("画像を開いてから実行してください"); return; }
+    if (framesGenerating) return;
+    setFramesGenerating(true);
+    setFramesMsg("枠候補を生成しています…");
+    setErrMsg("");
+    setRecentCandTableUids([]);
+    try {
+      const args = ["detect-frames", "--input", imgPath, "--dpi", String(meta.current.render_dpi)];
+      if (tplPath) args.push("--template", tplPath);
+      const out = await invoke<string>("run_core_capture", { args });
+      const ev = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .find((e) => e && e.event === "detect_frames");
+      if (!ev?.ok) {
+        setFramesMsg("");
+        setErrMsg(ev?.error ? `枠候補を生成できませんでした: ${ev.error}` : "枠候補を生成できませんでした。");
+        return;
+      }
+      // スバル差し戻し Must-1: tplPath が null の経路（起動時復元・(t) の
+      // テンプレート切替）では --template を渡せず、core の
+      // overlaps_existing が全候補 false 固定になる。GUI 側でも現在の
+      // fields/tables に対して独立に重なりを再判定し、どちらか一方でも
+      // 検出したら overlaps=true に確定する（安全網を二重化する）
+      const newCands = candidatesFromDetectFrames(ev).map((c) => ({
+        ...c,
+        overlaps: c.overlaps || candidateOverlapsExisting(c, fields, tables, splitY),
+      }));
+      const defaults: Record<string, boolean> = {};
+      for (const c of newCands) defaults[c.id] = candidateDefaultChecked(c);
+      setCandSelected(defaults);
+      // 候補生成は Undo 1コマとして即座に積む（400ms静止の経路に頼らない・
+      // 設計08 §4.5.3）。生成前の状態（現在の cands 含む）を丸ごと退避する
+      pushHistoryNow({ fields, tables, excls, splitY, cands: newCands });
+      setCands(newCands);
+      markDirty(true);
+      const zr = zeroReasonNotice(ev.zero_reason);
+      const stats = ev.stats ?? {};
+      const statsText = `線 横${stats.lines_h ?? 0}・縦${stats.lines_v ?? 0}`
+        + `／矩形 ${stats.rects ?? 0}`;
+      // マリン core レビュー由来: 候補にしなかった枠の内訳（excluded[]）と、
+      // --template 指定時に寸法不一致でテンプレートが適用されなかった旨
+      // （template_applied/template_skip_reason）を追記する
+      const excludedNote = excludedSummaryJa(ev.excluded);
+      const skipNote = templateSkipReasonNotice(ev.template_applied, ev.template_skip_reason);
+      const extraNotes = [excludedNote, skipNote].filter(Boolean).join(" ／ ");
+      if (newCands.length === 0) {
+        setFramesMsg(`${zr ?? "候補が見つかりませんでした。"}（${statsText}・${ev.elapsed_ms ?? 0}ms）`
+          + (extraNotes ? ` ／ ${extraNotes}` : ""));
+      } else {
+        const tableCount = newCands.filter((c) => c.kind === "table").length;
+        const fieldCount = newCands.filter((c) => c.kind === "field").length;
+        const overlapCount = newCands.filter((c) => c.overlaps).length;
+        setFramesMsg(`枠候補: 表${tableCount}・欄${fieldCount}件`
+          + (overlapCount ? `（うち重なりのため対象外 ${overlapCount} 件） ` : "")
+          + `・${statsText}・${ev.elapsed_ms ?? 0}ms`
+          + (extraNotes ? ` ／ ${extraNotes}` : ""));
+      }
+    } catch (e) {
+      setFramesMsg("");
+      setErrMsg(`枠候補の生成に失敗しました: ${e}`);
+    } finally {
+      setFramesGenerating(false);
+    }
+  };
+
+  // 表候補を採用した結果できた table の uid を集める（「接頭辞で列名を一括
+  // リネーム」の対象を絞るため・FR-F24）。次の生成で作り直す
+  const [recentCandTableUids, setRecentCandTableUids] = useState<string[]>([]);
+
+  // 一括採用（overlaps_existing の候補は選択状態に関わらず対象外・
+  // Orchestrator判断）。carve／resolveOverlaps は通さない——追加のみ
+  const acceptSelectedCandidates = () => {
+    const beforeTablesLen = tables.length;
+    const result = applyCandidates(fields, tables, cands, candSelected, uid);
+    if (result.acceptedCount === 0) { setFramesMsg("選択した候補がありません（重なりのある候補は対象外です）"); return; }
+    const newTableUids = result.tables.slice(beforeTablesLen).map((t) => t.uid);
+    setFields(result.fields);
+    setTables(result.tables);
+    setCands(result.cands);
+    setRecentCandTableUids((prev) => [...prev, ...newTableUids]);
+    markDirty(true);
+    setFramesMsg(`${result.acceptedCount} 件を採用しました`);
+  };
+
+  const clearAllCandidates = () => {
+    if (cands.length === 0) return;
+    setCands([]);
+    setFramesMsg("候補をすべて除去しました（確定済みの枠は変更していません）");
+  };
+
+  // 個別採用（FR-F20）。重なりがある候補は確認を挟む（§4.5.2-3・carve へ
+  // 逃げず人に決めさせる）
+  const acceptOneCandidate = (cand: Cand) => {
+    if (cand.overlaps && !window.confirm(candidateOverlapWarning())) return;
+    if (cand.kind === "field") {
+      const spec = fieldSpecFromCandidate(cand, fields.map((f) => f.field_id));
+      setFields((fs) => [...fs, { uid: uid(), ...spec }]);
+    } else {
+      const spec = tableSpecFromCandidate(cand, tables.map((t) => t.table_id));
+      if (!spec) return;
+      const newUid = uid();
+      setTables((ts) => [...ts, { uid: newUid, ...spec }]);
+      setRecentCandTableUids((prev) => [...prev, newUid]);
+    }
+    setCands((cs) => cs.filter((c) => c.id !== cand.id));
+    // スバル差し戻し Must-2: 重なりを承知で採用した場合、保存するまで
+    // 消えない注意を候補パネル上部に残す（既存枠が保存時に切り抜かれる）
+    if (cand.overlaps) setOverlapAcceptNotice(overlapAcceptedNotice());
+    markDirty(true);
+  };
+
+  const removeOneCandidate = (id: string) => {
+    setCands((cs) => cs.filter((c) => c.id !== id));
+  };
+
+  // 「接頭辞」入力を使った表の列名一括リネーム（FR-F24）。今回の生成で
+  // 候補から採用した表だけを対象にする——無関係な既存表を巻き込まない
+  const applyPrefixToRecentTables = () => {
+    if (recentCandTableUids.length === 0) return;
+    const targets = new Set(recentCandTableUids);
+    setTables((ts) => ts.map((t) => targets.has(t.uid) ? renameTableColumnsWithPrefix(t, candPrefix) : t));
+    markDirty(true);
+    setFramesMsg(`表の列名を「${candPrefix}_1..N」へ一括変更しました`);
   };
 
   // ---------- マウス ----------
@@ -2804,7 +3314,7 @@ export default function Editor(
         history.current.future = [];
       }
       const carvedFields = fields.map((f) => carved.get(f.uid) ?? f);
-      snapRef.current = { fields: carvedFields, tables, excls, splitY };
+      snapRef.current = { fields: carvedFields, tables, excls, splitY, cands };
       setFields(carvedFields);
       // carve で extras が総入れ替えになった欄を選択中だと、part の添字が
       // 存在しない/別の領域を指すようになる（issue #60 M-4）。安全側へ倒し、
@@ -2890,6 +3400,10 @@ export default function Editor(
                        extra: { ...pan } };
       return;
     }
+    // issue #73 (b)・設計08 §4.5.4: 枠候補の生成中はキャンバス操作を無効化
+    // する（パン・ズームは許可——上の isPan 分岐がここより先にあるため
+    // 影響を受けない）
+    if (framesGenerating) return;
     // 画像が無い間はキャンバス上の枠操作を無効化する（2026-09-02 ユーザー
     // 指摘・マリンレビュー H-1）。パン判定は上で確定済みなのでここでは
     // 画像の有無だけを見る。抜けるときに待ち受け状態（領域を追加・別の欄と
@@ -3152,11 +3666,12 @@ export default function Editor(
   useEffect(() => {
     if (restoring.current) { restoring.current = false; return; }
     const t = setTimeout(() => {
-      const cur: Snap = { fields, tables, excls, splitY };
+      const cur: Snap = { fields, tables, excls, splitY, cands };
       const prev = snapRef.current;
       if (prev === null) { snapRef.current = cur; return; }   // 基準の初期化
       if (prev.fields !== cur.fields || prev.tables !== cur.tables
-          || prev.excls !== cur.excls || prev.splitY !== cur.splitY) {
+          || prev.excls !== cur.excls || prev.splitY !== cur.splitY
+          || prev.cands !== cur.cands) {
         history.current.past.push(prev);
         if (history.current.past.length > 100) history.current.past.shift();
         history.current.future = [];
@@ -3164,7 +3679,7 @@ export default function Editor(
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [fields, tables, excls, splitY]);
+  }, [fields, tables, excls, splitY, cands]);
 
   const resetHistory = () => {
     history.current = { past: [], future: [] };
@@ -3173,9 +3688,10 @@ export default function Editor(
   // 1クリック=1 Undo コマ（issue #66 段7・K-M4）。通常の編集は400ms静止で
   // 1コマにまとめる下の useEffect に任せるが、並べ替えボタンは連打されても
   // 1回1回を別のコマにしたい（「3つ上げたつもりが1回のUndoで全部戻る」を
-  // 防ぐ）ため、クリック時点で待たずに history へ積む
+  // 防ぐ）ため、クリック時点で待たずに history へ積む。issue #73 (b) の
+  // 候補生成も同じ理由で使う（設計08 §4.5.3「400ms静止の経路に頼らない」）
   const pushHistoryNow = (next: Snap) => {
-    const prev = snapRef.current ?? { fields, tables, excls, splitY };
+    const prev = snapRef.current ?? { fields, tables, excls, splitY, cands };
     history.current.past.push(prev);
     if (history.current.past.length > 100) history.current.past.shift();
     history.current.future = [];
@@ -3186,6 +3702,7 @@ export default function Editor(
     snapRef.current = snap;
     setFields(snap.fields); setTables(snap.tables);
     setExcls(snap.excls); setSplitY(snap.splitY);
+    setCands(snap.cands ?? []);
     setSel(null); setPending(null); markDirty(true);
   };
   const undoEdit = () => {
@@ -3208,6 +3725,10 @@ export default function Editor(
     // 実行タブ表示中などはここで即 return（issue #69 Q-H3）。ref は毎レンダー
     // 再代入されるため、この時点の `active` は常に最新——追加の ref は不要
     if (!active) return;
+    // スバル差し戻し Should-2: 枠候補の生成中はキーボード操作（Delete・矢印
+    // nudge 等）も無効にする（マウス操作は onDown 側で既に framesGenerating
+    // を見て無効化済み・§4.5.4「生成中はキャンバスの枠操作を無効化」と揃える）
+    if (framesGenerating) return;
     const el = document.activeElement as HTMLElement | null;
     const tag = (el?.tagName ?? "").toLowerCase();
     // 入力欄相当の判定に isContentEditable を加える（issue #69 Q-H3）。
@@ -3309,7 +3830,7 @@ export default function Editor(
   const moveField = (uid: string, dir: "up" | "down") => {
     const next = moveFieldOutputOrder(fields, uid, dir, splitY);
     if (!next) return;
-    pushHistoryNow({ fields: next, tables, excls, splitY });
+    pushHistoryNow({ fields: next, tables, excls, splitY, cands });
     setFields(next);
     markDirty(true);
     flashRow(uid);
@@ -3323,7 +3844,7 @@ export default function Editor(
     const next = moveTableColumnOrder(t.columns, index, dir);
     if (!next) return;
     const nextTables = tables.map((x) => x.uid === tableUid ? { ...x, columns: next } : x);
-    pushHistoryNow({ fields, tables: nextTables, excls, splitY });
+    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands });
     setTables(nextTables);
     markDirty(true);
     flashRow(`${tableUid}:${dir === "up" ? index - 1 : index + 1}`);
@@ -3741,6 +4262,92 @@ export default function Editor(
       </div>);
   };
 
+  // issue #73 (b)・Orchestrator決定（おかゆ実機検証後）: 枠候補パネルを
+  // .panel-wrap の第3タブへ。上部（結果行・一括操作・接頭辞）は
+  // flex-shrink:0 で固定し、一覧だけを flex:1・overflow-y:auto にする——
+  // #edittabpanel 自体が既に flex column（App.css）なので、この関数が
+  // 返す1枚の div がそのままその子要素として伸縮する
+  const candidatesPanel = () => (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      {/* 上部は固定（flexShrink:0）。狭い側パネル（320px幅）だと framesMsg の
+          診断文（excludedSummaryJa／templateSkipReasonNotice 込み）や
+          長いボタン文言がそのまま何行にも折り返し、一覧の可視領域を
+          食い潰していた（実機検証: 一覧 clientHeight が151pxまで低下）。
+          見出し・注意は極力コンパクトにし、framesMsg は2行クランプ＋
+          title 属性で全文を保つ（DOM/ARIA には全文が残るため aria-live の
+          読み上げは変わらない・視覚的な省略のみ） */}
+      <div style={{ flexShrink: 0, padding: "10px 18px 6px" }}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>
+          枠候補{cands.length > 0 ? `（${cands.length} 件）` : ""}</h3>
+        {/* スバル差し戻し Must-2: 重なりを承知で採用した候補があれば、
+            保存するまで消えない注意をここに出す */}
+        {overlapAcceptNotice && (
+          <p className="note" role="status" aria-live="polite"
+            style={{ color: "var(--warn-ink)", margin: "0 0 4px" }}>{overlapAcceptNotice}</p>
+        )}
+        {framesMsg && (
+          <p className="note" role="status" aria-live="polite" title={framesMsg}
+            style={{ margin: "0 0 6px", display: "-webkit-box", WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 2, overflow: "hidden" }}>{framesMsg}</p>
+        )}
+        {cands.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+            <button className="btn" type="button" onClick={acceptSelectedCandidates}>
+              選んだ候補を採用
+            </button>
+            <button className="btn" type="button" onClick={clearAllCandidates}>
+              すべて除去
+            </button>
+          </div>
+        )}
+        {cands.length > 0 && (
+          // App.css の label { display:flex; flex-direction:column } は
+          // フォーム全般で意図的に縦積みにする既定（Settings モーダル等と
+          // 揃える）——この横並びの狭い行では <label> を使わず、
+          // <span id>+aria-labelledby で同じ関連付けをアクセシブルに保つ
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <span id="cand-prefix-label" style={{ fontSize: 12.5, whiteSpace: "nowrap" }}>接頭辞</span>
+            <input value={candPrefix} aria-labelledby="cand-prefix-label" style={{ width: 50 }}
+              onChange={(e) => setCandPrefix(e.target.value)} />
+            <button className="btn" type="button" onClick={applyPrefixToRecentTables}
+              disabled={recentCandTableUids.length === 0}
+              title={recentCandTableUids.length === 0
+                ? "この生成から採用した表がまだありません"
+                : "採用した表の列名を接頭辞で一括変更"}>
+              変更
+            </button>
+          </div>
+        )}
+      </div>
+      {/* 一覧本体だけがスクロールする（おかゆ実機検証で発覚した canvas 0px
+          化の根治——このタブに移したことで固定の max-height clamp は
+          不要になった。パネルの高さいっぱいを使う） */}
+      <div className="cand-list" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 18px 14px" }}>
+        {cands.length === 0 && <p className="note">候補がありません。</p>}
+        {cands.map((c) => (
+          <div key={c.id} className="panel-outrow">
+            <input type="checkbox"
+              checked={!!candSelected[c.id]} disabled={c.overlaps}
+              title={c.overlaps ? "既存の枠と重なるため一括採用の対象外です（個別採用は可能）" : undefined}
+              aria-label={candidateAriaLabel(c)}
+              onChange={(e) => setCandSelected((s) => ({ ...s, [c.id]: e.target.checked }))} />
+            <span>
+              {c.kind === "table" ? "表" : "欄"}候補 {c.id}
+              {c.faceHint ? `（${c.faceHint}）` : ""}
+              {c.overlaps && <span className="format-hidden-badge">既存と重なり</span>}
+            </span>
+            <span className="note">
+              {Math.round(c.rect.w)}×{Math.round(c.rect.h)}px・残差 {c.residual.toFixed(1)}px
+              {c.table ? `・${c.table.rows}行` : ""}
+            </span>
+            <button className="btn" type="button" onClick={() => acceptOneCandidate(c)}>採用</button>
+            <button className="btn" type="button" onClick={() => removeOneCandidate(c.id)}>除去</button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
   const templateLoaded = fields.length > 0 || tables.length > 0;
   const outputDisabledTotal = countOutputDisabled(fields, tables);
   // 並べ替え（段7）で読み込み時の並びから変わっているか（段6 のガードと同じ
@@ -3771,15 +4378,27 @@ export default function Editor(
           // それ以外はキャンバス上に枠を描く／操作するツールなので、押せても
           // 何も起きない状態を見せないよう画像が無い間は無効化する
           // （マリンレビュー H-1・onDown 側のガードと二重で塞ぐ）
-          const need = t !== "select" && !hasImage;
+          const need = (t !== "select" && !hasImage) || framesGenerating;
           return (
             <button key={t} className={tool === t ? "btn active" : "btn"}
-              disabled={need} title={need ? "帳票の画像か PDF を開くと使えます" : undefined}
+              disabled={need} title={need
+                ? (framesGenerating ? "枠候補の生成中は操作できません" : "帳票の画像か PDF を開くと使えます")
+                : undefined}
               onClick={() => setTool(t)}>
               {{ select: "選択", field: "欄を追加", excl: "除外範囲",
                  table: "くり返し行（家族・明細）", split: "表裏の境界" }[t]}
             </button>);
         })}
+        <span className="sep" />
+        {/* issue #73 (b)・設計08 §4.5.6: 既存の detect-grid（領域指定・
+            「くり返し行」ツールで pending を描いてから生成）はそのまま残し、
+            ページ全体からの一括生成を別ボタンとして追加する（2ボタンに
+            分ける方針・既存の入口を壊さない） */}
+        <button className="btn" onClick={runDetectFrames}
+          disabled={!hasImage || framesGenerating}
+          title={!hasImage ? "帳票の画像か PDF を開くと使えます" : undefined}>
+          {framesGenerating ? "枠候補を生成中…" : "ページ全体から枠候補を生成"}
+        </button>
         <span className="msg" role="status" aria-live="polite">
           {msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
@@ -3872,8 +4491,11 @@ export default function Editor(
                  : hoverCursor ? { cursor: hoverCursor } : undefined}
           onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
           onWheel={onWheel} onContextMenu={(e) => e.preventDefault()} />
-        {/* 「選択中/出力列」の2タブ構成（issue #66 段3・FR-1.7・C-1・AC-1.24）。
-            出力列タブはテンプレート未読込時 disabled（C-1 の empty 定義） */}
+        {/* 「選択中/出力列/枠候補」の3タブ構成（issue #66 段3・FR-1.7・C-1・
+            AC-1.24 の2タブに、issue #73 (b)・Orchestrator決定で「枠候補」を
+            追加）。出力列タブはテンプレート未読込時 disabled（C-1 の empty
+            定義）、枠候補タブは候補0件のとき disabled（他タブと同じ
+            role="tab"/aria-selected/aria-controls 規約に揃える） */}
         <div className="panel-wrap">
           <div className="tabs panel-tabs" role="tablist" aria-label="編集パネル">
             <button type="button" role="tab" id="edittab-selected"
@@ -3889,10 +4511,21 @@ export default function Editor(
               出力列
               {outputDisabledTotal > 0 && <span className="badge">⊘{outputDisabledTotal}</span>}
             </button>
+            <button type="button" role="tab" id="edittab-candidates"
+              aria-selected={panelTab === "candidates"} aria-controls="edittabpanel"
+              className={panelTab === "candidates" ? "active" : ""}
+              disabled={cands.length === 0}
+              title={cands.length === 0 ? "「ページ全体から枠候補を生成」で候補ができると使えます" : undefined}
+              onClick={() => setPanelTab("candidates")}>
+              枠候補
+              {cands.length > 0 && <span className="badge">{cands.length}</span>}
+            </button>
           </div>
           <div id="edittabpanel" role="tabpanel"
-            aria-labelledby={panelTab === "selected" ? "edittab-selected" : "edittab-output"}>
-            {panelTab === "output" && templateLoaded ? outputListPanel() : panel()}
+            aria-labelledby={panelTab === "selected" ? "edittab-selected"
+              : panelTab === "output" ? "edittab-output" : "edittab-candidates"}>
+            {panelTab === "candidates" ? candidatesPanel()
+              : panelTab === "output" && templateLoaded ? outputListPanel() : panel()}
           </div>
         </div>
       </div>

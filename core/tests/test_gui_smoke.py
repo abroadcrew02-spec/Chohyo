@@ -121,7 +121,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # 出力列タブは id 指定で開く（マリンレビュー LOW: 出力しない欄があると
     # バッジ「⊘N」が名前に付き get_by_role(name=...) が壊れうるため）
     page.locator("#edittab-output").click()
-    before = page.locator(".panel-outrow").count()
+    before = page.locator("#edittabpanel .panel-outrow").count()
     assert before > 0, "デモテンプレートの欄・表が出力列タブに出ていない"
 
     # ツールボタンは select 以外、画像が無い間 disabled になる
@@ -141,7 +141,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     page.mouse.move(box["x"] + 200, box["y"] + 200, steps=5)
     page.mouse.up()
 
-    after = page.locator(".panel-outrow").count()
+    after = page.locator("#edittabpanel .panel-outrow").count()
     assert after == before, "画像を開く前にキャンバス操作で欄が増えてしまった"
     # コーディネータ指摘2: 上の件数不変チェックは tool="select"（既定）では
     # ヒットテストが空振りするだけの恒真判定になる（select 経路に欄を増やす
@@ -407,3 +407,53 @@ def test_editor_restores_last_template_notice_after_reload(page):
     # 戻る（このテストが最後なので後続テストへの影響はない）
     page.locator(".tabs button", has_text="実行").click()
     page.wait_for_selector("text=読み取る帳票の選択")
+
+
+def test_editor_detect_frames_generate_accept_and_undo(page):
+    # issue #73 (b)・設計08 §4: ページ全体からの枠候補一括生成。生成→一覧に
+    # 表示→一括採用（overlaps_existing の候補は対象外）→確定枠（出力列一覧）
+    # に増える→Undo で直前の状態に戻ることを確認する。
+    # Orchestrator決定（おかゆ実機検証後）: 枠候補パネルは編集領域上部の
+    # 全幅カードから .panel-wrap の第3タブ「枠候補」へ移した。生成した瞬間に
+    # 自動でこのタブへ切り替わる（候補が残っている間は自動で戻らない）ため、
+    # 出力列一覧を数える箇所では明示的に #edittab-output へ切り替える。
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=この画像に合うテンプレート")
+
+    page.locator("#edittab-output").click()
+    before = page.locator("#edittabpanel .panel-outrow").count()
+
+    page.get_by_role("button", name="ページ全体から枠候補を生成").click()
+    page.wait_for_selector("text=枠候補（4 件）")
+    # 生成すると自動で「枠候補」タブへ切り替わる
+    assert page.locator("#edittab-candidates").get_attribute("aria-selected") == "true",         "候補生成後に「枠候補」タブへ自動で切り替わっていない"
+    # 疑似応答: 表1（overlaps無し）＋欄3（うち1件 overlaps_existing）
+    assert page.get_by_text("既存と重なり").count() == 1,         "overlaps_existing の候補が1件だけ印付きで示されていない"
+
+    page.get_by_role("button", name="選んだ候補を採用").click()
+    page.wait_for_selector("text=3 件を採用しました")
+    # overlaps だった候補（c2）が1件残るため自動ではタブが戻らない設計——
+    # 出力列一覧は明示的にタブを切り替えて数える
+    page.locator("#edittab-output").click()
+    after = page.locator("#edittabpanel .panel-outrow").count()
+    assert after == before + 3, f"採用後の欄/表の増分が期待と違う: before={before} after={after}"
+    assert page.get_by_text("field_01", exact=False).is_visible()
+    # overlaps だった候補は個別採用の対象として枠候補タブに残る
+    page.locator("#edittab-candidates").click()
+    assert page.get_by_text("既存と重なり").count() == 1
+
+    # Undo（Ctrl+Z）で直前の採用を取り消す。400ms 静止の履歴コマ化を待つ
+    page.wait_for_timeout(500)
+    page.keyboard.press("Control+z")
+    page.wait_for_timeout(200)
+    # 候補は1→4件の非ゼロ遷移なので自動タブ切替は起きない。出力列タブへ
+    # 切り替えて確定枠が採用前の件数に戻ったことを確認する
+    page.locator("#edittab-output").click()
+    reverted = page.locator("#edittabpanel .panel-outrow").count()
+    assert reverted == before, f"Undo で採用前の件数に戻っていない: before={before} reverted={reverted}"
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    page.locator(".tabs button", has_text="実行").click()
