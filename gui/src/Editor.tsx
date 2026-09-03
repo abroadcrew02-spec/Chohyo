@@ -4425,7 +4425,7 @@ export default function Editor(
             display:none／visibility:hidden は使わない（スクリーンリーダーに
             読ませるための意図的な視覚非表示・.sr-only は App.css 参照） */}
         <span className="sr-only" role="status" aria-live="polite">
-          {framesMsg}{overlapAcceptNotice ? `／${overlapAcceptNotice}` : ""}
+          {framesMsg}
         </span>
         <span className="msg" role="status" aria-live="polite">
           {msg}{dirtyState ? "（未保存）" : ""}</span>
