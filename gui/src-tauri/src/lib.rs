@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Component, Path, PathBuf, Prefix};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -19,12 +20,32 @@ pub struct CoreProc(pub Mutex<Option<u32>>);
 /// 白リストをルート固定にはせずダイアログの選択結果で広げる。
 pub struct PickedPaths(pub Mutex<HashSet<PathBuf>>);
 
+/// ドロップを受け付ける画面が表示されているか（issue #69 セキュリティ LOW (b)）。
+///
+/// `on_window_event` の DragDrop は**タブに関係なく**発火するため、
+/// ドロップを受ける画面（実行画面）が隠れている間に落としたファイルまで
+/// `PickedPaths` へ登録されていた。画面には何も出ないので、利用者からは
+/// 「読み書きを許すパスが増えた」ことが分からない（不可視の権限拡大）。
+/// フロント（App.tsx）がタブ切替のたびに `set_drop_active` で更新する。
+///
+/// 既定は true——起動直後は実行画面が表示されており、フロントが一度も
+/// 伝えてこない場合でも従来どおり動く（伝達漏れで機能が壊れる側へは
+/// 倒さない）。webview がこの値を偽れても、実際のドロップという利用者の
+/// 物理操作なしにはパスは増えない。
+pub struct DropActive(pub Mutex<bool>);
+
 /// webview から起動できるサブコマンドの白リスト（issue #7）。
-/// purge（中間データ全削除）は要件 §6.3「削除は明示操作のみ」のため
-/// GUI 境界からは呼べない——必要なら CLI を直接使う。
+///
+/// purge（中間データの削除）は issue #52 M-11 で追加した。要件 §6.3
+/// 「削除は明示操作のみ」は「GUI から呼べないこと」ではなく「利用者の
+/// 明示操作以外では走らないこと」を求めている——実行画面の二段確認
+/// （何が消えて何が残るかの説明 → 最終確認）がその明示操作にあたる。
+/// 削除手段が CLI にしか無い状態こそが、中間データ（要配慮個人情報）を
+/// 無期限に溜め続ける原因になっていた。受け付けるフラグは
+/// `--yes`・`--include-output` だけに限る（`allowed_flags`）。
 const ALLOWED_SUBCOMMANDS: &[&str] = &[
     "run", "render", "remap", "status", "verify", "detect-grid",
-    "expand-page", "import-credentials", "detect-frames",
+    "expand-page", "import-credentials", "detect-frames", "purge",
 ];
 
 /// サブコマンドが受け付けるフラグと、値を取るかどうかの対応表
@@ -53,7 +74,16 @@ fn allowed_flags(subcommand: &str) -> &'static [(&'static str, bool)] {
         "detect-frames" => &[
             ("--input", true), ("--page", true), ("--dpi", true), ("--template", true),
         ],
-        // import-credentials は位置引数 json_path のみ（check_args_v2 内で別扱い）。
+        // import-credentials は位置引数 json_path（check_args_v2 内で別扱い）に
+        // 加えて --delete-source（issue #52 M-10）。取り込みに成功したら元の
+        // 平文鍵 JSON をランダム上書きのうえ削除するフラグで、GUI からは既定で
+        // 付ける——取り込みのたびに平文の秘密鍵がディスクへ残るのを止める。
+        "import-credentials" => &[("--delete-source", false)],
+        // purge は値を取らない2つだけ（issue #52 M-11・S-MC）。--config のような
+        // 「どこを消すか」を差し替えられるフラグは絶対に足さない——消す対象は
+        // config.json の workdir/output_dir だけ、という不変条件で二段確認の
+        // 説明文（何が消えるか）と実際の削除範囲を一致させている。
+        "purge" => &[("--yes", false), ("--include-output", false)],
         _ => &[],
     }
 }
@@ -394,6 +424,17 @@ fn workdir_pages_dir(root: &Path, workdir: &str) -> Option<PathBuf> {
 /// ダイアログを介さずに読み書きしてよいフォルダ。アプリルートに加えて、
 /// 設定の workdir 配下の `editor_pages` を含める（編集画面の PDF 展開結果は
 /// ここに出る。workdir を外部フォルダへ向けた構成でもプレビューを壊さない）。
+///
+/// **ジャンクション残余の再評価トリガ（issue #69 残置3）**: 現状の残余リスク
+/// （canonicalize 済みルート配下にジャンクションを張られた場合の読み取り拡大）
+/// は LOW として受容している。前提は「読めるのは roots 配下の限られた拡張子
+/// だけ」「roots は repo_root と workdir/editor_pages の2つだけ」。次のいずれか
+/// に手を入れるときは、この受容を **HIGH 相当として再評価**すること:
+/// (1) roots を参照するコマンドの許可拡張子を増やす（`check_scope` の
+/// `&["png","jpg","jpeg"]` / `&["json"]` を広げる）
+/// (2) `read_text` に roots を許す（現在は picked 由来のみ）
+/// (3) workdir を GUI から自由入力できるようにする
+/// 詳細は docs/design/chouhyo-ocr/08_frame_detection_design.md §3.2.6 の末尾。
 fn allowed_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     let root = repo_root(app)?;
     let mut roots = vec![root.canonicalize().unwrap_or_else(|_| root.clone())];
@@ -439,6 +480,13 @@ fn remember_dropped(picked: &PickedPaths, paths: &[PathBuf]) {
             set.insert(abs);
         }
     }
+}
+
+/// ドロップを受け付ける画面が表示されているかをフロントから伝える
+/// （issue #69 セキュリティ LOW (b)）。実行画面のマウント／タブ切替で呼ぶ。
+#[tauri::command]
+fn set_drop_active(state: State<'_, DropActive>, active: bool) {
+    *state.0.lock().unwrap() = active;
 }
 
 /// ダイアログで選ばれたパスを白リストへ登録する。
@@ -615,8 +663,44 @@ async fn core_output_stdout_only(app: &AppHandle, root: &Path,
 /// `kill_core`（中断ボタン）は利用者にそのまま返す一方、`PidSlot::drop`
 /// はベストエフォートとして無視する（早期 return からの後始末で、失敗を
 /// 更に誰かに投げる先が無いため）。
+/// Windows 標準の実行ファイルを `%SystemRoot%` 起点の絶対パスで解決する
+/// （issue #53 L-12・バイナリプランティング対策）。
+///
+/// `Command::new("taskkill")` のような名前指定は PATH 探索に委ねる。探索順に
+/// 攻撃者が書ける場所（同名の taskkill.exe・explorer.exe を置ける場所）が
+/// 含まれるかは環境依存で、Rust std の Windows 側探索順に cwd が入るかは
+/// **未検証**（issue 本文の指摘どおり）——だが絶対パスで名指しするのは
+/// 検証結果に関わらず正しい書き方なので、環境依存の調査結果を待たずに直す。
+///
+/// `SystemRoot` が無い・空のときは従来どおりの名前指定へフォールバックする
+/// （ここで失敗させると、環境変数が壊れているだけでフォルダを開く・中断する
+/// といった無関係な操作まで道連れになる）。実在確認はしない——判定を
+/// 決定論に保ち（単体テスト可能にし）、パスが誤っていれば spawn の失敗として
+/// 呼び出し側のエラー経路に乗せる。
+fn system_program(system_root: Option<std::ffi::OsString>, rel: &str,
+                  fallback: &str) -> PathBuf {
+    match system_root {
+        Some(root) if !root.is_empty() => {
+            let mut p = PathBuf::from(root);
+            p.push(rel);
+            p
+        }
+        _ => PathBuf::from(fallback),
+    }
+}
+
+/// `%SystemRoot%\System32\taskkill.exe`（issue #53 L-12）。
+fn taskkill_program() -> PathBuf {
+    system_program(std::env::var_os("SystemRoot"), "System32\\taskkill.exe", "taskkill")
+}
+
+/// `%SystemRoot%\explorer.exe`（issue #53 L-12）。
+fn explorer_program() -> PathBuf {
+    system_program(std::env::var_os("SystemRoot"), "explorer.exe", "explorer")
+}
+
 fn kill_pid(pid: u32) -> Result<(), String> {
-    let mut c = Command::new("taskkill");
+    let mut c = Command::new(taskkill_program());
     c.args(["/T", "/F", "/PID", &pid.to_string()]);
     #[cfg(windows)]
     c.creation_flags(CREATE_NO_WINDOW);
@@ -641,24 +725,39 @@ struct PidSlot<'a> {
     state: &'a Mutex<Option<u32>>,
     pid: u32,
     kill_on_drop: bool,
+    released: bool,
 }
 
 impl<'a> PidSlot<'a> {
     fn new(state: &'a Mutex<Option<u32>>, pid: u32) -> Self {
-        Self { state, pid, kill_on_drop: true }
+        Self { state, pid, kill_on_drop: true, released: false }
     }
 
-    /// 正常終了（`child.wait()` 済み）を伝える。以後の Drop は kill を試みない
-    /// ——既に終了した pid へ taskkill してもエラーにはならないが、OS が pid を
-    /// 再利用する僅かな窓を、成功する毎回のパスで払う理由が無い（早期
-    /// return の異常系だけがこのリスクを取る価値がある）。
-    fn disarm(&mut self) {
+    /// 正常終了（`child.wait()` 済み）の後始末を**その場で**行う
+    /// （issue #53 L-13）。スロットを空にし、以後の Drop は何もしない。
+    ///
+    /// 呼び出し側は `Child` を**まだ手元に持っている**状態でこれを呼ぶこと。
+    /// Windows は開いているプロセスハンドルがある間 pid を再利用しないため、
+    /// 「ハンドルを持ったままスロットを空にする」順序にすると、
+    /// 「終了済みの pid がスロットに残っている」時間が無くなる。逆順
+    /// （Child を先に drop）だと、その間に中断ボタン（`kill_core`）が
+    /// スロットの pid を取り出し、再利用済みの別プロセスへ
+    /// `taskkill /T /F` を撃つ窓が空く。
+    fn release(&mut self) {
+        let mut slot = self.state.lock().unwrap();
+        release_slot(&mut slot, self.pid);
+        self.released = true;
         self.kill_on_drop = false;
     }
 }
 
 impl Drop for PidSlot<'_> {
     fn drop(&mut self) {
+        if self.released {
+            // release() 済み。ここで再びスロットを触ると、その後に始まった
+            // 別の実行が同じ pid を取っていた場合にそちらを消してしまう
+            return;
+        }
         let mut slot = self.state.lock().unwrap();
         release_slot(&mut slot, self.pid);
         drop(slot);
@@ -680,11 +779,64 @@ fn release_slot(slot: &mut Option<u32>, pid: u32) {
     }
 }
 
+/// 実行 ID の連番（プロセス内で単調増加・issue #96）。`run_core` を呼ぶたび 1 進む。
+static RUN_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 実行 ID の文字列表現（issue #96）。`<pid>-<連番>`。
+///
+/// 連番だけでもプロセス内では一意だが、GUI を落として起動し直すと 0 から
+/// 振り直しになる。webview が再読み込みをまたいで古い ID を持っていても
+/// 取り違えないよう pid を前に付ける。外部クレートは足さない——UUID の
+/// ような大域的な一意性は要らず、必要なのは「同じ GUI で前後する 2 つの
+/// 実行を区別できること」だけ。
+fn format_run_id(pid: u32, seq: u64) -> String {
+    format!("{pid}-{seq}")
+}
+
+/// 次の実行 ID を採番する（採番のたびに連番が進む）。
+fn next_run_id() -> String {
+    format_run_id(std::process::id(), RUN_SEQ.fetch_add(1, Ordering::Relaxed))
+}
+
+/// `core-line` / `core-err` の payload（issue #96）。
+///
+/// 以前は行の文字列だけを送っていたため、前の実行の残り行が次の実行の画面へ
+/// 混ざっても webview 側で区別できなかった。`run_id` を添えてフロントで
+/// 捨てられるようにする（読取スレッドの join と合わせた二重の防御）。
+#[derive(Clone, serde::Serialize)]
+struct CoreLine {
+    run_id: String,
+    line: String,
+}
+
+/// `core-start` の payload（issue #96）。読取スレッドを起こす前に 1 回だけ送る。
+///
+/// run_id を `run_core` の戻り値だけで渡すと、行イベントが流れ終わった後に
+/// しか分からずフィルタの用を成さない。開始側の別イベントで先に知らせる。
+#[derive(Clone, serde::Serialize)]
+struct RunStart {
+    run_id: String,
+}
+
+/// `run_core` の戻り値（issue #96）。
+///
+/// 終了コードに加えてその実行の run_id を返す。フロントはこれを「この ID の
+/// 実行はもう終わった」の印として使い、後から遅れて届く行イベントを捨てる。
+#[derive(Clone, serde::Serialize)]
+struct RunResult {
+    code: i32,
+    run_id: String,
+}
+
 /// コアを起動し stdout(JSON Lines)/stderr を行単位でイベント中継、終了コードを返す。
+///
+/// イベントを出すのはこの経路だけ——`run_core_capture` は `core_output`
+/// （`Command::output()` で丸ごと受け取る）を通るため emit を挟まず、
+/// run_id を持たせる対象にならない。
 #[tauri::command]
 async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
                   picked: State<'_, PickedPaths>,
-                  args: Vec<String>) -> Result<i32, String> {
+                  args: Vec<String>) -> Result<RunResult, String> {
     let pairs = check_args_v2(&args)?;
     let root = repo_root(&app)?;
     // 値のパススコープ検査（issue S-MD・S-N2）。run_core_capture 側と同じ
@@ -715,28 +867,82 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
     };
 
     let stdout = child.stdout.take().ok_or("stdout を取得できない")?;
+    let stderr = child.stderr.take().ok_or("stderr を取得できない")?;
+
+    // 行イベントより先に「今回の run_id」を知らせる（issue #96）。パイプの
+    // 取得に失敗する経路（上の 2 行）では送らない——1 行も流れない実行の
+    // ID をフロントに握らせない。
+    let run_id = next_run_id();
+    let _ = app.emit("core-start", RunStart { run_id: run_id.clone() });
+
     let app_out = app.clone();
-    std::thread::spawn(move || {
+    let id_out = run_id.clone();
+    let out_reader = std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = app_out.emit("core-line", line);
+            let _ = app_out.emit("core-line", CoreLine { run_id: id_out.clone(), line });
         }
     });
-    let stderr = child.stderr.take().ok_or("stderr を取得できない")?;
     let app_err = app.clone();
-    std::thread::spawn(move || {
+    let id_err = run_id.clone();
+    let err_reader = std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            let _ = app_err.emit("core-err", line);
+            let _ = app_err.emit("core-err", CoreLine { run_id: id_err.clone(), line });
         }
     });
 
-    let status = tauri::async_runtime::spawn_blocking(move || child.wait())
+    // `Child` を待機スレッドから**返してもらう**（issue #53 L-13）。閉じた
+    // プロセスハンドルは pid の再利用を許すため、ハンドルを持ったまま
+    // スロットを空にし、その後で drop する順序にする。以前は `child` を
+    // クロージャへ move したままにしていたので、wait() 完了（＝ハンドルが
+    // 閉じる）から関数末尾のスロット解放までの間——読取スレッドの join を
+    // 挟むので短くない——中断ボタンが再利用済み pid を kill しうる窓が
+    // 空いていた。
+    let (wait_result, child) =
+        tauri::async_runtime::spawn_blocking(move || {
+            let status = child.wait();
+            (status, child)
+        })
         .await
-        .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
-    // 正常終了: 子プロセスは wait() 済みで既に居ない。kill は試みず、
-    // スロットの解放だけを PidSlot::drop（関数末尾）に任せる
-    slot_guard.disarm();
-    Ok(status.code().unwrap_or(-1))
+    let status = match wait_result {
+        Ok(status) => {
+            // 正常終了: 子プロセスは wait() 済みで既に居ない。kill は試みず、
+            // ハンドルを持っているうちにスロットだけ空にする
+            slot_guard.release();
+            drop(child);   // ここで初めて pid が再利用可能になる
+            status
+        }
+        Err(e) => {
+            // wait 失敗——プロセスが生きている可能性がある。kill は
+            // PidSlot::drop に任せ、ハンドルは kill が終わるまで開けておく
+            // （kill 対象の pid が再利用されない）
+            drop(slot_guard);
+            drop(child);
+            return Err(e.to_string());
+        }
+    };
+
+    // 読取スレッド 2 本の完了を待ってから戻す（issue #96）。`child.wait()` を
+    // 見ただけで戻すと、パイプに残っていた行が「次の実行が始まった後」に
+    // emit されうる——完了サマリがその 1 行だと、新しい実行の表示を古い
+    // サマリが上書きする。
+    //
+    // ここで詰まらないことは EOF が来ることに依存する。コアは子プロセス
+    // （pdftoppm 等）を `subprocess.run(..., capture_output=True)` で起動して
+    // おり（core/chouhyo_ocr/ingest.py）、こちらのパイプの書き込み端を孫が
+    // 引き継ぐ経路が無い。コアが終わった時点で書き込み端は全て閉じる。
+    //
+    // `child.wait()` が失敗する経路ではここへ来ない（上の match で戻る）。
+    // その場合はハンドルが drop されてスレッドは切り離されるが、
+    // `PidSlot::drop` がプロセスを kill してパイプを閉じるため、スレッドは
+    // やはり終了する。
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        let _ = out_reader.join();
+        let _ = err_reader.join();
+    })
+    .await;
+
+    Ok(RunResult { code: status.code().unwrap_or(-1), run_id })
 }
 
 /// 実行中のコアを子プロセス（pdftoppm 等）ごと停止する。中断分は
@@ -765,64 +971,127 @@ async fn run_core_capture(app: AppHandle, picked: State<'_, PickedPaths>,
     core_output(&app, &root, args).await
 }
 
+/// ネイティブダイアログをメインスレッドの外で開く（issue #84）。
+///
+/// Tauri 2 の**同期**コマンドはメインスレッドで実行されるため、rfd の
+/// ダイアログをそのまま呼ぶと、開いている間 GUI プロセス全体（他の invoke を
+/// 含む）が止まる（2026-09-02 実機の通し確認で 2 分以上ハングし、ダイアログを
+/// 閉じると即再開）。`spawn_blocking` でワーカースレッドへ逃がす。
+///
+/// rfd 0.15 の Windows 実装（`backend/win_cid/utils.rs::init_com`）は
+/// **呼び出しスレッドで** `CoInitializeEx(COINIT_APARTMENTTHREADED)` →
+/// `CoUninitialize` を行うため、メインスレッド以外から呼んでよい。rfd 自身の
+/// 非同期実装も専用スレッドを起こしている（`backend/win_cid/thread_future.rs`）。
+///
+/// `FileDialog` はクロージャの**中**で組み立てる（外で組み立てて move
+/// させない）——渡すのは `String`／`PathBuf` だけにしておけば、rfd が将来
+/// 親ウィンドウハンドルのような非 Send のフィールドを持っても壊れない。
+/// `PickedPaths` のロックは await をまたがせない（またぐと未来が Send で
+/// なくなりコマンドとして登録できない・`run_core` の PidSlot と同じ制約）
+/// ——ここでは await が完了した後にだけ取る。
+///
+/// ワーカー側が panic した場合は `None`（＝キャンセルと同じ）に倒す。呼び出し
+/// 側の契約が `Option<String>` の1本しかなく、Rust 側にログ基盤も無いため、
+/// 区別できる情報を返す先が無い。以前はメインスレッドで panic していたので、
+/// 「ダイアログが開かなかった」で済むぶん後退ではない。
+async fn dialog<T, F>(build_and_show: F) -> Option<T>
+where
+    F: FnOnce() -> Option<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(build_and_show).await.ok().flatten()
+}
+
 #[tauri::command]
-fn pick_folder(picked: State<'_, PickedPaths>) -> Option<String> {
+async fn pick_folder(app: AppHandle) -> Option<String> {
     // run --input のパススコープ検査（issue S-MD）を通すには picked への
     // 登録が要る。以前は登録しておらず、フォルダ選択直後の run が
     // allowed_roots（アプリルート・workdir）の外だと拒否されていた
     // （出力フォルダは登録不要だが、同じダイアログを共用しているため
     // ここで一括登録しても実害は無い——読み書きコマンド側の拡張子制限は
     // 別に効いている）。
-    let p = rfd::FileDialog::new().pick_folder()?;
-    remember(&picked, &p);
+    let p = dialog(|| rfd::FileDialog::new().pick_folder()).await?;
+    remember(&app.state::<PickedPaths>(), &p);
     Some(p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
-fn pick_image(picked: State<'_, PickedPaths>) -> Option<String> {
+async fn pick_image(app: AppHandle) -> Option<String> {
     // テンプレ作成の入力はスキャン PDF のことが多い。PDF はコアの expand-page で
     // 1ページ目を PNG 展開してから表示する（フロント側 loadImage が分岐）
-    let p = rfd::FileDialog::new()
-        .add_filter("帳票（PDF・画像）", &["pdf", "png", "jpg", "jpeg"])
-        .pick_file()?;
-    remember(&picked, &p);
+    let p = dialog(|| {
+        rfd::FileDialog::new()
+            .add_filter("帳票（PDF・画像）", &["pdf", "png", "jpg", "jpeg"])
+            .pick_file()
+    })
+    .await?;
+    remember(&app.state::<PickedPaths>(), &p);
     Some(p.to_string_lossy().to_string())
 }
 
 
+/// JSON ファイルを選ぶ（テンプレートの読み書き・認証キーの取り込み）。
+///
+/// `kind` はダイアログのフィルタ名だけを切り替える（issue #97）。省略時は
+/// 従来どおり「テンプレート」——鍵の取り込み導線（RunScreen の
+/// `import_credentials`）が `kind: "credentials"` を渡すまでは表示が変わらない
+/// ので、フロント側の追従が要る。`save` の既定パス解決・白リスト登録の規則は
+/// `kind` に依存しない（用途で分けているのは表示名だけ）。
 #[tauri::command]
-fn pick_json(app: AppHandle, picked: State<'_, PickedPaths>, save: bool,
-             remember_pick: Option<bool>, default_path: Option<String>) -> Option<String> {
-    let mut d = rfd::FileDialog::new().add_filter("テンプレート", &["json"]);
-    let p = if save {
-        // 保存の既定は「エディタが今読み込んでいるファイル」（default_path）。
-        // 指定が無い（起動時の自動読込のまま一度も別ファイルを開いていない）
-        // ときだけ出荷テンプレートへフォールバックする。以前は保存の既定が
-        // 常に出荷テンプレート固定だったため、別テンプレートを編集していても
-        // Enter 1回で出荷テンプレートを上書きしてしまう経路になっていた
-        // （issue #56 T1-3）。出荷テンプレへの保存だけは呼び出し側
-        // （is_shipped_template_path・Editor.tsx）でも明示確認を挟む
+async fn pick_json(app: AppHandle, save: bool, remember_pick: Option<bool>,
+                   default_path: Option<String>, kind: Option<String>) -> Option<String> {
+    let filter_name = match kind.as_deref() {
+        Some("credentials") => "認証キー（JSON）",
+        _ => "テンプレート",
+    };
+    // 保存の既定は「エディタが今読み込んでいるファイル」（default_path）。
+    // 指定が無い（起動時の自動読込のまま一度も別ファイルを開いていない）
+    // ときだけ出荷テンプレートへフォールバックする。以前は保存の既定が
+    // 常に出荷テンプレート固定だったため、別テンプレートを編集していても
+    // Enter 1回で出荷テンプレートを上書きしてしまう経路になっていた
+    // （issue #56 T1-3）。出荷テンプレへの保存だけは呼び出し側
+    // （is_shipped_template_path・Editor.tsx）でも明示確認を挟む
+    let mut start_dir: Option<PathBuf> = None;
+    let mut start_name: Option<String> = None;
+    if save {
         let dp = default_path.as_deref().map(Path::new)
             .filter(|p| !p.as_os_str().is_empty());
         if let Some(dp) = dp {
-            if let Some(dir) = dp.parent().filter(|p| !p.as_os_str().is_empty()) {
-                d = d.set_directory(dir);
-            }
-            if let Some(name) = dp.file_name() {
-                d = d.set_file_name(name.to_string_lossy().into_owned());
-            }
+            start_dir = dp.parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_path_buf());
+            start_name = dp.file_name().map(|n| n.to_string_lossy().into_owned());
         } else if let Ok(root) = repo_root(&app) {
-            d = d.set_directory(root.join("templates"));
-            d = d.set_file_name("chouhyo-v1.json");
+            start_dir = Some(root.join("templates"));
+            start_name = Some("chouhyo-v1.json".to_string());
         }
-        d.save_file()
-    } else { d.pick_file() }?;
+    }
+    let p = dialog(move || {
+        let mut d = rfd::FileDialog::new().add_filter(filter_name, &["json"]);
+        if let Some(dir) = start_dir {
+            d = d.set_directory(dir);
+        }
+        if let Some(name) = start_name {
+            d = d.set_file_name(name);
+        }
+        if save { d.save_file() } else { d.pick_file() }
+    })
+    .await?;
     // 認証キーの取り込みは remember_pick=false で呼ぶ。白リストへ入れると
     // GCP サービスアカウント鍵（平文 JSON）がセッション中ずっと read_text で
     // 読める状態になる——鍵を DPAPI へ退避させる操作が、その鍵を読める窓を
     // 開けてしまう。テンプレートの読み書きだけが白リストの用途（issue #49）
-    if remember_pick.unwrap_or(true) {
-        remember(&picked, &p);
+    //
+    // 既定を true のままにしているのは、テンプレート編集が任意の場所の JSON を
+    // 開ける必要があるため（既定を false にすると全呼び出し側の修正が要る）。
+    // ただし `kind:"credentials"` のときは呼び出し側の指定によらず登録しない
+    // （issue #69 セキュリティ LOW (c)）——「鍵を選ぶダイアログ」で選ばれた
+    // ものが白リストに載る経路を、呼び出し側の書き忘れ1つで開かないため。
+    // fail-open な既定値に、用途による fail-closed の上書きを重ねる形にする。
+    let remember_pick = remember_pick.unwrap_or(true)
+        && kind.as_deref() != Some("credentials");
+    if remember_pick {
+        remember(&app.state::<PickedPaths>(), &p);
     }
     Some(p.to_string_lossy().to_string())
 }
@@ -838,7 +1107,9 @@ fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
     if !abs.is_dir() {
         return Err("フォルダではないため開けません".into());
     }
-    Command::new("explorer")
+    // 絶対パス指定（issue #53 L-12）。フォルダを開くだけの操作でも、PATH に
+    // 置かれた同名の explorer.exe を起動する余地は残さない
+    Command::new(explorer_program())
         .arg(abs)
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -951,7 +1222,44 @@ fn merge_config(existing: Option<&str>, patch: &serde_json::Value)
     Ok(cur)
 }
 
+/// `<path>.tmp` へ書いてから rename で置き換える（issue #97・`promote_staged`
+/// と同型）。rename を注入可能にしてあるのは、確定の rename が失敗する経路を
+/// 単体テストで固定するため（`promote_with` と同じ理由——OS レベルで rename
+/// 失敗を確実に誘発する方法が Windows に無い）。
+///
+/// 失敗しても既存ファイルは書き換わらない。途中で電源が落ちても、壊れた
+/// 内容が本体へ入るのは rename の一瞬だけになる（Windows の `MoveFileEx`
+/// 相当・`std::fs::rename` は既存ファイルを置き換える）。
+fn write_atomic_with<F>(path: &Path, content: &str, mut rename: F) -> Result<(), String>
+where
+    F: FnMut(&Path, &Path) -> std::io::Result<()>,
+{
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = PathBuf::from(tmp_name);
+    std::fs::write(&tmp, content)
+        .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))?;
+    if let Err(e) = rename(&tmp, path) {
+        // 書き損じの一時ファイルを残さない（次回の保存が古い内容の tmp を
+        // 見つけて混乱するのを防ぐ）。削除できなくても元の失敗を返す。
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("保存の確定に失敗しました（{:?}）。設定は変更されていません",
+                           e.kind()));
+    }
+    Ok(())
+}
+
+fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
+    write_atomic_with(path, content, |from, to| std::fs::rename(from, to))
+}
+
 /// 設定の部分更新（要件 §5.7: GUI で選んだ値を保存し次回既定値に）。他キーは保持する。
+///
+/// 書き込みは tmp + rename（issue #97）。`merge_config` は壊れた config への
+/// 上書きを拒否するため、素の `fs::write` が途中で切れて config が壊れると
+/// GUI からは二度と書けなくなる（防御と非アトミック書き込みが噛み合って
+/// 自己修復不能になる）。テンプレート切替のたびに呼ばれる経路であり、
+/// 書き込み頻度も低くない。
 #[tauri::command]
 fn write_config(app: AppHandle, patch: serde_json::Value) -> Result<(), String> {
     let p = config_file(&app)?;
@@ -961,8 +1269,8 @@ fn write_config(app: AppHandle, patch: serde_json::Value) -> Result<(), String> 
         None
     };
     let merged = merge_config(existing.as_deref(), &patch)?;
-    std::fs::write(&p, serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())
+    let text = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+    write_atomic(&p, &text)
 }
 
 /// 画像を data URL で返す（編集画面のキャンバス表示用・asset protocol 不使用）。
@@ -1110,11 +1418,103 @@ where
     Ok(())
 }
 
+/// `.bak` を残す期間（issue #65-11）。これより古い `.bak` は次の保存成功時に
+/// 掃除する。
+const BACKUP_MAX_AGE: std::time::Duration =
+    std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
+/// 保存成功時に、古い `.bak` を掃除する（issue #65-11）。
+///
+/// **世代方式ではなく日付方式を選んだ理由**: `.bak` の名前は
+/// `<保存先>.bak` の固定名で、`promote_with` の rename が毎回同じ名前を
+/// 置き換える。つまり「同名の世代」は仕組み上そもそも1つしか存在せず、
+/// 「1世代だけ残す」は掃除契機にならない（何も消すものが無い）。実際に
+/// `templates/` へ溜まるのは **別のテンプレートを保存したときの `.bak`** と、
+/// **元の `.json` を消した後に残る孤児の `.bak`** で、これらは名前では
+/// 区別できず更新日時でしか掃除できない。
+///
+/// 対象は「保存先と同じフォルダ直下」「`.json.bak` で終わる通常ファイル」
+/// 「`keep`（今回作ったばかりの `.bak`）以外」「最終更新が `max_age` より
+/// 古い」の全てを満たすものだけ。`.json.bak` に限るのは、自分が作る
+/// バックアップの命名（保存先は必ず `.json`）と一致させて、利用者が自分で
+/// 置いた `.bak` を巻き込まないため。reparse point（symlink・ジャンクション）
+/// は対象にしない——リンクを消すつもりがリンク先を消す事故を作らない。
+///
+/// 失敗は握って続ける（掃除は保存の付随処理で、保存自体を失敗させない）。
+/// 戻り値は消せた件数（単体テスト用）。
+fn sweep_old_backups(dir: &Path, keep: &Path, max_age: std::time::Duration,
+                     now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == keep {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.to_ascii_lowercase().ends_with(".json.bak") {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if !meta.file_type().is_file() {
+            continue;   // ディレクトリ・symlink・ジャンクション
+        }
+        let Ok(modified) = meta.modified() else { continue };
+        let Ok(age) = now.duration_since(modified) else { continue };  // 未来日時は触らない
+        if age > max_age && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// staged ファイルを本番パスへ確定する（issue #56 T1・保存経路のトランザクション化）。
 fn promote_staged(abs: &Path) -> Result<(), String> {
     let staged = staged_path(abs);
     let bak = backup_path(abs);
-    promote_with(&staged, abs, &bak, |from, to| std::fs::rename(from, to))
+    promote_with(&staged, abs, &bak, |from, to| std::fs::rename(from, to))?;
+    // 確定できた後にだけ掃除する（issue #65-11）。失敗経路では `.bak` が
+    // 唯一の復元元になりうるので絶対に触らない
+    if let Some(dir) = abs.parent() {
+        sweep_old_backups(dir, &bak, BACKUP_MAX_AGE, std::time::SystemTime::now());
+    }
+    Ok(())
+}
+
+/// staged ファイルを「既存の名前を外してから新規作成」で書く
+/// （issue #69 セキュリティ LOW (a)・ハードリンク対策）。
+///
+/// #89 の `ensure_not_reparse_point` は symlink／ジャンクションを弾くが、
+/// **ハードリンク**は `is_symlink()` に掛からない（同じ実体への別名であって
+/// reparse point ではない）。あらかじめ `<名前>.json.saving.json` を範囲外の
+/// ファイルへのハードリンクとして置かれると、`fs::write` はその実体を
+/// 切り詰めて上書きしてしまう。
+///
+/// 判定で防ぐ手もあるが、リンク数（`nlink`）を読む
+/// `std::os::windows::fs::MetadataExt::number_of_links` は stable では
+/// 使えない（`windows_by_handle`・rust-lang/rust#63010。rustc 1.94.1 で
+/// E0658 を実測）。新しい依存（windows-sys）を足さずに同じ結果を得るため、
+/// **名前を外してから `create_new` で作る**方式にする——ハードリンクの
+/// 名前を1つ消してもリンク先の中身は消えず、その後に作るのは必ず新しい
+/// 実体になる。検査と書き込みの間に差し込まれても `create_new` は既存
+/// ファイルへは書かずに失敗する（TOCTOU で起こせるのは失敗だけ）。
+fn write_staged_fresh(staged: &Path, content: &str) -> Result<(), String> {
+    use std::io::Write;
+    match std::fs::remove_file(staged) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!("一時ファイルを準備できません（{:?}）", e.kind()));
+        }
+    }
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staged)
+        .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))?;
+    f.write_all(content.as_bytes())
+        .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))
 }
 
 /// staged ファイルを破棄する（コア検証 NG 時の掃除）。既に無ければ成功扱い（冪等）。
@@ -1148,7 +1548,9 @@ fn write_template_staged(picked: State<'_, PickedPaths>,
                          path: String, content: String) -> Result<String, String> {
     let abs = validate_template_target(&path, &picked.0.lock().unwrap())?;
     let staged = staged_path(&abs);
-    std::fs::write(&staged, content).map_err(|e| e.to_string())?;
+    // 既存の名前を外してから新規作成する（issue #69 セキュリティ LOW (a)）。
+    // 置かれていたのがハードリンクでも、その実体へ書き込まない
+    write_staged_fresh(&staged, &content)?;
     Ok(staged.to_string_lossy().to_string())
 }
 
@@ -1225,26 +1627,56 @@ async fn save_user_template(app: AppHandle, name: String, content: String,
     let existing = user_templates::list_all_stems(&dir);
     let shipped = user_templates::list_shipped_stems(&root);
     let verdict = user_templates::validate_user_template_name(&name, &existing, &shipped)?;
-    let normalized = match verdict {
-        user_templates::NameVerdict::New(n) => n,
+    let (normalized, is_new) = match verdict {
+        user_templates::NameVerdict::New(n) => (n, true),
         user_templates::NameVerdict::Overwrites(n) => {
             if !overwrite {
                 return Err("AlreadyExists".into());
             }
-            n
+            (n, false)
         }
     };
     let target = dir.join(format!("{normalized}.json"));
-    // 保存先が再度 templates_user 直下であることを防御的に再検査する
-    // （07 §7.3「canonicalize 後の親一致を再検査する」）。
+    // 名前検証（07 §7.4）がパス区切りと `..` を落としているため、この字句
+    // 比較は構造上必ず真になる——名前検証が将来ゆるんだ場合に備えた後段
+    // 防御であって、07 §7.3 の「canonicalize 後の親一致」はこれではなく
+    // 書き込み後の ensure_written_inside が担う（#89）。
     if target.parent() != Some(dir.as_path()) {
         return Err("保存先がテンプレート保存フォルダの外です".into());
     }
+    // L-2 追補（#90）: `New` 判定なのに実ファイルがある場合の最終防御。
+    // Rust の衝突判定（NFC＋Unicode の小文字化）と NTFS の大小文字畳み込みは
+    // 一致しないため、別名と見なした先に実体があることがありうる。
+    //
+    // `overwrite=true` のときは掛けない——GUI は `AlreadyExists` を受けて
+    // 上書き確認を出し、同じ名前で再送する（`Editor.tsx` の
+    // saveAsUserTemplate）。ここで無条件に弾くと、確認を通しても常に
+    // `AlreadyExists` が返り、その名前では二度と保存できなくなる。
+    // 目的は「確認なしの上書きを起こさない」ことであって、上書きの禁止では
+    // ない（08 §3.2.3: 確認は UI の責務）。
+    if is_new && !overwrite {
+        user_templates::recheck_new_target_absent(&target)?;
+    }
     let staged = staged_path(&target);
+    // #89: 保存先・一時ファイルのどちらかが reparse point なら書かない。
+    // `fs::write` はリンクを辿るため、この検査が無いと templates_user 内に
+    // 置かれたリンク1本で範囲外への書き込みになる（列挙・読み取りは同じ
+    // 検査を既に通している・07 §7.3）。
+    user_templates::ensure_not_reparse_point(&staged)?;
+    user_templates::ensure_not_reparse_point(&target)?;
     // M-2 追補: OS エラーの Display 表現に絶対パスが混入する余地を断つ
     // ため、固定文言＋種別のみを返す。
-    std::fs::write(&staged, &content)
-        .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))?;
+    // 加えて、既存の名前を外してから create_new で作る（issue #69
+    // セキュリティ LOW (a)）——reparse point 検査に掛からないハードリンクを
+    // 経由して範囲外のファイルを上書きしない。
+    write_staged_fresh(&staged, &content)?;
+    // #89: 書けた実体が templates_user 直下にあることを canonicalize して
+    // 確認する。外れていたら書いたファイルを消して失敗させる（検査前に
+    // 差し替えられた場合でも、範囲外に中身を残さない）。
+    if let Err(e) = user_templates::ensure_written_inside(&staged, &dir) {
+        let _ = discard_staged_file(&target);
+        return Err(e);
+    }
 
     // H-1 対応（レビュー AZKi）: verify の判定は終了コードに依存しない
     // 専用経路（core_output_stdout_only）で行う。core_output は非 0 終了を
@@ -1311,18 +1743,25 @@ async fn match_templates(app: AppHandle, picked: State<'_, PickedPaths>,
         check_scope(&input_abs, &["png", "jpg", "jpeg"], &roots, &picked_set)?;
     }
     let dir = user_templates::user_templates_dir(&app)?;
-    let (candidate_paths, excluded) = user_templates::classify_candidates(&dir, &names);
+    let (candidate_paths, excluded) = user_templates::classify_candidates(&dir, &names)?;
 
     let shipped = root.join("templates").join("chouhyo-v1.json");
     let args = user_templates::build_match_args(&input_abs, &shipped, &candidate_paths);
 
-    let stdout = core_output(&app, &root, args).await?;
+    // L-1 追補（#90）: `core_output` は非 0 終了時にコアの stderr をそのまま
+    // 返すため、`ConfigError` 経由で `workdir` 等の絶対パスが webview へ出る
+    // 経路になっていた（07 §7.3）。`save_user_template` と同じ
+    // `core_output_stdout_only`（起動失敗だけを固定文言で Err にする）＋
+    // 許可キー方式へ揃える。終了コードは見ない——判定は stdout の
+    // `match_templates` イベント1行（`ok`）が唯一の正。
+    let stdout = core_output_stdout_only(&app, &root, args).await?;
     let value: serde_json::Value = stdout
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .find(|v| v.get("event").and_then(|e| e.as_str()) == Some("match_templates"))
         .ok_or_else(|| "コアからの応答を解釈できません".to_string())?;
-    let merged = user_templates::merge_excluded_into(value, excluded);
+    let merged = user_templates::merge_excluded_into(
+        user_templates::sanitize_match_output(&value), excluded);
     serde_json::to_string(&merged).map_err(|e| e.to_string())
 }
 
@@ -1331,6 +1770,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(CoreProc(Mutex::new(None)))
         .manage(PickedPaths(Mutex::new(HashSet::new())))
+        .manage(DropActive(Mutex::new(true)))
         // ドラッグ＆ドロップのパスは OS のイベントから直接受け取る（issue S-N1）。
         // webview 側（RunScreen.tsx の onDragDropEvent）は同じドロップを受けて
         // 入力欄の表示を更新するだけで、白リストへの登録には関与しない——
@@ -1340,6 +1780,13 @@ pub fn run() {
             if let tauri::WindowEvent::DragDrop(
                 tauri::DragDropEvent::Drop { paths, .. }) = event
             {
+                // ドロップを受ける画面が表示されているときだけ登録する
+                // （issue #69 セキュリティ LOW (b)）。編集タブを見ている
+                // 最中のドロップは、画面上は何も起きないのに白リストだけが
+                // 増えていた——見えない権限拡大を残さない
+                if !*window.state::<DropActive>().0.lock().unwrap() {
+                    return;
+                }
                 remember_dropped(&window.state::<PickedPaths>(), paths);
             }
         })
@@ -1357,6 +1804,7 @@ pub fn run() {
             open_folder,
             read_config,
             write_config,
+            set_drop_active,
             read_file_b64,
             read_text,
             write_text,
@@ -1390,10 +1838,37 @@ mod tests {
     }
 
     #[test]
-    fn denies_purge_and_unknown_and_empty() {
-        assert!(check_args_v2(&v(&["purge", "--yes"])).is_err());
+    fn denies_unknown_and_empty() {
         assert!(check_args_v2(&v(&["--config", "x", "run"])).is_err());
         assert!(check_args_v2(&v(&[])).is_err());
+        assert!(check_args_v2(&v(&["debug-images"])).is_err());
+    }
+
+    #[test]
+    fn purge_accepts_only_yes_and_include_output() {
+        // issue #52 M-11: GUI から呼べるようにしたが、受け付けるのはこの2つだけ
+        assert!(check_args_v2(&v(&["purge", "--yes"])).is_ok());
+        let pairs = check_args_v2(&v(&["purge", "--yes", "--include-output"])).unwrap();
+        assert_eq!(pairs, vec![("--yes".to_string(), String::new()),
+                               ("--include-output".to_string(), String::new())]);
+        // 消す場所を差し替えられるフラグ・値付き・位置引数はすべて拒否する
+        assert!(check_args_v2(&v(&["purge", "--config", "C:\\other.json"])).is_err());
+        assert!(check_args_v2(&v(&["purge", "--yes=1"])).is_err());
+        assert!(check_args_v2(&v(&["purge", "C:\\somewhere"])).is_err());
+        assert!(check_args_v2(&v(&["purge", "--input", "C:\\in"])).is_err());
+    }
+
+    #[test]
+    fn import_credentials_accepts_delete_source_flag() {
+        // issue #52 M-10: 取り込み後に元の平文鍵を消すフラグ（値は取らない）
+        let pairs = check_args_v2(&v(&["import-credentials", "C:\\key.json",
+                                       "--delete-source"])).unwrap();
+        assert_eq!(pairs, vec![("json_path".to_string(), "C:\\key.json".to_string()),
+                               ("--delete-source".to_string(), String::new())]);
+        assert!(check_args_v2(&v(&["import-credentials", "C:\\key.json",
+                                   "--delete-source=1"])).is_err());
+        // 他のサブコマンドには生えていない
+        assert!(check_args_v2(&v(&["run", "--input", "x", "--delete-source"])).is_err());
     }
 
     // --- サブコマンドごとのフラグ表検査（issue #52 M-7・S-MD）---
@@ -2054,6 +2529,56 @@ mod tests {
         assert!(validate_config_patch(&json!({"last_template": "C:\\"})).is_ok());
     }
 
+    // --- config.json の tmp + rename 書き込み（issue #97）---
+    use super::{write_atomic, write_atomic_with};
+
+    #[test]
+    fn write_atomic_replaces_existing_content_and_leaves_no_tmp() {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_write_atomic_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.json");
+
+        write_atomic(&target, "{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"a\":1}");
+        write_atomic(&target, "{\"a\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"a\":2}",
+                   "既存ファイルを置き換える");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "一時ファイルが残っている: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_failure_keeps_existing_file_and_removes_tmp() {
+        // 確定の rename が失敗しても、既存の config.json は無傷のまま
+        // ——merge_config は壊れた config への上書きを拒否するため、
+        // ここで中身が半端に残ると GUI から二度と保存できなくなる（#97）。
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_write_atomic_fail_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.json");
+        std::fs::write(&target, "{\"keep\":true}").unwrap();
+
+        let err = write_atomic_with(&target, "{\"new\":true}", |_, _| {
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"))
+        })
+        .unwrap_err();
+
+        assert!(err.contains("設定は変更されていません"), "{err}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"keep\":true}");
+        assert!(!dir.join("config.json.tmp").exists(), "失敗時に一時ファイルを残さない");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // --- 壊れた config.json を空扱いにしない（issue N-3）---
     use super::merge_config;
 
@@ -2116,6 +2641,201 @@ mod tests {
         let mut slot: Option<u32> = None;
         release_slot(&mut slot, 111);
         assert_eq!(slot, None);
+    }
+
+    // --- PID 再利用レース（issue #53 L-13）---
+    use super::PidSlot;
+
+    #[test]
+    fn pid_slot_release_clears_slot_and_later_drop_does_not_touch_it() {
+        // release() はロックを取ってその場でスロットを空にする。呼び出し側は
+        // このとき Child（プロセスハンドル）をまだ持っており、pid は再利用
+        // されない——「終了済みの pid がスロットに残っている」時間が無くなる。
+        let state = Mutex::new(Some(4242u32));
+        {
+            let mut guard = PidSlot::new(&state, 4242);
+            guard.release();
+            assert_eq!(*state.lock().unwrap(), None, "release でスロットが空になる");
+            // 直後に別の実行が始まり、たまたま同じ pid を取った状況を作る
+            *state.lock().unwrap() = Some(4242);
+        }   // ここで PidSlot::drop
+        assert_eq!(*state.lock().unwrap(), Some(4242),
+                   "release 済みの Drop はスロットにもプロセスにも触らない");
+    }
+
+    // --- Windows 標準実行ファイルの絶対パス解決（issue #53 L-12）---
+    use super::system_program;
+
+    #[test]
+    fn system_program_uses_system_root_when_present() {
+        assert_eq!(
+            system_program(Some("C:\\Windows".into()), "System32\\taskkill.exe", "taskkill"),
+            PathBuf::from("C:\\Windows\\System32\\taskkill.exe"));
+        assert_eq!(
+            system_program(Some("C:\\Windows".into()), "explorer.exe", "explorer"),
+            PathBuf::from("C:\\Windows\\explorer.exe"));
+    }
+
+    #[test]
+    fn system_program_falls_back_to_bare_name_without_system_root() {
+        // 環境変数が無い・空なら従来どおり PATH 解決へ（機能を壊さない側へ倒す）
+        assert_eq!(system_program(None, "explorer.exe", "explorer"),
+                   PathBuf::from("explorer"));
+        assert_eq!(system_program(Some("".into()), "explorer.exe", "explorer"),
+                   PathBuf::from("explorer"));
+    }
+
+    // --- 古い .bak の掃除（issue #65-11）---
+    use super::{sweep_old_backups, write_staged_fresh, BACKUP_MAX_AGE};
+    use std::time::{Duration, SystemTime};
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn sweep_old_backups_removes_only_aged_json_bak_files() {
+        let dir = scratch_dir("sweep_old");
+        let keep = dir.join("current.json.bak");
+        let orphan = dir.join("deleted-template.json.bak");
+        let other = dir.join("notes.txt.bak");     // 自分の命名規則ではない
+        let live = dir.join("current.json");
+        for p in [&keep, &orphan, &other, &live] {
+            std::fs::write(p, "x").unwrap();
+        }
+        // 実ファイルの mtime は動かせないので「今」を未来へずらして老化させる
+        let future = SystemTime::now() + Duration::from_secs(3600);
+        let removed = sweep_old_backups(&dir, &keep, Duration::from_secs(60), future);
+
+        assert_eq!(removed, 1, "掃除対象は孤児の .json.bak 1件だけ");
+        assert!(!orphan.exists(), "7日より古い .json.bak は消える");
+        assert!(keep.exists(), "今回作った .bak（1世代）は残す");
+        assert!(other.exists(), "利用者が置いた .bak を巻き込まない");
+        assert!(live.exists(), "テンプレート本体は対象外");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweep_old_backups_keeps_recent_files() {
+        let dir = scratch_dir("sweep_recent");
+        let bak = dir.join("t.json.bak");
+        std::fs::write(&bak, "x").unwrap();
+        let removed = sweep_old_backups(&dir, &dir.join("other.json.bak"),
+                                        BACKUP_MAX_AGE, SystemTime::now());
+        assert_eq!(removed, 0, "作ったばかりの .bak は残る（直前の内容の復元元）");
+        assert!(bak.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn promote_staged_keeps_the_fresh_backup_and_sweeps_old_ones() {
+        // promote 成功時に掃除が走っても、今回の .bak は消えない
+        let dir = scratch_dir("sweep_promote");
+        let target = dir.join("t.json");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(staged_path(&target), "new").unwrap();
+
+        promote_staged(&target).expect("promote は成功するはず");
+
+        assert_eq!(std::fs::read_to_string(backup_path(&target)).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- staged 書き込みのハードリンク対策（issue #69 セキュリティ LOW (a)）---
+
+    #[test]
+    fn write_staged_fresh_does_not_write_through_a_hard_link() {
+        let dir = scratch_dir("staged_hardlink");
+        let victim = dir.join("victim.json");
+        std::fs::write(&victim, "secret").unwrap();
+        let staged = dir.join("t.json.saving.json");
+        // 攻撃者が先回りして staged の名前を範囲外ファイルへのハードリンクに
+        // しておく状況（symlink ではないので #89 の reparse point 検査は素通り）
+        std::fs::hard_link(&victim, &staged).unwrap();
+
+        write_staged_fresh(&staged, "new content").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "secret",
+                   "リンク先の実体を書き換えてはいけない");
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "new content",
+                   "staged 自体は新しい実体として書けている");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_staged_fresh_replaces_an_ordinary_existing_file() {
+        let dir = scratch_dir("staged_plain");
+        let staged = dir.join("t.json.saving.json");
+        std::fs::write(&staged, "前回の書きかけ").unwrap();
+        write_staged_fresh(&staged, "新しい内容").unwrap();
+        assert_eq!(std::fs::read_to_string(&staged).unwrap(), "新しい内容");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- 実行 ID の採番とイベント payload（issue #96）---
+    use super::{format_run_id, next_run_id, CoreLine, RunResult, RunStart};
+
+    #[test]
+    fn format_run_id_joins_pid_and_sequence() {
+        assert_eq!(format_run_id(4321, 0), "4321-0");
+        assert_eq!(format_run_id(4321, 7), "4321-7");
+        // pid が違えば連番が同じでも別の ID（GUI を起動し直すと連番は 0 に
+        // 戻るため、pid が無いと再起動をまたいで同じ ID が生まれる）
+        assert_ne!(format_run_id(4321, 0), format_run_id(4322, 0));
+    }
+
+    #[test]
+    fn next_run_id_is_unique_and_monotonic_within_the_process() {
+        // 採番が重複すると、フロントの「今回の run_id 以外を捨てる」判定が
+        // 前後の実行を区別できなくなる（issue #96 の防御が無効化する）
+        let ids: Vec<String> = (0..64).map(|_| next_run_id()).collect();
+        let uniq: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(uniq.len(), ids.len(), "採番が重複した: {ids:?}");
+
+        let seq_of = |id: &str| -> u64 {
+            id.rsplit_once('-').expect("<pid>-<連番> 形式").1
+                .parse().expect("連番は数値")
+        };
+        for w in ids.windows(2) {
+            assert!(seq_of(&w[1]) > seq_of(&w[0]),
+                    "連番が単調増加していない: {} → {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn next_run_id_is_unique_across_threads() {
+        // 採番は AtomicU64。同時に採番されても衝突しないことを固定する
+        let ids: Vec<String> = std::thread::scope(|sc| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| sc.spawn(|| (0..32).map(|_| next_run_id()).collect::<Vec<_>>()))
+                .collect();
+            hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        let uniq: std::collections::HashSet<&String> = ids.iter().collect();
+        assert_eq!(uniq.len(), ids.len(), "並行採番で重複した");
+    }
+
+    #[test]
+    fn event_payloads_carry_the_run_id_as_json() {
+        // フロント（RunScreen の acceptsRunEvent）が読むキー名を固定する。
+        // ここがズレると run_id が undefined になり、フィルタが素通りになる
+        let line = serde_json::to_value(CoreLine {
+            run_id: "1-2".into(), line: "{\"event\":\"summary\"}".into(),
+        }).unwrap();
+        assert_eq!(line["run_id"], "1-2");
+        assert_eq!(line["line"], "{\"event\":\"summary\"}");
+
+        let start = serde_json::to_value(RunStart { run_id: "1-2".into() }).unwrap();
+        assert_eq!(start["run_id"], "1-2");
+
+        let result = serde_json::to_value(RunResult { code: 0, run_id: "1-2".into() }).unwrap();
+        assert_eq!(result["code"], 0);
+        assert_eq!(result["run_id"], "1-2");
     }
 
     // --- コア実体の選択（2026-09-02 実測: 同梱 exe の陳腐化事故）---

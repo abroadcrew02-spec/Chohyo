@@ -1,0 +1,78 @@
+# cargo-deny 設定（ライセンス許可リストと脆弱性アドバイザリ）
+#
+# 実行:
+#   cd gui/src-tauri && cargo deny check
+#
+# 目的は2つ。
+#   1. 配布物に載るクレートのライセンスを許可リストに限定する。コピーレフト
+#      （GPL / AGPL / LGPL / SSPL / CC-BY-SA）が依存グラフへ入り込んだら落ちる。
+#   2. RustSec のアドバイザリ DB と突き合わせ、既知の脆弱性を検出する。
+#
+# 検出されたものを ignore で黙らせない。ライセンスなら採用可否を法務判断へ、
+# 脆弱性なら更新か代替クレートで対処する。
+
+[graph]
+# 配布対象は Windows の 64bit のみ。Cargo.lock は全プラットフォーム分の
+# クレートを含むため、ここで絞らないと配布物に載らないクレート（macOS の
+# objc 系・Linux の gtk 系）まで判定対象に入る。
+targets = [{ triple = "x86_64-pc-windows-msvc" }]
+all-features = false
+
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# 未メンテナンス扱いのクレートは、直接依存とワークスペース内のみ警告する。
+# 推移的依存の未メンテナンスは上流の更新待ちになり、こちらで直せない。
+unmaintained = "workspace"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# 許可するのは実際にグラフへ出たものだけ（2026-09-03 時点で 218 クレート）。
+# 新しいライセンスが増えたらここが落ちるので、その時点で採否を判断する。
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "0BSD",
+    "CC0-1.0",
+    "ISC",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # MPL-2.0 はファイル単位の弱いコピーレフト（cssparser 系・option-ext の
+    # 5 クレート）。改変せずそのまま結合して配布する分には、こちら（gui・
+    # 自作コード）へのコピーレフトの波及はない。ただし MPL-2.0 §3.2(a) により、
+    # 対象ファイル自体の入手可能性を知らせる義務は改変の有無に関係なく発生する
+    # ——THIRD-PARTY-NOTICES.txt に載せた配布元 URL がこれを兼ねる。
+    # 該当ファイルを改変する場合は別途法務確認が要る。
+    "MPL-2.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+# 許可リストに載せたが未使用のライセンスは警告に留める。依存更新で
+# 一時的に消えることがあり、その都度リストを削るのは追従コストに合わない。
+unused-allowed-license = "allow"
+
+# ワークスペース内の自作クレート（gui）を判定対象から外す設定。
+# ただし cargo-deny がこれを適用するのは `publish = false` が宣言された
+# クレートだけで、gui にはその宣言が無い。そのため現状 `cargo deny check`
+# は gui 自身について unlicensed で 1 件 error になる（第三者クレート
+# 218 件はすべて合格）。
+# 解消するには次のどちらか。どちらもこのリポジトリのライセンス方針の
+# 決定を伴うため、判断待ちで未実施（issue #78）。
+#   a) gui/src-tauri/Cargo.toml の [package] に `publish = false` を足す
+#   b) リポジトリ自身のライセンスを決めて [package] に `license` を書く
+private = { ignore = true }
+
+[bans]
+# tauri の依存グラフは同一クレートの複数バージョンを常に含む。ここを deny に
+# すると恒常的に落ちるだけで、ライセンスにも脆弱性にも効かない。
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

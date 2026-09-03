@@ -1,0 +1,52 @@
+# cargo-about 設定（Rust 側のサードパーティ表記の生成元）
+#
+# 実行は scripts/gen_notices.py 経由。単体で確かめるときは:
+#   cd gui/src-tauri && cargo about generate --format json
+#
+# accepted は「複数ライセンスから選べるクレートで、どれを採用するか」の
+# 優先順位でもある。MIT を先頭に置いているので `MIT OR Apache-2.0` の
+# クレートは MIT として表記される。
+
+# 配布対象は Windows の 64bit のみ。Cargo.lock は全プラットフォーム分の
+# クレートを含むため、ここで絞らないと配布物に載らない macOS/Linux 向け
+# クレートまで表記に混ざる（絞り込み前 486 → 絞り込み後 218 クレート）。
+targets = ["x86_64-pc-windows-msvc"]
+
+# ビルド時にしか使わないクレート（tauri-build 等）は配布物に載らないため
+# 表記の対象から外す。テスト専用の依存も同様。
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# 2026-09-03 時点で Windows ターゲットの依存グラフに実在するものだけを列挙する。
+# 依存更新で新しいライセンスが入るとここで落ちるので、その時点で採否を判断する。
+# コピーレフト（GPL / AGPL / LGPL / SSPL / CC-BY-SA）は意図的に入れていない。
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "0BSD",
+    "MIT-0",
+    "CC0-1.0",
+    "Unlicense",
+    # ICU4X 系（icu_normalizer ほか 18 クレート）。コピーレフトではないが、
+    # 著作権表示と許諾文を配布物へ添付する義務がある。
+    "Unicode-3.0",
+    # ファイル単位の弱いコピーレフト（cssparser 系・option-ext の 5 クレート）。
+    # 改変せず結合して配布する分にはこちらのソース開示義務は生じない。
+    "MPL-2.0",
+]
+
+# schemars_derive は LICENSE ファイルを同梱しているのに、走査が
+# src/regex_syntax.rs（regex_syntax から複製したユーティリティで、先頭に MIT の
+# 条文がコメントで入っている）の方を拾ってしまう。表記に Rust のソースが
+# そのまま載るので、読むべきファイルを明示する。checksum を付けているため、
+# クレートを更新してファイルが変われば cargo-about が気づいて落ちる。
+[schemars_derive.clarify]
+license = "MIT"
+
+[[schemars_derive.clarify.files]]
+path = "LICENSE"
+checksum = "1954992a2b32e8a2af24a4c11b726902e344c1934b947a77f04d404908f8db30"

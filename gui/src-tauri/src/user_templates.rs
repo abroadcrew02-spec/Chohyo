@@ -209,6 +209,65 @@ pub fn resolve_existing_entry(dir: &Path, name: &str) -> Result<PathBuf, String>
     Ok(canonical)
 }
 
+/// 保存経路の reparse point 検査（07 §7.3・#89）。
+///
+/// 列挙（`list_dir`）と読み取り（`resolve_existing_entry`）は
+/// `symlink_metadata().file_type()` で reparse point（symlink・Windows の
+/// ジャンクション）を除外しているのに、保存経路にはこの検査が無かった。
+/// `fs::write` はリンクを辿るため、`templates_user/` 内にあらかじめ
+/// `<名前>.json` や `<名前>.json.saving.json` が置かれていると、保存が
+/// 範囲外への書き込みになる。
+///
+/// **存在しないパスは通過させる**（新規保存は通常この状態）。存在確認が
+/// NotFound 以外で失敗した場合は保存を続けずに拒否する（fail-closed）。
+/// 文言に絶対パスを含めない（07 §7.3）。
+pub fn ensure_not_reparse_point(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Err("保存先がシンボリックリンクまたはジャンクションのため保存できません".into())
+        }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("保存先を確認できません".into()),
+    }
+}
+
+/// 書き込んだファイルの実体が `dir` 直下にあることを確認する（07 §7.3・#89）。
+///
+/// 名前検証がパス区切りと `..` を落としているため、`target.parent()` の
+/// 字句比較は構造上必ず真になり、検査として機能しない（#89 の指摘）。
+/// 列挙・読み取りと同じく **canonicalize 後の親一致**で確かめる。
+/// 呼び出しは `fs::write` の**後**——書き込みの直前に確認しても、その後に
+/// 差し替えられれば意味がないため、実際に書けた実体を見る。
+pub fn ensure_written_inside(written: &Path, dir: &Path) -> Result<(), String> {
+    // 実体をたどれない（書いた直後に消された等）ときは「範囲外」と断定せず
+    // 確認できなかったこととして返す——どちらも保存は失敗させるが、利用者に
+    // 見せる理由まで断定しない。
+    let unknown = || "保存できたか確認できませんでした。もう一度保存し直してください".to_string();
+    let canonical_dir = dir.canonicalize().map_err(|_| unknown())?;
+    let canonical = written.canonicalize().map_err(|_| unknown())?;
+    if canonical.parent() != Some(canonical_dir.as_path()) {
+        return Err("保存先がテンプレート保存フォルダの外です".into());
+    }
+    Ok(())
+}
+
+/// `New`（上書き確認なしで書ける）と判定した名前が、保存直前でも実在しない
+/// ことを最終防御で確認する（#90 L-2）。
+///
+/// 衝突判定は NFC 正規化＋Unicode の `to_lowercase()` で行うが、NTFS の
+/// 大小文字畳み込みは Unicode の小文字化と一致しない（`İ` U+0130 のように
+/// `to_lowercase()` が2文字へ展開する文字がある）。Rust が別名と見ても
+/// ファイルシステム上は同一ファイルになりうるため、実ファイルの有無で
+/// もう一度確かめる。`symlink_metadata` を使うのはリンクも「実在する」と
+/// 数えるため（辿った先の有無で判定しない）。
+pub fn recheck_new_target_absent(target: &Path) -> Result<(), String> {
+    if std::fs::symlink_metadata(target).is_ok() {
+        return Err("AlreadyExists".into());
+    }
+    Ok(())
+}
+
 /// 一覧に載せるテンプレート1件の情報（webview 契約: 表示名のみ・絶対パスなし）。
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
 pub struct UserTemplateInfo {
@@ -458,11 +517,22 @@ pub fn list_all_stems(dir: &Path) -> Vec<String> {
 /// 解決できなかった名前は `excluded` へ理由付きで積んで続行する
 /// （1件の不正で照合ループ全体を止めない・FR-F28）。`reason` は
 /// `"invalid_name"`（文字種検証落ち）／`"not_found"`（形は妥当だが実在しない・
-/// エントリ安全性検査落ち）／`"limit"`（件数上限超過）のいずれか。
-pub fn classify_candidates(dir: &Path, names: &[String]) -> (Vec<PathBuf>, Vec<ExcludedInfo>) {
+/// エントリ安全性検査落ち）のいずれか。
+///
+/// **入口で件数上限を掛ける**（L-4 追補・#90）。上限は列挙と同じ
+/// `MAX_LISTED`——候補名の供給元は `list_user_templates`（`list_dir` が
+/// `MAX_LISTED` 件で切る）だけなので、これを超える要求は webview 側の異常で
+/// あり、正常な操作では起こらない。旧実装は超過分を1件ずつ `excluded` へ
+/// 積んで続行していたため、件数無制限の入力がそのまま応答 JSON の長さに
+/// なっていた（自プロセス内の負荷）。超過は黙って切らずに明示エラーで返す。
+pub fn classify_candidates(dir: &Path, names: &[String])
+                           -> Result<(Vec<PathBuf>, Vec<ExcludedInfo>), String> {
+    if names.len() > MAX_LISTED {
+        return Err(format!("一度に照合できるテンプレートは{MAX_LISTED}件までです"));
+    }
     let mut candidates = Vec::new();
     let mut excluded = Vec::new();
-    for name in names.iter().take(MAX_LISTED) {
+    for name in names {
         match resolve_existing_entry(dir, name) {
             Ok(path) => candidates.push(path),
             Err(_) => {
@@ -475,10 +545,7 @@ pub fn classify_candidates(dir: &Path, names: &[String]) -> (Vec<PathBuf>, Vec<E
             }
         }
     }
-    for extra in names.iter().skip(MAX_LISTED) {
-        excluded.push(ExcludedInfo { name: extra.clone(), reason: "limit".into() });
-    }
-    (candidates, excluded)
+    Ok((candidates, excluded))
 }
 
 /// `match-templates --input <input> --shipped <shipped> --candidate <c1> ...`
@@ -515,6 +582,70 @@ pub fn merge_excluded_into(mut value: serde_json::Value, extra: Vec<ExcludedInfo
         }
     }
     value
+}
+
+/// `match_templates` イベント（コアの stdout・JSON Lines の1行）を許可キー
+/// だけに絞り込んで再構築する（L-1 追補・#90・`sanitize_verify_output` と
+/// 同じ「許可した値だけを通す」方式）。
+///
+/// コアの失敗応答は固定コード（`input_not_found`／`expand_failed`／
+/// `input_unreadable`／`internal`）だが、`error` を無条件に素通しすると、
+/// 将来コアが例外メッセージや設定値（`workdir` 等の絶対パス）を載せたときに
+/// そのまま webview へ出る（07 §7.3「絶対パスを外へ出さない」）。キーの
+/// 許可リストに加え、`error` の**値**も固定コードの字形（ASCII 小文字と
+/// `_` のみ・32 文字以内）でなければ `internal` へ丸める。
+///
+/// `results[]`／`excluded[]` の要素も同じ方式で絞る——入れ子は素通しに
+/// なりやすく、コアが1件ごとの診断（パス付き）を足したときに漏れるため。
+pub fn sanitize_match_output(value: &serde_json::Value) -> serde_json::Value {
+    const TOP_KEYS: &[&str] =
+        &["event", "ok", "truncated", "elapsed_ms", "budget_elapsed_ms", "input_size"];
+    const RESULT_KEYS: &[&str] = &["kind", "name", "template_id", "verdict", "reason",
+                                   "score", "detected", "expected", "fields", "tables",
+                                   "updated_at"];
+    const EXCLUDED_KEYS: &[&str] = &["name", "reason"];
+
+    let fallback = || serde_json::json!({
+        "event": "match_templates", "ok": false, "error": "internal"
+    });
+    let Some(obj) = value.as_object() else { return fallback() };
+
+    let mut out = serde_json::Map::new();
+    for key in TOP_KEYS {
+        if let Some(v) = obj.get(*key) {
+            out.insert((*key).to_string(), v.clone());
+        }
+    }
+    if let Some(err) = obj.get("error") {
+        let code = err
+            .as_str()
+            .filter(|s| {
+                !s.is_empty() && s.len() <= 32
+                    && s.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            })
+            .unwrap_or("internal");
+        out.insert("error".to_string(), serde_json::Value::String(code.to_string()));
+    }
+    for (key, allowed) in [("results", RESULT_KEYS), ("excluded", EXCLUDED_KEYS)] {
+        if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
+            let items: Vec<serde_json::Value> = arr
+                .iter()
+                .map(|item| {
+                    let mut m = serde_json::Map::new();
+                    if let Some(o) = item.as_object() {
+                        for k in allowed {
+                            if let Some(v) = o.get(*k) {
+                                m.insert((*k).to_string(), v.clone());
+                            }
+                        }
+                    }
+                    serde_json::Value::Object(m)
+                })
+                .collect();
+            out.insert(key.to_string(), serde_json::Value::Array(items));
+        }
+    }
+    serde_json::Value::Object(out)
 }
 
 /// verify の stdout（JSON Lines）から「テンプレート検証」行の `ok` を読む
@@ -1071,7 +1202,7 @@ mod tests {
             "missing".to_string(),  // 形は妥当だが実在しない
             "b".to_string(),        // 有効・実在
         ];
-        let (candidates, excluded) = classify_candidates(&canonical_dir, &names);
+        let (candidates, excluded) = classify_candidates(&canonical_dir, &names).unwrap();
 
         assert_eq!(candidates.len(), 2);
         assert!(candidates.iter().any(|p| p.file_name().unwrap() == "a.json"));
@@ -1088,20 +1219,131 @@ mod tests {
     }
 
     #[test]
-    fn classify_candidates_reports_limit_beyond_max_listed() {
+    fn classify_candidates_rejects_more_names_than_max_listed() {
+        // L-4 追補（#90）: 入口の件数上限。候補名の供給元は
+        // list_user_templates（MAX_LISTED 件で切る）だけなので、超過は
+        // webview 側の異常——黙って切らずに明示エラーで返す。
         let dir = mkdir("classify_candidates_limit");
         let canonical_dir = dir.canonicalize().unwrap();
-        let names: Vec<String> = (0..(MAX_LISTED + 2)).map(|i| format!("no-such-{i}")).collect();
+        let names: Vec<String> = (0..(MAX_LISTED + 1)).map(|i| format!("no-such-{i}")).collect();
 
-        let (candidates, excluded) = classify_candidates(&canonical_dir, &names);
+        let err = classify_candidates(&canonical_dir, &names).unwrap_err();
+        assert!(err.contains(&MAX_LISTED.to_string()), "{err}");
 
+        // 上限ちょうどは通る（境界）。
+        let ok_names: Vec<String> = names.iter().take(MAX_LISTED).cloned().collect();
+        let (candidates, excluded) = classify_candidates(&canonical_dir, &ok_names).unwrap();
         assert!(candidates.is_empty());
-        let limit_count = excluded.iter().filter(|e| e.reason == "limit").count();
-        let not_found_count = excluded.iter().filter(|e| e.reason == "not_found").count();
-        assert_eq!(limit_count, 2, "{excluded:?}");
-        assert_eq!(not_found_count, MAX_LISTED, "{excluded:?}");
+        assert_eq!(excluded.len(), MAX_LISTED, "{excluded:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- #89: 保存経路の reparse point 検査・canonicalize 後の親一致 ---
+
+    #[test]
+    fn ensure_not_reparse_point_passes_for_absent_and_regular_file() {
+        let dir = mkdir("reparse_regular");
+        let absent = dir.join("no-such.json.saving.json");
+        assert!(ensure_not_reparse_point(&absent).is_ok(), "存在しないパスは通す");
+        let regular = dir.join("plain.json.saving.json");
+        std::fs::write(&regular, "{}").unwrap();
+        assert!(ensure_not_reparse_point(&regular).is_ok(), "通常ファイルは通す");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ensure_not_reparse_point_rejects_staged_junction() {
+        // #89（08 §3.2.6 #16）: staged（`<名前>.json.saving.json`）の位置に
+        // reparse point があれば保存を拒否する。ファイル symlink の作成は
+        // 管理者権限が要るため、非昇格で作れるディレクトリジャンクションを
+        // staged の名前で作って同じ is_symlink() 分岐を実証する（#13 と同じ
+        // 作り方・`create_junction` の doc 参照）。
+        let dir = mkdir("staged_junction");
+        let real = mkdir("staged_junction_target");
+        let staged = dir.join("テンプレA.json.saving.json");
+        create_junction(&staged, &real)
+            .expect("ジャンクションの作成に失敗（mklink /J は非昇格で成功するはず）");
+
+        let meta = std::fs::symlink_metadata(&staged).unwrap();
+        assert!(meta.file_type().is_symlink(),
+                "ジャンクションが reparse point として検出されていない");
+        assert!(ensure_not_reparse_point(&staged).is_err(),
+                "staged 位置の reparse point は保存を拒否するべき");
+
+        let _ = std::fs::remove_dir(&staged);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&real);
+    }
+
+    #[test]
+    fn ensure_written_inside_accepts_entry_of_dir_and_rejects_outside() {
+        let dir = mkdir("written_inside");
+        let outside = mkdir("written_outside");
+        let inside = dir.join("a.json.saving.json");
+        std::fs::write(&inside, "{}").unwrap();
+        let elsewhere = outside.join("a.json.saving.json");
+        std::fs::write(&elsewhere, "{}").unwrap();
+
+        assert!(ensure_written_inside(&inside, &dir).is_ok());
+        let err = ensure_written_inside(&elsewhere, &dir).unwrap_err();
+        assert!(!err.contains(&outside.to_string_lossy().to_string()),
+                "エラー文言に絶対パスを含めない（07 §7.3）: {err}");
+        // 書けなかった（消えた）場合も範囲内とは言えないので拒否する
+        assert!(ensure_written_inside(&dir.join("gone.json"), &dir).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn recheck_new_target_absent_detects_existing_file() {
+        // L-2 追補（#90）: `New` 判定の最終防御。
+        let dir = mkdir("recheck_new");
+        let target = dir.join("a.json");
+        assert!(recheck_new_target_absent(&target).is_ok());
+        std::fs::write(&target, "{}").unwrap();
+        assert_eq!(recheck_new_target_absent(&target).unwrap_err(), "AlreadyExists");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- L-1（#90）: match_templates 応答の許可キー方式 ---
+
+    #[test]
+    fn sanitize_match_output_drops_unknown_keys_and_nested_fields() {
+        let value = serde_json::json!({
+            "event": "match_templates", "ok": true, "truncated": false,
+            "elapsed_ms": 12, "workdir": "C:\\Users\\taro\\workdir",
+            "results": [{"name": "帳票A", "kind": "user", "verdict": "match",
+                         "path": "C:\\Users\\taro\\AppData\\templates_user\\帳票A.json"}],
+            "excluded": [{"name": "壊れたテンプレ", "reason": "parse",
+                          "detail": "C:\\Users\\taro\\x.json"}]
+        });
+
+        let out = sanitize_match_output(&value);
+
+        assert!(out.get("workdir").is_none(), "未知の最上位キーは落とす: {out}");
+        assert_eq!(out["results"][0]["name"], "帳票A");
+        assert!(out["results"][0].get("path").is_none(), "入れ子の未知キーも落とす: {out}");
+        assert_eq!(out["excluded"][0]["reason"], "parse");
+        assert!(out["excluded"][0].get("detail").is_none());
+        assert!(!out.to_string().contains("C:\\\\Users"), "絶対パスが残っている: {out}");
+    }
+
+    #[test]
+    fn sanitize_match_output_keeps_error_codes_and_masks_messages() {
+        for code in ["input_not_found", "expand_failed", "input_unreadable", "internal"] {
+            let v = serde_json::json!({"event": "match_templates", "ok": false, "error": code});
+            assert_eq!(sanitize_match_output(&v)["error"], code, "固定コードはそのまま通す");
+        }
+        // コードの字形でない値（例外メッセージ・パス混入）は internal へ丸める
+        let leaked = serde_json::json!({
+            "event": "match_templates", "ok": false,
+            "error": "ConfigError: workdir=C:\\Users\\taro\\workdir が読めません"});
+        assert_eq!(sanitize_match_output(&leaked)["error"], "internal");
+        // オブジェクトですらない応答も固定形へ倒す
+        assert_eq!(sanitize_match_output(&serde_json::json!(["x"]))["error"], "internal");
     }
 
     #[test]

@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+# 配布用アプリ本体で crates.io へ公開しない。cargo-deny の unlicensed 検査は
+# publish = false のクレートを private として除外する（#78・リポ自身の
+# LICENSE はユーザー判断で未決のまま）。
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
