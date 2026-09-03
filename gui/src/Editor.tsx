@@ -775,12 +775,25 @@ export function buildTemplateJson(input: {
     (fields.length - (front.fields.length + back.fields.length))
     + (excls.length - (front.exclusions.length + back.exclusions.length))
     + (tables.length - (front.tables.length + back.tables.length));
+  // 実コアは面ごとに tables 1件以上を要求する（位置合わせのアンカー・
+  // D-25・template.py の load_template）。片面にしか内容が無い紙（例:
+  // 横長1面の画像から新規作成したテンプレート）では、もう一方の面が
+  // fields/tables/exclusions すべて空のまま残り、その空面にテーブルが
+  // 無いという理由だけで保存が拒否されていた（ころね UX Must の実機検証で
+  // 発覚）。空面は書き出さない——ただし両面とも空なら front だけを残す
+  // （schema の faces minItems:1 を満たすため）。droppedCount は面 filter
+  // 前の front/back（要素の割り当てそのもの）から計算しており、ここで
+  // 面を間引いても値は変わらない
+  const isEmptyFace = (f: { fields: unknown[]; tables: unknown[]; exclusions: unknown[] }) =>
+    f.fields.length === 0 && f.tables.length === 0 && f.exclusions.length === 0;
+  const nonEmptyFaces = [front, back].filter((f) => !isEmptyFace(f));
+  const faces = nonEmptyFaces.length > 0 ? nonEmptyFaces : [front];
   return {
     template: {
       schema_version: 1, template_id: meta.template_id,
       render_dpi: meta.render_dpi,
       image: { width: W, height: H }, record: meta.record,
-      faces: [front, back],
+      faces,
     },
     droppedCount,
   };
@@ -1072,6 +1085,25 @@ export function canvasInteractionAllowed(hasImage: boolean, _tool: string): bool
   return hasImage;
 }
 
+/// 「この紙用に新しいテンプレートを作る」ボタンを出すかどうか（ころね UX
+/// レビュー Must）。従来は様式不一致の黄帯（hasFormatMismatch）でしか
+/// 出ておらず、寸法／向き不一致の赤帯（expandAlignNotice の
+/// reason==="size"）では出なかった。README はこのボタンを唯一の復旧導線
+/// として案内しているため、初見ユーザーが寸法不一致の紙を出荷テンプレの
+/// 上で編集し続け、保存時の「面の範囲外にある要素があります」で手戻りに
+/// なっていた。alignReason==="template"（テンプレ破損）は画像側の寸法が
+/// 拠り所にならないため対象外——空のテンプレートを作っても保存後の再照合で
+/// 同じ破損テンプレートに当たる問題は解決しない。
+export function newTemplateActionAvailable(
+  hasFormatMismatch: boolean,
+  alignReason: ExpandAlignReason | undefined,
+  hasImage: boolean,
+): boolean {
+  if (!hasImage) return false;
+  if (hasFormatMismatch) return true;
+  return alignReason === "size";
+}
+
 // ---------------------------------------------------------------- issue #72 (t)
 // テンプレートの保存・選択・照合提示（設計08 §3）。この画面が持つのは
 // 「一覧・照合結果を並べ替えて見せる」「空のテンプレートを組み立てる」
@@ -1178,9 +1210,23 @@ export function matchErrorJa(code: string | undefined | null): string {
 
 /// 不一致・判定不能だった画像用の空テンプレート（issue #72 (t)・FR-F30・
 /// 設計08 §3.6）。image は開いた画像の実寸、faces は現行の表裏境界
-/// （splitY）で front/back の2面に分け、cells・tables・exclusions は空。
-/// toEditorState（このファイル内・コンポーネント内関数）がそのまま読める
-/// 形にする——buildTemplateJson が書き出す face の形と揃える。
+/// （splitY）で分ける。toEditorState（このファイル内・コンポーネント内
+/// 関数）がそのまま読める形にする——buildTemplateJson が書き出す face の
+/// 形と揃える。
+///
+/// **splitY >= height（無関係な紙・片面の画像）は面を1つ（表面・全面）だけ
+/// 返す**（Orchestrator決定・ころね UX Must の実機検証で発覚した保存拒否の
+/// 根本対応）。実コアは面ごとに tables 1件以上を要求する（位置合わせの
+/// アンカー・D-25・template.py の load_template）ため、中身の入りようが
+/// 無い裏面を機械的に作ると「裏面にテーブルが無い」という理由だけで保存が
+/// 拒否される——寸法不一致の修正導線を用意した意味が保存の一歩手前で
+/// 失われていた。表裏のある紙は「表裏の境界」ツールで splitY を動かせば
+/// 従来どおり2面に分けられる（newTemplateNotice 参照）。
+///
+/// splitY < height の通常の2面分岐でも、両面とも高さ1px以上を保つよう
+/// クランプする（schema/template.schema.json の rect.h は minimum:1 のため）。
+/// height<2 の極端な入力では両面を1px以上にできない（数学的に不可能）——
+/// 実運用の画像でここに達することは想定していない。
 export function emptyTemplateFor(width: number, height: number, splitY: number): {
   schema_version: number; template_id: string; render_dpi: number;
   image: { width: number; height: number }; record: { pages: number };
@@ -1188,29 +1234,36 @@ export function emptyTemplateFor(width: number, height: number, splitY: number):
             source: { page_offset: number; rect: Rect };
             fields: never[]; tables: never[]; exclusions: never[] }[];
 } {
-  const sy = Math.max(0, Math.min(splitY, height));
   const face = (id: "front" | "back", y0: number, y1: number) => ({
     face_id: id,
     source: { page_offset: 0, rect: { x: 0, y: y0, w: width, h: y1 - y0 } },
     fields: [] as never[], tables: [] as never[], exclusions: [] as never[],
   });
-  return {
+  const base = {
     schema_version: 1, template_id: "new-template", render_dpi: 300,
     image: { width, height }, record: { pages: 1 },
-    faces: [face("front", 0, sy), face("back", sy, height)],
   };
+  if (splitY >= height) {
+    return { ...base, faces: [face("front", 0, height)] };
+  }
+  const sy = Math.max(1, Math.min(splitY, height - 1));
+  return { ...base, faces: [face("front", 0, sy), face("back", sy, height)] };
 }
 
 /// 空のテンプレートを開いた直後の案内（issue #72 (t)・FR-F31・設計08 §3.6）。
 /// (b)（ページ全体からの枠候補生成）は今回未実装のため、hasCandidates は
 /// 現状常に false——将来 (b) が入ったときの分岐だけ先に用意しておく。
 export function newTemplateNotice(hasCandidates: boolean): string {
+  // splitY を画像の高さに倒すため（emptyTemplateFor 参照・ころね UX Must
+  // 対応）、新規テンプレートは常に表面1面から始まる。表裏のある紙の案内は
+  // 両方の分岐に付ける——ツール名は実際のボタンラベル「表裏の境界」に揃える
+  const splitHint = "表裏のある紙は「表裏の境界」ツールで面を分けてください。";
   if (hasCandidates) {
-    return "この画像から検出した枠の候補があります。候補を確認して採用してください。";
+    return `この画像から検出した枠の候補があります。候補を確認して採用してください。${splitHint}`;
   }
   return "空のテンプレートで開きました。「くり返し行（家族・明細）」で表の外枠を描くと、"
     + "行と列を自動検出できます（等分割の生成にも切り替えられます）。単発の欄は"
-    + "「欄を追加」で描いてください。";
+    + `「欄を追加」で描いてください。${splitHint}`;
 }
 
 // ---------------------------------------------------------------- issue #73 (b)
@@ -1698,6 +1751,14 @@ export default function Editor(
   const [dirtyState, setDirtyState] = useState(false);
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
   const [errMsg, setErrMsg] = useState("");
+  // errMsg（赤帯）が寸法/向き不一致（expandAlignNotice の reason==="size"）
+  // 由来かどうかを覚えておく状態（ころね UX 指摘）。赤帯には従来
+  // 「テンプレ破損」「寸法不一致」の2種類が混在しており文言だけでは
+  // 判別できないため、loadImage が判定した reason をそのまま保持する。
+  // errMsg を上書きする他の失敗経路（画像読込失敗等）でも undefined に
+  // 戻し、赤帯の原因とボタン表示がズレないようにする
+  const [lastAlignReason, setLastAlignReason] =
+    useState<ExpandAlignReason | undefined>(undefined);
   // 失敗ではないが目立たせたい注意（切り抜きの10〜30%減・コアの verify
   // 警告）。灰色の msg に混ぜると気づかれない（D-7）ため errMsg（赤帯）とは
   // 別チャンネルにする（.warnbox・issue #59 H-4／設計書 U-08・U-09）
@@ -2289,8 +2350,13 @@ export default function Editor(
     // onload 側で反映する（いろは5巡目指摘・issue #71 (a') で黄帯を追加）
     let alignErr = "";
     let alignWarn = "";
+    let alignReason: ExpandAlignReason | undefined;
     let faces: { face_id: string; verdict: string }[] = [];
     let verdict: string | undefined;
+    // 新しい読み込み試行のたびにリセットする。以降の早期 return（展開失敗・
+    // 読込失敗等）では onload に到達せず setLastAlignReason は呼ばれないため、
+    // ここでクリアしておかないと直前の "size" 判定が誤って残り続ける
+    setLastAlignReason(undefined);
     // 画像（PNG/JPG 等）でも expand-page を通す（issue #71 (a')・設計08
     // §2.7.1・AC-F02 の前提）。ingest.expand は PDF 以外を入力そのまま
     // 返すため、コア側の変更は不要——PDF 専用だった従来の分岐を外すだけで
@@ -2323,7 +2389,7 @@ export default function Editor(
       const pageNote = ev.pages > 1 ? `PDF の 1/${ev.pages} ページ目・` : "";
       const align = expandAlignNotice(
         ev.aligned, ev.reason, pageNote, ev.verdict, meta.current.template_id);
-      if (align.level === "error") alignErr = align.text;
+      if (align.level === "error") { alignErr = align.text; alignReason = ev.reason; }
       else if (align.level === "warn") alignWarn = align.text;
       else note = align.text;
       faces = Array.isArray(ev.faces) ? ev.faces : [];
@@ -2352,6 +2418,7 @@ export default function Editor(
       // 無ければ従来どおりクリアする。様式不一致（alignWarn）は黄帯専用の
       // formatWarnMsg へ（carve 警告の warnMsg とは別チャンネル）
       setErrMsg(alignErr);
+      setLastAlignReason(alignReason);
       setFormatWarnMsg(alignWarn);
       setFormatFaces(faces);
       // 新しい画像を開いたら上書き表示（FR-F05）は必ずリセットする
@@ -2413,7 +2480,13 @@ export default function Editor(
                     marks: c.choice_marks ?? [],
                     output: c.output === false ? false : undefined })) });
     }
-    setFields(fs); setTables(ts); setExcls(es); setSplitY(sy ?? 1880);
+    setFields(fs); setTables(ts); setExcls(es);
+    // back 面が無いテンプレート（buildTemplateJson が片面のみ書き出した
+    // ものを含む・ころね UX Must 対応）は splitY を画像の高さへ倒し、
+    // 全体を表面として扱う——旧実装の固定 1880 だと、裏面を持たない
+    // 小さい/横長の画像で splitY が画像高さを超え、次に保存するときにまた
+    // 高さ0の裏面を書き出そうとしてしまう（emptyTemplateFor と同じ理由）
+    setSplitY(sy ?? t.image?.height ?? curSize().H);
     setLoadedExcls(es.map((e) => ({ id: e.id, rect: e.rect })));
     // 出力順の読み込み時基準（issue #66 段6・FR-2.2）。この後の並べ替えが
     // あったかどうかを、この時点の配列順と比べて判定する
@@ -2696,16 +2769,21 @@ export default function Editor(
     setMsg(`取り込みました（利用者テンプレート: ${name}）`);
   };
 
-  // 不一致時の導線（FR-F30/F31・設計08 §3.6）。(b) 未実装のため到達点は
-  // 「空のテンプレートで開く」まで——枠候補の一括生成はしない
+  // 不一致時の導線（FR-F30/F31・設計08 §3.6）。
+  // Orchestrator決定（ころね UX Must の実機検証後）: 継承した splitY では
+  // なく H を渡す——この紙は今開いている画像とは無関係（別の縦長テンプレを
+  // 編集していたときの splitY を引き継ぐ理由が無い）ため、常に表面1面から
+  // 始める（emptyTemplateFor の splitY>=height 分岐）。表裏のある紙は
+  // 「表裏の境界」ツールで利用者自身が分ける（newTemplateNotice 参照）
   const createTemplateForThisImage = () => {
     if (!confirmDiscard()) return;
     const { W, H } = curSize();
-    const empty = emptyTemplateFor(W, H, splitY);
+    const empty = emptyTemplateFor(W, H, H);
     toEditorState(empty);
     resetHistory();
     setTplPath(null);
     setErrMsg("");
+    setLastAlignReason(undefined);
     // 直前のテンプレートに対する様式判定はもう意味を持たない（新しい
     // テンプレートは常に「一致」の定義そのものになる）
     setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
@@ -4309,6 +4387,16 @@ export default function Editor(
             style={{ margin: "0 0 6px", display: "-webkit-box", WebkitBoxOrient: "vertical",
               WebkitLineClamp: 2, overflow: "hidden" }}>{framesMsg}</p>
         )}
+        {/* ころね（user_advocate）UX レビュー 推奨2: 既存の他候補と重ならない
+            候補は candidateDefaultChecked により最初からチェック済みになる
+            （§4.5.2）。挙動自体は変えず、その事実を一言添えるだけ——1件しか
+            出なかった生成でチェック済みの理由が分からない、という指摘への
+            対応 */}
+        {cands.length > 0 && (
+          <p className="note" style={{ margin: "0 0 4px" }}>
+            重ならない候補は最初からチェック済みです
+          </p>
+        )}
         {cands.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
             <button className="btn" type="button" onClick={acceptSelectedCandidates}>
@@ -4336,6 +4424,14 @@ export default function Editor(
               変更
             </button>
           </div>
+        )}
+        {/* ころね（user_advocate）UX レビュー 推奨1: 無効理由を title だけに
+            置くとホバーしないと分からない。ボタン直下に常時表示の注記も
+            添える（title は維持——スクリーンリーダー以外での即時確認用） */}
+        {cands.length > 0 && recentCandTableUids.length === 0 && (
+          <p className="note" style={{ margin: "2px 0 0" }}>
+            この生成から採用した表がまだありません
+          </p>
         )}
       </div>
       {/* 一覧本体だけがスクロールする（おかゆ実機検証で発覚した canvas 0px
@@ -4430,7 +4526,32 @@ export default function Editor(
         <span className="msg" role="status" aria-live="polite">
           {msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
-      {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
+      {/* ころね（user_advocate）UX レビュー Must: 寸法／向き不一致
+          （expandAlignNotice の reason==="size"）の赤帯にも、様式不一致の
+          黄帯と同じ「この紙用に新しいテンプレートを作る」導線を出す。
+          README がこのボタンを唯一の復旧導線として案内しているため、
+          赤帯だけ導線が無いと初見ユーザーが出荷テンプレートの上で
+          候補生成・採用・列名変更まで進めてしまい、保存時の「面の範囲外に
+          ある要素があります」で手戻りになっていた。reason==="template"
+          （テンプレ破損）は画像側の寸法が拠り所にならないため対象外
+          （newTemplateActionAvailable 参照） */}
+      {errMsg && (
+        <div className="errbox" style={{ margin: "8px 18px", display: "flex",
+          alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <span>{errMsg}</span>
+          {newTemplateActionAvailable(hasFormatMismatch, lastAlignReason, hasImage)
+            && lastAlignReason === "size" && (
+            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <button className="btn" onClick={createTemplateForThisImage}>
+                この紙用に新しいテンプレートを作る
+              </button>
+              <span className="note">
+                この紙でテンプレートを新しく作るには下のボタンを押してください
+              </span>
+            </span>
+          )}
+        </div>
+      )}
       {/* スバル差し戻し Must-2・ラミィ差し戻し（3回目・Must）: 重なりを
           承知で採用した候補があれば、保存するまで消えない注意をタブに
           依存しない常時表示エリアに出す（候補タブを離れても見える） */}

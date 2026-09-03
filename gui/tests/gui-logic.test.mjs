@@ -22,7 +22,7 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } from "./RunScreen.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
@@ -44,7 +44,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1649,6 +1649,57 @@ test("Q-H2 buildTemplateJson: clamp 済み入力なら droppedCount=0 で全要�
     template.faces[0].exclusions.length + template.faces[1].exclusions.length, excls.length);
 });
 
+// buildTemplateJson: 空面は書き出さない（Orchestrator決定・2回目のころね
+// 実機検証で発覚した保存拒否の根本対応）。実コアは面ごとに tables 1件以上を
+// 要求する（D-25）ため、fields/tables/exclusions が全て空の面をそのまま
+// 書き出すと「そのアンカーが無い」という理由だけで保存が拒否されていた。
+// front/back どちらでも同じ規則——ただし両方空なら front だけを残す
+// （schema の faces minItems:1 を満たすため）。droppedCount は面を間引く
+// 前の割り当てから計算するため、この間引きでは変わらない
+test("buildTemplateJson: back が空（fields/tables/exclusions すべて0件）なら back を書き出さない", () => {
+  const W = 1800, H = 1200, splitY = 1199;
+  const fields = [
+    { uid: "u1", field_id: "f1", kind: "text", marks: [],
+      rect: { x: 100, y: 100, w: 100, h: 50 } },
+  ];
+  const tables = [
+    { uid: "t1", table_id: "tbl1", row_pitch: 80, row_height: 80,
+      blocks: [{ x: 100, y: 300, rows: 5 }],
+      columns: [{ name: "列1", x_offset: 0, width: 200, kind: "text", subfields: "", marks: [] }] },
+  ];
+  const meta = { template_id: "t", render_dpi: 300, image: null, record: { pages: 1 } };
+  const { template, droppedCount } =
+    buildTemplateJson({ fields, tables, excls: [], splitY, W, H, meta });
+  assert.equal(droppedCount, 0);
+  assert.equal(template.faces.length, 1, "空の back が書き出されてしまっている");
+  assert.equal(template.faces[0].face_id, "front");
+  assert.equal(template.faces[0].fields.length, 1);
+  assert.equal(template.faces[0].tables.length, 1);
+});
+test("buildTemplateJson: front/back とも空なら front だけを残す（schema の faces minItems:1）", () => {
+  const W = 1800, H = 1200, splitY = 600;
+  const meta = { template_id: "t", render_dpi: 300, image: null, record: { pages: 1 } };
+  const { template, droppedCount } =
+    buildTemplateJson({ fields: [], tables: [], excls: [], splitY, W, H, meta });
+  assert.equal(droppedCount, 0);
+  assert.equal(template.faces.length, 1);
+  assert.equal(template.faces[0].face_id, "front");
+});
+test("buildTemplateJson: front が空・back に内容があれば back だけを残す", () => {
+  const W = 1800, H = 1200, splitY = 600;
+  const fields = [
+    { uid: "u1", field_id: "f1", kind: "text", marks: [],
+      rect: { x: 100, y: 900, w: 100, h: 50 } },
+  ];
+  const meta = { template_id: "t", render_dpi: 300, image: null, record: { pages: 1 } };
+  const { template, droppedCount } =
+    buildTemplateJson({ fields, tables: [], excls: [], splitY, W, H, meta });
+  assert.equal(droppedCount, 0);
+  assert.equal(template.faces.length, 1, "空の front が書き出されてしまっている");
+  assert.equal(template.faces[0].face_id, "back");
+  assert.equal(template.faces[0].fields.length, 1);
+});
+
 test("Q-H2 (L-Q1): fieldsForFace と outOfFaceElements の面判定述語が一致する", () => {
   const H = 1000, splitY = 400;
   const fields = [
@@ -2034,11 +2085,34 @@ test("emptyTemplateFor: 画像の実寸・現在の表裏境界で2面・欄/表
   }
 });
 
-test("emptyTemplateFor: splitY が画像の高さを超えてもクランプし面の高さが負にならない", () => {
+// splitY >= height（無関係な紙・片面の画像）は面を1つ（表面・全面）だけ
+// 返す（Orchestrator決定・2回目のころね実機検証で判明: 実コアは面ごとに
+// tables 1件以上を要求するため（D-25）、中身の入りようが無い裏面を機械的に
+// 作ると「裏面にテーブルが無い」という理由だけで保存が拒否されていた）
+test("emptyTemplateFor: splitY が画像の高さ以上なら面を1つ（表面・全面）だけ返す", () => {
   const t = emptyTemplateFor(1000, 500, 9999);
-  const [front, back] = t.faces;
+  assert.equal(t.faces.length, 1);
+  const [front] = t.faces;
+  assert.equal(front.face_id, "front");
+  assert.equal(front.source.rect.y, 0);
   assert.equal(front.source.rect.h, 500);
-  assert.equal(back.source.rect.h, 0);
+});
+test("emptyTemplateFor: splitY がちょうど画像の高さでも面を1つだけ返す（境界値）", () => {
+  const t = emptyTemplateFor(1000, 500, 500);
+  assert.equal(t.faces.length, 1);
+  assert.equal(t.faces[0].source.rect.h, 500);
+});
+// splitY のクランプは高さ0ではなく高さ1px以上を保つ（ころね UX Must の
+// 実機検証で発見: 高さ0の面は schema/template.schema.json の rect.h
+// minimum:1 に反し、保存時に実コアのスキーマ検証で拒否されていた——旧
+// テスト名の「負にならない」は満たしていたが「1px以上」までは検査して
+// いなかった）。この分岐は splitY < height（2面のまま）のときだけ効く
+test("emptyTemplateFor: splitY が0以下でも両面とも高さ1px以上を保つ（2面のまま）", () => {
+  const t = emptyTemplateFor(1000, 500, 0);
+  const [front, back] = t.faces;
+  assert.equal(t.faces.length, 2);
+  assert.equal(front.source.rect.h, 1);
+  assert.equal(back.source.rect.h, 499);
 });
 
 test("newTemplateNotice: 候補なし（(b)未実装の現状）は等分割生成と手動作図を案内する", () => {
@@ -2467,6 +2541,32 @@ test("shouldSwitchToCandidatesTab: 候補0件（zero_reason あり）のとき�
 test("shouldSwitchToCandidatesTab: nextLen=0 かつ zero_reason 無し（防御的）でも切り替えない", () => {
   assert.equal(shouldSwitchToCandidatesTab(0, 0, null), false);
   assert.equal(shouldSwitchToCandidatesTab(0, 0, undefined), false);
+});
+
+// newTemplateActionAvailable（ころね／user_advocate UX レビュー Must）:
+// 従来は様式不一致の黄帯（hasFormatMismatch）でしか「この紙用に新しい
+// テンプレートを作る」ボタンが出ず、寸法／向き不一致の赤帯（reason==="size"）
+// では出なかった。README が唯一の復旧導線として案内しているボタンなので、
+// 赤帯でも同じ条件で有効になることを確認する。reason==="template"
+// （テンプレ破損）は対象外——空テンプレートを作っても保存後の再照合で
+// 同じ破損テンプレに当たる問題は解決しないため
+test("newTemplateActionAvailable: 寸法/向き不一致の赤帯（reason==='size'）でも有効", () => {
+  assert.equal(newTemplateActionAvailable(false, "size", true), true);
+});
+test("newTemplateActionAvailable: テンプレ破損の赤帯（reason==='template'）では無効", () => {
+  assert.equal(newTemplateActionAvailable(false, "template", true), false);
+});
+test("newTemplateActionAvailable: 様式不一致の黄帯（hasFormatMismatch）でも従来どおり有効", () => {
+  assert.equal(newTemplateActionAvailable(true, undefined, true), true);
+  assert.equal(newTemplateActionAvailable(true, "align", true), true);
+});
+test("newTemplateActionAvailable: 画像が無ければどちらの理由でも無効", () => {
+  assert.equal(newTemplateActionAvailable(true, "size", false), false);
+  assert.equal(newTemplateActionAvailable(false, "size", false), false);
+});
+test("newTemplateActionAvailable: 不一致要因が無ければ無効", () => {
+  assert.equal(newTemplateActionAvailable(false, undefined, true), false);
+  assert.equal(newTemplateActionAvailable(false, "align", true), false);
 });
 
 // ---------------------------------------------------------------- issue #72 (t)

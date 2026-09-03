@@ -455,5 +455,81 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
     reverted = page.locator("#edittabpanel .panel-outrow").count()
     assert reverted == before, f"Undo で採用前の件数に戻っていない: before={before} reverted={reverted}"
 
-    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）。候補の採用で
+    # markDirty(true) が立ち、Undo は「保存済みに戻す」操作ではないため
+    # dirtyState は立ったまま——App.tsx の switchTo はタブ離脱時に
+    # window.confirm で破棄確認を挟む（未保存のまま編集タブを離れる事故を
+    # 防ぐ設計どおりの動作）。ここでは実際に保存はしないため確認を承諾する。
+    # 直前の test_editor_restores_last_template_notice_after_reload が reload
+    # で summary state を初期化済み（このテストはその summary=null の状態を
+    # 引き継ぐ・ここでは一度も読み取りを実行していない）ため、完了後専用の
+    # 「次の作業（目視確認）」ではなく手順1〜3の初期画面を待つ
+    page.once("dialog", lambda d: d.accept())
     page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")
+
+
+def test_editor_size_mismatch_new_template_generate_accept_save(page):
+    # ころね（user_advocate）の初見ユーザー目線レビュー Must: 用紙サイズ／
+    # 向き不一致（expandAlignNotice の reason==="size"・赤帯）では、様式不一致
+    # （罫線判定・黄帯）の時にしか出なかった「この紙用に新しいテンプレートを
+    # 作る」ボタンが出ていなかった。README はこのボタンを唯一の復旧導線として
+    # 案内しているため、初見ユーザーは出荷テンプレートの上で候補生成→採用→
+    # 列名変更まで進み、保存時に「面の範囲外にある要素があります」で手戻りに
+    # なっていた。赤帯にも同じボタンを出す修正後、そこから新規テンプレート
+    # 作成→枠候補生成→採用→利用者テンプレート保存まで一気通貫で通ることを
+    # 確認する。
+    #
+    # デモモードの pick_image は「帳票を開く」を押すたび mismatch → match →
+    # undecidable → size-mismatch の順で疑似パスを巡回する（bridge.ts の
+    # DEMO_FORMAT_VARIANTS・demoImagePickCount）。この巡回カウンタは他の
+    # テストの実行順・押下回数に依存して累積するため、reload でリセットして
+    # から4回押し、4回目で確実に size-mismatch.png を引く。
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(500)
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+    open_btn = page.get_by_role("button", name="帳票を開く（PDF・画像）")
+    for _ in range(3):
+        open_btn.click()
+        page.wait_for_selector("text=この画像に合うテンプレート")
+
+    open_btn.click()
+    page.wait_for_selector("text=用紙サイズ／向きがテンプレートと合っていません")
+    new_tpl_btn = page.get_by_role(
+        "button", name="この紙用に新しいテンプレートを作る", exact=True)
+    assert new_tpl_btn.is_visible(), \
+        "寸法/向き不一致の赤帯に新規テンプレート作成の導線が出ていない"
+    assert page.get_by_text("この紙でテンプレートを新しく作るには下のボタン",
+                             exact=False).is_visible()
+
+    new_tpl_btn.click()
+    page.wait_for_selector("text=空のテンプレートで開きました")
+
+    page.get_by_role("button", name="ページ全体から枠候補を生成").click()
+    page.wait_for_selector("text=枠候補（4 件）")
+
+    page.get_by_role("button", name="選んだ候補を採用").click()
+    page.wait_for_selector("text=3 件を採用しました")
+
+    seen_dialog_types = []
+
+    def handle_dialog(dialog):
+        seen_dialog_types.append(dialog.type)
+        # walkthrough_b: 機微情報を含まない検証専用の名前
+        dialog.accept("walkthrough_b")
+
+    page.on("dialog", handle_dialog)
+    try:
+        page.get_by_role("button", name="利用者テンプレートとして保存", exact=True).click()
+        page.wait_for_selector("text=利用者テンプレートとして保存しました")
+    finally:
+        page.remove_listener("dialog", handle_dialog)
+    assert "prompt" in seen_dialog_types, "名前入力（window.prompt）が発火していない"
+
+    # 実行タブへ戻す（このテストの冒頭で reload しており、一度も読み取りを
+    # 実行していないため summary は null——完了後専用の
+    # 「次の作業（目視確認）」ではなく手順1〜3の初期画面を待つ）
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")

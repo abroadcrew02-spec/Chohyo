@@ -112,11 +112,14 @@ const DEMO_TEMPLATE = {
 // mismatch → match → undecidable の順で巡回する（スバル差し戻し4・任意）。
 // **1回目は必ず mismatch**——Playwright スモーク
 // （core/tests/test_gui_smoke.py の test_editor_format_mismatch_*）は
-// 「帳票を開く」を1回しか押さないため、この順序に依存している
+// 「帳票を開く」を1回しか押さないため、この順序に依存している。
+// size-mismatch.png（ころね UX レビュー Must の検証用）は末尾に足した
+// 4番目——既存3件の巡回順（インデックス0〜2）をずらすと上記の「1回目は
+// 必ず mismatch」に依存する既存テストが壊れるため、新規分は必ず末尾に足す
 const DEMO_FORMAT_FACE = (verdict: string, reason: string, score: number, detected: number, expected: number) =>
   ({ verdict, reason, score, detected, expected });
 const DEMO_FORMAT_VARIANTS: Record<string, {
-  aligned: boolean; reason?: "align"; verdict: "mismatch" | "match" | "undecidable"; score: number;
+  aligned: boolean; reason?: "align" | "size"; verdict: "mismatch" | "match" | "undecidable"; score: number;
   faces: { face_id: string; verdict: string; reason: string; score: number; detected: number; expected: number }[];
 }> = {
   "C:\\デモ\\mismatch.png": {
@@ -140,6 +143,14 @@ const DEMO_FORMAT_VARIANTS: Record<string, {
       { face_id: "back", ...DEMO_FORMAT_FACE("match", "", 1, 26, 26) },
     ],
   },
+  // reason:"size"（PageSizeMismatch・Q-H1）の実応答は verdict/score/faces が
+  // 個別の面診断を持たない（core/chouhyo_ocr/cli.py:340-347 実測——寸法検査は
+  // 面ごとの罫線判定より前に短絡するため）。score:-1・faces:[] は「診断して
+  // いない」ことを表す実コアの値そのもので、デモも同じ形にする
+  "C:\\デモ\\size-mismatch.png": {
+    aligned: false, reason: "size", verdict: "mismatch", score: -1,
+    faces: [],
+  },
 };
 const DEMO_FORMAT_PATHS = Object.keys(DEMO_FORMAT_VARIANTS);
 let demoImagePickCount = 0;
@@ -149,6 +160,16 @@ let demoImagePickCount = 0;
 // 描かれる（実コアの位置合わせ済み画像と同じ座標系の扱い）
 const DEMO_MISMATCH_IMAGE_B64 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+// ころね（user_advocate）UX レビュー Must の検証用: createTemplateForThisImage
+// は開いている画像の実寸（im.naturalWidth/Height＝imgSize）でテンプレートを
+// 組み立てる。上の1x1画像のままだと新規テンプレートも1x1になり、
+// detect-frames の疑似候補（page 座標で最大 x:950・y:2100 付近）が軒並み
+// 「面の範囲外」になってしまう——実際の紙とは無関係な、デモ疑似データ間の
+// 寸法不整合でしかない。size-mismatch.png 専用に DEMO_TEMPLATE と同じ
+// 2490×3510（splitY も同じ前提で front/back に収まる）の1bit最小PNGを
+// 用意し、read_file_b64 側でパス別に返し分ける
+const DEMO_SIZE_MISMATCH_IMAGE_B64 =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAACboAAA22AQAAAABcLfViAAAEP0lEQVR42u3BMQEAAADCoPVPbQhfoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA4DXEdgAB1TENJgAAAABJRU5ErkJggg==";
 
 // issue #72 (t) デモ検証用: 利用者テンプレートの一覧（Rust list_user_templates
 // の疑似応答・gui/src-tauri/src/user_templates.rs の UserTemplateInfo/
@@ -209,7 +230,14 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
       demoImagePickCount++;
       return path;
     }
-    case "read_file_b64": return DEMO_MISMATCH_IMAGE_B64;
+    case "read_file_b64": {
+      // expand-page の疑似応答は page_path に --input のパスをそのまま
+      // エコーする（実コアと同じ・上の DEMO_FORMAT_VARIANTS 参照）ため、
+      // ここでも同じパス文字列でどちらの疑似画像を返すか判定できる
+      const { path } = (args ?? {}) as { path?: string };
+      if (path === "C:\\デモ\\size-mismatch.png") return DEMO_SIZE_MISMATCH_IMAGE_B64;
+      return DEMO_MISMATCH_IMAGE_B64;
+    }
     case "pick_json": return "C:\\デモ\\template.json";
     case "read_text": return JSON.stringify(DEMO_TEMPLATE);
     // read_default_template は config.last_template を解決して返す
