@@ -151,6 +151,14 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .panel-wrap { width: 320px; border-left: 1px solid var(--line);
   display: flex; flex-direction: column; background: var(--surface); min-height: 0; }
 .panel-tabs { margin-left: 0; padding: 8px 12px 0; flex-shrink: 0; }
+/* #edittabpanel（Editor.tsx の role="tabpanel" 外枠）に flex/min-height が
+   無いと、内側の .panel（flex:1・overflow-y:auto）は「flex コンテナの中の
+   flex アイテム」になれず伸縮もスクロールも効かない——中身（出力列一覧・
+   220列など）が伸びるとページ全体が縦スクロールする実機バグの原因だった
+   （issue #72 (t) 実機通し確認）。.panel-wrap と同じ flex column
+   ＋min-height:0 をここにも通し、.panel まで縮小・内部スクロールの
+   連鎖を保つ */
+#edittabpanel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel { flex: 1; padding: 14px 18px; overflow-y: auto; background: var(--surface); }
 .panel-outrow { display: flex; align-items: center; gap: 8px; padding: 6px 4px;
   border-radius: 6px; }

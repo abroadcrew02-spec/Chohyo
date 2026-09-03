@@ -49,14 +49,16 @@ type Failure = { page_id: string; status: string; reason_code?: string };
 // 幅は常に730固定——tauri.conf.json の windows[0].width と一致させる。
 export const RUN_WINDOW_WIDTH = 730;
 
-// 実行前の最大状態（Playwright 実測: フォルダ未選択時の手順3ヒント文まで
-// 込みで appbar 65px + run-screen 547px = 612px。folder選択後はヒント文が
-// 消えて逆に低くなるため、未選択時の方が実は高い）に、実機WebView2と
-// 計測に使ったヘッドレスChromiumのフォント描画差を吸収する安全マージン
-// 8pxを足した値。tauri.conf.json の windows[0].height と同じ値を保つこと
-// （既定サイズの正本は tauri.conf.json 側。ここでは resize 判定の
-// 下限値として参照する）。
-export const RUN_WINDOW_HEIGHT_DEFAULT = 620;
+// 実行前の最大状態（issue #72 (t) 実機再計測・2026-09-03・実機 WebView2 の
+// CDP 接続で直接計測: appbar 65px + run-screen 697px = 762px。テンプレート
+// 選択カード追加後の値——フォルダ未選択・テンプレート一覧取得済みの状態が
+// 最も高い）に、フォント描画差・将来の軽微な文言追加を吸収する安全マージン
+// 18pxを足した値。tauri.conf.json の windows[0].height と同じ値を保つこと
+// （既定サイズの正本は tauri.conf.json 側。ここでは targetWindowHeight の
+// 下限クランプとして参照する——このおかげで、この値より本文が短ければ
+// 常にこのサイズへ、長ければ実測に応じて拡大する。620=旧値。実測の詳細は
+// 完了報告の実測表を参照）。
+export const RUN_WINDOW_HEIGHT_DEFAULT = 780;
 
 // アプリバー（App.tsx の .appbar）の高さ。実行画面の外側にあるため、
 // document.querySelector で動的に測る（App.tsx とファイルをまたぐが、
@@ -566,29 +568,37 @@ export default function RunScreen(
 
   // ウィンドウの縦幅を実行画面の状態に揃える（起動時の余白なし・完了サマリ
   // でのスクロールなしの両立・ユーザー承認済み 2026-09-01）。
-  //   - サマリ未表示（起動直後・入力待ち・処理中）: 既定の小窓に揃える
-  //   - サマリ表示中: 本文の実測高から必要な高さを求め、縦だけ拡大する
   // タブ切替のたびに規定サイズへ揃える方針のため、この画面がアクティブに
   // なった瞬間（active）と、サマリの有無が変わった瞬間（summary）の両方で
   // 発火させる——手動リサイズの保持はしない。ブラウザのデモモードでは
   // window API が無いため isTauri で no-op にする（bridge.ts と同じ流儀）。
   //
-  // running を deps に追加し、running===false のときだけ計測する（issue
+  // issue #72 (t)・実機通し確認の指摘: 以前は summary が無い間（起動直後・
+  // 入力待ち）を「常に既定の小窓（RUN_WINDOW_HEIGHT_DEFAULT）」に固定して
+  // 実測をスキップしていた。テンプレート選択カード（list_user_templates の
+  // 非同期取得後に伸びる）・再利用ページ数の注記など、summary 表示前の
+  // 画面も内容が伸びる経路が増えたため、**summary の有無を問わず常に本文を
+  // 実測**する形に直した（既定値は targetWindowHeight の下限クランプとして
+  // 働くので、本文が既定より短ければ従来どおり既定の小窓のままになる）。
+  //
+  // 高さに影響する非同期完了（テンプレート一覧の取得＝templates・verify
+  // 結果の変化）も再計測のトリガーに追加した——マウント直後の1回だけでは、
+  // verify（認証キー未設定の初回案内カード等、後から現れる大きな要素）が
+  // 間に合わないまま測ってしまう。
+  //
+  // running を deps に残し、running===false のときだけ計測する（issue
   // Q-MD）。完了直後は「summary が入る」「running が false になる」の2つの
   // 状態更新がほぼ同時に起き、どちらも deps 変化として effect を再発火
   // させるため、旧実装（deps=[active, summary]）は setSize を2回呼びかねな
   // かった。running===true の間は何もしない（実行中に options が動くのは
   // 望ましくない）うえ、実際の計測は rAF 1回分だけ遅らせてまとめる——
-  // ResizeObserver は setSize との相互発火（発振）を招くため使わない。
+  // ResizeObserver は setSize との相互発火（発振）を招くため使わない
+  // （明示的な state 変化のあとに1回だけ計測する、という既存方針を維持）。
   useEffect(() => {
     if (!isTauri || !active || running) return;
     const raf = requestAnimationFrame(() => {
       (async () => {
         const win = getCurrentWindow();
-        if (!summary) {
-          await win.setSize(new LogicalSize(RUN_WINDOW_WIDTH, RUN_WINDOW_HEIGHT_DEFAULT));
-          return;
-        }
         const factor = await win.scaleFactor();
         const contentHeight = screenRef.current?.scrollHeight ?? RUN_WINDOW_HEIGHT_DEFAULT;
         const appbarHeight = document.querySelector(".appbar")?.getBoundingClientRect().height
@@ -603,7 +613,7 @@ export default function RunScreen(
       })().catch(() => { /* デモ/取得失敗時は実行の妨げにしない */ });
     });
     return () => cancelAnimationFrame(raf);
-  }, [active, summary, running]);
+  }, [active, summary, running, verify, templates]);
 
   useEffect(() => {
     const subs: Promise<UnlistenFn>[] = [
