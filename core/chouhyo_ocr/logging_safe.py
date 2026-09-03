@@ -60,6 +60,11 @@ _ALLOWED_KEYS = {
     # purge --include-output の削除実績（S-MC）。件数と、ファイル名の日時部分
     # （output_<日時>.xlsx の <日時>）のみで記入値は含まない
     "kept", "failed", "timestamps",
+    # 位置合わせ残差（issue #74 (c)・FR-F32・08 §5.5）。res_h／res_v は軸別の
+    # 最大絶対残差（px）、res_pairs／res_unpaired は h+v 合計の対応本数。
+    # いずれも px 値・件数のみで名前・記入値を含まない。裸の "residual_px" は
+    # 意図的に足さない——grid.py（#85）の同名キーと混同しないための切り分け
+    "res_h", "res_v", "res_pairs", "res_unpaired",
 }
 
 _app: logging.Logger | None = None

@@ -5,7 +5,7 @@ import hashlib
 import io
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -629,12 +629,33 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                         store, pid, format_check.PageVerdict("unknown", "", -1.0, ()))
                     log.info("format_check_skipped_reuse", page_id=pid)
             else:
-                for f in faces:
+                for idx, f in enumerate(faces):
+                    # 残差の記録（issue #74 (c)・FR-F32・08 §5.4）。align_page が
+                    # 例外なく返った以上 f.estimate は None ではないはずだが、
+                    # 呼び出し元の変化に備えて防御的に None を許容する（未計測
+                    # のまま -1/'' で書く・§5.9 不変条件6）
+                    residual = f.estimate.residual if f.estimate else None
+                    if residual is not None:
+                        align_residual_px = float(max(residual.h.max, residual.v.max))
+                        align_residual_detail = json.dumps(asdict(residual), ensure_ascii=False)
+                        # ログは面ごとに1イベント（pipeline.py・upsert_alignment の
+                        # 隣）。estimate_shift の中では出さない — match-templates
+                        # 等の候補照合ループから何度も呼ばれるため（08 §5.5）。
+                        # face_id は渡さない（白リスト外・Q-S1）——face_idx のみ
+                        log.info("align_residual", page_id=pid, face_idx=idx,
+                                 res_h=residual.h.max, res_v=residual.v.max,
+                                 res_pairs=residual.h.pairs + residual.v.pairs,
+                                 res_unpaired=residual.h.unpaired + residual.v.unpaired)
+                    else:
+                        align_residual_px = -1.0
+                        align_residual_detail = ""
                     store.upsert_alignment(
                         pid, f.face_id,
                         {"angle": f.angle, "dx": f.dx, "dy": f.dy,
                          "matched": f.shift_matched},
-                        True, geo_hash, ALGO_VERSION, tpl_hash)
+                        True, geo_hash, ALGO_VERSION, tpl_hash,
+                        align_residual_px=align_residual_px,
+                        align_residual_detail=align_residual_detail)
                     # 位置合わせ画像はローカル中間データ（remap の再スコア用・#45 の
                     # 再利用元）で配布物ではない。圧縮率を下げてエンコード時間を優先する
                     # （実測: level 6 で 0.35s/枚 → level 1 で 0.22s/枚・容量は +1MB 程度）

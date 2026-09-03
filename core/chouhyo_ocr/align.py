@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 from dataclasses import dataclass
@@ -48,6 +49,33 @@ SHIFT_RUNNER_DIST = 4     # 次点とみなす最小距離（px・300dpi=BASE_DP
 
 
 @dataclass(frozen=True)
+class AxisResidual:
+    """1軸の残差集計（08 §5.2・FR-F32（c））。記録のみ・判定には使わない。"""
+    med: int = 0       # 対応した残差の中央値（偶数個は小さい側を採る＝整数のまま）
+    max: int = 0        # 対応した残差の絶対値の最大
+    pairs: int = 0       # 対応が取れた期待線の本数
+    unpaired: int = 0    # 対応が取れなかった期待線の本数
+
+
+@dataclass(frozen=True)
+class BlockResidual:
+    """1ブロック（y のみ）の残差集計（08 §5.2）。"""
+    block_idx: int      # face.table_geoms 内の0始まり序数
+    med: int
+    max: int
+    pairs: int
+    unpaired: int
+
+
+@dataclass(frozen=True)
+class Residual:
+    """面ごとの残差（軸別＋ブロック別）。08 §5.3・FR-F32（c）。"""
+    h: AxisResidual = AxisResidual()
+    v: AxisResidual = AxisResidual()
+    blocks: tuple[BlockResidual, ...] = ()
+
+
+@dataclass(frozen=True)
 class ShiftEstimate:
     dx: int
     dy: int
@@ -64,6 +92,9 @@ class ShiftEstimate:
     matched_uniq: int = 0     # 重複排除した期待線のうち best shift で当たった本数
     at_boundary_h: bool = False   # _axis_shift の by（few_lines で早期 return しても保持）
     at_boundary_v: bool = False   # 同 bx
+    # --- FR-F32（(c)）。判定には一切使わない。None = 未計測（位置合わせ失敗面・
+    # #45 再利用ページ）。08 §5.2・§5.9 不変条件6 ---
+    residual: "Residual | None" = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +131,74 @@ def _axis_shift(detected: list[int], expected: list[int], n: int,
     return best_s, scores[best_s], runner, abs(best_s) >= n and n > 0
 
 
+def _nearest_signed_dist(sorted_det: list[int], target: int) -> "int | None":
+    """target に最も近い検出線までの符号付き距離（08 §5.2）。
+
+    sorted_det が空なら None。二分探索で target の左右1件ずつを候補にし、
+    絶対距離が小さい方を選ぶ。左右が等距離（同着）のときは target 以上の側
+    ＝大きい側を採る（min は先頭の候補を返すため。決定的だが判定には無関係）。
+    判定側の _axis_shift とは無関係の別ロジック——ここは記録専用で判定条件
+    には一切使わない。
+    """
+    if not sorted_det:
+        return None
+    i = bisect.bisect_left(sorted_det, target)
+    candidates = []
+    if i < len(sorted_det):
+        candidates.append(sorted_det[i])
+    if i > 0:
+        candidates.append(sorted_det[i - 1])
+    nearest = min(candidates, key=lambda p: abs(p - target))
+    return nearest - target
+
+
+def _axis_residual(expected: list[int], detected_sorted: list[int], shift: int,
+                   window: int) -> AxisResidual:
+    """1軸の残差集計（08 §5.2）。記録専用・判定には使わない。
+
+    expected の各線について「期待位置＋shift」から最も近い検出線までの
+    符号付き距離を求める。距離が window（対応窓・face.shift_limits を流用）
+    を超える場合は対応なし（unpaired）として集計から外す。
+    """
+    dists: list[int] = []
+    unpaired = 0
+    for e in expected:
+        d = _nearest_signed_dist(detected_sorted, e + shift)
+        if d is None or abs(d) > window:
+            unpaired += 1
+        else:
+            dists.append(d)
+    if not dists:
+        return AxisResidual(med=0, max=0, pairs=0, unpaired=unpaired)
+    dists_sorted = sorted(dists)
+    n = len(dists_sorted)
+    med = dists_sorted[n // 2] if n % 2 else dists_sorted[n // 2 - 1]
+    return AxisResidual(med=med, max=max(abs(d) for d in dists),
+                        pairs=len(dists), unpaired=unpaired)
+
+
+def _build_residual(face: Face, det_h: "set[int]", det_v: "set[int]",
+                    exp_h_set: "set[int]", exp_v_set: "set[int]",
+                    per_block_h: list[list[int]], dy: int, dx: int,
+                    n_x: int, n_y: int) -> Residual:
+    """成功時（ok=True）の残差組み立て（08 §5.2）。記録のみ・判定には使わない。
+
+    面の h／v は重複排除済みの期待線集合（exp_h_set／exp_v_set）と合併
+    検出線集合（det_h／det_v）から、ブロックは per_block_h（ブロックごとの
+    検出線・estimate_shift のループが控えたもの）とそのブロック自身の
+    h_lines から求める——合併集合から求めるとブロック間のズレが打ち消し
+    合って消える（08 §5.1 (b)）ため、ブロック残差は面残差から独立に計算する。
+    x 残差はブロック単位では記録しない（08 §5.2・(f) の吸着は y 軸のみ）。
+    """
+    h = _axis_residual(sorted(exp_h_set), sorted(det_h), dy, n_y)
+    v = _axis_residual(sorted(exp_v_set), sorted(det_v), dx, n_x)
+    blocks = []
+    for idx, (g, lp_h) in enumerate(zip(face.table_geoms, per_block_h)):
+        br = _axis_residual(sorted(set(g.h_lines)), sorted(lp_h), dy, n_y)
+        blocks.append(BlockResidual(idx, br.med, br.max, br.pairs, br.unpaired))
+    return Residual(h=h, v=v, blocks=tuple(blocks))
+
+
 def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> ShiftEstimate:
     """罫線射影による面の平行移動推定（D-25）。
 
@@ -123,11 +222,17 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
     det_v: set[int] = set()
     exp_h: list[int] = []
     exp_v: list[int] = []
+    # ブロックごとの検出線（08 §5.1 (c)・FR-F32（(c)）。合併する前に控える
+    # だけで、line_positions の呼び出し回数・引数・det_h/det_v の中身は
+    # 1つも変わらない（NFR-F01・NFR-F08）
+    per_block_h: list[list[int]] = []
     for g in face.table_geoms:
         x0 = max(0, g.x_min - n_x)
         x1 = min(w, g.x_max + n_x)
         strip = binary[:, x0:x1]
-        det_h.update(line_positions(strip.sum(axis=1), (x1 - x0) * H_COVERAGE, gap=line_gap))
+        lp_h = line_positions(strip.sum(axis=1), (x1 - x0) * H_COVERAGE, gap=line_gap)
+        det_h.update(lp_h)          # 既存（合併結果は1ビットも変わらない）
+        per_block_h.append(lp_h)    # (c) が足す控え
         exp_h += list(g.h_lines)
         y0 = max(0, g.y_min - n_y)
         y1 = min(h, g.y_max + n_y)
@@ -153,12 +258,13 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
         + sum(1 for e in exp_v_set
               if (e + dx) in det_v or (e + dx - 1) in det_v or (e + dx + 1) in det_v))
 
-    def _est(ok: bool, reason: str) -> ShiftEstimate:
+    def _est(ok: bool, reason: str, residual: "Residual | None" = None) -> ShiftEstimate:
         return ShiftEstimate(
             dx, dy, matched, total, ok, reason,
             det_h_count=det_h_count, det_v_count=det_v_count,
             exp_h_uniq=exp_h_uniq, exp_v_uniq=exp_v_uniq,
-            matched_uniq=matched_uniq, at_boundary_h=by, at_boundary_v=bx)
+            matched_uniq=matched_uniq, at_boundary_h=by, at_boundary_v=bx,
+            residual=residual)
 
     import math
     need_y = max(2, math.ceil(len(exp_h) * SHIFT_MATCH_RATIO))
@@ -182,7 +288,11 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
     for g in face.table_geoms:
         if not (hit(det_h, g.h_lines[0] + dy) and hit(det_h, g.h_lines[-1] + dy)):
             return _est(False, "edge_mismatch")
-    return _est(True, "")
+    # 残差は成功が確定してからだけ組み立てる（08 §5.2）。判定（上のどの
+    # return にも）には一切使わない——ここまでの判定経路は1行も変えていない
+    residual = _build_residual(face, det_h, det_v, exp_h_set, exp_v_set,
+                               per_block_h, dy, dx, n_x, n_y)
+    return _est(True, "", residual=residual)
 
 
 # 位置合わせ方式の版。処理内容を変えたら上げる（#25: 旧方式で作った中間データを

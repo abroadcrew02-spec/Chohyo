@@ -598,7 +598,7 @@ assert all(v == "〓" for v in row.values)
 
 このテストの目的は関数名（`fails_instead_of_wrong_values`）とコメント（「正常なのに値が違うだけは絶対に出さない」）のとおり**「正常顔の誤値を出さないこと」**であって、どちらのバケツに入るかではない。バケツの付け替えは FR-F09 が要求した仕様変更なので緑偽装（07 §7.2-4）には当たらないが、**既存テストの期待値変更であることに変わりはない**ので §1 と同じ扱い（理由と日付をテスト内コメントに残す）にする。§7-3 に要件側の追記提案として挙げる。
 
-**golden（AC-F45）**: 07 が `※要確認（着手時点のコミットが未定）` としていた着手前コミットは **`71384a4`** に確定した（`workdir/golden/71384a4/`・manifest は `testdata/golden_manifest.json`・2026-09-02 取得）。#77 のログ変更は出力を変えないため、この golden は (a') の実装後も有効。
+**golden（AC-F45）**: 07 が `※要確認（着手時点のコミットが未定）` としていた着手前コミットは、最初 `71384a4` で取得したが **`1541239`** で取り直した（現物は `workdir/golden/1541239/`・manifest は `testdata/golden_manifest.json`・`head_short` も `1541239`・2026-09-03 実測で確認）。取り直しの理由は manifest の `root_cause_of_2026-09-02_divergence` にある——`71384a4` 版の manifest はファイルの sha256 しか記録せず、`unclear_threshold=0.4` を使ったことを procedure として残していなかった。第三者が既定値 0.85 で再現すると 〓 化するセルが増え（実測: masked_cells 4 → 21）、出力が一致しなくなる。`scripts/make_golden.py` が config を manifest へ必ず残す形に直したうえで、`1541239`（2026-09-02 17:15・(a') の GUI 側コミット）の HEAD で 17:57 に取り直したものが現在の正。#77 のログ変更は出力を変えないため、この golden は (a') の実装後も有効。
 
 ### 2.10 変更ファイルと分担
 
@@ -1326,7 +1326,7 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 
 ### 4.6 性能（NFR-F02）とガード
 
-- 上限は**面1枚あたり 3.0 秒**（NFR-F02・暫定 ※Q-F13）。`detect-frames` は**ページ単位で1回**走り、面切りは内側にある。したがって**2面テンプレートでは実質「ページ1枚 3.0 秒」で測ることになる**——測定単位が要件と食い違う（§7-13）
+- 上限は**ページ1枚あたり 3.0 秒**（NFR-F02・暫定 ※Q-F13）。`detect-frames` は**ページ単位で1回**走り、面切りは内側にある。**07 v1.4（§0.9 変更4・NFR-F02）が単位を「面1枚」から「ページ1枚」へ訂正したため、測定単位の食い違いは解消済み**——§4.10 R-6 と §7-13 が挙げていた宿題はここで閉じる
 - 見積り（※未計測）: 2490×3510 の numpy 走査は二値化 0.1 秒＋水平/垂直のラン抽出 0.3〜0.8 秒。矩形化はレール数の積（formB で 10×8=80 対）なので無視できる。**現実的な帳票では 1.5 秒前後**と見るが、根拠は演算量の概算のみで実測ではない
 - **ガード**: レールが `MAX_RAILS`(200) を超えたら矩形化に入らず `zero_reason:"too_many_lines"` で返す。網掛け・写真・スキャンノイズの多い紙で組合せ爆発（200×200=4万対 × 辺被覆判定）に落ちるのを防ぐ
 - 計測は `scripts/perf_check.py` に項目を足す（AC-F47 と同じ枠組み）
@@ -1409,11 +1409,268 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 | R-4 | 表の束ね条件（署名一致＋等ピッチ）が実帳票で成立しない | 表が欄候補にばらける | **顕在化した**（2026-09-03・§4.7.1）。sample-1 の front 面で family が8件に断片化する（back の detail は pitch 104 で安定）。ばらけても害は無い——人が採用時に判断でき、候補ゼロにもならない。受け皿は「くり返し行」からの生成と手描き |
 | R-7 | テスト（`align_page` の合成画像）と CLI（生画像＋ページ全体 Otsu）で前処理が違い、同じ紙でも候補の割れ方が変わる | テストが緑でも利用者の画面では別の個数になる | 実測差は sample-1 の back 側で「2件 vs 1件」（§4.7.1）。編集画面は `expand-page` 経由の位置合わせ済み下地を開くため実運用は前者に近いが、CLI を直接使う開発者は後者を見る。**どちらの経路でも pitch は定義と一致する**ので採用後の実害は小さい。経路を揃えるかは(b) の完了後に判断する |
 | R-5 | ページ外形の 90% 判定が、A4 いっぱいの表を誤って捨てる | 本命の表が出ない | 外形判定は**幅と高さの両方**が 90% 以上のときだけ適用する。表は縦方向に余白があるので通常は当たらない。当たった場合に備え `excluded` に理由を出す |
-| R-6 | NFR-F02 の測定単位（面1枚 vs ページ1枚）が要件と食い違う | 性能 AC の合否が曖昧 | §7-13 で要件側の明確化を求める |
+| R-6 | NFR-F02 の測定単位（面1枚 vs ページ1枚）が要件と食い違う | 性能 AC の合否が曖昧 | **解消済み**（07 v1.4 §0.9 変更4 が「ページ1枚あたり」へ訂正）。§4.6・§7-13 も追従済み |
 
 ## 5. (c) 位置合わせ残差・吸着量の記録（#74）
 
-**未着手。**
+対象: FR-F32（シフト量・一致本数・残差を `alignment` へ記録し、ログへイベントとして出す）・AC-F29。07 qa_lead S-2 が設計フェーズへ送った**テーブル名・列名・ログイベント名**をここで確定する。
+
+現状（2026-09-03 実測）: `pipeline.py:633` が `store.upsert_alignment(pid, f.face_id, {"angle","dx","dy","matched"}, ...)` を呼んでおり、**シフト量（`dx`／`dy`）と一致本数（`matched`）は既に入っている。欠けているのは残差だけ**。したがって (c) の実体は「残差を定義し、既存の記録経路へ相乗りさせる」ことに尽きる。
+
+**吸着量（(f) #75 の成果物）はこの段では作らない。** 列名・ログキーは `align_`／`res_` 接頭辞で切り、(f) が同じ行・同じイベントの隣へ `snap_` 接頭辞で足せる余地を残す（§5.4・§5.5）。
+
+### 5.1 ゲート判定: 残差は既存の計算結果から導出できるか
+
+**結論: 面単位は導出だけで取れる。ブロック単位は `estimate_shift` のループに「既に計算済みの戻り値を控える」1行が要る。どちらも判定経路（`ok`／`reason`／`dx`／`dy`／`matched`／`total`）には触れず、画像の追加走査もゼロ。実装へ進めてよい**（次セッションへ送る必要はない）。
+
+#### (a) 面単位は完全に導出のみ
+
+`estimate_shift` は `align.py:146-154` の時点で `det_h`／`det_v`（重複排除済みの検出線・集合）、`exp_h_set`／`exp_v_set`（重複排除した期待線）、`dy`／`dx`（best shift）を**すべて確定して手元に持っている**。FR-F45 の `matched_uniq` がこの4つ＋シフトだけで求まっているのがその証拠（§2.2.1）。残差は同じ材料から、`matched_uniq` の判定を「±1px の窓に在るか」から「最も近い検出線までの符号付き距離」へ替えるだけで得られる。画像アクセスも `line_positions` の再実行も発生しない。
+
+#### (b) ブロック単位は合併集合からは導出できない（数値で示す）
+
+**面の合併集合 `det_h` だけからブロック残差を出すと、(f) が測りたい信号がちょうど消える。** §6 に記録済みの実測（back／detail・`block_idx=1` のみ y へ δ=4px 動かす）で確かめられる:
+
+- 面の best shift は `dy=1` に収束する（`block_idx=0` が動いていないため両ブロックの折衷点になる）
+- `block_idx=1` の実線は「期待+4」の位置、`block_idx=0` の実線は「期待+0」の位置にある
+- 合併集合 `det_h` には**両方**が入っている。`block_idx=1` の期待線 `e` から `e+dy = e+1` に最も近い線を合併集合から探すと、**`block_idx=0` の線（距離 1）が当たり、`block_idx=1` 自身の線（距離 3）は選ばれない**
+- 実測（2026-09-03・`shift_block_y` で back/detail の `block_idx=1` のみ δ=4px。同一入力に対しブロック別／合併集合の2通りで `_axis_residual` を回した）:
+
+| ブロック | ブロック別の検出線から（実装） | 合併集合 `det_h` から |
+|---|---|---|
+| `block_idx=0` | `med=0`・`max=2` | `med=0`・`max=1` |
+| `block_idx=1` | `med=3`・`max=4` | `med=0`・`max=1` |
+
+- 合併集合から出すと **`block_idx=1` が `block_idx=0` と同じ値になり、面の h 残差（`med=0`・`max=1`）とも一致する**——4px 動かした事実が跡形もなく消える。出荷テンプレートは2ブロックが同じ `h_lines` を持つ（back は両方とも y 93..1549・2026-09-03 実測）ため、合併集合には常に「動いていない側」の線が混じる
+- この主張は実装後に **`_build_residual` のブロック計算を合併集合から出すよう壊すと非対称合成のテストが赤になる**ことでも裏を取った（あやめ・`test_residual_block_shift_is_isolated_per_block` が `(0, 0, 0)` を返して落ちる）
+
+#### (c) 分けて持つのに追加走査は要らない
+
+ブロックごとの検出線は、`estimate_shift` のループが**既に1ブロックずつ計算している**（`align.py:130`・`:135` の `line_positions(...)`）。戻り値を集合へ合併する前に控えるだけでよい:
+
+```python
+for g in face.table_geoms:
+    ...
+    lp_h = line_positions(strip.sum(axis=1), (x1 - x0) * H_COVERAGE, gap=line_gap)
+    det_h.update(lp_h)          # 既存（合併結果は1ビットも変わらない）
+    per_block_h.append(lp_h)    # ← (c) が足す1行
+```
+
+`line_positions` の呼び出し回数・引数・戻り値は同一で、`det_h`／`det_v`／`exp_h`／`exp_v` の中身も変わらない。判定を作る4条件（`need_y`／`need_x`・`by`／`bx`・`SHIFT_GAP_MIN`・`edge_mismatch`。`align.py:163-185`）には一切触れない。
+
+**「導出だけ」を厳密に読めば、面単位は Yes・ブロック単位は No（1行の追加が要る）。** ただし NFR-F08 が守るもの（`ok`・`reason`・`dx`・`dy`・`matched`・`total` の算出）は不変、NFR-F01 が守るもの（追加走査）もゼロで、FR-F45（§2.2.1）が引いた線の内側に収まる。
+
+#### (d) 前提の検算: ブロック別の検出は本当に分離しているか
+
+ブロックの h ストリップは隣と少し重なる（2026-09-03 実測）:
+
+| 面 | `block_idx=0` の h ストリップ | `block_idx=1` の h ストリップ | 重なり | ストリップ幅 |
+|---|---|---|---:|---:|
+| front | `[366, 1423]` | `[1387, 2444]` | 36px | 1057 |
+| back | `[20, 1173]` | `[1073, 2226]` | 100px | 1153 |
+
+重なっても混入しないのは `H_COVERAGE = 0.50` があるため——`block_idx=1` の横線は `block_idx=0` のストリップ内では 50px しか占めず、被覆率 4%（要 50%）で `line_positions` の閾値を通らない。**この分離は被覆率の閾値に依存する**ので、`projection.py` の定数を動かすときは §5.9 の不変条件3を確認する。
+
+### 5.2 残差の定義
+
+**残差 = 「期待線＋面のシフト量」と、対応する検出線との符号付き距離**（px・整数）。
+
+- `r(e) = p − (e + shift)`。`e` は期待線（面ローカル座標）、`shift` は `estimate_shift` が確定した `dy`（水平線）／`dx`（垂直線）、`p` は対応した検出線
+- **対応の取り方**: `e + shift` から最も近い検出線を選ぶ。距離が**対応窓**を超えたら「対応なし」として集計から外し、本数だけ数える
+- **対応窓は `face.shift_limits`（`n_x`, `n_y`）をそのまま流用する。新しい px 定数を作らない。** `_shift_limits`（`template.py:263-273`）は「最小ピッチ／最小列間隔の半分 − 2px」で、隣の行（列）の線を掴まないエイリアシング境界そのもの。出荷テンプレートでは front `(23, 54)`・back `(50, 50)`（行ピッチ 113／104 の半分 − 2）。dpi にはテンプレート側が追随するので、較正対象の定数が増えない
+- **符号**: 正 = 検出線が期待位置より下（右）にある。(f) が枠を動かすべき向きと同じ
+- **同着規則**: 左右の検出線が等距離なら **`e + shift` 以上の側（大きい側）** を採る。実装は二分探索の右候補を先に評価する（`_nearest_signed_dist`）。判定には無関係なので、どちらを採っても読み取り結果は変わらない——再現性のために向きを固定しておくだけ
+
+集計は3種。系統的なズレ（(f) が吸着量として使う量）とばらつき（歪み・かすれの兆候）を分けて見るため:
+
+| 名前 | 定義 | 用途 |
+|---|---|---|
+| `med` | 対応した残差の中央値（偶数個は小さい側を採る＝整数のまま） | 系統的なズレ。(f) の吸着量の候補になる量 |
+| `max` | 対応した残差の絶対値の最大 | ばらつき。`med` と離れていれば歪み・かすれを疑う |
+| `pairs`／`unpaired` | 対応が取れた／取れなかった期待線の本数 | その `med` が何本から出た値かを示す。`pairs` が小さい `med` は信用しない |
+
+**粒度は面とブロックの両方を持つ。**
+
+- **面**: h 軸・v 軸それぞれ。母集団は `exp_h_set`／`exp_v_set`（重複排除済み。front は2ブロックが同じ y を持つため期待横線 12 本 → uniq 6 本。実測 2026-09-03: 面全体の uniq は front 16 本・back 26 本で、§2.6 の JSON 例の `expected` と一致する）と `det_h`／`det_v`
+- **ブロック**: **y（水平線）のみ**。母集団はそのブロックの `h_lines` と、そのブロックのストリップから出た検出線
+
+**ブロックの x 残差は記録しない。** (f) の吸着は y 軸のみで、x 軸は仕様として no-op（07 FR-F34）。使い道の無い列を先に作らない。必要になったら `align_residual_detail` の JSON へ `x` キーを足すだけで済む（列追加も migration も不要）。
+
+**位置合わせ失敗面は「未計測」。** 残差は `dx`／`dy` を基準にした量で、`ok=False` の面はその `dx`／`dy` 自体が信用できない（だから失敗にしている）。失敗面に数値を書くと「残差が小さいから悪くない」と読み違える余地を作る。実装上は `_est(True, "")` を返す直前でだけ残差を組み立て、失敗経路（`align.py:166-184` の4つの `return`）は `residual=None` のまま通す——未計測が慣習ではなく**構造**で決まる。副次的に、失敗面では残差の計算コストもゼロになる。
+
+**再利用ページ（#45）も未計測。** `_restore_alignment` は `estimate` を持たない `AlignedFace` を作り（`pipeline.py:259-262`）、そもそも `upsert_alignment` を呼ばない。前回の run が書いた行がそのまま残る。§2.4.2 が (a') で採った「再利用ページの判定は `unknown`」と同じ扱い。
+
+### 5.3 `align.py` の拡張
+
+§2.2.1 と同じ方針——**既定値つきで足すだけ・判定には一切使わない**。
+
+```python
+@dataclass(frozen=True)
+class AxisResidual:
+    med: int = 0
+    max: int = 0
+    pairs: int = 0
+    unpaired: int = 0
+
+
+@dataclass(frozen=True)
+class BlockResidual:
+    block_idx: int      # face.table_geoms 内の0始まり序数
+    med: int
+    max: int
+    pairs: int
+    unpaired: int
+
+
+@dataclass(frozen=True)
+class Residual:
+    h: AxisResidual = AxisResidual()
+    v: AxisResidual = AxisResidual()
+    blocks: tuple[BlockResidual, ...] = ()
+
+
+@dataclass(frozen=True)
+class ShiftEstimate:
+    ...   # 既存13フィールド（dx/dy/matched/total/ok/reason ＋ FR-F45 の7つ）は変更なし
+    # --- FR-F32（(c)）。判定には一切使わない。None = 未計測（位置合わせ失敗面） ---
+    residual: "Residual | None" = None
+```
+
+- **`ShiftEstimate` へ足すのは1フィールドだけ。** 集計値を平らに並べると §2.2.1 の7つと合わせて20フィールド超の dataclass になる。入れ子にしておけば (f) が `snap` を足すときも1フィールドで済む
+- 末尾に既定値つきで足すため、既存の生成箇所（`_est`・`align.py:156-161` の1箇所）とテストのキーワード生成（`test_format_check.py:30`）はどちらも無改修
+- **`AlignedFace` には何も足さない。** (a') が入れた `estimate: ShiftEstimate | None` から `face.estimate.residual` で届く。同じ値を2箇所に持たせない
+- `block_idx` は `face.table_geoms` 内の序数。§1.4 の匿名序数の語彙（`face_idx`・`cell_idx`）に揃える。⚠️ `table_geoms` は面内の**全テーブルのブロックを平らに並べたもの**（`template.py:605` の `geoms.extend`）なので、面に複数テーブルがある場合はテーブル内のブロック番号と一致しない。出荷テンプレートは両面とも1テーブル2ブロックなので現状は一致する
+
+計算量: 面 back で期待横線 15 本 × 検出線 24 本前後。二分探索なら 15×log₂24 回の整数比較にすぎず、NFR-F01 の帯（+0.05 秒/枚＝50ms）とは桁が違う。`sorted(det_h)` は `align.py:138` で既に作られているが名前に束ねていない——**判定側の式を1文字も動かさないことを優先し、残差側で `sorted()` を呼び直す**（24 要素の再ソートは実測に響かない）。
+
+### 5.4 記録（`alignment` のスキーマ変更と migration）
+
+**`alignment` テーブルへ列を2つ足す。** 07 FR-F32 が記録先を `alignment` と指定しており、(c) の対象は面ごとの位置合わせ結果そのものなので、面ごとに1行ある `alignment` が素直に噛み合う。§2.5.1 が (a') で `alignment` を退けた理由（**失敗ページには行が作られない**）は (c) には当たらない——失敗面は §5.2 のとおり定義上「未計測」で、書く行が無くて困らない。
+
+```sql
+-- Store.__init__ の _ensure_column で追加（store.py:98-118 と同じ流儀）
+ALTER TABLE alignment ADD COLUMN align_residual_px     REAL NOT NULL DEFAULT -1;  -- -1 = 未計測
+ALTER TABLE alignment ADD COLUMN align_residual_detail TEXT NOT NULL DEFAULT '';  -- '' = 未計測
+```
+
+- `align_residual_px` は**面の代表値** `max(h.max, v.max)`。`page.format_score` の `-1 = 未計測`（`store.py:116`）と同じ流儀。1列あれば「この面はどれだけズレて着地したか」で並べ替え・絞り込みができる
+- `align_residual_detail` は軸別＋ブロック別の JSON。`page.format_detail`（`store.py:117`）と同じ「代表値は数値列・内訳は JSON」の組み合わせに揃える
+
+```json
+{"h":{"med":0,"max":1,"pairs":15,"unpaired":0},
+ "v":{"med":0,"max":11,"pairs":10,"unpaired":1},
+ "blocks":[{"block_idx":0,"med":0,"max":2,"pairs":15,"unpaired":0},
+           {"block_idx":1,"med":3,"max":4,"pairs":15,"unpaired":0}]}
+```
+
+**この例は実測値**（2026-09-03・素材 `workdir/pages/sample-1.png` の back 面・`helpers_geom.shift_block_y` で `block_idx=1` のみ y へ δ=4px・`est.dy=1`）。手計算の例示値は載せない。読み方:
+
+- `block_idx=1` の `med=3` は δ−1（面の `dy=1` が引かれた残り）で、§6 の記録と一致する。`block_idx=0` は `med=0`——**設計初稿が置いた `-1` は手計算の誤りで、実測は `0`**
+- `v.max=11`・`unpaired=1` は変形と無関係な実データの素の値。back 面右端の縦線（x=2176）がかすれで 11px ずれており、対応窓 50px の内側なので「対応あり」として拾われる。別の1本は窓を超えて `unpaired` に落ちている
+- この行の `align_residual_px` は `max(h.max, v.max) = max(1, 11) = 11`。**面の代表値は v 軸のかすれに引きずられる**——`med` と `max` を分けて持つ理由がそのまま出ている例
+
+- **名前の衝突回避**: `grid.py` の `TableCandidate.residual_px`／`FieldCandidate.residual_px`（#85・`grid.py:43`「検出線と等間隔当てはめの最大ずれ」）とは別物。`align_` 接頭辞で切り分ける。ログの白リストにも裸の `residual_px` は足さない（§5.5）
+- **(f) の余地**: 吸着量は同じ行へ `snap_px`（REAL・`-1 = 未吸着`）と `snap_detail`（TEXT・ブロック別の吸着量と fail-safe の理由コード）を足す形で入る。接頭辞が `align_`／`snap_` で割れているので、(c) の列を作り替えずに済む
+- **`ALGO_VERSION` は "2" のまま上げない。** (c) は読み取りアルゴリズムを変えない。上げると既存の中間データの整列結果が全部捨てられ再整列が走る（§2.5.2 と同じ理由）
+- `upsert_alignment` に `align_residual_px: float = -1.0`・`align_residual_detail: str = ""` をキーワード引数で足す（既定値つき）。呼び出し箇所は `pipeline.py:633` の1つだけ
+- **`transform` JSON へ相乗りさせない。** `transform` は `_restore_alignment` が再利用判定で読む中間データ（`pipeline.py:259-262`）で、課金に直結する経路。記録のために触る場所ではない（§2.5.1 の B 案を退けたのと同じ判断）
+
+**旧 DB との互換**: `_ensure_column` は列が無いときだけ `ALTER TABLE` を打つ（`store.py:121-124`）。旧 DB は開いた瞬間に列が増え、既存行は `-1`／`''`＝未計測になる。**再利用判定（`_restore_alignment`）は `ok`・`geometry_hash`・`algo_version`・`template_hash` の4つしか見ない**ので、新しい列は「再整列するかどうか」に一切影響しない——(c) を入れたせいで再整列が走る（＝実行時間と課金の条件が変わる）ことはない。
+
+### 5.5 ログイベント
+
+```
+align_residual page_id=<id> face_idx=0 res_h=1 res_v=1 res_pairs=26 res_unpaired=0
+```
+
+- **出す場所は `pipeline.py`、`upsert_alignment` の隣**（`:633` のループ内）。`estimate_shift` の中では出さない——`estimate_shift` は `format_check.check_page` からも呼ばれ、(t) の `match-templates` は候補テンプレートの数だけ回る。推定関数の中でログを出すと候補数ぶん撒かれ、NFR-F09 の時間予算にも触る。AC-F29 が求めるのは「任意のページを `run` する → ログにイベントとして出る」なので、run の記録箇所に置けば足りる
+- **面ごとに1イベント。ブロック別の内訳はログへ出さない**（`align_residual_detail` に入る）。ログは「ズレが増えていないか」を一目で追うためのもので、内訳を追うのは中間データ側の役目
+- **`face_id` は渡さない。** `face_id` は白リストに入っていない（§1.2・`logging_safe.py:39-63`）ため、渡しても黙って落ちる——W-3／W-4 の診断が死んでいた §1.4 穴 #1 と同じ罠を踏まない。`face_idx`（既存の許可キー）で出す
+- 記入値・テンプレート名・欄名は含まない（px 値と本数だけ）
+
+**白リストへ足すキーは4つ**: `res_h`・`res_v`（軸ごとの `max`・px）／`res_pairs`・`res_unpaired`（本数）。
+
+- `residual_px` という名前は**足さない**。`detect-frames` の JSON キー（#85）と同名で、ログを横断して grep したときに別物が混ざる
+- 面の代表値（`align_residual_px`）はログに出さない——`max(res_h, res_v)` で読めるため、同じ値に2つ目の名前を与えない
+- (f) が足すときは `snap_px`・`snap_reason` の形になる想定。`res_` と `snap_` で接頭辞が割れている
+
+### 5.6 `expand-page` の JSON と画面表示（Q-F5b 未回答への備え）
+
+⚠️ **`verify` は残差の受け皿にならない。** `cmd_verify`（`cli.py:130-236`）が見るのはテンプレート・Poppler・保存先・API 残量・資格情報の5点で、**ページを読まず位置合わせを走らせない**。編集画面へ位置合わせ結果を返している経路は `expand-page`（`cli.py:245-`・JSON 契約は §2.6）なので、(c) の画面向けの出口はこちらにする。
+
+§2.6 の原則どおり **`aligned` と `reason` の値域を1つも変えず、キーを足すだけ**:
+
+```json
+{"event":"expand_page","ok":true,"page_path":"...","aligned":true,
+ "verdict":"match","score":0.97,
+ "faces":[{"face_id":"front","verdict":"match","reason":"","score":1.0,
+           "detected":18,"expected":16,
+           "residual":{"px":1,"h":1,"v":1,"pairs":16,"unpaired":0,
+                       "blocks":[{"block_idx":0,"med":0,"max":1},
+                                 {"block_idx":1,"med":0,"max":1}]}}]}
+```
+
+- 位置合わせ失敗面と旧コアでは `residual` キーごと出さない。GUI は「無ければ未計測」で扱う（`verdict` を足したときと同じフォールバック・§2.6）
+- `faces[].face_id` は既存どおり名前を出す（stdout は秘匿対象外・07 §0.6）。`face_idx` に寄せるのはログ側だけ
+
+**画面表示は今回入れない（Q-F5b 未回答）。** テンプレート作成者が開発者と別人なら「残差 3px」という表示は読み手にとって意味を持たない可能性がある。後から切り替えられるよう、境界をこう置く:
+
+- **core は Q-F5b の回答に関係なく常に値を返す**（記録は判断を待たない）
+- **`Editor.tsx` はこの段では受け取るだけで何も描かない。** 表示すると決まったときの変更は `Editor.tsx` の描画1箇所の追加で足り、**core・JSON 契約・DB スキーマは変更不要**
+- 何を出すかも先に決めない（px を直に出すか「よく合っています／少しズレています」に丸めるかは Q-F5b の回答で変わる）。決まっていない表示のために JSON の形を先に曲げない
+
+### 5.7 テスト計画（AC-F29・NFR-F08・後方互換）
+
+| 対象 | レベル | 落とす場所 |
+|---|---|---|
+| AC-F29（残差の算出） | **unit** | 合成の罫線画像（`test_detect_frames.py` の `_draw_table` と同型）で作った**横並び2ブロック・非対称**の面（`block_idx=0` にだけ余分な5行。理由は §5.10 R-1）に `estimate_shift` を掛ける。①無変形 → `h == (med 0, max 0, pairs 20, unpaired 0)` ②`block_idx=1` だけを y へ δ=4px → `est.dy == 0`・`blocks[0] == (med 0, max 0)`・`blocks[1].med == δ`・**面の `h.med`／`h.max` はどちらも 0**（ブロックのズレが面へ漏れない＝§5.1 (b) の実証） |
+| AC-F29（アルゴリズム単位） | unit | `_axis_residual`／`_nearest_signed_dist` を直接呼ぶ境界値: 期待線0本・検出線0本（全 `unpaired`）・対応窓ちょうど（`<= window` は対応あり／`> window` で `unpaired`）・偶数個の中央値が小さい側 |
+| AC-F29（記録） | **unit ＋ 中間データの直接確認** | 1ページ `run`（`ReplayClient`）→ `alignment` を直接 SELECT し、`align_residual_px >= 0` かつ `align_residual_detail` が JSON として読め、`blocks` の要素数が `len(face.table_geoms)` と一致 |
+| AC-F29（ログ） | unit | `run` 後の `app.log` に `align_residual` 行があり、`face_idx=` を含み **`face_id=` を含まない**（`test_leak_guards.py` と同型・§1.5） |
+| 失敗面の未計測 | unit | 罫線を消した画像で `estimate_shift` → `ok=False` かつ `residual is None`。`upsert_alignment` は成功パスのみのため行が作られないこと |
+| 旧 DB 互換 | unit | 追加列**なし**の `alignment` を持つ DB ファイルを開く → 列が増え、既存行が `-1`／`''` になる。同じ DB で `_restore_alignment` が従来どおり再利用に成功する（再整列に落ちない） |
+| NFR-F08（golden） | integration | `workdir/golden/1541239/` の `.xlsx`／`.csv` とセル値が完全一致（AC-F45・§6）。(c) は吸着を入れないため ON／OFF の区別なく一致すること |
+| 既存の位置合わせ | 回帰 | `test_alignment_robustness.py`（4件）・`test_page_size_guard.py`・`test_format_check.py` が**期待値を1つも変えずに**全緑。`ok`／`reason`／`dx`／`dy`／`matched`／`total` を動かしていないことの実証 |
+| NFR-F01（性能） | 計測 | `scripts/perf_check.py` の `measure_pipeline` で着手前後の1ページあたりを比較し、増分が +0.05 秒/枚以内 |
+
+**期待値の出所**: L1 の合成構成の期待値（`dy=0`・`blocks[1].med=δ`・`blocks[0].med=0`）は、**その構成で実測してから**採用した。実データ（sample-1・L2）の δ=4 では `blocks[1].med=3`（§6 と一致）・`blocks[0].med=0`・`v.max=11` で、**L1 と L2 で数値は一致しない**——面の `dy` が L1 では 0、L2 では 1 に収束するため（`med` はその分だけ差が出る）。テストが固定するのは「ブロックのズレがそのブロックだけに現れる」という性質であって、L1 と L2 で同じ数値が出ることではない。設計初稿が §6 の値をそのまま L1 の期待値に流用していたのが誤りで、**値を合わせにいかず構成側を実測で選び直した**（§5.10 R-1）。
+
+### 5.8 変更ファイルと分担
+
+**coder 1名（シオン・`coder_backend`）で収まる。** GUI 側の変更はゼロ——`expand-page` の新キーは既存 GUI が無視して従来どおり動く（§2.6 の後方互換）。Rust も触らない（新しいサブコマンドもフラグも増えない）。
+
+| 側 | 担当 | ファイル | 主な変更 |
+|---|---|---|---|
+| core | シオン（`coder_backend`） | `core/chouhyo_ocr/align.py` | `AxisResidual`／`BlockResidual`／`Residual` の追加・`ShiftEstimate.residual`・ループのブロック別控え1行・成功パスでの残差組み立て |
+| core | シオン | `core/chouhyo_ocr/store.py` | 列2つの追加（`_ensure_column`）・`upsert_alignment` のキーワード引数2つ |
+| core | シオン | `core/chouhyo_ocr/pipeline.py` | `upsert_alignment` への受け渡し・`align_residual` ログ |
+| core | シオン | `core/chouhyo_ocr/logging_safe.py` | 白リストへ4キー（`res_h`・`res_v`・`res_pairs`・`res_unpaired`） |
+| core | シオン | `core/chouhyo_ocr/cli.py` | `expand-page` の `faces[].residual` |
+| core | シオン | `core/tests/test_align_residual.py`（新規） | §5.7 の8項目 |
+
+**触らないファイル**: `projection.py`（`H_COVERAGE`／`V_COVERAGE`／`LINE_GAP`／`line_positions`）・`format_check.py`・`grid.py`・`gui/` 配下すべて。
+
+### 5.9 守るべき不変条件
+
+1. **`ok`・`reason`・`dx`・`dy`・`matched`・`total` の算出経路を1行も変えない**（NFR-F08）。`residual` は `estimate_shift` の中でも `align_page` の中でも一度も条件分岐に使わない
+2. **画像を追加で走査しない**（NFR-F01）。`line_positions` の呼び出し回数・引数を変えず、戻り値を控えるだけ
+3. **ブロック別の検出線はストリップの被覆率で分離している。** `H_COVERAGE`／`V_COVERAGE`／`LINE_GAP` を動かすとブロック残差の意味が変わる（§5.1 (d) の検算）
+4. **`ALGO_VERSION` を上げない。** 上げると既存の整列結果が捨てられ再整列が走る
+5. **残差を判定に使わない。** 記録のみ。しきい値を置かない・分岐を作らない。使うのは (f) の段
+6. **位置合わせ失敗面と再利用ページは未計測**（`residual is None`／`-1`／`''`）。「計測して 0」と「未計測」を同じ値で表さない
+7. **再利用判定（`_restore_alignment`）の材料を増やさない。** 新しい列は再整列の可否に影響しない
+8. **ログに名前を出さない。** `face_id`・`table_id`・`field_id` は渡さない（`face_idx`・`block_idx` のみ）
+9. **golden（`workdir/golden/1541239/`）と完全一致する**（AC-F45）
+
+### 5.10 リスク
+
+| # | リスク | 影響 | 緩和 |
+|---|---|---|---|
+| R-1 | ブロック残差の期待値（3px／−1px）が L1 の合成画像で再現しない | AC-F29 の unit が書けない／期待値をひねり出す誘惑が生まれる | **顕在化・対応済み**（2026-09-03）。原因は被覆率でも線幅でもなく **合成構成の対称性**——完全対称な2ブロックで片方だけ動かすと、`dy=0`（動いていない側に合わせる解）と `dy=δ`（動いた側に合わせる解）のスコアが同点になり、`SHIFT_GAP_MIN` を割って `ambiguous` に落ちる。実測（2026-09-03・15行×4列×2ブロック・行ピッチ60）では **δ=3 以上がすべて `ambiguous`**（δ=2 のみ ok）で、(f) が想定する刺激 δ=4 が通らない。sample-1 の back 面が通っていたのは実データのノイズで左右が非対称だったため。**対策: L1 の刺激は非対称構成で与える**（`block_idx=0` にだけ余分な5行を持たせ、動いていない側が一致本数で支配的になるようにする）。この構成なら δ=2〜6 のすべてで `ok=True`・`dy=0`・`blocks[1].med=δ` が安定する |
+| R-2 | `med`（中央値）が本数の少ないブロックで暴れる | 小さい表の残差が信用できない | `pairs`／`unpaired` を必ず同じ JSON へ入れ、何本から出た値かを分かるようにする。**「信用する下限」を立てるのは 07 FR-F34＝(f) の役目**で、(c) は判断材料を欠けなく渡すところまで |
+| R-3 | 対応窓に `shift_limits` を流用したため、テンプレートの行ピッチが変わると窓も変わる | 別テンプレート間で残差の意味が揃わない | 窓の値は `align_residual_detail` に持たせない代わり、**テンプレートから常に再導出できる**（`alignment` 行に `template_hash` がある）。px 定数を新設して二重に較正するより、既存のエイリアシング境界に揃える方が破綻しにくい |
+| R-4 | 残差の記録が「吸着が効いた証拠」として過大に読まれる | (f) の効果判定を誤る | 記録されるのは**着地点のズレ**であって吸着の効果ではない。(f) の効果判定は ON／OFF 差分（07 FR-F40）と組み合わせて初めて成立する。§5.9 の不変条件5を実装コメントにも残す |
+| R-5 | `align_residual_px` と `grid.residual_px`（#85）が会話や調査の中で混同される | 別の量を比べて誤った結論に至る | 列名とログキーで接頭辞を分けた。**ログの白リストに裸の `residual_px` を足さない**ことで、ログ横断の grep でも混ざらない |
 
 ## 6. (f) 実行時のブロック単位吸着（#75）
 
@@ -1426,9 +1683,11 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 | 2〜5 | ok | 1 に収束 | δ−1 | 1 |
 | 6 | **ambiguous** | — | — | — |
 
+> ⚠️ 上表の残差は (c) の実装前に手で見積もった値。**(c) 実装後に `_build_residual` で測り直すと、δ=4 で `block_idx=1` は `med=3`（δ−1・表と一致）だが `block_idx=0` は `med=0`（表の「1」ではない）**（2026-09-03 実測・§5.4）。(f) のテスト計画は表の値ではなく実装の測定値を使う。
+
 **07 の AC-F30（「成立窓は `2 < δ < 4`＝整数では δ=3 のみ」）は誤り。** 実測では δ=5 まで ok で、`ambiguous` になるのは δ=6 から。面の dy が 1 に収束するため block1 の残差は δ−1 になる。**OFF でラベル混入（02 D-25 の実測: ±2px から）を観測しつつ、ON で許容幅（detail の行間隙 4px）に収まる刺激は δ=4（block1 残差 3px）が最も筋が良い。** (f) のテスト計画はこの値で書く。07 側の訂正提案は §7-4。
 
-**golden**: 着手前コミットは `71384a4`（`workdir/golden/71384a4/`・manifest `testdata/golden_manifest.json`）。AC-F45 の比較対象はこれ。
+**golden**: 着手前コミットは `1541239`（現物は `workdir/golden/1541239/`・manifest `testdata/golden_manifest.json`・`head_short` も `1541239`）。AC-F45 の比較対象はこれ。初出の `71384a4` から取り直した経緯は §2.9 末尾を参照。
 
 ---
 
@@ -1528,6 +1787,8 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 
 ### 7-13. NFR-F02 の測定単位（面1枚 vs ページ1枚）
 
-- NFR-F02 は「**面1枚あたり 3.0 秒以内**」。しかし FR-F14 の入力は「面画像」でも、実装は**ページ1枚を1回のプロセス起動で処理し、面切りは内側**に置くのが自然（`format_check.check_page` と同じ構造・面ごとにプロセスを起こすと起動コストが2倍かかる）
+> **状態: 反映済み**（07 v1.4 §0.9 変更4・NFR-F02 が「ページ1枚あたり 3.0 秒以内」へ訂正。値は据え置き。08 側は §4.6・§4.10 R-6 で追従済み）
+
+- NFR-F02 は（v1.3 まで）「**面1枚あたり 3.0 秒以内**」だった。しかし FR-F14 の入力は「面画像」でも、実装は**ページ1枚を1回のプロセス起動で処理し、面切りは内側**に置くのが自然（`format_check.check_page` と同じ構造・面ごとにプロセスを起こすと起動コストが2倍かかる）
 - 出荷テンプレートは2面なので、**利用者が待つのはページ1枚ぶんの時間**であり、NFR-F09（照合は「合計 3.0 秒」と明記した）と同じ考え方を採るなら、ここも「ページ1枚あたり」で測るのが実態に合う
 - **提案**: NFR-F02 を「**ページ1枚あたり 3.0 秒以内**（面ごとではなく、利用者が待つ合計時間）」へ改める。値は変えない

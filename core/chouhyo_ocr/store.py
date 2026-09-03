@@ -116,6 +116,13 @@ class Store:
         self._ensure_column("page", "format_detail", "TEXT NOT NULL DEFAULT ''")
         # page.status の既存8値は増やさない。新しい区別（FR-F09）はここで持つ
         self._ensure_column("page", "status_reason", "TEXT NOT NULL DEFAULT ''")
+        # 位置合わせ残差・吸着量の記録（issue #74 (c)・FR-F32・08 §5.4）。
+        # -1 / '' は「未計測」（位置合わせ失敗面・#45 再利用ページ・旧版データ）
+        # の印——align_residual_px は面の代表値 max(h.max, v.max)、
+        # align_residual_detail は軸別＋ブロック別の内訳（JSON）。ALGO_VERSION
+        # は上げない——(c) は読み取りアルゴリズムを変えないため（08 §5.9）
+        self._ensure_column("alignment", "align_residual_px", "REAL NOT NULL DEFAULT -1")
+        self._ensure_column("alignment", "align_residual_detail", "TEXT NOT NULL DEFAULT ''")
         self.con.commit()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -362,18 +369,29 @@ class Store:
     # --- alignment / era ---
     def upsert_alignment(self, page_id: str, face_id: str, transform: dict,
                          ok: bool, geometry_hash: str, algo_version: str,
-                         template_hash: str = "") -> None:
+                         template_hash: str = "",
+                         align_residual_px: float = -1.0,
+                         align_residual_detail: str = "") -> None:
+        """位置合わせ結果を記録する。
+
+        align_residual_px / align_residual_detail は issue #74 (c)・FR-F32
+        （08 §5.4）。既定値 -1 / '' は「未計測」——呼び出し側が渡さない限り
+        旧版と同じ挙動になる。
+        """
         self.con.execute(
             """INSERT INTO alignment(page_id, face_id, transform, ok, geometry_hash,
-                                     algo_version, template_hash)
-               VALUES(?,?,?,?,?,?,?)
+                                     algo_version, template_hash,
+                                     align_residual_px, align_residual_detail)
+               VALUES(?,?,?,?,?,?,?,?,?)
                ON CONFLICT(page_id, face_id) DO UPDATE SET
                  transform=excluded.transform, ok=excluded.ok,
                  geometry_hash=excluded.geometry_hash,
                  algo_version=excluded.algo_version,
-                 template_hash=excluded.template_hash""",
+                 template_hash=excluded.template_hash,
+                 align_residual_px=excluded.align_residual_px,
+                 align_residual_detail=excluded.align_residual_detail""",
             (page_id, face_id, json.dumps(transform), int(ok), geometry_hash,
-             algo_version, template_hash))
+             algo_version, template_hash, align_residual_px, align_residual_detail))
         self.con.commit()
 
     def alignments(self, page_id: str) -> dict[str, tuple[dict, bool, str, str, str]]:

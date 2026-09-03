@@ -319,7 +319,9 @@ def cmd_expand_page(args) -> int:
         # 済み）。判定関数の例外は verdict を欠落させるだけに留め、
         # expand-page 自体（画像は既に保存済み）は成功のまま返す
         try:
-            verdict_fields = _expand_page_verdict_fields(format_check.from_faces(_faces))
+            verdict_fields = _expand_page_verdict_fields(
+                format_check.from_faces(_faces),
+                estimates={f.face_id: f.estimate for f in _faces})
         except Exception as ex:  # noqa: BLE001
             import traceback
             log.error("format_check_failed", error_code=type(ex).__name__)
@@ -353,7 +355,8 @@ def cmd_expand_page(args) -> int:
         # 留め、expand-page 自体は生画像＋aligned:false で従来どおり続行する
         try:
             pv = format_check.from_diag(e.diag)
-            verdict_fields = _expand_page_verdict_fields(pv)
+            verdict_fields = _expand_page_verdict_fields(
+                pv, estimates={d.face_id: d.estimate for d in e.diag})
         except Exception as ex:  # noqa: BLE001
             import traceback
             # error_trace の第1引数は error_code（型名）。format_tb のみ渡す
@@ -378,22 +381,44 @@ def cmd_expand_page(args) -> int:
     return 0
 
 
-def _expand_page_verdict_fields(pv) -> dict:
+def _expand_page_verdict_fields(pv, estimates: "dict | None" = None) -> dict:
     """`format_check.PageVerdict` → expand-page の JSON 追加フィールド
-    （issue #71 (a')・08 §2.6）。
+    （issue #71 (a')・08 §2.6／issue #74 (c)・08 §5.6）。
 
     stdout の JSON Lines は秘匿対象外（07 §0.6）——GUI が面を特定するために
     `face_id`（名前）をそのまま出す。ログ（logging_safe 経由）が使う匿名の
     `face_idx` とは別の語彙で、ここでは意図して face_id を使う。
+
+    `estimates`（face_id → `align.ShiftEstimate | None`）を渡すと、
+    `estimate.residual` が None でない面にだけ `residual` キーを足す
+    （08 §5.6: `aligned`／`reason` の値域は変えず、キーを足すだけ・
+    位置合わせ失敗面と旧コアでは `residual` キーごと出さない）。
+    `format_check` 自体（`FaceVerdict`）は残差を持たないため、
+    ここで `estimates` 越しに突き合わせる——`format_check.py` は
+    このタスクの対象外（触らないファイル・08 §5.8）。
     """
+    estimates = estimates or {}
+    faces = []
+    for f in pv.faces:
+        entry = {"face_id": f.face_id, "verdict": f.verdict, "reason": f.reason,
+                 "score": f.score, "detected": f.detected, "expected": f.expected}
+        est = estimates.get(f.face_id)
+        residual = est.residual if est is not None else None
+        if residual is not None:
+            entry["residual"] = {
+                "px": max(residual.h.max, residual.v.max),
+                "h": residual.h.max,
+                "v": residual.v.max,
+                "pairs": residual.h.pairs + residual.v.pairs,
+                "unpaired": residual.h.unpaired + residual.v.unpaired,
+                "blocks": [{"block_idx": b.block_idx, "med": b.med, "max": b.max}
+                          for b in residual.blocks],
+            }
+        faces.append(entry)
     return {
         "verdict": pv.verdict,
         "score": pv.score,
-        "faces": [
-            {"face_id": f.face_id, "verdict": f.verdict, "reason": f.reason,
-             "score": f.score, "detected": f.detected, "expected": f.expected}
-            for f in pv.faces
-        ],
+        "faces": faces,
     }
 
 
