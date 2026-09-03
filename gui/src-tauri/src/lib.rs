@@ -24,7 +24,7 @@ pub struct PickedPaths(pub Mutex<HashSet<PathBuf>>);
 /// GUI 境界からは呼べない——必要なら CLI を直接使う。
 const ALLOWED_SUBCOMMANDS: &[&str] = &[
     "run", "render", "remap", "status", "verify", "detect-grid",
-    "expand-page", "import-credentials",
+    "expand-page", "import-credentials", "detect-frames",
 ];
 
 /// サブコマンドが受け付けるフラグと、値を取るかどうかの対応表
@@ -47,6 +47,11 @@ fn allowed_flags(subcommand: &str) -> &'static [(&'static str, bool)] {
         "expand-page" => &[
             ("--input", true), ("--page", true), ("--dpi", true),
             ("--template", true), ("--no-mask", false),
+        ],
+        // detect-frames は #73 (b) のページ全体からの枠候補生成（新しい権限は要らない・
+        // run_core_capture 経由・--input は既存の読み取りルート検査に従う）。
+        "detect-frames" => &[
+            ("--input", true), ("--page", true), ("--dpi", true), ("--template", true),
         ],
         // import-credentials は位置引数 json_path のみ（check_args_v2 内で別扱い）。
         _ => &[],
@@ -125,7 +130,7 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
 /// 呼べない・方針どおり）なので、ここに含めても inject_default_template まで
 /// 到達しない。
 const TEMPLATE_ACCEPTING_SUBCOMMANDS: &[&str] = &[
-    "run", "render", "remap", "verify", "expand-page", "debug-images",
+    "run", "render", "remap", "verify", "expand-page", "debug-images", "detect-frames",
 ];
 
 /// サブコマンドが `--template` を受け付けるのに引数へ含まれていない場合、
@@ -1448,6 +1453,27 @@ mod tests {
                                        "--region", "1,2,3,4", "--mode", "ruled",
                                        "--rows", "2", "--cols", "3", "--dpi", "300"])).unwrap();
         assert_eq!(pairs.len(), 6);
+    }
+
+    #[test]
+    fn detect_frames_accepts_its_full_flag_set() {
+        // issue #73 (b): detect-frames は新しい権限を要らない
+        // （run_core_capture 経由・--input は既存の読み取りルート検査に従う）。
+        let pairs = check_args_v2(&v(&["detect-frames", "--input", "C:\\in",
+                                       "--page", "1", "--dpi", "300",
+                                       "--template", "C:\\t.json"])).unwrap();
+        assert_eq!(pairs.len(), 4);
+    }
+
+    #[test]
+    fn detect_frames_rejects_unknown_flag() {
+        assert!(check_args_v2(&v(&["detect-frames", "--input", "C:\\in",
+                                   "--not-a-real-flag", "x"])).is_err());
+    }
+
+    #[test]
+    fn detect_frames_rejects_dpi_without_value() {
+        assert!(check_args_v2(&v(&["detect-frames", "--input", "C:\\in", "--dpi"])).is_err());
     }
 
     // --- パススコープ（issue #49・S-MD）---
