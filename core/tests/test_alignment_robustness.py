@@ -21,7 +21,7 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.pipeline import render, run
 from chouhyo_ocr.vision_client import ReplayClient
 
-PAGE = app_root() / "workdir" / "pages" / "sample-1.png"
+PAGE = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 RESP = (app_root() / "core" / "workdir" / "responses"
         / "帳票抽出検証用2026-08-24_p0001.json")
 TPL = app_root() / "templates" / "chouhyo-v1.json"

@@ -21,7 +21,7 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.template import load_template
 
 TPL_PATH = app_root() / "templates" / "chouhyo-v1.json"
-PAGES = app_root() / "workdir" / "pages"
+PAGES = app_root() / "testdata" / "local" / "pages"
 
 
 def _cfg(tmp_path: Path) -> Path:

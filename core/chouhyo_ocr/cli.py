@@ -125,6 +125,19 @@ def _band_scale_arg(value: str) -> float:
     return v
 
 
+def _snap_limit_arg(value: str) -> int:
+    """snap-diff の `--limit` の範囲検証（issue #75 (f)）。
+
+    0 以下だと一覧が常に空になり、合計だけが出て「差分が無い」と読み違える
+    余地ができる。1 以上に限る（上限は設けない——全件見たい運用が正当）。
+    """
+    v = int(value)
+    if v < 1:
+        raise argparse.ArgumentTypeError(
+            f"--limit は 1 以上にする（指定: {v}）")
+    return v
+
+
 def _client(cfg: Config, replay_dir: str | None):
     if replay_dir:
         from .vision_client import ReplayClient
@@ -776,7 +789,10 @@ def cmd_debug_images(args) -> int:
         # render と同じ整合ゲート——check_template=True で cell の割付内容も
         # テンプレート由来かを見る。不一致なら OperationRefused（main() が拒否
         # として処理し、with が確実に close する・Q-MG「閉じるのは開いた側」）
-        check_reusable(store, geometry_hash(raw), _tpl_hash(raw), check_template=True)
+        # 吸着 ON/OFF も照合する（issue #75・FR-F38・AC-F37）。設定を変えた後の
+        # 「現設定の枠」×「別設定で割り付けた〓判定」を1枚に重ねた嘘の可視化を出さない
+        check_reusable(store, geometry_hash(raw), _tpl_hash(raw),
+                       check_template=True, snap_enabled=cfg.snap_blocks)
         all_pages = store.pages()
         all_ids = {p["page_id"] for p in all_pages}
         if args.page and args.page not in all_ids:
@@ -842,8 +858,10 @@ def cmd_diag_overflow(args) -> int:
         # 幾何が変わっていれば token の座標は現テンプレートの枠と噛み合わない
         # ——数えても意味が無いので拒否する。割付結果（cell）は使わないので
         # テンプレート世代の一致（check_template）までは要求しない
+        # snap_enabled（issue #75・FR-F38）も揃っていることを要求する——
+        # 吸着の有無で枠の位置が変わり、枠外率の数え方が変わる
         check_reusable(store, geometry_hash(raw), _tpl_hash(raw),
-                       check_template=False)
+                       check_template=False, snap_enabled=cfg.snap_blocks)
         report = scan(template, store, band_scale=args.band_scale)
     for c in report.candidates:
         _progress({"event": "overflow_candidate", "page_id": c.page_id,
@@ -865,6 +883,25 @@ def cmd_diag_overflow(args) -> int:
                            "expected_digits": f.expected_digits,
                            "rule": f.rule}
                           for f in target_fields(template)]})
+    return 0
+
+
+def cmd_snap_diff(args) -> int:
+    """枠の自動合わせ（吸着）の ON/OFF で読取値が変わる欄を数える（診断・#75 (f)）。
+
+    材料は保存済み token だけ——送信も中間データの書き換えも起きない
+    （中間データは一時ディレクトリへ複製してから開く）。**数えるだけで
+    どちらが正しいかは言わない**（07 §9.3）。出力は JSON Lines 1 行で、
+    件数と差分の出た page_id・出力列名のみ（記入値は出さない）。
+
+    本体は `snap_diff.diff_event`。ここはその戻り値を出すだけの薄い層で、
+    拒否（`ok:false`）も業務的な拒否として終了コード 0 で返す
+    （`debug-images`・`diag-overflow` と同じ規約）。
+    """
+    from .snap_diff import DEFAULT_LIMIT, diff_event
+    cfg = _load_config_and_init_log(args.config)
+    limit = DEFAULT_LIMIT if args.limit is None else args.limit
+    _progress(diff_event(args.template, cfg, page_id=args.page, limit=limit))
     return 0
 
 
@@ -1339,6 +1376,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--band-scale", type=_band_scale_arg, default=1.0,
                    help="右隣を見る帯の幅（欄の高さの倍率・既定 1.0）")
     p.set_defaults(fn=cmd_diag_overflow)
+
+    # 枠の自動合わせ（吸着）の ON/OFF 差分（issue #75 (f)・FR-F40）。これも
+    # CLI 専用——担い手はテンプレート作成者（管理者）で、画面から押す機能では
+    # ない。GUI の白リスト（lib.rs ALLOWED_SUBCOMMANDS）へは足さない
+    p = sub.add_parser("snap-diff",
+                       help="枠の自動合わせ ON/OFF で読取値が変わる欄を数える"
+                            "（診断・API 送信なし・issue #75）")
+    p.add_argument("--template", default=default_tpl)
+    p.add_argument("--page", default=None, help="特定の帳票IDのみ比べる")
+    p.add_argument("--limit", type=_snap_limit_arg, default=None,
+                   help="一覧に出す差分の上限（省略時は既定値。超えた分は "
+                        "truncated: true で示し、件数の合計はそのまま出る）")
+    p.set_defaults(fn=cmd_snap_diff)
 
     p = sub.add_parser("detect-frames",
                        help="ページ全体からの枠候補一括生成（領域指定なし・issue #73）")

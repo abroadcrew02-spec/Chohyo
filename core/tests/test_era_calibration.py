@@ -19,7 +19,7 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.template import load_template
 
 TPL_PATH = app_root() / "templates" / "chouhyo-v1.json"
-PAGES = app_root() / "workdir" / "pages"
+PAGES = app_root() / "testdata" / "local" / "pages"
 
 TRUTH = {
     "sample-1.png": {"person_生年月日_元号": "平",

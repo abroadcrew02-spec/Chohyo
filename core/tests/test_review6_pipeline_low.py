@@ -13,8 +13,8 @@ from chouhyo_ocr.config import ConfigError
 from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.store import Store, StoreError
 
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 
 needs_replay = pytest.mark.skipif(

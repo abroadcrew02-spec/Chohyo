@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } from "./RunScreen.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } from "./RunScreen.tsx";\n' +
       // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
       // 衝突しやすいので独立した1行にする
       'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n',
@@ -47,7 +47,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
 
 let failed = 0;
@@ -3266,6 +3266,42 @@ test("AC-F11 frameStyleFor: 参照先の枠は判定不能でも参照先の破�
   const ok = frameStyleFor({ verdict: "match", fallback: true });
   assert.equal(ok.alpha, 1);
   assert.deepEqual(ok.dash, FALLBACK_DASH);
+});
+
+// ------------------------------------------------------- issue #75 (f)・FR-F41
+// 枠の自動合わせ（吸着）でテンプレートの位置のまま読んだページ数。原因の違う
+// 2つの数字を1つに足さないこと・0件では出さないこと・run のサマリから
+// noticeFor 経由で「実行時のお知らせ」へ届くことを固定する。
+test("AC-F40 snapNotice: 見送ったページ数が件数付きで出る（入力の紙由来と分かる）", () => {
+  const t = snapNotice({ snap_failsafe_pages: 3, snap_excluded_pages: 0 });
+  assert.match(t, /3 件/);
+  assert.match(t, /読み取るたびに変わります/);
+  // 許容幅の内側の誤りを機械で見つける手段は無い（07 §9.3）。
+  // 「検知」と書けばそれ自体が嘘になる
+  assert.ok(!/検知/.test(t), t);
+});
+test("AC-F40 snapNotice: 対象外のページ数はテンプレート由来として別に出る", () => {
+  const t = snapNotice({ snap_failsafe_pages: 0, snap_excluded_pages: 12 });
+  assert.match(t, /12 件/);
+  assert.match(t, /毎回同じ件数/);
+  assert.ok(!/読み取るたびに変わります/.test(t), t);
+});
+test("AC-F40 snapNotice: 2つの数字を1つに足さない（両方非0なら両方出る）", () => {
+  const t = snapNotice({ snap_failsafe_pages: 3, snap_excluded_pages: 12 });
+  assert.match(t, /3 件/);
+  assert.match(t, /12 件/);
+  assert.ok(!/15/.test(t), "合計を出している（直す先が違うので混ぜない）");
+});
+test("AC-F40 snapNotice: 両方0・旧コア（キー欠落）では出さない", () => {
+  assert.equal(snapNotice({ snap_failsafe_pages: 0, snap_excluded_pages: 0 }), null);
+  assert.equal(snapNotice({}), null);
+});
+test("AC-F40 noticeFor: run のサマリから実行時のお知らせへ配線されている", () => {
+  const ev = { event: "summary", snap_failsafe_pages: 2, snap_excluded_pages: 0 };
+  assert.equal(noticeFor(ev), snapNotice(ev));
+  // 吸着が動かない既定運用（両方0）では、サマリで通知自体を出さない
+  assert.equal(noticeFor({ event: "summary", snap_failsafe_pages: 0,
+                           snap_excluded_pages: 0 }), null);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

@@ -31,7 +31,7 @@ from chouhyo_ocr.template import load_template
 
 ROOT = app_root()
 MATERIALS = {
-    "sample-1": ROOT / "workdir" / "pages" / "sample-1.png",
+    "sample-1": ROOT / "testdata" / "local" / "pages" / "sample-1.png",
     "formB-1": ROOT / "testdata" / "formB" / "formB-1.png",
     "formC-1": ROOT / "testdata" / "formC" / "formC-1.png",
 }

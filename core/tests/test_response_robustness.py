@@ -17,8 +17,8 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.pipeline import OperationRefused, render, run
 from chouhyo_ocr.vision_client import ReplayClient
 
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 
 pytestmark = pytest.mark.skipif(

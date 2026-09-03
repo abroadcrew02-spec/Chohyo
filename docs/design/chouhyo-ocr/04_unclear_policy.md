@@ -49,7 +49,7 @@
 
 ### 1.3 実応答での分布
 
-`workdir/s2/resp_DOCUMENT_TEXT_DETECTION.json`（自作サンプル1ページ・位置合わせ前の保存応答。アンカー補正がかかっていないため座標は概算）を `symbols_from_response` → `to_face_local` → `assign` に通した結果。
+`testdata/local/s2/resp_DOCUMENT_TEXT_DETECTION.json`（自作サンプル1ページ・位置合わせ前の保存応答。アンカー補正がかかっていないため座標は概算）を `symbols_from_response` → `to_face_local` → `assign` に通した結果。
 
 | 項目 | 値 |
 |---|---|

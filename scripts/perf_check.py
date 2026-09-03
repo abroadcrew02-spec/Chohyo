@@ -21,6 +21,13 @@
   .venv/Scripts/python.exe scripts/perf_check.py --pages 250     # 枚数を変える
   .venv/Scripts/python.exe scripts/perf_check.py --only frames   # 枠検出1枚
   .venv/Scripts/python.exe scripts/perf_check.py --only cumulative --runs 5 --pages 20
+  .venv/Scripts/python.exe scripts/perf_check.py --snap on --pages 20  # 吸着 ON で計測
+
+`--snap on|off`（既定 off）は計測用 config の `snap_blocks` を切り替える
+（#75）。同じ計測を両モードで回して所要時間を比べるためのもので、パイプライン
+計測と累積計測には summary の `snap_failsafe_pages`（入力画像由来で吸着を
+見送ったページ数）と `snap_excluded_pages`（テンプレート定義由来で対象外に
+したページ数）を並べて出す。
 """
 import argparse
 import json
@@ -34,8 +41,8 @@ import psutil
 
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / "workdir_build" / "perf"
-PAGE = ROOT / "workdir" / "pages" / "sample-1.png"
-RESP = ROOT / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE = ROOT / "testdata" / "local" / "pages" / "sample-1.png"
+RESP = ROOT / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 TPL = ROOT / "templates" / "chouhyo-v1.json"
 FORMB_PNG = ROOT / "testdata" / "formB" / "formB-1.png"
 FORMB_TPL = ROOT / "testdata" / "formB" / "formB-v1.json"
@@ -76,9 +83,9 @@ def measure_expand() -> int:
     return 0
 
 
-def measure_pipeline(N: int) -> int:
+def measure_pipeline(N: int, snap: bool = False) -> int:
     # 前提の成果物が無いと base = PAGE.read_bytes() が素の FileNotFoundError で
-    # 落ち、purge 直後に「壊れた」と誤読される（レビュー M-19）。何を用意すれば
+    # 落ち、素材の無い環境で「壊れた」と誤読される（レビュー M-19）。何を用意すれば
     # よいかを先に言う
     missing = [p for p in (PAGE, RESP) if not p.exists()]
     if missing:
@@ -86,7 +93,8 @@ def measure_pipeline(N: int) -> int:
         for p in missing:
             print(f"  - {p}", flush=True)
         print("先に replay 用の 1 ページ分（サンプル画像と保存済み応答）を"
-              "用意してから実行する。purge 後は素材ごと消えている", flush=True)
+              "用意してから実行する。素材は testdata/local/ に置く（#88 以降 purge では消えない）",
+              flush=True)
         return 2
     if BASE.exists():
         shutil.rmtree(BASE)
@@ -102,6 +110,7 @@ def measure_pipeline(N: int) -> int:
         "output_dir": str(BASE / "out"),
         "workdir": str(BASE / "wd"),
         "log_dir": str(BASE / "logs"),
+        "snap_blocks": snap,
     }), encoding="utf-8")
 
     py = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -155,6 +164,7 @@ def measure_pipeline(N: int) -> int:
     mb = 1024 * 1024
     print(f"pages={summary['pages']} rows={summary['rows']} "
           f"align_failed={summary['align_failed']}")
+    print(_snap_line(snap, summary))
     print(f"elapsed={elapsed:.1f}s ({elapsed/N:.2f}s/枚)")
     print(f"peak_rss={peak/mb:.0f}MB  xlsx={xlsx.stat().st_size/mb:.1f}MB  "
           f"db={db.stat().st_size/mb:.1f}MB")
@@ -201,8 +211,12 @@ def _run_core(cfg: Path, argv: list[str]) -> dict | None:
     return last
 
 
-def _perf_config(name: str) -> Path:
-    """計測用の使い捨て config（出力・作業・ログを workdir_build/perf 配下へ）。"""
+def _perf_config(name: str, snap: bool = False) -> Path:
+    """計測用の使い捨て config（出力・作業・ログを workdir_build/perf 配下へ）。
+
+    `snap` はブロック単位吸着（`snap_blocks`・#75）の ON/OFF。既定は core と
+    同じ False で、`--snap on` のときだけ True を書く。
+    """
     base = BASE / name
     if base.exists():
         shutil.rmtree(base)
@@ -212,8 +226,22 @@ def _perf_config(name: str) -> Path:
         "output_dir": str(base / "out"),
         "workdir": str(base / "wd"),
         "log_dir": str(base / "logs"),
+        "snap_blocks": snap,
     }), encoding="utf-8")
     return cfg
+
+
+def _snap_line(snap: bool, summary: dict) -> str:
+    """吸着の効き方を summary の 2 キーで1行に出す（#75 Unit C）。
+
+    `snap_failsafe_pages` は入力画像由来（罫線のかすれ・吸着後の重なり）で
+    フェイルセーフに落ちたページ数、`snap_excluded_pages` はテンプレート定義
+    由来（行数が足りず合わせ先に使えない）で対象外にしたページ数。原因が
+    違うので合算せず並べる。
+    """
+    return (f"snap={'on' if snap else 'off'}  "
+            f"snap_failsafe_pages={summary.get('snap_failsafe_pages')}  "
+            f"snap_excluded_pages={summary.get('snap_excluded_pages')}")
 
 
 def _detect_only_ms(png: Path, tpl: "Path | None", repeat: int) -> list[int]:
@@ -254,7 +282,7 @@ def _detect_only_ms(png: Path, tpl: "Path | None", repeat: int) -> list[int]:
     return out
 
 
-def measure_frames(repeat: int = 3) -> int:
+def measure_frames(repeat: int = 3, snap: bool = False) -> int:
     """枠候補の一括生成（detect-frames）1 枚の所要時間（issue #87 項目2）。
 
     受入基準 AC-F47・NFR-F02（ページ 1 枚 3.0 秒）の実測。素材は
@@ -282,8 +310,11 @@ def measure_frames(repeat: int = 3) -> int:
         print("  formC は testdata/formC/make_formC.py で生成する")
         return 0
 
-    cfg = _perf_config("frames")
-    print(f"枠検出計測（AC-F47・NFR-F02 予算 {FRAMES_BUDGET_S:.1f}s・各{repeat}回）")
+    cfg = _perf_config("frames", snap)
+    # detect-frames は吸着を通らない（run のパイプラインだけが通る）。config には
+    # 同じ値を書いて条件を揃えるが、summary の 2 キーは出ない
+    print(f"枠検出計測（AC-F47・NFR-F02 予算 {FRAMES_BUDGET_S:.1f}s・各{repeat}回・"
+          f"snap={'on' if snap else 'off'}／detect-frames は吸着を通らない）")
     print(f"  {'素材':24s} {'elapsed_ms(CLI)':>20s} {'detect_ms(単体)':>18s} "
           f"{'rails h/v':>10s} {'候補':>5s}  zero_reason")
     worst = 0
@@ -367,7 +398,7 @@ def _report_cumulative(rows: list) -> None:
           "ほうが大きい。判断に使うなら --pages を増やして測り直す")
 
 
-def measure_cumulative(runs: int, pages_per_run: int) -> int:
+def measure_cumulative(runs: int, pages_per_run: int, snap: bool = False) -> int:
     """run を繰り返したときの再レンダー時間の伸び（issue #100）。
 
     run() は毎回 Store 内の全 done ページを対象に出力を作り直す。同じ workdir へ
@@ -383,11 +414,12 @@ def measure_cumulative(runs: int, pages_per_run: int) -> int:
             print(f"  - {p}")
         return 2
 
-    cfg = _perf_config("cumulative")
+    cfg = _perf_config("cumulative", snap)
     base = PAGE.read_bytes()
-    print(f"累積計測（{runs} 回 x {pages_per_run} ページ・同一 workdir へ追加）")
+    print(f"累積計測（{runs} 回 x {pages_per_run} ページ・同一 workdir へ追加・"
+          f"snap={'on' if snap else 'off'}）")
     print(f"  {'run':>3s} {'追加':>5s} {'累積done':>9s} {'render_s':>9s} "
-          f"{'run全体_s':>10s} {'render_ms/頁':>13s}")
+          f"{'run全体_s':>10s} {'render_ms/頁':>13s} {'snap_fs':>8s} {'snap_ex':>8s}")
     rows = []
     seq = 0
     for r in range(1, runs + 1):
@@ -416,8 +448,12 @@ def measure_cumulative(runs: int, pages_per_run: int) -> int:
         done = ev.get("total_done_pages") or seq
         rs = ev.get("render_seconds", 0.0)
         rows.append((r, done, rs, wall))
+        # snap_failsafe_pages（入力画像由来）と snap_excluded_pages（テンプレート
+        # 定義由来）は原因が違うので合算せず別々の列に出す
         print(f"  {r:3d} {pages_per_run:5d} {done:9d} {rs:9.1f} {wall:10.1f} "
-              f"{(rs * 1000 / done if done else 0):13.1f}")
+              f"{(rs * 1000 / done if done else 0):13.1f} "
+              f"{ev.get('snap_failsafe_pages', 0):8d} "
+              f"{ev.get('snap_excluded_pages', 0):8d}")
 
     _report_cumulative(rows)
     return 0
@@ -434,16 +470,22 @@ def main() -> int:
                     help="--only cumulative のときの run 回数（issue #100）")
     ap.add_argument("--repeat", type=int, default=3,
                     help="--only frames のときの素材あたり反復回数")
+    ap.add_argument("--snap", default="off", choices=["on", "off"],
+                    help="ブロック単位吸着（config の snap_blocks・#75）。"
+                         "既定 off は core の既定と同じ。on/off を切り替えて"
+                         "同じ計測を両モードで回し、所要時間と "
+                         "snap_failsafe_pages / snap_excluded_pages を比べる")
     a = ap.parse_args()
+    snap = a.snap == "on"
     rc = 0
     if a.only in ("all", "expand"):
         rc |= measure_expand()
     if a.only in ("all", "pipeline"):
-        rc |= measure_pipeline(a.pages)
+        rc |= measure_pipeline(a.pages, snap)
     if a.only == "frames":
-        rc |= measure_frames(a.repeat)
+        rc |= measure_frames(a.repeat, snap)
     if a.only == "cumulative":
-        rc |= measure_cumulative(a.runs, a.pages)
+        rc |= measure_cumulative(a.runs, a.pages, snap)
     return rc
 
 

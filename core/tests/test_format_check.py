@@ -19,7 +19,7 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.template import load_template
 
 TPL = app_root() / "templates" / "chouhyo-v1.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 
 
 def _est(ok=False, reason="", det_h=0, det_v=0, exp_h=0, exp_v=0,

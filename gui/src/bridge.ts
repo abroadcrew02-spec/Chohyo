@@ -49,6 +49,10 @@ async function mockRun(): Promise<{ code: number; run_id: string }> {
     fallback_used: 2, fallback_discarded: 1, carve_hole: 0,
     fallback_discarded_excluded_field: 1, carve_hole_excluded_field: 0,
     conflict_excluded_field: 1,
+    // issue #75 (f): 枠の自動合わせを見送った／対象外だったページ数。
+    // 実物（core）は既定 OFF で常に 0 を出すので、デモでは片方だけ非0に
+    // して「0 のときは出さない」分岐も一緒に確かめられるようにする
+    snap_failsafe_pages: 1, snap_excluded_pages: 0,
     xlsx: "output\\output_demo.xlsx", csv: "output\\output_demo.csv" }));
   return { code: 0, run_id: runId };
 }

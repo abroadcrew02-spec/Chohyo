@@ -27,8 +27,8 @@
     ],
     "python": "C:\\Users\\user\\Desktop\\workspace20\\chouhyo_tool\\.venv\\Scripts\\python.exe",
     "template": "templates\\chouhyo-v1.json",
-    "page_png": "workdir\\pages\\sample-1.png（.gitignore 対象・ローカル限定）",
-    "s2_response": "workdir\\s2\\resp_DOCUMENT_TEXT_DETECTION.json（.gitignore 対象・ローカル限定）",
+    "page_png": "testdata\\local\\pages\\sample-1.png（.gitignore 対象・ローカル限定）",
+    "s2_response": "testdata\\local\\s2\\resp_DOCUMENT_TEXT_DETECTION.json（.gitignore 対象・ローカル限定）",
     "page_id": "sample-1_p0001",
     "replay": true,
     "api_calls": 1,
@@ -40,16 +40,16 @@
   },
   "outputs": {
     "output.xlsx": {
-      "path": "workdir/golden/1541239/output.xlsx",
+      "path": "testdata/local/golden/1541239/output.xlsx",
       "cell_value_sha256": "4030f5e3108b5d84de48eadcf96fca09de794a1cc1f9387f3ca9705cc1b12e6a",
       "rows": 1,
       "cols": 220,
       "masked_cells": 4
     },
     "output.csv": {
-      "path": "workdir/golden/1541239/output.csv",
+      "path": "testdata/local/golden/1541239/output.csv",
       "normalized_sha256": "1ec2ff9cf987095ef6a349e8ab8bd2ed4440475f517941357328c33309934dd9"
     }
   },
-  "note": "記入値（帳票の読取結果そのもの）はこのファイルに含めない。output.xlsx/output.csv 自体は workdir/ 配下（.gitignore 対象）に置きコミットしない。ハッシュはファイルバイト列ではなくセル値・正規化テキストを対象にしている（procedure 参照）。"
+  "note": "記入値（帳票の読取結果そのもの）はこのファイルに含めない。output.xlsx/output.csv 自体は testdata/local/golden/ 配下（.gitignore 対象）に置きコミットしない。ハッシュはファイルバイト列ではなくセル値・正規化テキストを対象にしている（procedure 参照）。"
 }

@@ -3,8 +3,8 @@
 ## 0. 文書情報
 
 - 文書ID: chouhyo-ocr-08
-- 版数: `v0.1`（§1・§2 のみ確定。後続段は見出しのみ）
-- 最終更新: 2026-09-02
+- 版数: `v0.2`（§1〜§6 を確定。**§6＝(f) は 2026-09-03 の実装と同一の作業で書き下ろした**）
+- 最終更新: 2026-09-03
 - 上位文書: [07_frame_detection_requirements.md](07_frame_detection_requirements.md) v1.1（**要件の正本**。本書は実装方針のみを書き、要件を再定義しない）
 - 関連: [02_design.md](02_design.md)（D-15・D-25・D-26・§6.2）／[03_test_requirements.md](03_test_requirements.md) §2・§3（テストレベルと回帰ゲート基準値の正本）／[05_output_columns_requirements.md](05_output_columns_requirements.md)（列契約）
 - GitHub Issue: #77（ログ匿名化・§1）／#71（(a') 既存判定の接続・§2）
@@ -17,8 +17,8 @@
 | #71 (a') | 既存判定の接続・3値化・理由コード分離・記録（FR-F01〜F13・F45／AC-F01〜F15） | **§2 に設計を確定**（実装済み: core 5a3b660 / GUI 1541239） |
 | #72 (t) | テンプレートの保存・選択・照合提示 | **§3 に設計を確定**（実装済み: #72 クローズ） |
 | #73 (b) | ページ全体からの枠候補生成 | **§4 に設計を確定**（FR-F19 と切り抜きの衝突は §7-10 の判断待ち） |
-| #74 (c) | 位置合わせ残差・吸着量の記録 | §5・未着手 |
-| #75 (f) | 実行時のブロック単位吸着 | §6・未着手 |
+| #74 (c) | 位置合わせ残差・吸着量の記録 | **§5 に設計を確定**（実装済み: `f935a79`） |
+| #75 (f) | 実行時のブロック単位吸着 | **§6 に設計を確定**（core 実装済み・2026-09-03。診断コマンド `snap-diff`・GUI・README は別作業） |
 
 **§7 に、07 v1.3 と本設計の食い違い（要件側の修正提案）を列挙する。** 7-1〜7-9 は (a')・(t) の設計時に出したもので要件へ反映済み。**未決は 7-10〜7-13 の4件**で、7-10（既存枠と切り抜きの衝突）は (b) の実装着手前に結論が要る。
 
@@ -308,7 +308,7 @@ def classify(est: ShiftEstimate) -> tuple[Verdict, str]:
 
 **★1 `edge_mismatch` を「不一致」から「判定不能」へ倒す**
 
-`workdir/pages/sample-1.png`（本物の紙）の back/detail の水平罫線を上から N 本白塗りした実測:
+`testdata/local/pages/sample-1.png`（本物の紙）の back/detail の水平罫線を上から N 本白塗りした実測:
 
 | N | det_h | matched/total | reason |
 |---:|---:|---:|---|
@@ -459,7 +459,7 @@ ALTER TABLE page ADD COLUMN format_detail  TEXT NOT NULL DEFAULT '';   -- faces[
 ALTER TABLE page ADD COLUMN status_reason  TEXT NOT NULL DEFAULT '';
 ```
 
-- **`ALGO_VERSION` は "2" のまま上げない。** 上げると既存の中間データの整列結果が全部捨てられ、再整列が走る（`_restore_alignment` の判定材料）。(a') は読み取りアルゴリズムを変えないので上げる理由が無く、07 §7.2-4 が許容する直値更新は (f) の分（"2"→"3"）だけ
+- **`ALGO_VERSION` は "2" のまま上げない。** 上げると既存の中間データの整列結果が全部捨てられ、再整列が走る（`_restore_alignment` の判定材料）。(a') は読み取りアルゴリズムを変えないので上げる理由が無い。⚠️ **2026-09-03 更新: (f) でも上げない**（PM 判断・07 v1.5 FR-F44）。旧記述「07 §7.2-4 が許容する直値更新は (f) の分（"2"→"3"）だけ」は撤回する——(f) は吸着 ON/OFF を `alignment.snap_enabled` として別に持ち、再利用の照合はそちらで行う。結果として **`ALGO_VERSION` の直値更新は本件のどの段でも発生しない**
 - `format_detail` は `[{"face_idx":0,"verdict":"mismatch","reason":"lines","score":0.18,"detected":21,"expected":16}, ...]`。**`face_id`（名前）は入れず `face_idx` で持つ**（§1.4 の語彙に揃える。中間データは秘匿対象外だが、語彙を2つ持たない）
 - `store.set_status(pid, "")`（成功時・`pipeline.py:606`）は `status_reason` に触れない。成功時は `set_status_reason(pid, "")` を明示的に呼ぶ
 
@@ -511,7 +511,7 @@ format_check_failed page_id=<id> error_code=<型名>
 
 #### 2.7.1 画像ファイルでも `expand-page` を通す（AC-F02 の前提）
 
-**現状の穴**: `loadImage`（`Editor.tsx:1547-1590`）は `if (p.toLowerCase().endsWith(".pdf"))` のときだけ `expand-page` を呼ぶ。**PNG／JPG は生のまま表示され、位置合わせも様式判定も走らない。** AC-F01／AC-F02 の素材は PNG（`workdir/pages/sample-1.png`・#70-1 で作る同寸別様式画像）なので、このままでは「編集画面で開いても判定が出ない」。
+**現状の穴**: `loadImage`（`Editor.tsx:1547-1590`）は `if (p.toLowerCase().endsWith(".pdf"))` のときだけ `expand-page` を呼ぶ。**PNG／JPG は生のまま表示され、位置合わせも様式判定も走らない。** AC-F01／AC-F02 の素材は PNG（`testdata/local/pages/sample-1.png`・#70-1 で作る同寸別様式画像）なので、このままでは「編集画面で開いても判定が出ない」。
 
 - 対応: 拡張子を問わず `expand-page` を通す。`ingest.expand` は PDF 以外を `[source]` としてそのまま返す（`ingest.py:166-167`）ので、コア側の変更は要らない
 - 読み取り権限: 成功時の `page_path` は `workdir/editor_pages/` 配下（読み取りルート・#69）。失敗時は利用者が選んだ元ファイルで、`pick_image` 経由で `picked` に登録済みのため `read_file_b64` を通る（`lib.rs` の `check_scope`）
@@ -629,7 +629,7 @@ assert all(v == "〓" for v in row.values)
 
 このテストの目的は関数名（`fails_instead_of_wrong_values`）とコメント（「正常なのに値が違うだけは絶対に出さない」）のとおり**「正常顔の誤値を出さないこと」**であって、どちらのバケツに入るかではない。バケツの付け替えは FR-F09 が要求した仕様変更なので緑偽装（07 §7.2-4）には当たらないが、**既存テストの期待値変更であることに変わりはない**ので §1 と同じ扱い（理由と日付をテスト内コメントに残す）にする。§7-3 に要件側の追記提案として挙げる。
 
-**golden（AC-F45）**: 07 が `※要確認（着手時点のコミットが未定）` としていた着手前コミットは、最初 `71384a4` で取得したが **`1541239`** で取り直した（現物は `workdir/golden/1541239/`・manifest は `testdata/golden_manifest.json`・`head_short` も `1541239`・2026-09-03 実測で確認）。取り直しの理由は manifest の `root_cause_of_2026-09-02_divergence` にある——`71384a4` 版の manifest はファイルの sha256 しか記録せず、`unclear_threshold=0.4` を使ったことを procedure として残していなかった。第三者が既定値 0.85 で再現すると 〓 化するセルが増え（実測: masked_cells 4 → 21）、出力が一致しなくなる。`scripts/make_golden.py` が config を manifest へ必ず残す形に直したうえで、`1541239`（2026-09-02 17:15・(a') の GUI 側コミット）の HEAD で 17:57 に取り直したものが現在の正。#77 のログ変更は出力を変えないため、この golden は (a') の実装後も有効。
+**golden（AC-F45）**: 07 が `※要確認（着手時点のコミットが未定）` としていた着手前コミットは、最初 `71384a4` で取得したが **`1541239`** で取り直した（現物は `testdata/local/golden/1541239/`・manifest は `testdata/golden_manifest.json`・`head_short` も `1541239`・2026-09-03 実測で確認）。取り直しの理由は manifest の `root_cause_of_2026-09-02_divergence` にある——`71384a4` 版の manifest はファイルの sha256 しか記録せず、`unclear_threshold=0.4` を使ったことを procedure として残していなかった。第三者が既定値 0.85 で再現すると 〓 化するセルが増え（実測: masked_cells 4 → 21）、出力が一致しなくなる。`scripts/make_golden.py` が config を manifest へ必ず残す形に直したうえで、`1541239`（2026-09-02 17:15・(a') の GUI 側コミット）の HEAD で 17:57 に取り直したものが現在の正。#77 のログ変更は出力を変えないため、この golden は (a') の実装後も有効。
 
 ### 2.10 変更ファイルと分担
 
@@ -927,7 +927,7 @@ staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親�
 
 ⚠️ **`align._face_estimate` の手順を `PageContext` が複製している**（`align.py` を変更しない範囲での分割のため）。複製が黙って古くなるのを防ぐため、`core/tests/test_format_check_shared_prep.py` が素材3×テンプレート2の全組み合わせで `align._face_estimate` 由来の判定と一致することを固定する。`align.py` の前処理を変えたらこのテストが落ちる。
 
-**実測（2026-09-03・候補7件＝出荷テンプレート＋その複製6件・`workdir/pages/sample-1.png` 2490×3510）**
+**実測（2026-09-03・候補7件＝出荷テンプレート＋その複製6件・`testdata/local/pages/sample-1.png` 2490×3510）**
 
 候補ループ相当（stat → JSON 読み → `load_template` → `validate_v1` → 照合）を before/after 交互に3回ずつ。
 
@@ -1166,7 +1166,7 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 
 「線分として拾えるのは 60px 以上なのだから、そこから組んだ矩形の辺は必ず 60px を超え、`MIN_RECT_SIZE`(20px) による `too_small` 除外には到達しないのでは」という筋は、**半分しか当たらない**。線分長が下限を課すのは**線が走っている向きの辺**だけで、もう一方の辺は**レール間隔**——隣り合うレールが 10px しか離れていなければ、10×113px の細長い原子セルができる。
 
-実測（2026-09-03・`workdir/pages/sample-1.png` に `detect_segments` → `_cluster_rails` → `_grid_atomic_cells` を直接通した結果）: 原子セル 146 個のうち **6 個が幅 10px**（高さは 61〜116px）で `too_small` に落ちた。formB では 0 件。**`too_small` は死んだ分岐ではない。**
+実測（2026-09-03・`testdata/local/pages/sample-1.png` に `detect_segments` → `_cluster_rails` → `_grid_atomic_cells` を直接通した結果）: 原子セル 146 個のうち **6 個が幅 10px**（高さは 61〜116px）で `too_small` に落ちた。formB では 0 件。**`too_small` は死んだ分岐ではない。**
 
 較正で効いてくるのは次の2点:
 
@@ -1448,11 +1448,11 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 | AC-F23 | gui-logic ＋ L2 実走 | 生成中表示・各候補の `residual`・`renameTableColumns` の3点 |
 | NFR-F02 | 計測 | `scripts/perf_check.py` で formB（1800×1200）と sample-1（2490×3510）の所要を測る |
 
-**追加で回す素材**: `testdata/formC/formC-1.png`（同寸別様式・`make_formC.py` で生成）と `workdir/pages/sample-1.png`（`.gitignore` 配下＝**L2**）。前者は「別様式でも表候補が取れる」、後者は「出荷テンプレの紙で表候補2ブロック（family・detail）が取れる」ことの確認に使う。**sample-1 の期待個数は未実測**——実装後に実走して記録する（先に期待値を決め打ちしない）。
+**追加で回す素材**: `testdata/formC/formC-1.png`（同寸別様式・`make_formC.py` で生成）と `testdata/local/pages/sample-1.png`（`.gitignore` 配下＝**L2**）。前者は「別様式でも表候補が取れる」、後者は「出荷テンプレの紙で表候補2ブロック（family・detail）が取れる」ことの確認に使う。**sample-1 の期待個数は未実測**——実装後に実走して記録する（先に期待値を決め打ちしない）。
 
 #### 4.7.1 sample-1 の実測（H-2 適用後・2026-09-03 再実測）
 
-出荷テンプレート `templates/chouhyo-v1.json` と `workdir/pages/sample-1.png`（2490×3510・テンプレートの `image_size` と一致）で再実走した。**H-2（行を x で分割する対応）の前後で結果が変わるため、以下は適用後の値。**
+出荷テンプレート `templates/chouhyo-v1.json` と `testdata/local/pages/sample-1.png`（2490×3510・テンプレートの `image_size` と一致）で再実走した。**H-2（行を x で分割する対応）の前後で結果が変わるため、以下は適用後の値。**
 
 前処理の違いで結果が変わるので2経路とも測った（どちらも `.venv/Scripts/python.exe`・`detect_frames` 単体を `time.perf_counter` で挟む・画像読み込みは含まない）:
 
@@ -1468,7 +1468,7 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
             excluded: non_rectangular 3, not_closed 11, too_small 5, straddles_face 3
 ```
 
-⚠️ `not_closed` は **#85 N-2 で追加した内訳**（2026-09-03・生画像経路は `detect-frames --input ..\workdir\pages\sample-1.png --template ..\templates\chouhyo-v1.json`、align 経路は `align_page` の合成画像を `detect_frames` へ直接）。追加前はこの成分が `excluded` のどこにも出ず、`components` と `rects` の差（生画像 160-145=15、align 157-143=14）のうち `non_rectangular` で説明できない 13／11 件が宙に浮いていた。追加後は成分の台帳（§4.2.3）が両経路とも閉じる。
+⚠️ `not_closed` は **#85 N-2 で追加した内訳**（2026-09-03・生画像経路は `detect-frames --input ..\testdata\local\pages\sample-1.png --template ..\templates\chouhyo-v1.json`、align 経路は `align_page` の合成画像を `detect_frames` へ直接）。追加前はこの成分が `excluded` のどこにも出ず、`components` と `rects` の差（生画像 160-145=15、align 157-143=14）のうち `non_rectangular` で説明できない 13／11 件が宙に浮いていた。追加後は成分の台帳（§4.2.3）が両経路とも閉じる。
 
 **表候補の残差（#85 N-1 の効果・align 経路）**: 変更前は表候補10件のうち `rows==2` の8件がすべて `residual_px` 0.0 だった。変更後は 8 件とも 0 より大きくなる（pitch 536.90／512.40 の候補がいずれも 2.1、他は 0.7〜2.1）。⚠️ 生画像経路では表候補13件中 `rows==2` が12件あり、うち7件は変更後も 0.0 のまま——こちらはレールが単一線分で散らばりが実際に 0 のため（§4.4 の⚠️）。
 
@@ -1687,7 +1687,7 @@ ALTER TABLE alignment ADD COLUMN align_residual_detail TEXT NOT NULL DEFAULT '';
            {"block_idx":1,"med":3,"max":4,"pairs":15,"unpaired":0}]}
 ```
 
-**この例は実測値**（2026-09-03・素材 `workdir/pages/sample-1.png` の back 面・`helpers_geom.shift_block_y` で `block_idx=1` のみ y へ δ=4px・`est.dy=1`）。手計算の例示値は載せない。読み方:
+**この例は実測値**（2026-09-03・素材 `testdata/local/pages/sample-1.png` の back 面・`helpers_geom.shift_block_y` で `block_idx=1` のみ y へ δ=4px・`est.dy=1`）。手計算の例示値は載せない。読み方:
 
 - `block_idx=1` の `med=3` は δ−1（面の `dy=1` が引かれた残り）で、§6 の記録と一致する。`block_idx=0` は `med=0`——**設計初稿が置いた `-1` は手計算の誤りで、実測は `0`**
 - `v.max=11`・`unpaired=1` は変形と無関係な実データの素の値。back 面右端の縦線（x=2176）がかすれで 11px ずれており、対応窓 50px の内側なので「対応あり」として拾われる。別の1本は窓を超えて `unpaired` に落ちている
@@ -1695,9 +1695,10 @@ ALTER TABLE alignment ADD COLUMN align_residual_detail TEXT NOT NULL DEFAULT '';
 
 - **名前の衝突回避**: `grid.py` の `TableCandidate.residual_px`／`FieldCandidate.residual_px`（#85・`grid.py:43`「検出線と等間隔当てはめの最大ずれ」）とは別物。`align_` 接頭辞で切り分ける。ログの白リストにも裸の `residual_px` は足さない（§5.5）
 - **(f) の余地**: 吸着量は同じ行へ `snap_px`（REAL・`-1 = 未吸着`）と `snap_detail`（TEXT・ブロック別の吸着量と fail-safe の理由コード）を足す形で入る。接頭辞が `align_`／`snap_` で割れているので、(c) の列を作り替えずに済む
-- **`ALGO_VERSION` は "2" のまま上げない。** (c) は読み取りアルゴリズムを変えない。上げると既存の中間データの整列結果が全部捨てられ再整列が走る（§2.5.2 と同じ理由）
+- **`ALGO_VERSION` は "2" のまま上げない。** (c) は読み取りアルゴリズムを変えない。上げると既存の中間データの整列結果が全部捨てられ再整列が走る（§2.5.2 と同じ理由）。**(f) でも上げない**（2026-09-03 PM 判断・§6・07 v1.5 FR-F44）——再利用の歯止めは `snap_enabled` 列で掛ける
 - `upsert_alignment` に `align_residual_px: float = -1.0`・`align_residual_detail: str = ""` をキーワード引数で足す（既定値つき）。呼び出し箇所は `pipeline.py:633` の1つだけ
 - **`transform` JSON へ相乗りさせない。** `transform` は `_restore_alignment` が再利用判定で読む中間データ（`pipeline.py:259-262`）で、課金に直結する経路。記録のために触る場所ではない（§2.5.1 の B 案を退けたのと同じ判断）
+  - ⚠️ **但し書き（2026-09-03・(f) 実装時）: この判断は (c) の残差＝記録専用の値についてのものであり、(f) の吸着後座標には当たらない。** 吸着後座標は「復元に必須の幾何」で、`_restore_alignment` が読む場所に置かないと読み戻すために2つ目の経路を作ることになる。したがって **(f) は幾何（適用した dy の配列）を `transform["snap"]` へ、記録（測った量・一致本数・理由コード）を `snap_detail` 列へ**と分ける（§6）。同じ値を2箇所に持たせない原則はそのまま——`transform` 側は「適用した量」、`snap_detail` 側は「測った量（`measured_dy`）」で、名前も役割も別
 
 **旧 DB との互換**: `_ensure_column` は列が無いときだけ `ALTER TABLE` を打つ（`store.py:121-124`）。旧 DB は開いた瞬間に列が増え、既存行は `-1`／`''`＝未計測になる。**再利用判定（`_restore_alignment`）は `ok`・`geometry_hash`・`algo_version`・`template_hash` の4つしか見ない**ので、新しい列は「再整列するかどうか」に一切影響しない——(c) を入れたせいで再整列が走る（＝実行時間と課金の条件が変わる）ことはない。
 
@@ -1753,7 +1754,7 @@ align_residual page_id=<id> face_idx=0 res_h=1 res_v=1 res_pairs=26 res_unpaired
 | AC-F29（ログ） | unit | `run` 後の `app.log` に `align_residual` 行があり、`face_idx=` を含み **`face_id=` を含まない**（`test_leak_guards.py` と同型・§1.5） |
 | 失敗面の未計測 | unit | 罫線を消した画像で `estimate_shift` → `ok=False` かつ `residual is None`。`upsert_alignment` は成功パスのみのため行が作られないこと |
 | 旧 DB 互換 | unit | 追加列**なし**の `alignment` を持つ DB ファイルを開く → 列が増え、既存行が `-1`／`''` になる。同じ DB で `_restore_alignment` が従来どおり再利用に成功する（再整列に落ちない） |
-| NFR-F08（golden） | integration | `workdir/golden/1541239/` の `.xlsx`／`.csv` とセル値が完全一致（AC-F45・§6）。(c) は吸着を入れないため ON／OFF の区別なく一致すること |
+| NFR-F08（golden） | integration | `testdata/local/golden/1541239/` の `.xlsx`／`.csv` とセル値が完全一致（AC-F45・§6）。(c) は吸着を入れないため ON／OFF の区別なく一致すること |
 | 既存の位置合わせ | 回帰 | `test_alignment_robustness.py`（4件）・`test_page_size_guard.py`・`test_format_check.py` が**期待値を1つも変えずに**全緑。`ok`／`reason`／`dx`／`dy`／`matched`／`total` を動かしていないことの実証 |
 | NFR-F01（性能） | 計測 | `scripts/perf_check.py` の `measure_pipeline` で着手前後の1ページあたりを比較し、増分が +0.05 秒/枚以内 |
 
@@ -1779,12 +1780,12 @@ align_residual page_id=<id> face_idx=0 res_h=1 res_v=1 res_pairs=26 res_unpaired
 1. **`ok`・`reason`・`dx`・`dy`・`matched`・`total` の算出経路を1行も変えない**（NFR-F08）。`residual` は `estimate_shift` の中でも `align_page` の中でも一度も条件分岐に使わない
 2. **画像を追加で走査しない**（NFR-F01）。`line_positions` の呼び出し回数・引数を変えず、戻り値を控えるだけ
 3. **ブロック別の検出線はストリップの被覆率で分離している。** `H_COVERAGE`／`V_COVERAGE`／`LINE_GAP` を動かすとブロック残差の意味が変わる（§5.1 (d) の検算）
-4. **`ALGO_VERSION` を上げない。** 上げると既存の整列結果が捨てられ再整列が走る
+4. **`ALGO_VERSION` を上げない。** 上げると既存の整列結果が捨てられ再整列が走る（**(f) も同じ**——2026-09-03 PM 判断で "2" 据え置きが確定し、この不変条件は (c) だけの限定ではなくなった）
 5. **残差を判定に使わない。** 記録のみ。しきい値を置かない・分岐を作らない。使うのは (f) の段
 6. **位置合わせ失敗面と再利用ページは未計測**（`residual is None`／`-1`／`''`）。「計測して 0」と「未計測」を同じ値で表さない
 7. **再利用判定（`_restore_alignment`）の材料を増やさない。** 新しい列は再整列の可否に影響しない
 8. **ログに名前を出さない。** `face_id`・`table_id`・`field_id` は渡さない（`face_idx`・`block_idx` のみ）
-9. **golden（`workdir/golden/1541239/`）と完全一致する**（AC-F45）
+9. **golden（`testdata/local/golden/1541239/`）と完全一致する**（AC-F45）
 
 ### 5.10 リスク
 
@@ -1798,7 +1799,235 @@ align_residual page_id=<id> face_idx=0 res_h=1 res_v=1 res_pairs=26 res_unpaired
 
 ## 6. (f) 実行時のブロック単位吸着（#75）
 
-**未着手。** ただし前提作業（#70・§10.2-2）の実測が出ているので、設計に効く2点だけ記録しておく。
+**実装済み**（2026-09-03・core 側 Unit A/B。診断コマンド `snap-diff`・GUI・README は Unit C）。既定は OFF（`config.json` の `snap_blocks`）。
+
+### 6.0 中心にある考え方
+
+**「吸着後の座標」を持ち回るのではなく、`Template` を吸着後の姿に差し替える。**
+
+```
+snap_by_face: dict[face_id, FaceSnap]     面ごとに「どのブロックを何 px 動かすか」
+        └─→ snap.apply_snap(template, snap_by_face) -> Template（複製）
+                    ├─ mapping.assign(t2.cells, ...)          … 経路①②
+                    ├─ era.score_cell(binary, t2 の cell)      … 経路①③
+                    ├─ write_debug_images（ページ単位で適用）   … 経路④
+                    └─ _restore_alignment 経由で読み戻し        … 経路⑤
+```
+
+- `Template` は frozen dataclass なので `dataclasses.replace` で複製できる。`image_size`・`dpi_scale`・`face()` はそのまま動く
+- `geometry_hash`／`template_hash` は**生 JSON から**計算するので、差し替えてもハッシュは変わらない（再利用の鍵を汚さない）
+- 5経路が「同じ座標」になる担保は、**5経路すべてが同じ1関数 `apply_snap` の出力を使う**こと。座標をコピーして回さない
+- **`align_page`／`estimate_shift` には吸着後の `Template` を渡さない**（アンカーが二重に動く）
+
+### 6.1 cell から block への帰属（判断1）
+
+`CellSpec` は `table_id`／`row_no` を持つがブロック序数を持たない。`transform["snap"]["dy"]` は `face.table_geoms` の並び順で添字を打つので、cell 側が同じ序数を持たないと復元のたびに「どの dy をどの cell へ配るか」を導出し直すことになる——導出方法が2つあれば5経路が別々の答えを出しうる。
+
+```python
+CellSpec.block_idx: int | None = None   # 表由来のみ。単発欄は None
+TableZone.block_idx: int = 0            # 同じ序数（below_table 判定の占有域も動く）
+TableGeom には追加しない                 # tuple 内の位置がそのまま block_idx
+```
+
+採番は **`load_template` の面ループ**で行う（`_expand_table` 単体では面内の通し序数を決められない——同じ面に table が複数あると各 table が 0 から数え直す）。
+
+```python
+blk_base = len(geoms)                                # この table の先頭ブロックの面内序数
+cells.extend(_expand_table(fid, t, block_base=blk_base))
+zones.extend(_table_zones(t, block_base=blk_base))
+geoms.extend(_table_geoms(t))                        # ← この順序が序数の正本
+```
+
+採らなかった案: **幾何包含**（cell が geom の矩形に入るかで決める）は `choice_marks`（欄の外へ最大 4px はみ出す実例が出荷テンプレートにある）・`extra_rects`（離れた矩形の集合）・下端が `y_max` と一致する行の境界扱いで壊れる。**`(table_id, row_no)` からの逆算**は同じ情報を派生表として二重に持つことになり、テンプレート編集で静かにずれる。
+
+### 6.2 吸着で動かすもの／動かさないもの（判断2）
+
+| 動かす | 動かさない |
+|---|---|
+| 表由来 cell の `rect`・`extra_rects`・`fallback_rect`・`choice_marks`（**y だけ**） | 単発欄（`fields` 由来・`block_idx is None`） |
+| `TableZone.bottom` | `Face.exclusions`（紙に固定されたマスク） |
+| `TableGeom` の `y_min`／`y_max`／`h_lines` | `Face.source_rect`・`shift_limits`・`field_geoms`（#86） |
+| | **x 座標（1つも動かさない）** |
+
+単発欄を動かさない理由: (f) は「検出した罫線へブロックを合わせる」段で、単発欄には対応する期待罫線が定義されていない（`table_geoms` は `tables` からしか作られない）。動かすなら「同じ面の表の dy を流用する」しかないが、それは「紙の伸縮が面内で一様」という未検証の仮定を置くことになる。位置ズレは D-25 の面シフトが既に吸収している。
+
+`binarize_face` へ渡す face も**吸着前**のまま（除外マスクは紙に固定・ブロックとは無関係）。動くのは帯を測る cell だけ。
+
+### 6.3 永続化と読み出し口（判断3）
+
+**幾何は `transform`、記録は `snap_detail`、SQL で絞る値は列。同じ値を2箇所に持たせない。**
+
+```jsonc
+// alignment.transform（既存4キーは1つも変えない）
+{"angle": 0.0, "dx": 0, "dy": 1, "matched": 38,
+ "snap": {"v": 1, "applied": true, "dy": [0, 3]}}   // dy は block_idx 順・「適用した量」
+```
+
+```sql
+ALTER TABLE alignment ADD COLUMN snap_enabled INTEGER NOT NULL DEFAULT 0;  -- 実行時の設定（再利用ガードの鍵）
+ALTER TABLE alignment ADD COLUMN snap_px      REAL    NOT NULL DEFAULT -1; -- 面の代表値 max|適用 dy|。-1 = 未吸着
+ALTER TABLE alignment ADD COLUMN snap_detail  TEXT    NOT NULL DEFAULT ''; -- 内訳（記録専用）
+```
+
+```jsonc
+// alignment.snap_detail（記録専用・復元には使わない）
+{"applied": false, "reason": "failsafe",
+ "blocks": [{"block_idx":0,"measured_dy":0,"matched":15,"need":8,"expected":15,"allow":4,"reason":""},
+            {"block_idx":1,"measured_dy":3,"matched":3,"need":8,"expected":15,"allow":4,"reason":"few_lines"}]}
+```
+
+- `measured_dy` は「**測った**量」、`transform` の `dy` は「**適用した**量」。fail-safe では前者が非ゼロ・後者が 0。名前を分けることで、両者が同じ値になる場合（`applied=true`）でも役割の違いが読める
+- `snap_enabled` を JSON でなく**列**にしたのは、`stale_done_pages` が SQL の比較で照合するため
+
+**読み出し口は `store.snap_geometry(page_id)` の1つだけ。** 戻り値は `face_id → (transform["snap"] の dict, snap_enabled)`。呼び出し側はどの経路でも次の2行だけを書く。
+
+```python
+snap_by_face = snap.from_store_rows(store.snap_geometry(pid))
+t2 = snap.apply_snap(template, snap_by_face)
+```
+
+既存の `alignments()` の5要素タプル契約は変えない（`test_reuse_guards.py`・`test_review4_pipeline.py` が依存）。
+
+**`_restore_alignment` の戻り値は2要素のまま**（3要素化しない）。再利用経路は課金に直結する #45 の資産で、契約を変えるほどの必要が無い。代わりにキーワード必須引数 `snap_enabled` を足し、記録と現在の設定が違えば `None`（＝再整列）を返す。
+
+**再利用ガードの鍵は `snap_enabled` 列。`ALGO_VERSION` は "2" 据え置き**（PM 判断・07 v1.5 FR-F44）。照合は5箇所（`check_reusable` の3呼び出し元＋`_restore_alignment`＋`stale_done_pages`）。`check_reusable` の `snap_enabled` は**既定値を付けない**キーワード必須引数にする——既定 `False` を付けると配線し忘れた呼び出し元が「常に OFF として照合」＝素通りする（fail-open）。必須なら配線漏れが `TypeError` として実行前に落ちる。
+
+**`apply_snap` はどの面も適用しないなら入力の `Template` を同一オブジェクトのまま返す**（複製もしない）。OFF・未記録・fail-safe のすべてで下流が1バイトも変わらないことを、テストではなく設計で守る。
+
+### 6.4 判定順と閾値（判断4）
+
+| 順 | 条件 | 結果 |
+|---|---|---|
+| 1 | 設定が OFF | `disabled`・**ここで即 return**（1バイトも計算しない） |
+| 2 | `est` が無い／`ok=False`／`block_shifts` が空 | `no_estimate` |
+| 3 | `face.table_geoms` が空（#86 の欄アンカー面） | `no_blocks` |
+| 4 | いずれかのブロックが期待横線 4 本以下 | `excluded_small_table`（**面全体**・fail-safe とは別カウント） |
+| 5 | いずれかのブロックが `matched < need_y` | ブロックに `few_lines`、面は `failsafe` |
+| 6 | いずれかのブロックが `abs(dy) > allow` | ブロックに `over_tolerance`、面は `failsafe` |
+| 7 | 吸着後に**新しい**重なりが生じる | 面 `overlap_after_snap`（**fail-safe に計上**） |
+| 8 | 上記すべて通過 | `applied=True` |
+
+- `need_y(n) = max(2, ceil(n × SHIFT_MATCH_RATIO))`。**新しい定数を作らない**（`align.SHIFT_MATCH_RATIO=0.5` を流用）
+- 除外の境界は `len(h_lines) <= 4`（＝`rows <= 3`）。n=4 で `ceil(4×0.5)=2` が下限 2 と拮抗し、n=5 で初めて `ceil` 側が上回る。**除外を通った表では下限 2 が効くことは無い**
+- **許容幅の境界は含む。拒否は `abs(dy) > allow`。** 行 i の矩形は半開区間なので、全行を `+allow = pitch − height` 動かすと下端は次の行の元の上端に**ちょうど接する**だけで重ならない。`>=` で弾くと救える帯（detail で 2〜4px）を 1px 削る
+- 吸着量は **(c) が測った `residual.blocks[i].med`**（面のシフトを当てた後に残った符号付き距離の中央値）をそのまま採る。一致本数（`matched`）だけは `_axis_shift` の score を使う。**追加の画像走査はゼロ**（`per_block_h` は #74 が既に控えている）
+- **`ambiguous`（次点差）・`boundary` をブロック単位で追加しない。** FR-F36 が定義する条件は2つだけで、勝手に増やさない。1行ズレのエイリアシングは ①探索上限 `n_y`（detail 50・family 54）が行ピッチ（104・113）の半分未満で丸1行ズレの解が探索範囲外 ②許容幅（4〜8px）が `n_y` より1桁小さく検査がそのまま歯止めになる、で二重に塞がれている
+
+#### 吸着量の推定量と符号（判断4-D・2026-09-03 確定）
+
+**`dy` は `residual.blocks[i].med` そのもの。** `_axis_residual` は「期待線＋面のシフト `est.dy`」から最も近い検出線までの符号付き距離を測るので、得られる `med` は**面シフトを当てた後に残った量**——テンプレート枠の y をその分だけ動かせば検出線に乗る。面のシフトを引く操作は要らない（(c) の計算に既に織り込まれている）。正は「検出線が期待位置より下」で、(f) が枠を動かすべき向きと同じ。
+
+**当初案（`_axis_shift` をブロック単位に再適用し `best_s − est.dy` を採る）は撤回した。** `_axis_shift` のスコアは `(e+s) ∈ det` を **±1px の窓**で数えるため、真のずれ δ に対し `s ∈ {δ−1, δ, δ+1}` が同点になり、同点規則 `key=(score, -abs(s))` が絶対値の小さい側を採る——**吸着量が系統的に 1px 過小**になる。(f) が救う帯は detail で 2〜4px しかなく、1px は無視できない割合だった（実測は §6.8）。
+
+**`matched` は `_axis_shift` の score のまま。** ±1px の窓で同点になる3シフトのどれを採っても一致本数は変わらないので、この量に上のバイアスは無い。**`residual.blocks[i].pairs` は使わない**——対応窓が `shift_limits`（detail で 50px）と緩く、FR-F36 が「一致本数」に求めている厳しさ（`need_y`）と釣り合わない。
+
+`snap_detail.blocks[].measured_dy` は **(c) の残差が正本で、(f) はその写し**。同じ量に2つの推定経路を持たせない。
+
+符号の担保はテストで持つ: `helpers_geom.shift_block_y` で block1 だけに δ を与えた合成素材で `block_shifts[1].dy == δ` ちょうど（`test_t_f6b_*`・δ=±2〜±5）。写しであることは `test_t_f6a_*` が固定する。
+
+#### 第3条件（吸着後の新しい重なり）
+
+判断2（単発欄を動かさない）とセットで**必須**。実測（2026-09-03）:
+
+```
+family block0/block1 最終行 y: 1359-1464（半開区間）
+person_備考                y: 1471（x 400-2430・family block0 の x 389-1400 と x 帯が重なる）
+余白: 7px ／ 許容幅（row_pitch − row_height）: 8px
+→ dy=+8 で最終行の下端が 1472 となり、person_備考 の上端 1471 と 1px 重なる
+```
+
+**許容幅は、隣接する単発欄までの余白より大きくなりうる。** 重なると `mapping._bucket_cells` の first-hit（定義順）が行き先を決め、`status=正常` のまま値が入れ替わる。`load_template` の重なり拒否（issue #24）はテンプレート座標で読み込み時に1回走るだけで、吸着後の座標は1度も検証されない。
+
+- 母集団はその面の cell の全領域（`all_rects()`）＋`fallback_rect`。**除外領域は含めない**（W-1/W-2 が「拒否せず見える化」と決めた領域で、重なっても白塗りで〓になるだけ。値の取り違えは起きない）
+- 判定は「吸着後に重なる」かつ「**吸着前は重なっていない**」の連言。既存の重なりを再検出して常時 fail-safe にしない
+- 落とす単位は**面**。**クランプ（許容幅を余白まで縮めて適用する）は採らない**——測った量が +8 なのに +7 だけ動かすのは「半分だけ正しい」状態で、D-25 が禁じた形
+- **実行するのは計画時（新規整列）だけ。** 復元経路は検査を通った適用済みの dy を読むので再検査しない
+- 走査は「吸着後の矩形を y でソートし、y 帯が重なる間だけ前進、そのうち x 帯も重なる対だけを検査」する掃引。母集団は front 58／back 140 の受け皿矩形（`chouhyo-v1`・2026-09-03 実測）で、比較は整数のみ。**両面あわせて 0.712 ms/ページ**（200 回平均・同日実測）——NFR-F07（+0.15 秒/枚＝150 ms）に対し 2 桁の余裕がある
+
+### 6.5 件数（FR-F41）とログ
+
+`Summary` へ2つ追加する。**1つの数字に混ぜない。**
+
+```python
+snap_failsafe_pages: int = 0   # 入力画像由来・毎回変わる（FR-F36/F42）
+snap_excluded_pages: int = 0   # テンプレート定義由来・毎回同じ（FR-F35）
+```
+
+- 数える単位は**ページ**。**1ページを両方に数えない**（優先は `excluded`）。結果として `failsafe + excluded <= 総ページ数` が成立する
+- `disabled`・`no_estimate`・`no_blocks` はどちらにも数えない（吸着を試みてすらいない）
+- `progress({"event":"summary", ...})` へ2キーを**常に出す**（0 でも出す・`remap_summary` と同じ流儀）
+
+```
+snap_result page_id=<id> face_idx=0 snap_dy_max=3 snap_reason=failsafe snap_blocks=2
+```
+
+白リストへ足すキーは **`snap_dy_max`・`snap_reason`・`snap_blocks`** の3つ。`face_id`・`table_id` は白リスト外（Q-S1・§1.2）なので**渡しても黙って落ちる**——(c) と同じく `face_idx` で出す。ブロック別の内訳はログへ出さない（`snap_detail` に入る）。
+
+### 6.6 診断コマンド `snap-diff`（FR-F40）
+
+**吸着 ON と OFF で読取値が変わる欄を数えるだけのコマンド。** 「どちらが正しいか」は言わない——許容幅の内側の誤りを機械で見つける手段は無く（§3.5・Q-F11）、ON と OFF を並べるところまでが機械の仕事で、判断は人（テンプレート作成者）が行う。
+
+```
+chouhyo-ocr snap-diff [--template <path>] [--page <page_id>] [--limit N]
+```
+
+**GUI の白リスト（`gui/src-tauri/src/lib.rs` の `ALLOWED_SUBCOMMANDS`）へは足さない。** `debug-images`・`diag-overflow` と同じ CLI 専用で、担い手は管理者。画面から押せる場所に置くと、Q-F14 の受け入れ手順（差分を全件見る）を踏まずに吸着が ON になる。Rust 側の変更は 0 件。
+
+**入力**は保存済みの `token` 表だけ。`OcrClient` を1つも作らない（Vision 送信 0 回）。**出力側**は `render_out` を呼ばず、`render_rows.build_row` をメモリ上で 2 回呼んで比べる——生テキストではなく出力列の値で比べることで、〓の判定・元号の 5 値・金額の正規化まで込みの差が拾える。
+
+**中間データは 1 バイトも変えない。** SQLite を一時ディレクトリへ複製してから開く——`Store.__init__` は `_ensure_column` で `ALTER TABLE` を打つため、**原本を開くだけで行の形が変わる**（AC-F39 は実行前後で該当行が同一であることを求める）。WAL の内容は `-wal` にあるので一緒に複製し、`-shm` は複製しない（複製側で作り直される）。
+
+**ON 側の座標は保存済みの結果を読む**（画像から吸着をやり直さない）。座標の作り方は他の 4 経路と同じ 2 行だけで、`transform["snap"]` を直接読むコードを増やさない（§6.3）。`apply_snap` が同一オブジェクトを返したページ（未記録・fail-safe・適用量が全ブロック 0）は、差分 0 と数えて計算しない——同一オブジェクトであること自体が「下流が 1 バイトも変わらない」ことの証明（§6.7 不変条件 2）。
+
+**拒否条件は 3 つ**（順に見る）:
+
+| reason | 条件 | なぜ止めるか |
+|---|---|---|
+| `no_snap_recorded` | `store.snap_flags()` に `1` が無い（done ページが全部 OFF で作られている） | 比べる相手が無い。OFF 同士を比べて「差分 0 件」と返すのは、確かめていないことを確かめた形にする |
+| `algo_version_mismatch` | `algo_versions()` != `{ALGO_VERSION}` | 方式の差を吸着の差として読むと判断を誤る |
+| `geometry_mismatch` / `snap_flag_mixed` | 幾何セクションの不一致／ON と OFF のページが 1 つの workdir に混在 | token 座標が枠と噛み合わない／どちらの側と比べているのか決まらない |
+
+判定は `check_reusable(..., check_template=False, snap_enabled=True)` に通し、拒否されたら理由コードを付けて `ok:false` で返す（**メッセージ本文は例外からそのまま使う**——文言を二重管理しない）。`check_template=False` なのは割付を token から作り直すため（`remap`・`diag-overflow` と同じ扱い）。ほかに材料が無い場合の `no_store`・`no_pages`・`page_not_found` があり、いずれも**終了コード 0**（業務的な拒否・`debug-images` と同じ規約）。
+
+**出力は 1 実行 1 行の JSON。記入値は載せない**（FR-F40・v1.5）:
+
+```jsonc
+{"event":"snap_diff","ok":true,
+ "pages":3,              // 比べた done ページ数
+ "pages_snapped":2,      // うち吸着後の座標が実際に動いていたページ数
+ "cells_compared":660,   // 比べた欄の延べ数（ページ数 × 出力列数）
+ "diff_cells":1,         // 値が変わった欄の延べ数（打ち切り前の総数）
+ "aligned_missing":0,    // 丸印を採点し直せなかった (ページ, 面) の数
+ "algo_version":"2","snap_blocks_config":false,"truncated":false,
+ "diffs":[{"page_id":"a_p0001","column":"detail_15_金額"}]}
+```
+
+- `diffs` は `--limit`（既定 200）で打ち切り、超過は `truncated:true` で示す。`diff_cells` は打ち切り前の総数なので、一覧が切れても件数は正しい
+- **`pages_snapped` を必ず併記する。** これが 0 なら「差分 0 件」は「吸着が 1 度も動いていない」を意味し、吸着の妥当性を何も語らない（§7.2 の緑偽装と同じ型の誤読を防ぐ）
+- 丸印の採点に使う二値化画像は**吸着前の面**から作り（§6.2 判断 2）、(ページ, 面) 単位でキャッシュして ON/OFF の両側で使い回す。位置合わせ画像が無い面は**両側とも同じように落とす**（片側だけ落とすと存在しない差分が生まれる）ので差分は増えず、件数だけ `aligned_missing` に残す
+- ログへ出すのは件数だけ（`snap_diff count=<n>`）。欄名・記入値は出さない（Q-S1・NFR-F05）
+
+### 6.7 守るべき不変条件
+
+1. **吸着 OFF では `snap.py` の計算が1行も走らない**（判定順 1 で即 return）
+2. **`apply_snap` は適用が無ければ同一オブジェクトを返す**（`is` で確かめられる）
+3. **`align_page` に吸着後の `Template` を渡さない**（アンカーが二重に動く）
+4. **`estimate_shift` の判定経路を1行も変えない。** `block_shifts` は `residual` と同じく成功確定後に組み立てるだけ（NFR-F08）
+5. **x 座標を1つも動かさない**（テストで固定する。レビューの目視に頼らない）
+6. **単発欄・除外領域・面の切り出し矩形・`field_geoms`・`shift_limits` を動かさない**
+7. **`transform["snap"]` を解釈するコードは読み1（`store.snap_geometry`）・書き1（`pipeline` の upsert）だけ**
+8. **`ALGO_VERSION` を上げない**（PM 判断）
+9. **既定 OFF の出力は golden と一致する**（AC-F45）
+
+### 6.8 実装時に判明した実測（設計との食い違い・2026-09-03）
+
+| # | 設計の想定 | 実測 | 扱い |
+|---|---|---|---|
+| 1 | 判断4-D の自己検査「合成素材では `block_shifts[i].dy` と (c) の `residual.blocks[i].med` が**一致する**」 | **合成素材では常に 1px ずれた**（`dy = med − sign(med)`）。原因は `_axis_shift` のスコアが ±1px の窓で数えるため真のずれ δ に対し `s ∈ {δ−1, δ, δ+1}` が同点になり、同点規則 `key=(score, -abs(s))` が絶対値の小さい側を採ること。実素材では 0〜1px（front block1: `_axis_shift` −1 / `med` −2、back δ=4 の block1: どちらも 3） | **解決済み**（2026-09-03 architect 判断）。窓で潰れる推定量を使い続ける理由が無いため、`dy` を `residual.blocks[i].med` に切り替えた（`matched` は `_axis_shift` の score のまま）。切り替え後は `shift_block_y` で δ を与えた合成素材で `dy == δ` ちょうど（δ=±2〜±5 で実測）。実素材 sample-1 の δ=4 では 面シフト 1px ＋ ブロック 3px = 4px と刺激に一致する |
+| 2 | AC-F30「OFF では block1 にラベル混入または列ズレが出る」 | **再現しない。** δ=2/3/4/5 の4通りすべてで、OFF・ON とも無変形時と**セル値が完全一致**（差 0 欄・sample-1・2026-09-03）。detail の行の高さは 100px で、記入は行の内側にあるため 3〜4px では `mapping` のバケツから出ない。位置合わせが許容する刺激（δ≤5）は出力を変えるには小さすぎる | AC-F30 は**幾何のレベル**（吸着量が測ったズレと一致すること）で固定し、出力が変わらないことも別テストで実測として固定した。出力レベルの再現には素材の追加が要る（Q-F14 へ引き継ぎ） |
+| 3 | FR-F48 の警告は `[W-5]` を新設 | **`[W-5]` は #86 が既に使っている**（表を持たない面のアンカー不足）。加えて T-5b 追補で「最外の欄の外側の辺が紙に要る」注意を欄数に関わらず出す要求があり、W-5 の文言から分離する必要があった | `[W-5]`＝アンカー個数不足（既存・文言から最外辺の段落を分離）／**`[W-6]`＝欄アンカー面の最外辺の注意（欄数に関わらず常時）**／**`[W-7]`＝期待横線 4 本以下の表（FR-F48・AC-F64）** の3本立てにした。W-7 は**表ごとに1件**（ブロックごとではない——利用者が直す対象は表の行数1箇所） |
+
+### 6.9 前提となる実測（#70・§10.2-2）
 
 **吸着の刺激 δ の実測**（`core/tests/helpers_geom.py` の docstring・2026-09-02・`shift_block_y` で back/detail の block_idx=1 のみを y へ δ px 動かし `estimate_shift` を back 面全体へ実行）:
 
@@ -1811,7 +2040,7 @@ align_residual page_id=<id> face_idx=0 res_h=1 res_v=1 res_pairs=26 res_unpaired
 
 **07 の AC-F30（「成立窓は `2 < δ < 4`＝整数では δ=3 のみ」）は誤り。** 実測では δ=5 まで ok で、`ambiguous` になるのは δ=6 から。面の dy が 1 に収束するため block1 の残差は δ−1 になる。**OFF でラベル混入（02 D-25 の実測: ±2px から）を観測しつつ、ON で許容幅（detail の行間隙 4px）に収まる刺激は δ=4（block1 残差 3px）が最も筋が良い。** (f) のテスト計画はこの値で書く。07 側の訂正提案は §7-4。
 
-**golden**: 着手前コミットは `1541239`（現物は `workdir/golden/1541239/`・manifest `testdata/golden_manifest.json`・`head_short` も `1541239`）。AC-F45 の比較対象はこれ。初出の `71384a4` から取り直した経緯は §2.9 末尾を参照。
+**golden**: 着手前コミットは `1541239`（現物は `testdata/local/golden/1541239/`・manifest `testdata/golden_manifest.json`・`head_short` も `1541239`）。AC-F45 の比較対象はこれ。初出の `71384a4` から取り直した経緯は §2.9 末尾を参照。
 
 ---
 

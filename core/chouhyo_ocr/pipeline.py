@@ -13,7 +13,7 @@ from typing import Callable
 
 from PIL import Image
 
-from . import era, format_check, ingest, logging_safe as log, render_rows
+from . import era, format_check, ingest, logging_safe as log, render_rows, snap
 from .align import (AlignedFace, AlignError, PageSizeMismatch, align_page,
                     geometry_hash, page_size_verdict)
 from .columns import META_COLUMNS, derive_columns, validate_v1
@@ -77,6 +77,13 @@ class Summary:
     fallback_discarded_excluded_field: int = 0
     carve_hole_excluded_field: int = 0
     conflict_excluded_field: int = 0
+    # issue #75 (f)・FR-F41。**2つを1つの数字に混ぜない**——原因が違う。
+    # snap_failsafe_pages は入力画像由来（罫線のかすれ・吸着後の重なり）で
+    # 毎回変わり、snap_excluded_pages はテンプレート定義由来（期待横線 4 本
+    # 以下の表）で毎回同じ件数になる。単位はページ（面ではない）で、1ページを
+    # 両方に数えない（excluded を優先・08 §6 判断4-H）
+    snap_failsafe_pages: int = 0
+    snap_excluded_pages: int = 0
 
 
 def _png_bytes(img: "Image.Image") -> bytes:
@@ -228,7 +235,7 @@ def _record_format_result(store: Store, page_id: str, pv) -> None:
 
 
 def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
-                   *, check_template: bool) -> None:
+                   *, check_template: bool, snap_enabled: bool) -> None:
     """中間データが現テンプレート・現方式で作られたものかを検査する（#25）。
 
     不変条件: 出力は、その出力を組み立てたテンプレートと同一のテンプレートで
@@ -239,6 +246,11 @@ def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
     （_render_locked・_remap_locked・cli.cmd_debug_images・cli.cmd_diag_overflow）
     が `with Store(...) as store:` で包んでおり、ここで raise した例外は with の
     __exit__ が確実に close する。
+
+    snap_enabled（issue #75・FR-F38）に**既定値を付けない**理由: 既定 False を
+    付けると、配線し忘れた呼び出し元が「常に OFF として照合」＝素通りする
+    （fail-open）。キーワード必須にすれば配線漏れが `TypeError` として実行前に
+    落ちる。呼び出し元は3つしかないので保守コストは無い。
     """
     from .align import ALGO_VERSION
     stored_geo = store.geometry_hashes()
@@ -252,6 +264,16 @@ def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
         raise OperationRefused(
             "位置合わせ方式が更新されている。旧方式で作った中間データは"
             "再利用できない——`run` で再処理する（API 送信が発生する）")
+    # 4つ目のガード（issue #75・FR-F38・AC-F37）。既存3ハッシュが一致していても
+    # ここで止まる——ON で作った座標を OFF の実行へ流用させない。既定 OFF で
+    # 作った既存 workdir を OFF のまま使う場合は {0} == {0} で素通りする
+    # （AC-F43b: 拒否されず Vision 0 回）
+    stored_snap = store.snap_flags()
+    if stored_snap and stored_snap != {int(snap_enabled)}:
+        raise OperationRefused(
+            "枠の自動合わせ（吸着）の設定が中間データと違う。"
+            "吸着の有無で枠の位置が変わるため、設定を元に戻すか"
+            "`run` で再処理する（API 送信が発生する）")
     if check_template:
         stored_tpl = store.template_hashes() - {""}
         if stored_tpl and stored_tpl != {tpl_hash}:
@@ -267,7 +289,7 @@ _ALIGNED_STATES = frozenset({"aligned", "sending", "received"})
 
 def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
                        page_id: str, geo_hash: str, algo_version: str,
-                       tpl_hash: str
+                       tpl_hash: str, *, snap_enabled: bool
                        ) -> tuple[list[AlignedFace], "Image.Image"] | None:
     """保存済みの位置合わせ結果から faces/composite を復元する（#45）。
 
@@ -278,9 +300,16 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
 
     再利用できるのは、面ごとに ①alignment 行がある ②ok ③geometry_hash が
     現テンプレートと一致 ④algo_version が現コードと一致 ⑤template_hash が
-    現テンプレートと一致 ⑥整列画像が実在し寸法が source.rect と一致 の
+    現テンプレートと一致 ⑥整列画像が実在し寸法が source.rect と一致
+    ⑦吸着 ON/OFF が現在の設定と一致（issue #75・FR-F38・AC-F58）の
     **すべて** を満たす場合だけ。1つでも欠けたら None を返して再整列させる
     （古い定義を使い回して誤った値を出さない）。
+
+    ⑦が要るのは、⑥までのゲートは吸着の有無を見ないため。ON で整列した面の
+    保存済み座標（`transform["snap"]`）を OFF の実行が読み戻すと、設定を
+    OFF にしたのに吸着後の枠で割り付ける。戻り値は**2要素のまま**にして、
+    吸着量は呼び出し元が `store.snap_geometry()` から別に取る——再利用経路は
+    課金に直結する #45 の資産で、契約を変えるほどの必要が無い（08 §6 判断3-E）。
 
     ⑤が要るのは、平行移動の探索アンカー（estimate_shift）が faces[].tables の
     blocks.origin / row_pitch / columns から作られるのに対し、geometry_hash は
@@ -302,6 +331,13 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
     rows = store.alignments(page_id)
     if not rows:
         return None
+    # ⑦ 吸着 ON/OFF の照合（FR-F38）。面が1つでも違う設定で作られていたら
+    # 再整列へ倒す（部分的に混ざった座標を作らない）
+    snap_rows = store.snap_geometry(page_id)
+    for face in template.faces:
+        rec = snap_rows.get(face.face_id)
+        if rec is None or rec[1] != int(snap_enabled):
+            return None
     import numpy as np
 
     from .align import binarize_face
@@ -336,7 +372,8 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
 
 
 def _map_and_score(store: Store, template: Template, page_id: str,
-                   resp: dict, aligned_faces
+                   resp: dict, aligned_faces, *,
+                   snap_by_face: "dict[str, snap.FaceSnap]"
                    ) -> tuple[int, int, int, int, int, int, int, int, int, int]:
     """応答 → token 保存 → 割付 → cell/era 保存。
 
@@ -349,9 +386,18 @@ def _map_and_score(store: Store, template: Template, page_id: str,
     出す。末尾3つは issue #66 段2（FR-1.4）: 上記のうち output: false の欄が
     発火元のものだけの内訳（MappingResult をそのまま素通しするだけで、
     ここでは判定しない——判定は mapping.assign() に集約済み）。
+
+    snap_by_face（issue #75・FR-F37 の経路①）: 面ごとの吸着結果。冒頭で
+    `apply_snap` を1回だけ通し、以降の割付・丸印判定は吸着後の `t2` を使う。
+    吸着していないときは `t2 is template`（同一オブジェクト）になるので、
+    OFF の挙動は1バイトも変わらない。
+    ⚠️ `binarize_face` へ渡す face は**吸着前**のまま——除外領域は紙に固定
+    されたマスクでブロックとは無関係（08 §6 判断2）。ここでは二値は
+    aligned_faces が持っているものをそのまま使うので、その性質は保たれる。
     """
+    t2 = snap.apply_snap(template, snap_by_face)
     page_syms = symbols_from_response(resp)
-    by_face = {f.face_id: to_face_local(f, page_syms) for f in template.faces}
+    by_face = {f.face_id: to_face_local(f, page_syms) for f in t2.faces}
     total_syms = sum(len(v) for v in by_face.values())
     page_total = len(page_syms)
 
@@ -360,10 +406,10 @@ def _map_and_score(store: Store, template: Template, page_id: str,
         for seq, (fid, s) in enumerate(
             (fid, s) for fid, syms in by_face.items() for s in syms)]
 
-    result = assign(template.cells, by_face, template.faces, dpi=template.render_dpi)
+    result = assign(t2.cells, by_face, t2.faces, dpi=t2.render_dpi)
 
     cell_rows = []
-    for cell in template.cells:
+    for cell in t2.cells:
         content = result.cells.get(cell.field_id)
         is_empty = (cell.table_id, cell.row_no) in result.empty_rows
         cell_rows.append((cell.field_id,
@@ -373,7 +419,7 @@ def _map_and_score(store: Store, template: Template, page_id: str,
 
     binaries = {f.face_id: f.binary for f in aligned_faces}
     era_scores: dict[str, dict] = {}
-    for cell in template.cells:
+    for cell in t2.cells:
         if cell.kind != "choice":
             continue
         if (cell.table_id, cell.row_no) in result.empty_rows:
@@ -395,7 +441,7 @@ def _map_and_score(store: Store, template: Template, page_id: str,
         # U-04/#62: 文字単位信頼度・値の由来を cell_rows と同じ内容から作り、
         # 同じ page_id へ拡張列として保存する（store.cells() の戻り値は不変の
         # まま・設計 §10.2）
-        store.upsert_cell_extras(page_id, _extras_rows(template, result))
+        store.upsert_cell_extras(page_id, _extras_rows(t2, result))
         store.upsert_eras(page_id, era_scores)
         store.set_unassigned(page_id, result.unassigned_below_table,
                              result.unassigned_other)
@@ -456,11 +502,12 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # プリフライト（#25）: テンプレート・位置合わせ方式が変わっていたら、
         # API を1回も叩く前に止める。要配慮個人情報の再送は明示オプトインのみ
         # ——テンプレ編集の副作用で数百ページを黙って再開示・再課金しない
-        outdated_pages = store.stale_done_pages(geo_hash, tpl_hash, ALGO_VERSION)
+        outdated_pages = store.stale_done_pages(geo_hash, tpl_hash, ALGO_VERSION,
+                                                int(cfg.snap_blocks))
         if outdated_pages:
             if not resend_on_template_change:
                 raise OperationRefused(
-                    f"テンプレートまたは位置合わせ方式が変わっている"
+                    f"テンプレートまたは位置合わせ方式・枠の自動合わせの設定が変わっている"
                     f"（対象 {len(outdated_pages)} ページ）。"
                     "再処理には API 送信（課金）が発生するため中止した。"
                     "旧テンプレートへ戻す／`purge --yes` で作り直す／"
@@ -668,7 +715,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 if reason is not None:
                     raise PageSizeMismatch(reason)
                 reused = (_restore_alignment(store, template, aligned_dir, pid,
-                                             geo_hash, ALGO_VERSION, tpl_hash)
+                                             geo_hash, ALGO_VERSION, tpl_hash,
+                                             snap_enabled=cfg.snap_blocks)
                           if page["state"] in _ALIGNED_STATES else None)
                 if reused is None:
                     faces, composite = align_page(img, template)
@@ -737,6 +785,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 # state は動かさない（received を aligned へ戻すと保存済み応答を
                 # 使う条件が消え、再送＝再課金になる・issue #38）
                 faces, composite = reused
+                # 吸着量は保存済みの結果を読み戻す（FR-F37 の経路⑤・AC-F57）。
+                # 再計算しない——再利用の価値は「整列をやり直さない」ことにある
+                snap_by_face = snap.from_store_rows(store.snap_geometry(pid))
                 log.info("reuse_alignment", page_id=pid)
                 # issue #71 (a')・08 §2.4.2「再利用ページの扱い」: 判定のためだけに
                 # 整列相当の計算を回さない（#45 の再利用は「整列をやり直さない」
@@ -749,6 +800,19 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                         store, pid, format_check.PageVerdict("unknown", "", -1.0, ()))
                     log.info("format_check_skipped_reuse", page_id=pid)
             else:
+                # 吸着の計画（issue #75 (f)・FR-F33/F35/F36/F42）。ここで面ごとに
+                # 1回だけ確定させ、以降は同じ FaceSnap を記録と適用の両方へ使う。
+                # 第3条件（吸着後の新しい重なり）は面をまたいだ幾何が要るので
+                # 計画の後で reject_overlapping に通す（08 §6 判断4-F）
+                snap_by_face = snap.reject_overlapping(template, {
+                    f.face_id: snap.plan_face_snap(
+                        template.face(f.face_id), f.estimate, cfg.snap_blocks)
+                    for f in faces})
+                counter = snap.page_counter_key(snap_by_face)
+                if counter == "excluded":
+                    summary.snap_excluded_pages += 1
+                elif counter == "failsafe":
+                    summary.snap_failsafe_pages += 1
                 for idx, f in enumerate(faces):
                     # 残差の記録（issue #74 (c)・FR-F32・08 §5.4）。align_page が
                     # 例外なく返った以上 f.estimate は None ではないはずだが、
@@ -769,13 +833,27 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     else:
                         align_residual_px = -1.0
                         align_residual_detail = ""
+                    # 吸着の記録（issue #75・FR-F43・AC-F42）。幾何（適用した
+                    # dy）は transform["snap"] へ、内訳（測った量・一致本数・
+                    # 理由コード）は snap_detail へ分ける——同じ値を2箇所に
+                    # 持たせない（08 §6 判断3-B）
+                    fs = snap_by_face[f.face_id]
+                    log.info("snap_result", page_id=pid, face_idx=idx,
+                             snap_dy_max=int(max((abs(d) for d in fs.dy_by_block()),
+                                                 default=0)),
+                             snap_reason=fs.reason or "applied",
+                             snap_blocks=len(fs.blocks))
                     store.upsert_alignment(
                         pid, f.face_id,
                         {"angle": f.angle, "dx": f.dx, "dy": f.dy,
-                         "matched": f.shift_matched},
+                         "matched": f.shift_matched,
+                         "snap": snap.to_transform_json(fs)},
                         True, geo_hash, ALGO_VERSION, tpl_hash,
                         align_residual_px=align_residual_px,
-                        align_residual_detail=align_residual_detail)
+                        align_residual_detail=align_residual_detail,
+                        snap_enabled=int(cfg.snap_blocks),
+                        snap_px=snap.snap_px_of(fs),
+                        snap_detail=snap.to_detail_json(fs))
                     # 位置合わせ画像はローカル中間データ（remap の再スコア用・#45 の
                     # 再利用元）で配布物ではない。圧縮率を下げてエンコード時間を優先する
                     # （実測: level 6 で 0.35s/枚 → level 1 で 0.22s/枚・容量は +1MB 程度）
@@ -833,7 +911,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 (below, other, total, page_total,
                  fb_used, fb_discarded, hole,
                  fb_discarded_excl, hole_excl, conflict_excl) = _map_and_score(
-                    store, template, pid, resp, faces)
+                    store, template, pid, resp, faces,
+                    snap_by_face=snap_by_face)
             except Exception as e:  # noqa: BLE001
                 store.set_state(pid, "failed")
                 # M-2（2026-09-02 マリン指摘）: 送信後3コードにも専用理由コードを
@@ -944,6 +1023,12 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                   "fallback_discarded_excluded_field": summary.fallback_discarded_excluded_field,
                   "carve_hole_excluded_field": summary.carve_hole_excluded_field,
                   "conflict_excluded_field": summary.conflict_excluded_field,
+                  # issue #75 (f)・FR-F41。**2項目を別に出す**（原因が違う）。
+                  # 0 でも常に出す（remap_summary と同じ流儀）——毎回同じキーが
+                  # 並ぶ方が呼び出し側（GUI）の分岐が単純になる。サマリ6項目
+                  # （要件 §5.9）には数えない＝警告カード側で扱う
+                  "snap_failsafe_pages": summary.snap_failsafe_pages,
+                  "snap_excluded_pages": summary.snap_excluded_pages,
                   # P-H1 可視化（累積コストの目安）。total_done_pages は今回処理分
                   # ではなく store に蓄積された state=='done' の累積件数
                   # （えーちゃん指示 2026-09-02）
@@ -993,7 +1078,8 @@ def _render_locked(template_path: str | Path, cfg: Config,
     columns = derive_columns(template)
     with Store(_store_path(cfg)) as store:
         # 出力を1バイトも書く前に、中間データが現テンプレートの産物かを検査（#25）
-        check_reusable(store, geo_hash, _tpl_hash(raw), check_template=True)
+        check_reusable(store, geo_hash, _tpl_hash(raw), check_template=True,
+                       snap_enabled=cfg.snap_blocks)
         rows: list[Row] = []
         data_failures: list[str] = []
         bug_failures: list[str] = []
@@ -1132,7 +1218,8 @@ def _remap_locked(template_path: str | Path, cfg: Config,
     from .align import template_hash as _tpl_hash
     tpl_hash = _tpl_hash(raw)
     with Store(_store_path(cfg)) as store:
-        check_reusable(store, geo_hash, tpl_hash, check_template=False)
+        check_reusable(store, geo_hash, tpl_hash, check_template=False,
+                       snap_enabled=cfg.snap_blocks)
 
         n = 0
         fb_used_total = fb_discarded_total = carve_hole_total = 0
@@ -1144,13 +1231,18 @@ def _remap_locked(template_path: str | Path, cfg: Config,
             if page["state"] != "done":
                 continue
             pid = page["page_id"]
-            by_face: dict[str, list] = {f.face_id: [] for f in template.faces}
+            # 吸着後座標の復元（issue #75・FR-F37 の経路②③・AC-F36）。
+            # 読み出し口は store.snap_geometry() 1つだけで、run と同じ
+            # apply_snap を通す——座標をコピーして持ち回らない
+            t2 = snap.apply_snap(
+                template, snap.from_store_rows(store.snap_geometry(pid)))
+            by_face: dict[str, list] = {f.face_id: [] for f in t2.faces}
             from .mapping import Symbol
             for _seq, face_id, text, conf, x, y in store.tokens(pid):
                 by_face.setdefault(face_id, []).append(Symbol(text, x, y, conf))
-            result = assign(template.cells, by_face, template.faces, dpi=template.render_dpi)
+            result = assign(t2.cells, by_face, t2.faces, dpi=t2.render_dpi)
             cell_rows = []
-            for cell in template.cells:
+            for cell in t2.cells:
                 content = result.cells.get(cell.field_id)
                 is_empty = (cell.table_id, cell.row_no) in result.empty_rows
                 cell_rows.append((cell.field_id,
@@ -1168,7 +1260,7 @@ def _remap_locked(template_path: str | Path, cfg: Config,
             import numpy as np
             era_scores: dict[str, dict] = {}
             missing_aligned = 0
-            for cell in template.cells:
+            for cell in t2.cells:
                 if cell.kind != "choice":
                     continue
                 if (cell.table_id, cell.row_no) in result.empty_rows:
@@ -1182,6 +1274,9 @@ def _remap_locked(template_path: str | Path, cfg: Config,
                     continue
                 gray = np.asarray(Image.open(img_p).convert("L"))
                 from .align import binarize_face
+                # 二値化に渡す face は**吸着前**（template 側）——除外領域は紙に
+                # 固定されたマスクで、ブロックの罫線とは無関係（08 §6 判断2）。
+                # 帯を測る cell だけが吸着後（t2）になる
                 binary = binarize_face(gray, template.face(cell.face_id), dpi=template.render_dpi)
                 era_scores[cell.field_id] = era.score_cell(binary, cell)
 
@@ -1196,7 +1291,7 @@ def _remap_locked(template_path: str | Path, cfg: Config,
                 # U-04/#62: run と同じ変換（_extras_rows）で char_confs/origin も
                 # 作り直す。ここを直さないと、再割付のたびに由来印・文字単位〓の
                 # 材料が既定値 '' へ巻き戻る（設計 §12「remap にも同じ変更が要る」）
-                store.upsert_cell_extras(pid, _extras_rows(template, result))
+                store.upsert_cell_extras(pid, _extras_rows(t2, result))
                 store.upsert_eras(pid, era_scores)
                 store.set_template_hash(pid, tpl_hash)  # 割付し直した版の印（#25）
                 store.set_unassigned(pid, result.unassigned_below_table,

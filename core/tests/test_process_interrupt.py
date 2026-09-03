@@ -19,8 +19,8 @@ import pytest
 
 from chouhyo_ocr.paths import app_root
 
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
 
 pytestmark = pytest.mark.skipif(

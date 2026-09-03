@@ -21,7 +21,7 @@
 ——常に ReplayClient 経由）:
     .venv\\Scripts\\python.exe -X utf8 scripts\\make_golden.py
 
-出力: `workdir/golden/<head_short>/output.{xlsx,csv}`（.gitignore 対象・
+出力: `testdata/local/golden/<head_short>/output.{xlsx,csv}`（.gitignore 対象・
 記入値を含むためコミットしない）と `testdata/golden_manifest.json`
 （記入値を含まない・コミット対象）。
 """
@@ -47,8 +47,8 @@ from openpyxl import load_workbook  # noqa: E402
 
 # --- 既定パス（すべて .gitignore 対象・このマシン限定のローカルデータ）---
 DEFAULT_TEMPLATE = REPO_ROOT / "templates" / "chouhyo-v1.json"
-DEFAULT_PAGE_PNG = REPO_ROOT / "workdir" / "pages" / "sample-1.png"
-DEFAULT_RESPONSE = REPO_ROOT / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+DEFAULT_PAGE_PNG = REPO_ROOT / "testdata" / "local" / "pages" / "sample-1.png"
+DEFAULT_RESPONSE = REPO_ROOT / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 # 位置合わせ後のファイル名規約（ingest の既定命名）: "<入力ファイル名(拡張子なし)>_p0001"
 DEFAULT_PAGE_ID = "sample-1_p0001"
 
@@ -116,7 +116,7 @@ def main() -> None:
 
     cwd_used = str(REPO_ROOT)
 
-    golden_dir = REPO_ROOT / "workdir" / "golden" / head_short
+    golden_dir = REPO_ROOT / "testdata" / "local" / "golden" / head_short
     if golden_dir.exists():
         shutil.rmtree(golden_dir)
     golden_dir.mkdir(parents=True)
@@ -183,19 +183,19 @@ def main() -> None:
         },
         "outputs": {
             "output.xlsx": {
-                "path": f"workdir/golden/{head_short}/output.xlsx",
+                "path": f"testdata/local/golden/{head_short}/output.xlsx",
                 "cell_value_sha256": xlsx_hash,
                 "rows": n_rows,
                 "cols": n_cols,
                 "masked_cells": n_masked,
             },
             "output.csv": {
-                "path": f"workdir/golden/{head_short}/output.csv",
+                "path": f"testdata/local/golden/{head_short}/output.csv",
                 "normalized_sha256": csv_hash,
             },
         },
         "note": ("記入値（帳票の読取結果そのもの）はこのファイルに含めない。"
-                "output.xlsx/output.csv 自体は workdir/ 配下（.gitignore 対象）に"
+                "output.xlsx/output.csv 自体は testdata/local/golden/ 配下（.gitignore 対象）に"
                 "置きコミットしない。ハッシュはファイルバイト列ではなく"
                 "セル値・正規化テキストを対象にしている（procedure 参照）。"),
     }

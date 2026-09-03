@@ -29,9 +29,9 @@ from chouhyo_ocr.store import Store
 from chouhyo_ocr.vision_client import ReplayClient
 
 TPL = app_root() / "templates" / "chouhyo-v1.json"
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
-PAGE2_PNG = app_root() / "workdir" / "pages" / "sample-2.png"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
+PAGE2_PNG = app_root() / "testdata" / "local" / "pages" / "sample-2.png"
 
 needs_replay = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()),

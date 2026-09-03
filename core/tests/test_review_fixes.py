@@ -20,7 +20,7 @@ TPL = app_root() / "templates" / "chouhyo-v1.json"
 CFG = Config(unclear_threshold=0.85, era_threshold=0.06)
 RESP = (app_root() / "core" / "workdir" / "responses"
         / "帳票抽出検証用2026-08-24_p0001.json")
-PAGE_PNG_EXISTS = (app_root() / "workdir" / "pages" / "sample-1.png").exists()
+PAGE_PNG_EXISTS = (app_root() / "testdata" / "local" / "pages" / "sample-1.png").exists()
 
 
 # ---------- #11: 金額正規化の発火条件 ----------
@@ -405,7 +405,7 @@ def test_run_reports_stale_pages(tmp_path):
     from chouhyo_ocr.pipeline import run
     from chouhyo_ocr.vision_client import ReplayClient
     from chouhyo_ocr.paths import app_root
-    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    page_png = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
     cfg = Config(unclear_threshold=0.4, output_dir=str(tmp_path / "o"),
                  workdir=str(tmp_path / "w"), log_dir=str(tmp_path / "l"))
     inp = tmp_path / "in"; inp.mkdir()
@@ -434,8 +434,8 @@ def test_run_e2e_with_single_file_input(tmp_path):
     from chouhyo_ocr.paths import app_root
     from chouhyo_ocr.pipeline import render, run
     from chouhyo_ocr.vision_client import ReplayClient
-    resp_src = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    resp_src = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+    page_png = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
     if not (resp_src.exists() and page_png.exists()):
         pytest.skip("保存済み応答が無い環境")
     cfg = Config(unclear_threshold=0.4, output_dir=str(tmp_path / "out"),

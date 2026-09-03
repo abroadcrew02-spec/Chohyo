@@ -133,7 +133,7 @@ def response_meta_path(workdir: str | Path, page_id: str) -> Path:
 
     応答本体（<page_id>.json）へキーを足すのではなくサイドカーにするのは、
     本体を Vision の応答そのもの（MessageToDict の出力）のままに保つため。
-    ReplayClient の再生素材（workdir/s2 等）や remap/render は本体をそのまま
+    ReplayClient の再生素材（testdata/local/s2 等）や remap/render は本体をそのまま
     読むので、独自キーを混ぜると「保存した応答」と「API の応答」が別物に
     なる。サイドカーなら本体は素のまま、無ければ従来どおり扱えばよい。
     """

@@ -31,7 +31,7 @@ def test_body_stays_the_raw_api_response(tmp_path):
     """本体にはハッシュを混ぜない（ReplayClient の再生素材と同じ形を保つ）。
 
     本体へキーを足すと「保存した応答」と「API の応答」が別物になり、
-    workdir/s2 の再生素材や remap がそれを前提にできなくなる。
+    testdata/local/s2 の再生素材や remap がそれを前提にできなくなる。
     """
     save_response(tmp_path, "p_0001", RESP, image_sha256=H1)
     body = json.loads(response_path(tmp_path, "p_0001").read_text(encoding="utf-8"))

@@ -42,6 +42,14 @@ ANCHOR_MIN_SPAN_PX = 40
 ANCHOR_SEARCH_PX = 24
 ANCHOR_WARN_MIN = 3
 
+# 吸着（issue #75 (f)・FR-F35）を信用する下限。期待横線がこの本数以下の表は
+# need_y = max(2, ceil(n × SHIFT_MATCH_RATIO)) の下限 2 と拮抗する（n=4 で
+# ceil(4×0.5)=2 と同値、n=5 で初めて ceil 側が上回る）ため、吸着の対象に
+# しない。判定そのものは snap.is_small_table にあり、ここは保存時警告
+# （W-7・FR-F48）と共有するための1つの正本。snap.py は template.py を
+# import する側なので、定数はこちらに置く（逆向きは循環 import になる）
+SNAP_EXCLUDED_H_LINES_MAX = 4
+
 # px 単位の内部定数（mapping._LINE_GAP/_BUCKET・align.COARSE_DILATE/
 # SHIFT_RUNNER_DIST・grid.ROW_INSET・projection.LINE_GAP・本モジュールの
 # CHOICE_MARK_MARGIN_PX）が較正された基準 dpi（汎用化 A-3）。render_dpi は
@@ -104,6 +112,13 @@ class CellSpec:
     # 属性が変えるのは出力の可否だけで、幾何にも母集団にも触れない
     # （FR-1.2）。対象外判定は output_cells() の1関数に集約する（S-3設計）。
     output: bool = True
+    # 表由来のセルが属するブロックの面内通し序数（issue #75 (f)・FR-F33）。
+    # faces[].tables[].blocks[] を定義順に平坦化した 0 始まりで、同じ面の
+    # Face.table_geoms／Face.table_zones の並びと一致する。**単発欄（fields
+    # 由来）は None**——吸着で動かすのは表由来のセルだけ（08 §6 判断2）。
+    # 採番は load_template の面ループが行う（_expand_table 単体では面内の
+    # 通し序数を決められない。同じ面に table が複数あると 0 から数え直す）
+    block_idx: int | None = None
 
     def all_rects(self) -> tuple[Rect, ...]:
         """欄を構成する全領域（主＋追加）。参照先は含まない。"""
@@ -125,6 +140,9 @@ class TableZone:
     x_min: int
     x_max: int
     bottom: int  # 最終行の下端
+    # CellSpec.block_idx と同じ面内通し序数（issue #75 (f)）。枠外 symbol の
+    # below_table 判定に使う占有域も吸着で動くため、dy を配る対応が要る
+    block_idx: int = 0
 
 
 @dataclass(frozen=True)
@@ -136,6 +154,11 @@ class TableGeom:
     y_max: int
     h_lines: tuple[int, ...]  # 期待横線の y
     v_lines: tuple[int, ...]  # 期待縦線の x
+    # 行間隙 = row_pitch − row_height（issue #75 (f)・FR-F34 の許容幅）。
+    # px をコードへ直書きせずテンプレートから導出するための持ち回り。
+    # 欄アンカー（_field_geoms・issue #86）は行ピッチを持たないので 0 のまま
+    # ——欄の枠線は吸着の対象にしない（08 §6 判断5-B）
+    row_gap: int = 0
 
 
 @dataclass(frozen=True)
@@ -208,15 +231,19 @@ def _rect(d: dict) -> Rect:
     return Rect(d["x"], d["y"], d["w"], d["h"])
 
 
-def _expand_table(face_id: str, t: dict) -> list[CellSpec]:
+def _expand_table(face_id: str, t: dict, *, block_base: int = 0) -> list[CellSpec]:
     """テーブル定義から格子を展開する（設計 §4.2 展開規則）。
 
     blocks を定義順に走り、行の通し番号はブロックを跨いで連番。
+
+    block_base はこの table の先頭ブロックの**面内**通し序数（issue #75 (f)）。
+    同じ面に table が複数あると各 table のブロックは 0 から数え直すため、
+    面内で一意な序数は呼び出し元（load_template）が渡す。
     """
     cells: list[CellSpec] = []
     row_no = 0
     pitch, height = t["row_pitch"], t["row_height"]
-    for blk in t["blocks"]:
+    for bi, blk in enumerate(t["blocks"]):
         ox, oy = blk["origin"]["x"], blk["origin"]["y"]
         for i in range(blk["rows"]):
             row_no += 1
@@ -263,6 +290,7 @@ def _expand_table(face_id: str, t: dict) -> list[CellSpec]:
                         # 違う値を持たせる経路は無い——1つの tableColumn
                         # 定義が対象外なら、展開後の全行が対象外になる
                         output=c.get("output", True),
+                        block_idx=block_base + bi,
                     )
                 )
     return cells
@@ -282,6 +310,9 @@ def _table_geoms(t: dict) -> list[TableGeom]:
             y_min=oy, y_max=h[-1],
             h_lines=tuple(h),
             v_lines=tuple(ox + v for v in v_offsets),
+            # 吸着の許容幅（issue #75 FR-F34）。row_height <= row_pitch は
+            # load_template が先に検証済みなので負にならない
+            row_gap=t["row_pitch"] - t["row_height"],
         ))
     return geoms
 
@@ -345,6 +376,12 @@ def _anchor_shortage_warnings(faces: list[Face]) -> list[str]:
     拒否はしない——アンカーが 1 本でも作れるなら原理的に位置合わせは成立する
     （need = max(2, ...) は 1 欄の 2 辺で満たせる）。W-1〜W-4 と同じく
     「見える化のみ」に揃える。
+
+    2026-09-03（issue #75・T-5b 追補）: 「最外の欄の外側の辺が紙に要る」の
+    注意はこの警告から外し、W-6 として**欄の個数に関わらず**出すようにした。
+    欄が 3 個以上あっても最外の辺が紙に無ければ毎回 `edge_mismatch` で落ちる
+    （`test_field_anchor.py::test_t5b_outer_edge_missing_fails`）——個数の
+    不足とは独立した失敗要因なので、個数条件に相乗りさせない。
     """
     warnings: list[str] = []
     for f in faces:
@@ -355,23 +392,83 @@ def _anchor_shortage_warnings(faces: list[Face]) -> list[str]:
             warnings.append(
                 f"[W-5] 面 '{f.face_id}' は表を持たず、位置合わせのアンカーに"
                 f"使える欄が {n} 個しかない。罫線のかすれや記入のはみ出しで"
-                "位置合わせに失敗しやすい（表を1つ置くか、枠のある欄を増やすと安定する）。"
-                "面のいちばん上・下・左・右にある欄は、外側の辺の枠線が紙に"
-                "印刷されている欄にすること（この4本を位置合わせの照合に使うため、"
-                "紙に無いと毎回「外形不一致」で位置合わせに失敗する）")
+                "位置合わせに失敗しやすい（表を1つ置くか、枠のある欄を増やすと安定する）")
     return warnings
 
 
-def _table_zones(t: dict) -> list[TableZone]:
+def _anchor_outer_edge_warnings(faces: list[Face]) -> list[str]:
+    """W-6: 欄アンカー面には、欄数に関わらず最外の辺の注意を出す（issue #75・T-5b 追補）。
+
+    `estimate_shift` は欄アンカー面で「面内の期待線の**最外 2 本**（両軸）が
+    検出線に当たること」を要求する（`align.py` の非周期アンカー・issue #86）。
+    この 4 本は欄の個数と無関係に必要で、紙に印刷されていなければ欄が何個
+    あっても毎回「外形不一致」で位置合わせに失敗する。W-5（個数不足）の
+    条件に相乗りさせると、欄を増やして W-5 を消した利用者が同じ失敗に
+    はまり続ける。
+    """
+    warnings: list[str] = []
+    for f in faces:
+        if f.table_geoms or not f.field_geoms:
+            continue
+        warnings.append(
+            f"[W-6] 面 '{f.face_id}' は表を持たず、欄の枠線を位置合わせの基準に使う。"
+            "面のいちばん上・下・左・右にある欄は、外側の辺の枠線が紙に印刷されて"
+            "いる欄にすること（この4本を照合に使うため、紙に無いと毎回「外形不一致」で"
+            "位置合わせに失敗する）")
+    return warnings
+
+
+def _small_table_snap_warnings(faces: list[Face], raw: dict) -> list[str]:
+    """W-7: 期待横線が少ない表は吸着対象外になる（issue #75 FR-F48・AC-F64）。
+
+    吸着（(f)）は期待横線 `SNAP_EXCLUDED_H_LINES_MAX` 本以下の表を信用せず、
+    **その表を含む面全体**を対象外にする（FR-F35）。行数はテンプレートに
+    書いてあるので、実行を待たず保存時点で予見できる。拒否はしない
+    ——吸着が効かないだけで読み取りは従来どおり動く（W-1〜W-6 と同じ
+    「見える化のみ」）。
+
+    表 ID を出すため raw（元 JSON）から table_id を読む。`Face.table_geoms` は
+    table_id を持たないので突き合わせは定義順で行う——`_table_geoms` が blocks を
+    定義順に平坦化するのと同じ順序。
+
+    **表ごとに1件**（ブロックごとではない）。1つの表を複数ブロックに割っても、
+    利用者が直す対象は「その表の行数」1箇所だから。
+    """
+    warnings: list[str] = []
+    faces_by_id = {f.face_id: f for f in faces}
+    for rf in raw.get("faces", []):
+        face = faces_by_id.get(rf["face_id"])
+        if face is None or not face.table_geoms:
+            continue
+        idx = 0
+        for t in rf.get("tables", []):
+            counts = []
+            for _blk in t["blocks"]:
+                counts.append(len(face.table_geoms[idx].h_lines))
+                idx += 1
+            fewest = min(counts)
+            if fewest > SNAP_EXCLUDED_H_LINES_MAX:
+                continue
+            warnings.append(
+                f"[W-7] 面 '{rf['face_id']}' の表 '{t['table_id']}' は"
+                f"期待横線 {fewest} 本のため枠の自動合わせ（吸着）の対象外になり、"
+                "同じ面の他の表も吸着しない。行数を増やすか、吸着を使わない運用に"
+                "する（吸着は既定 OFF なので、設定を変えていなければ読み取りへの"
+                "影響はない）")
+    return warnings
+
+
+def _table_zones(t: dict, *, block_base: int = 0) -> list[TableZone]:
     right = max(c["x_offset"] + c["width"] for c in t["columns"])
     zones = []
-    for blk in t["blocks"]:
+    for bi, blk in enumerate(t["blocks"]):
         ox, oy = blk["origin"]["x"], blk["origin"]["y"]
         zones.append(TableZone(
             table_id=t["table_id"],
             x_min=ox,
             x_max=ox + right,
             bottom=oy + t["row_pitch"] * (blk["rows"] - 1) + t["row_height"],
+            block_idx=block_base + bi,
         ))
     return zones
 
@@ -705,8 +802,13 @@ def load_template(path: str | Path) -> Template:
                 raise TemplateError(
                     f"row_height({t['row_height']}) > row_pitch({t['row_pitch']})：行が重なる（table {t['table_id']}）"
                 )
-            cells.extend(_expand_table(fid, t))
-            zones.extend(_table_zones(t))
+            # ブロックの面内通し序数は、この時点の geoms の長さがそのまま
+            # 先頭になる（issue #75 (f)・08 §6 判断1）。**採番の正本はこの
+            # 3行の順序**——cells／zones が参照する序数と geoms の並びが
+            # 一致することを、派生表ではなく代入順で保証する
+            blk_base = len(geoms)
+            cells.extend(_expand_table(fid, t, block_base=blk_base))
+            zones.extend(_table_zones(t, block_base=blk_base))
             geoms.extend(_table_geoms(t))
         # 平行移動推定は罫線をアンカーにする。表を持たない面は、単発欄の枠線を
         # 代わりのアンカーにする（issue #86）——表のある面はここに入らず従来
@@ -929,5 +1031,7 @@ def load_template(path: str | Path) -> Template:
         warnings=tuple(_exclusion_overlap_warnings(faces, cells)
                        + _adjacent_gap_warnings(faces, cells)
                        + _hole_overlap_warnings(faces, cells)
-                       + _anchor_shortage_warnings(faces)),
+                       + _anchor_shortage_warnings(faces)
+                       + _anchor_outer_edge_warnings(faces)
+                       + _small_table_snap_warnings(faces, raw)),
     )

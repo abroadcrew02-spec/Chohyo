@@ -10,7 +10,7 @@ from PIL import Image
 from chouhyo_ocr.grid import detect_ruled, make_uniform
 from chouhyo_ocr.paths import app_root
 
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 
 
 def test_uniform_grid_arithmetic():

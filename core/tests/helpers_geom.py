@@ -5,7 +5,7 @@
 
 ## shift_block_y / shift_response_vertices の実測結果（§10.2-2）
 
-対象: `workdir/pages/sample-1.png`（テンプレート `templates/chouhyo-v1.json`・
+対象: `testdata/local/pages/sample-1.png`（テンプレート `templates/chouhyo-v1.json`・
 back 面・table_id="detail"・block_idx=1＝origin x=1123 のブロック）。
 `shift_block_y` でこのブロックの矩形領域だけを y 方向へ δ px 動かし、
 `chouhyo_ocr.align.estimate_shift` を back 面全体に対して実行した
@@ -22,7 +22,7 @@ from helpers_geom import shift_block_y
 
 tpl = load_template("templates/chouhyo-v1.json")
 face = tpl.face("back")
-img = Image.open("workdir/pages/sample-1.png").convert("RGB")
+img = Image.open("testdata/local/pages/sample-1.png").convert("RGB")
 for dy in (2, 3, 4, 6):
     shifted = shift_block_y(img, tpl, "back", "detail", 1, dy)
     r = face.source_rect

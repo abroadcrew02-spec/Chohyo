@@ -65,6 +65,13 @@ _ALLOWED_KEYS = {
     # いずれも px 値・件数のみで名前・記入値を含まない。裸の "residual_px" は
     # 意図的に足さない——grid.py（#85）の同名キーと混同しないための切り分け
     "res_h", "res_v", "res_pairs", "res_unpaired",
+    # ブロック単位の枠吸着（issue #75 (f)・FR-F43・08 §6）。snap_dy_max は
+    # その面で適用した y 移動量の最大絶対値（px）、snap_reason は固定語彙の
+    # 理由コード（applied / disabled / no_estimate / no_blocks /
+    # excluded_small_table / failsafe / overlap_after_snap）、snap_blocks は
+    # ブロック数。いずれも px 値・件数・列挙値のみで名前・記入値を含まない。
+    # ブロック別の内訳はログへ出さない（alignment.snap_detail に入る）
+    "snap_dy_max", "snap_reason", "snap_blocks",
 }
 
 _app: logging.Logger | None = None

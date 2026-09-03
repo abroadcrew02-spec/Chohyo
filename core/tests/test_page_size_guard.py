@@ -105,7 +105,7 @@ def test_run_with_distorted_input_reports_format_mismatch_without_sending(tmp_pa
     from chouhyo_ocr.pipeline import render, run
     from chouhyo_ocr.vision_client import ReplayClient
 
-    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    page_png = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
     tpl = app_root() / "templates" / "chouhyo-v1.json"
     if not page_png.exists():
         pytest.skip("展開済みサンプル画像が無い環境")
@@ -161,7 +161,7 @@ def test_reused_alignment_still_checks_page_size(tmp_path, monkeypatch):
     from chouhyo_ocr.pipeline import run
     from chouhyo_ocr.vision_client import ReplayClient
 
-    page_png = app_root() / "workdir" / "pages" / "sample-1.png"
+    page_png = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
     tpl = app_root() / "templates" / "chouhyo-v1.json"
     if not page_png.exists():
         pytest.skip("展開済みサンプル画像が無い環境")

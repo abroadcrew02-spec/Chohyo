@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from . import logging_safe as log
 from . import mapping
+from . import snap
 from .config import Config
 from .render_rows import unclear_reason
 from .store import Store
@@ -120,12 +121,20 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
 
     # symbol の行き先索引は面ごとに固定（テンプレートはページ間で共通）。
     # 全 symbol × 全セルの線形照合をやめ、assign() と同じ空間インデックスで
-    # 引く（#60 M-6・56倍の性能差の解消）
-    cells_by_face: dict[str, list[CellSpec]] = {}
-    for c in template.cells:
-        cells_by_face.setdefault(c.face_id, []).append(c)
-    locators = {face_id: mapping.build_symbol_locator(cs, dpi=template.render_dpi)
-               for face_id, cs in cells_by_face.items()}
+    # 引く（#60 M-6・56倍の性能差の解消）。
+    #
+    # 2026-09-03（issue #75・FR-F37 の経路④）: 吸着はページごとに違う量を
+    # 与えうるので、索引もページごとに変わる。ただし**吸着の署名が同じ
+    # ページは索引を作り直さない**——吸着 OFF・未記録のページでは署名が
+    # 全ページ同じになり、従来どおり1回だけ作って使い回す（56倍改善を殺さない）
+    locator_cache: dict[tuple, dict] = {}
+
+    def _locators_for(t2: Template) -> dict:
+        cells_by_face: dict[str, list[CellSpec]] = {}
+        for c in t2.cells:
+            cells_by_face.setdefault(c.face_id, []).append(c)
+        return {face_id: mapping.build_symbol_locator(cs, dpi=t2.render_dpi)
+                for face_id, cs in cells_by_face.items()}
 
     made: list[Path] = []
     for page in store.pages():
@@ -135,6 +144,16 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
         tokens = store.tokens(pid)
         if not tokens:
             continue
+
+        # 吸着後座標の復元（FR-F37 の経路④・AC-F56）。読み出し口は
+        # store.snap_geometry() 1つで、run・remap と同じ apply_snap を通す
+        snap_by_face = snap.from_store_rows(store.snap_geometry(pid))
+        t2 = snap.apply_snap(template, snap_by_face)
+        sig = tuple(sorted((fid, s.dy_by_block())
+                           for fid, s in snap_by_face.items()))
+        if sig not in locator_cache:
+            locator_cache[sig] = _locators_for(t2)
+        locators = locator_cache[sig]
 
         # --- 土台: 位置合わせ済みの面を貼り直した1枚 ---
         base = Image.new("RGB", (W, H), "white")
@@ -157,7 +176,7 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
         n_conflict = 0
 
         # --- 欄の枠と〓の塗り ---
-        for c in template.cells:
+        for c in t2.cells:
             ox, oy = face_origin[c.face_id]
             # render_rows.build_row と同じ既定値（field_id が cell に無ければ
             # raw=""・conf=None・is_empty=False）。conf が None のケースを

@@ -25,6 +25,12 @@ type Summary = {
   // 実機通し確認の指摘。core が summary へ追加中のキー・旧コアでは
   // undefined）。api_calls が処理枚数より少ない理由をここで説明する
   reused_pages?: number;
+  // 枠の自動合わせ（吸着）でテンプレートの位置のまま読んだページ数
+  // （issue #75 (f)・FR-F41）。2つは原因が違うので別のキーで届く——
+  // failsafe は入力した紙の状態由来（毎回変わる）、excluded はテンプレート
+  // 定義由来（毎回同じ）。既定 OFF の運用では常に 0（旧コアでは undefined）
+  snap_failsafe_pages?: number;
+  snap_excluded_pages?: number;
   xlsx?: string; csv?: string;
 };
 type Verify = { template: boolean; poppler: boolean; cred: string; storage: boolean;
@@ -203,6 +209,41 @@ export function counterNotice(ev: Record<string, any>): string | null {
     segments.push(`主と参照先の食い違い ${conflictExcl}件（出力しない欄）`);
   }
   return segments.length ? segments.join("・") : null;
+}
+
+/** 枠の自動合わせ（吸着）でテンプレートの位置のまま読んだページ数を
+ *  「実行時のお知らせ」へ出す（issue #75 (f)・FR-F41・AC-F40）。
+ *
+ *  **2つの数字を1つに足さない。** 直す先が違う——
+ *  `snap_failsafe_pages` は入力した紙の状態（罫線のかすれ・吸着後に欄が
+ *  重なる）で決まるので読み取るたびに変わり、原本の状態を見る話になる。
+ *  `snap_excluded_pages` はテンプレートの定義（行数の少ない表）で決まるので
+ *  同じテンプレートを使うかぎり毎回同じ件数になり、テンプレートを直す話に
+ *  なる。合計だけ出すと、利用者はどちらを見ればよいか分からない。
+ *
+ *  書けるのは「合わせた／見送った／対象外だった」の事実と件数だけで、
+ *  **合わせた結果が正しいかどうかには触れない**（07 §9.3）。許容幅の内側の
+ *  誤りを機械が見つける手段は無く、「検知した」と書くと嘘になる。
+ *
+ *  どちらも0（吸着 OFF の既定運用）・旧コアで undefined なら null——
+ *  0件表示はノイズになるので出さない（counterNotice と同じ流儀）。 */
+export function snapNotice(ev: Record<string, any>): string | null {
+  const failsafe = ev.snap_failsafe_pages ?? 0;
+  const excluded = ev.snap_excluded_pages ?? 0;
+  const parts: string[] = [];
+  if (failsafe > 0) {
+    parts.push(`枠の自動合わせを見送ったページが ${failsafe} 件あります。`
+      + `罫線がかすれているなどで合わせ先を確かめられなかったため、`
+      + `その面はテンプレートの位置で読みました（読み取り自体は終わっています）。`
+      + `入力した紙の状態で決まるので、件数は読み取るたびに変わります。`);
+  }
+  if (excluded > 0) {
+    parts.push(`枠の自動合わせの対象外だったページが ${excluded} 件あります。`
+      + `表の行数が少なく合わせ先として信用できないため、`
+      + `テンプレートの位置で読みました。テンプレート側の性質なので、`
+      + `同じテンプレートを使うかぎり毎回同じ件数になります。`);
+  }
+  return parts.length ? parts.join(" ") : null;
 }
 
 /** run/remap の完了サマリに中間データの累積量が乗ったら purge を促す1行
@@ -395,8 +436,11 @@ export function noticeFor(ev: Record<string, any>): string | null {
     case "summary":
     case "remap_summary": {
       // P-H1: counterNotice（欠落〓の出所）の隣に accumulationNotice（中間
-      // データの累積警告）を添える。どちらも null なら通知自体を出さない
-      const parts = [counterNotice(ev), accumulationNotice(ev)]
+      // データの累積警告）を添える。どれも null なら通知自体を出さない。
+      // snapNotice（issue #75 (f)）も同じ枠に置く——run の summary にしか
+      // 2キーは乗らないので remap_summary では常に null になるが、
+      // 片配線（#60 M-2・#66 段2）を繰り返さないために分岐は分けない
+      const parts = [counterNotice(ev), snapNotice(ev), accumulationNotice(ev)]
         .filter((s): s is string => !!s);
       return parts.length ? parts.join(" ") : null;
     }

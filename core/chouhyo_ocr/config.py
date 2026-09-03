@@ -39,6 +39,13 @@ class Config:
     # （設計 §8.5）。api_monthly_cap と同じ扱いで GUI 設定画面には出さず、
     # 設定6項目（要件 §5.8）にも数えない
     unclear_char_level: bool = False
+    # ブロック単位の枠吸着（issue #75 (f)・FR-F39）。**既定 OFF**——許容幅の
+    # 内側での誤吸着を検出する下流が存在しない（07 §3.5）ため、実データで
+    # 較正するまで既定を反転しない。api_monthly_cap・unclear_char_level と
+    # 同じ扱いで GUI 設定画面には出さず、設定6項目（要件 §5.8）にも数えない
+    # ——チェックボックス1つで一般利用者が押せる場所に置くと、ON にする前の
+    # 差分全件確認（Q-F14 の受け入れ手順）を踏まずに ON になる
+    snap_blocks: bool = False
     # issue #72 (t)・FR-F29・08 §3.5.1。実行画面・編集画面が最後に使った
     # テンプレートの区分＋表示名（絶対パスは保存しない）。値は "shipped"
     # （出荷テンプレート）または "user:<表示名>"（利用者テンプレート）の
@@ -80,6 +87,9 @@ def _validate(cfg: Config) -> Config:
     if not isinstance(cfg.unclear_char_level, bool):
         raise ConfigError(
             f"unclear_char_level は true/false にする（現在: {cfg.unclear_char_level!r}）")
+    if not isinstance(cfg.snap_blocks, bool):
+        raise ConfigError(
+            f"snap_blocks は true/false にする（現在: {cfg.snap_blocks!r}）")
     # issue #72 (t)・FR-F29・AC-F60: last_template だけは ConfigError を
     # 投げない。config.json は手編集や別プロセス（GUI）からも書けるため、
     # 他のキーと同じく例外にすると「last_template の1行が壊れているだけで

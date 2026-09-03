@@ -148,5 +148,11 @@ desktop.ini
 !/testdata/formB/formB-v1.json
 !/testdata/formB/responses/formB-1_p0001.json
 !/testdata/formB/formB-1.png
+# 検証素材のローカル置き場（#88）。記入値を含む実サンプル・保存済み Vision 応答・
+# golden 出力を置く。中間データ（workdir/）と同居していると purge --yes で
+# 消えて golden 比較と性能計測が再現できなくなるため、purge の対象外へ分けた。
+# 中身は記入値を含むので追跡しない。上の否定行より後ろに置く——gitignore は
+# 後勝ちで、前に置くと `!/testdata/...` の再包含に負ける。
+/testdata/local/
 # 否定行より後ろに置いて打ち消す（:67 の *.saving.json は上の否定に負ける・再検証 LOW）
 /testdata/**/*.saving.json

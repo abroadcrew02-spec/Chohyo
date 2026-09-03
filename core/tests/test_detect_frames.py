@@ -39,7 +39,7 @@ from chouhyo_ocr.template import load_template
 FORMB_PNG = app_root() / "testdata" / "formB" / "formB-1.png"
 FORMB_TPL = app_root() / "testdata" / "formB" / "formB-v1.json"
 FORMC_PNG = app_root() / "testdata" / "formC" / "formC-1.png"
-SAMPLE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+SAMPLE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 SHIPPED_TPL = app_root() / "templates" / "chouhyo-v1.json"
 
 needs_sample = pytest.mark.skipif(not SAMPLE_PNG.exists(), reason="サンプル画像が無い環境")

@@ -143,7 +143,7 @@ def main(coverage_on=False):
         # -rf: 失敗したテスト名を必ず末尾に出す（パイプで切り詰めても分かる）
         # -rs: skip の理由も出す。素材欠けで大量 skip したときに何が要るか分かる
         # -n auto: pytest-xdist で CPU 数ぶん並列（2026-09-01・ユーザー承認）。
-        #   テストは tmp_path 隔離・共有素材（workdir/s2 等）は読み取りのみなので
+        #   テストは tmp_path 隔離・共有素材（testdata/local/s2 等）は読み取りのみなので
         #   並列安全。集計行「N passed in Xs」の形式は xdist でも同じで、下の
         #   SUMMARY_LINE 集計はそのまま機能する
         pytest_cmd,
@@ -217,8 +217,8 @@ def main(coverage_on=False):
             counts += "（実行された試験が0件）"
         # skip が多いまま PASS と出すと、素材の無い環境の「116 passed, 70 skipped」が
         # そのままリリースノートへ転記される。約38%のテストが .gitignore 済みの
-        # workdir/ 素材（sample-1.png・s2/resp_*.json）に依存しており、purge 後や
-        # 別マシンでは黙って skip する（レビュー4巡目 M-5）
+        # testdata/local/ の検証素材（sample-1.png・s2/resp_*.json）に依存しており、
+        # 素材を持たない別マシンでは黙って skip する（レビュー4巡目 M-5・#88）
         skipped = agg.get("skipped", 0)
         passed = agg.get("passed", 0)
         if status == "PASS" and passed and skipped > passed * 0.1:
@@ -230,7 +230,7 @@ def main(coverage_on=False):
                 if line.startswith("SKIPPED"):
                     print(line)
             print("素材が要るテストが skip されている。"
-                  "workdir/pages/sample-1.png と workdir/s2/resp_*.json を用意して再実行する")
+                  "testdata/local/pages/sample-1.png と testdata/local/s2/resp_*.json を用意して再実行する")
         if code != 0:
             fail = True
             # 失敗したテスト名だけは必ずサマリへ載せる（全文はその後）

@@ -48,7 +48,7 @@
 
 ## 3. かすれた本物: back/detail の水平罫線を上から N 本白塗り（2026-09-02）
 
-対象: `workdir/pages/sample-1.png`（実サンプル・テンプレート
+対象: `testdata/local/pages/sample-1.png`（実サンプル・テンプレート
 `templates/chouhyo-v1.json` の back 面・table_id="detail"）。期待水平線位置
 （面ローカル・重複排除・昇順）は `[93, 197, 301, 405, ...]` の15本
 （2ブロック共通の行境界）。上から N 本を対応する y 位置で幅±3px 白塗りし、

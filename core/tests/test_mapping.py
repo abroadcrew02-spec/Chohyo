@@ -1,6 +1,6 @@
 """mapping.py: 保存済み S2 応答（実サンプル・page1）での回帰テスト。
 
-Vision API を呼ばない（workdir/s2/ の保存応答を使う）。応答ファイルは
+Vision API を呼ばない（testdata/local/s2/ の保存応答を使う）。応答ファイルは
 .gitignore 配下のためこのマシンにしか無い——無い環境では skip する。
 
 このテストの主眼は symbol 単位割付の実証:
@@ -15,7 +15,7 @@ from chouhyo_ocr.mapping import assign, symbols_from_response, to_face_local
 from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.template import load_template
 
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 
 pytestmark = pytest.mark.skipif(not RESP.exists(), reason="保存済み Vision 応答が無い環境")

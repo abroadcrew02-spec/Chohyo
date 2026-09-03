@@ -23,8 +23,8 @@ PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 # AC-F65 の replay 素材（.gitignore 配下・このマシン限定）。無い環境では skip
 # （test_e2e_replay.py と同じ規約）
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 
 
 def test_cli_top_level_handler_hides_exception_message(tmp_path):

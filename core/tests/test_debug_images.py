@@ -1,6 +1,6 @@
 """debug-images（読み取り可視化・開発者モード）のテスト。
 
-実サンプル素材（workdir/pages・workdir/s2）に依存するため、無い環境では skip
+実サンプル素材（testdata/local/pages・testdata/local/s2）に依存するため、無い環境では skip
 （test_e2e_replay と同じ流儀）。
 """
 import shutil
@@ -12,8 +12,8 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.pipeline import run
 from chouhyo_ocr.template import load_template
 
-RESP = app_root() / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 
 pytestmark = pytest.mark.skipif(

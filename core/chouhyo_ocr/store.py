@@ -141,6 +141,19 @@ class Store:
         # は上げない——(c) は読み取りアルゴリズムを変えないため（08 §5.9）
         self._ensure_column("alignment", "align_residual_px", "REAL NOT NULL DEFAULT -1")
         self._ensure_column("alignment", "align_residual_detail", "TEXT NOT NULL DEFAULT ''")
+        # ブロック単位の枠吸着（issue #75 (f)・FR-F38/F43・08 §6 判断3）。
+        # snap_enabled は**実行時の設定**で、再利用ガードの4つ目の鍵として
+        # SQL で照合する（stale_done_pages）。既定 0 は「吸着なしで作られた」
+        # ——既定 OFF で作った既存 workdir は OFF のまま素通りする（AC-F43b）。
+        # snap_px は面の代表値 max|適用した dy|（-1 = 未吸着）、snap_detail は
+        # ブロック別の測定と理由コード（JSON・記録専用で復元には使わない）。
+        # 復元に使う幾何は transform["snap"] に置く（読み出し口は
+        # snap_geometry() 1つだけ）。ALGO_VERSION は上げない——PM 判断
+        # （2026-09-03）: 吸着 ON/OFF は別項目で持ち、既定 OFF の既存 workdir に
+        # 再送（課金）を要求しない
+        self._ensure_column("alignment", "snap_enabled", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column("alignment", "snap_px", "REAL NOT NULL DEFAULT -1")
+        self._ensure_column("alignment", "snap_detail", "TEXT NOT NULL DEFAULT ''")
         self.con.commit()
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -447,27 +460,36 @@ class Store:
                          ok: bool, geometry_hash: str, algo_version: str,
                          template_hash: str = "",
                          align_residual_px: float = -1.0,
-                         align_residual_detail: str = "") -> None:
+                         align_residual_detail: str = "",
+                         snap_enabled: int = 0,
+                         snap_px: float = -1.0,
+                         snap_detail: str = "") -> None:
         """位置合わせ結果を記録する。
 
         align_residual_px / align_residual_detail は issue #74 (c)・FR-F32
-        （08 §5.4）。既定値 -1 / '' は「未計測」——呼び出し側が渡さない限り
+        （08 §5.4）。snap_* は issue #75 (f)・FR-F38/F43（08 §6）。
+        既定値 0 / -1 / '' は「吸着なし・未計測」——呼び出し側が渡さない限り
         旧版と同じ挙動になる。
         """
         self.con.execute(
             """INSERT INTO alignment(page_id, face_id, transform, ok, geometry_hash,
                                      algo_version, template_hash,
-                                     align_residual_px, align_residual_detail)
-               VALUES(?,?,?,?,?,?,?,?,?)
+                                     align_residual_px, align_residual_detail,
+                                     snap_enabled, snap_px, snap_detail)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(page_id, face_id) DO UPDATE SET
                  transform=excluded.transform, ok=excluded.ok,
                  geometry_hash=excluded.geometry_hash,
                  algo_version=excluded.algo_version,
                  template_hash=excluded.template_hash,
                  align_residual_px=excluded.align_residual_px,
-                 align_residual_detail=excluded.align_residual_detail""",
+                 align_residual_detail=excluded.align_residual_detail,
+                 snap_enabled=excluded.snap_enabled,
+                 snap_px=excluded.snap_px,
+                 snap_detail=excluded.snap_detail""",
             (page_id, face_id, json.dumps(transform), int(ok), geometry_hash,
-             algo_version, template_hash, align_residual_px, align_residual_detail))
+             algo_version, template_hash, align_residual_px, align_residual_detail,
+             int(snap_enabled), snap_px, snap_detail))
         self._commit()
 
     def alignments(self, page_id: str) -> dict[str, tuple[dict, bool, str, str, str]]:
@@ -491,6 +513,47 @@ class Store:
             if isinstance(t, dict):
                 out[face_id] = (t, bool(ok), geo, algo, tpl)
         return out
+
+    def snap_geometry(self, page_id: str) -> dict[str, tuple[dict, int]]:
+        """吸着後座標を読む**唯一の口**（issue #75・FR-F37・08 §6 判断3-C）。
+
+        face_id → (transform["snap"] の dict（無ければ {}）, snap_enabled)。
+
+        FR-F37 の5経路（run の割付・remap の割付・remap の丸印再スコア・
+        debug-images の描画・_restore_alignment）が同じ座標を復元することの
+        担保は「保存場所」ではなく「読み出しの単一化」による——場所を変えても
+        口が2つあれば壊れる。`transform["snap"]` を解釈するコードはこの
+        メソッドの中の1箇所だけに保つ（`grep '\\["snap"\\]' core/chouhyo_ocr/`
+        が1件であることを `test_snap_geometry.py` が固定する）。
+
+        `alignments()` の5要素タプル契約は変えない——`test_reuse_guards.py`・
+        `test_review4_pipeline.py` が依存しているため、新メソッドを足す。
+        transform が壊れている行は落とす（`alignments()` と同じ方針）。
+        """
+        out: dict[str, tuple[dict, int]] = {}
+        for face_id, transform, snap_enabled in self.con.execute(
+                "SELECT face_id, transform, snap_enabled FROM alignment WHERE page_id=?",
+                (page_id,)):
+            try:
+                t = json.loads(transform)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(t, dict):
+                continue
+            blob = t.get("snap")
+            out[face_id] = (blob if isinstance(blob, dict) else {},
+                            int(snap_enabled))
+        return out
+
+    def snap_flags(self) -> set[int]:
+        """done ページの吸着 ON/OFF（issue #75・FR-F38 の4つ目の再利用ガード）。
+
+        `algo_versions()` と同型。母集団を done に限る理由も同じ——失敗ページの
+        古い行まで数えると、1ページの位置合わせ失敗がバッチ全体を封鎖する。
+        """
+        return {int(v) for (v,) in self.con.execute(
+            """SELECT DISTINCT a.snap_enabled FROM alignment a
+               JOIN page p ON p.page_id = a.page_id WHERE p.state='done'""")}
 
     # 再利用検査の母集団は **出力に寄与する done ページのみ**（レビュー C-1）。
     # 失敗ページの古い alignment 行まで数えると、1ページの位置合わせ失敗が
@@ -520,15 +583,23 @@ class Store:
         self._commit()
 
     def stale_done_pages(self, geometry_hash: str, template_hash: str,
-                         algo_version: str) -> list[str]:
-        """処理済みのうち、現テンプレート・現方式で作られていないページ（#25）。"""
+                         algo_version: str, snap_enabled: int) -> list[str]:
+        """処理済みのうち、現テンプレート・現方式・現吸着設定で作られていない
+        ページ（#25・issue #75 FR-F38）。
+
+        snap_enabled を足したのは、ON の done ページと OFF の新規ページが
+        1つの出力に混ざるのを止めるため（D-26 が塞いだ状態の再現を防ぐ）。
+        引数に既定値を付けない——付けると配線し忘れた呼び出し元が「常に OFF」
+        として素通りする（fail-open）。
+        """
         rows = self.con.execute(
             """SELECT DISTINCT p.page_id FROM page p
                LEFT JOIN alignment a ON a.page_id = p.page_id
                WHERE p.state='done'
                  AND (p.template_hash != ? OR a.geometry_hash IS NULL
-                      OR a.geometry_hash != ? OR a.algo_version != ?)""",
-            (template_hash, geometry_hash, algo_version))
+                      OR a.geometry_hash != ? OR a.algo_version != ?
+                      OR a.snap_enabled != ?)""",
+            (template_hash, geometry_hash, algo_version, int(snap_enabled)))
         return [r[0] for r in rows]
 
     def upsert_eras(self, page_id: str, scores_by_field: dict[str, dict]) -> None:

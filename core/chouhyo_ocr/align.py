@@ -76,6 +76,38 @@ class Residual:
 
 
 @dataclass(frozen=True)
+class BlockShift:
+    """1ブロック（y のみ）の吸着量の測定結果（issue #75 (f)・08 §6）。
+
+    **`dy` の正本は (c) の `BlockResidual.med`**（面のシフトを当てた後に残った
+    符号付き距離の中央値）。ここはその写しで、`matched` を並べて持つための器。
+
+    2026-09-03 の判断（architect・08 §6 判断4-D）: 当初は `_axis_shift` を
+    ブロック単位に再適用した最良解（argmax）から面のシフトを引く設計だったが、
+    `_axis_shift` のスコアは **±1px の窓**で数えるため真のずれ δ に対し
+    `s ∈ {δ−1, δ, δ+1}` が同点になり、同点規則 `key=(score, -abs(s))` が
+    絶対値の小さい側を採る——**吸着量が系統的に 1px 過小になる**（実測・
+    `test_t_f6b_*`）。(f) が救う帯は detail で 2〜4px しかなく、1px は
+    無視できない。窓を持たない `_axis_residual`（最近傍の符号付き距離）へ
+    切り替えた。
+
+    `matched` は **`_axis_shift` の score のまま**にする。±1px の窓では同点に
+    なる3シフトのどれを採っても一致本数は変わらないので、この量は上記の
+    バイアスの影響を受けない。`BlockResidual.pairs` は使わない——対応窓が
+    `shift_limits`（detail で 50px）と緩く、「一致本数」として要求している
+    厳しさ（FR-F36 の `need_y`）と釣り合わないため。
+
+    判定に使うのは snap.plan_face_snap で、align.py 側は測って持ち回るだけ
+    ——`ok`・`reason`・`dx`・`dy`・`matched` の算出経路には一切効かない
+    （NFR-F08・08 §5.9-1）。
+    """
+    block_idx: int   # face.table_geoms 内の0始まり序数（BlockResidual と同じ語彙）
+    dy: int          # = BlockResidual.med（測った量。適用したかは snap 側が決める）
+    matched: int     # そのブロック単独での一致本数（_axis_shift の score）
+    expected: int    # 期待横線の本数（len(h_lines)）
+
+
+@dataclass(frozen=True)
 class ShiftEstimate:
     dx: int
     dy: int
@@ -95,6 +127,10 @@ class ShiftEstimate:
     # --- FR-F32（(c)）。判定には一切使わない。None = 未計測（位置合わせ失敗面・
     # #45 再利用ページ）。08 §5.2・§5.9 不変条件6 ---
     residual: "Residual | None" = None
+    # --- FR-F33（(f)・issue #75）。判定には一切使わない。空タプル = 未計測
+    # （位置合わせ失敗面・表を持たない面・#45 再利用ページ）。residual と同じく
+    # 成功が確定した後にだけ組み立てる（08 §6 判断4-G の手順2 が空を見る）---
+    block_shifts: tuple[BlockShift, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -197,6 +233,41 @@ def _build_residual(face: Face, det_h: "set[int]", det_v: "set[int]",
         br = _axis_residual(sorted(set(g.h_lines)), sorted(lp_h), dy, n_y)
         blocks.append(BlockResidual(idx, br.med, br.max, br.pairs, br.unpaired))
     return Residual(h=h, v=v, blocks=tuple(blocks))
+
+
+def _build_block_shifts(face: Face, per_block_h: list[list[int]],
+                        residual: "Residual", n_y: int,
+                        runner_dist: int) -> tuple[BlockShift, ...]:
+    """成功時（ok=True）の吸着量の測定（issue #75 (f)・08 §6 判断4-D/4-E）。
+
+    **`dy` は (c) が測った `residual.blocks[i].med` をそのまま採る**（2026-09-03
+    architect 判断）。`med` は「期待線＋面のシフト」から最も近い検出線までの
+    符号付き距離の中央値で、窓を持たない——テンプレート枠をその分だけ y へ
+    動かせば検出線に乗る。座標系の対応は (c) と同じ（`_axis_residual` は
+    `shift=est.dy` を当てた後の残りを測るので、面のシフトを引く操作は不要）。
+
+    当初案（`_axis_shift` をブロック単位に再適用し `best_s − est.dy` を採る）は
+    採らない。`_axis_shift` のスコアは ±1px の窓で数えるため真のずれ δ に対し
+    `s ∈ {δ−1, δ, δ+1}` が同点になり、同点規則が絶対値の小さい側を採って
+    **吸着量が系統的に 1px 過小になる**（BlockShift の docstring・実測）。
+
+    `matched` だけは `_axis_shift` の score を使う——同点になる3シフトの
+    どれを採っても一致本数は変わらないので、この量に上記のバイアスは無い。
+    `residual.blocks[i].pairs` は使わない（対応窓が `shift_limits`＝detail で
+    50px と緩く、FR-F36 が要求する「一致本数」の厳しさと釣り合わない）。
+
+    画像は1度も触らない——`per_block_h` は #74 が既に控えているもので、
+    追加の走査ゼロで NFR-F07 を構造で満たす。記録のみ・判定には使わない
+    （NFR-F08）。
+    """
+    shifts: list[BlockShift] = []
+    for idx, (g, lp_h, br) in enumerate(
+            zip(face.table_geoms, per_block_h, residual.blocks)):
+        _best_s, score, _runner, _boundary = _axis_shift(
+            sorted(lp_h), list(g.h_lines), n_y, runner_dist)
+        shifts.append(BlockShift(block_idx=idx, dy=br.med,
+                                 matched=score, expected=len(g.h_lines)))
+    return tuple(shifts)
 
 
 def _collect_table_lines(binary: "np.ndarray", face: Face, n_x: int, n_y: int,
@@ -329,13 +400,14 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
         + sum(1 for e in exp_v_set
               if (e + dx) in det_v or (e + dx - 1) in det_v or (e + dx + 1) in det_v))
 
-    def _est(ok: bool, reason: str, residual: "Residual | None" = None) -> ShiftEstimate:
+    def _est(ok: bool, reason: str, residual: "Residual | None" = None,
+             block_shifts: "tuple[BlockShift, ...]" = ()) -> ShiftEstimate:
         return ShiftEstimate(
             dx, dy, matched, total, ok, reason,
             det_h_count=det_h_count, det_v_count=det_v_count,
             exp_h_uniq=exp_h_uniq, exp_v_uniq=exp_v_uniq,
             matched_uniq=matched_uniq, at_boundary_h=by, at_boundary_v=bx,
-            residual=residual)
+            residual=residual, block_shifts=block_shifts)
 
     import math
     need_y = max(2, math.ceil(len(exp_h) * SHIFT_MATCH_RATIO))
@@ -377,11 +449,13 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
         if exp_v_set and not (hit(det_v, min(exp_v_set) + dx)
                               and hit(det_v, max(exp_v_set) + dx)):
             return _est(False, "edge_mismatch")
-    # 残差は成功が確定してからだけ組み立てる（08 §5.2）。判定（上のどの
-    # return にも）には一切使わない——ここまでの判定経路は1行も変えていない
+    # 残差（(c)）と吸着量（(f)）は成功が確定してからだけ組み立てる
+    # （08 §5.2・§6）。判定（上のどの return にも）には一切使わない
+    # ——ここまでの判定経路は1行も変えていない
     residual = _build_residual(face, det_h, det_v, exp_h_set, exp_v_set,
                                per_block_h, dy, dx, n_x, n_y)
-    return _est(True, "", residual=residual)
+    block_shifts = _build_block_shifts(face, per_block_h, residual, n_y, runner_dist)
+    return _est(True, "", residual=residual, block_shifts=block_shifts)
 
 
 # 位置合わせ方式の版。処理内容を変えたら上げる（#25: 旧方式で作った中間データを
@@ -439,7 +513,7 @@ def _otsu(gray: "np.ndarray", exclude: "np.ndarray") -> int:
     では閾値が暗い側の輝度そのものになるため、`<` ではインクが全て落ちて
     後段が few_lines へ倒れる。実素材は中間調があるので実害は無く、`<=` へ
     直すと実素材の二値化が動く（実測: sample-1 で front 1773 画素・back
-    1221 画素が変化。`workdir/pages/sample-1.png` + `templates/chouhyo-v1.json`
+    1221 画素が変化。`testdata/local/pages/sample-1.png` + `templates/chouhyo-v1.json`
     ・2026-09-03）。golden のバイト一致が崩れる変更なので見送った。
     **合成画像でこの関数を通す試験を書くときは、中間調を持たせること**
     （ぼかす・拡大して縮小するなど）。

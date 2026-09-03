@@ -81,7 +81,7 @@ M6 と M7 の順序は意図的にこの並びにしてある。M7（配布）�
 | ID | 結果 | 決着 |
 |---|---|---|
 | S1 | ✅ 成立 | `write_only=True` で確定。先頭ゼロ・数値型混在・COUNTIF・条件付き書式が読み戻しまで成立（`spikes/s1_openpyxl_writeonly.py`） |
-| S2 | ✅ 成立 | `DOCUMENT_TEXT_DETECTION` に確定。word confidence 0.329〜0.998・zero率0%。**TEXT_DETECTION は全語 0.0 で使用不可**（`spikes/s2_vision_confidence.py`・応答 JSON は workdir/s2/ に保存済み＝再課金なしで開発に使い回せる） |
+| S2 | ✅ 成立 | `DOCUMENT_TEXT_DETECTION` に確定。word confidence 0.329〜0.998・zero率0%。**TEXT_DETECTION は全語 0.0 で使用不可**（`spikes/s2_vision_confidence.py`・応答 JSON は testdata/local/s2/ に保存済み＝再課金なしで開発に使い回せる） |
 | S3 | ❌ 不成立→代替へ | 実物 JSON 2,366B は CredWrite 1783 で拒否。**DPAPI ファイル暗号化に確定**（`spikes/s3_keyring_size.py`） |
 | S4 | ✅ 主要2点成立 | `cargo build` 成功（7分22秒・Tauri react-ts scaffold=gui/）／PyInstaller onedir exe から grpc+TLS 込みで実 API 往復成功（C11 決着・追加の --add-data 不要）。残るは sidecar 疎通と canvas ドラッグの実機確認のみ |
 

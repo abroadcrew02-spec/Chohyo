@@ -15,7 +15,7 @@ from chouhyo_ocr.paths import app_root, user_templates_dir
 
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 FORMB = app_root() / "testdata" / "formB" / "formB-v1.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 
 needs_sample = pytest.mark.skipif(
     not PAGE_PNG.exists(), reason="サンプル画像が無い環境")

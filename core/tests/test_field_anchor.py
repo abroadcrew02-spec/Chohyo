@@ -34,7 +34,7 @@ from chouhyo_ocr.template import (
 )
 
 TPL = app_root() / "templates" / "chouhyo-v1.json"
-PAGE_PNG = app_root() / "workdir" / "pages" / "sample-1.png"
+PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 FORMB_TPL = app_root() / "testdata" / "formB" / "formB-v1.json"
 FORMB_PNG = app_root() / "testdata" / "formB" / "formB-1.png"
 
