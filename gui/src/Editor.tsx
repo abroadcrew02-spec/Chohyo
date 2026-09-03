@@ -1439,6 +1439,20 @@ export function zeroReasonNotice(reason: string | null | undefined): string | nu
   return ZERO_REASON_JA[reason] ?? `候補が見つかりませんでした（${reason}）`;
 }
 
+/// 枠候補タブへ自動切替するかどうか（ラミィ／accessibility 3回目確認・
+/// Must）。旧実装は「0件→N件」の遷移だけを見ていたため、候補が既にある
+/// 状態で再生成（テンプレ切替後の再実行など）すると切り替わらず、
+/// candidatesPanel() が呼ばれないまま framesMsg／overlapAcceptNotice が
+/// 誰にも伝わらなかった（WCAG 4.1.3）。**生成完了のたびに**切り替える
+/// （prevLen の値によらない）——候補が0件（zeroReason あり）のときだけ
+/// 切り替えない。結果文はタブ非依存の常時ライブ領域（sr-only）が伝える。
+export function shouldSwitchToCandidatesTab(
+  prevLen: number, nextLen: number, zeroReason: string | null | undefined,
+): boolean {
+  void prevLen;   // 意図的に不使用（0→N限定をやめたことの記録として引数だけ残す）
+  return nextLen > 0 && !zeroReason;
+}
+
 /// detect-frames の JSON（core/chouhyo_ocr/cli.py:cmd_detect_frames 実測・
 /// 2026-09-03）を Cand[] へ変換する。実装済みの core は設計08 §4.4 の例示
 /// と2点違う——①候補に `id` が無い（GUI 側で配列インデックスから振る）
@@ -1771,14 +1785,14 @@ export default function Editor(
   useEffect(() => {
     if (panelTab !== "candidates") lastNonCandTab.current = panelTab;
   }, [panelTab]);
+  // ラミィ差し戻し（3回目・Must）: 「タブへ切り替える」判断は生成完了の
+  // ハンドラ（runDetectFrames）から shouldSwitchToCandidatesTab で直接
+  // 行う（0→N限定をやめ、生成のたびに切り替える）。ここで残すのは
+  // 「候補が尽きたら直前のタブへ戻す」（一括除去・全採用・テンプレ切替）
+  // 側だけ——こちらは cands.length の推移を見るのが自然で、二重管理にならない
   const prevCandsLenRef = useRef(0);
   useEffect(() => {
-    if (prevCandsLenRef.current === 0 && cands.length > 0) {
-      // 生成された瞬間だけ自動で切り替える（候補パネル自体は cands.length>0
-      // の間ずっと有効なタブなので、生成直後の1回だけを狙う）
-      setPanelTab("candidates");
-    } else if (prevCandsLenRef.current > 0 && cands.length === 0 && panelTab === "candidates") {
-      // 一括除去・全採用・テンプレ切替で候補が尽きたら直前のタブへ戻す
+    if (prevCandsLenRef.current > 0 && cands.length === 0 && panelTab === "candidates") {
       setPanelTab(lastNonCandTab.current);
     }
     prevCandsLenRef.current = cands.length;
@@ -2110,7 +2124,7 @@ export default function Editor(
     // 枠候補は破線＋隅マーカー＋番号ラベルで確定枠と区別する（色だけに
     // 依存しない）。候補色（#4fc3f7/#7ce38b/#ff9f43）は白背景に対し単体では
     // 約1.6〜2.0:1 しかなく WCAG 1.4.11（非テキスト3:1）・1.4.3 未達だった
-    // ——outputBadge と同じ「背景非依存の二重描画」に揃える: 線は白ハロー
+    // ——outputBadge と同じ「背景非依存の二重描画」に揃える: 線は暗色ハロー
     // →色線の順で重ね描きし、ラベルは色を直書きせず不透明チップ＋白文字に
     // する。色分け（表／欄／重なり）はチップの縁色に残しつつ、識別は
     // 「?」（通常）／「!」（重なり）の記号でも行う（色だけに依存しない）
@@ -3177,6 +3191,12 @@ export default function Editor(
       pushHistoryNow({ fields, tables, excls, splitY, cands: newCands });
       setCands(newCands);
       markDirty(true);
+      // ラミィ差し戻し（3回目・Must）: 生成完了のたびに枠候補タブへ切り替える
+      // （候補が既にある状態での再生成でも切り替わるようにする。候補0件の
+      // ときは切り替えない——結果文は常時ライブ領域（sr-only）が伝える）
+      if (shouldSwitchToCandidatesTab(cands.length, newCands.length, ev.zero_reason)) {
+        setPanelTab("candidates");
+      }
       const zr = zeroReasonNotice(ev.zero_reason);
       const stats = ev.stats ?? {};
       const statsText = `線 横${stats.lines_h ?? 0}・縦${stats.lines_v ?? 0}`
@@ -4279,14 +4299,13 @@ export default function Editor(
       <div style={{ flexShrink: 0, padding: "10px 18px 6px" }}>
         <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>
           枠候補{cands.length > 0 ? `（${cands.length} 件）` : ""}</h3>
-        {/* スバル差し戻し Must-2: 重なりを承知で採用した候補があれば、
-            保存するまで消えない注意をここに出す */}
-        {overlapAcceptNotice && (
-          <p className="note" role="status" aria-live="polite"
-            style={{ color: "var(--warn-ink)", margin: "0 0 4px" }}>{overlapAcceptNotice}</p>
-        )}
+        {/* ラミィ差し戻し（3回目・Must）: overlapAcceptNotice の可視表示は
+            タブ非依存の常時表示エリア（errMsg と同じ場所）へ移した——タブを
+            離れても見えなくならないようにするため。ここには残さない。
+            framesMsg の role="status"/aria-live は sr-only 側の1箇所に
+            集約したのでここでは外す（二重読み上げの防止） */}
         {framesMsg && (
-          <p className="note" role="status" aria-live="polite" title={framesMsg}
+          <p className="note" title={framesMsg}
             style={{ margin: "0 0 6px", display: "-webkit-box", WebkitBoxOrient: "vertical",
               WebkitLineClamp: 2, overflow: "hidden" }}>{framesMsg}</p>
         )}
@@ -4399,10 +4418,26 @@ export default function Editor(
           title={!hasImage ? "帳票の画像か PDF を開くと使えます" : undefined}>
           {framesGenerating ? "枠候補を生成中…" : "ページ全体から枠候補を生成"}
         </button>
+        {/* ラミィ差し戻し（3回目・Must・WCAG 4.1.3）: 生成結果（framesMsg）と
+            重なり採用の注意（overlapAcceptNotice）は、候補タブ（#edittabpanel
+            が candidatesPanel() を描いているときだけ存在する）に閉じ込めず、
+            タブに依存しない常時マウントのライブ領域でも読み上げる。
+            display:none／visibility:hidden は使わない（スクリーンリーダーに
+            読ませるための意図的な視覚非表示・.sr-only は App.css 参照） */}
+        <span className="sr-only" role="status" aria-live="polite">
+          {framesMsg}{overlapAcceptNotice ? `／${overlapAcceptNotice}` : ""}
+        </span>
         <span className="msg" role="status" aria-live="polite">
           {msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
       {errMsg && <div className="errbox" style={{ margin: "8px 18px" }}>{errMsg}</div>}
+      {/* スバル差し戻し Must-2・ラミィ差し戻し（3回目・Must）: 重なりを
+          承知で採用した候補があれば、保存するまで消えない注意をタブに
+          依存しない常時表示エリアに出す（候補タブを離れても見える） */}
+      {overlapAcceptNotice && (
+        <div className="warnbox" role="status" aria-live="polite"
+          style={{ margin: "8px 18px" }}>{overlapAcceptNotice}</div>
+      )}
       {formatBannerText && (
         <div className="warnbox" role="status" aria-live="polite"
           style={{ margin: "8px 18px", display: "flex",

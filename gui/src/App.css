@@ -143,6 +143,11 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   border-bottom: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
 .toolbar .sep { width: 12px; }
 .toolbar .msg { margin-left: auto; color: var(--sub); font-size: 12px; }
+/* ラミィ（accessibility）差し戻し（issue #73 (b)・3回目確認・WCAG 4.1.3）:
+   視覚的には隠すがスクリーンリーダーには読ませる定番パターン。
+   display:none・visibility:hidden は読み上げ自体を止めてしまうため使わない */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .editor-body { flex: 1; display: flex; min-height: 0; }
 /* おかゆ実機検証（issue #73 (b)・候補36件）で発覚: 枠候補パネルが編集領域
    上部の全幅カードだった当時、パネルが伸びると .editor-body の残り空間が
