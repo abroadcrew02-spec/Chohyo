@@ -141,11 +141,14 @@ def test_tr_g5_purge_requires_yes(tmp_path):
             "--config", str(cfg_file), "purge"]
     r1 = subprocess.run(base, cwd=app_root() / "core", capture_output=True,
                         text=True, encoding="utf-8", timeout=60)
-    assert r1.returncode == 1 and wd.exists()      # --yes なしは拒否・消えない
+    assert r1.returncode == 1 and wd.exists() and (wd / "x.txt").exists()  # 拒否・消えない
     r2 = subprocess.run(base + ["--yes"], cwd=app_root() / "core",
                         capture_output=True, text=True, encoding="utf-8",
                         timeout=60)
-    assert r2.returncode == 0 and not wd.exists()  # 明示時のみ削除（要件 §6.3）
+    # 明示時は中身が消える（要件 §6.3）。workdir 自体は keep-list 方式（#83）
+    # では cred.dpapi を残す余地のために残る——ここには cred.dpapi が無いので
+    # 空フォルダとして残る
+    assert r2.returncode == 0 and wd.exists() and not (wd / "x.txt").exists()
 
 
 def test_tr_g6_verify_fails_without_credentials(tmp_path):

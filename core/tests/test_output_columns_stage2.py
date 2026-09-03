@@ -443,7 +443,10 @@ def test_ac_1_12_purge_removes_excluded_field_intermediate_data(tmp_path):
         cwd=app_root() / "core", capture_output=True, text=True,
         encoding="utf-8", timeout=60)
     assert r.returncode == 0
-    assert not wd.exists()  # 対象外欄の読取値を含め、中間データごと消える
+    # workdir 自体は keep-list 方式（#83）では残るが、対象外欄の読取値を含む
+    # intermediate.sqlite は他の中間データと同様に特別扱いなく消える
+    assert wd.exists()
+    assert not (wd / "intermediate.sqlite").exists()
 
 
 # ========== 4. debug_images 側の由来一致（F-13・AC-1.20） ==========

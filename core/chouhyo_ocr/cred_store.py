@@ -82,3 +82,13 @@ def credentials_state(workdir: str | Path) -> str:
     if env_credentials_present():
         return "env"
     return "missing"
+
+
+def blob_name() -> str:
+    """workdir 直下に置く暗号化資格情報ファイルの名前（値ではなくファイル名のみ）。
+
+    cli.py の purge（issue #83）が「消してよい中間データ」から資格情報を
+    区別するために参照する。値そのもの（"cred.dpapi"）を呼び出し側に
+    ハードコードさせず、常にこの1箇所から取る。
+    """
+    return _BLOB_NAME

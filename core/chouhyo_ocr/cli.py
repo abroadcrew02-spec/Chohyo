@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -892,6 +894,100 @@ def _output_timestamps(targets: list[Path]) -> list[str]:
     return sorted(found)
 
 
+def _is_reparse_point(p: Path) -> bool:
+    """symlink または Windows ジャンクション（mount point）か（issue #83）。
+
+    Path.is_symlink() は IO_REPARSE_TAG_SYMLINK しか見ない——ジャンクション
+    （IO_REPARSE_TAG_MOUNT_POINT・`mklink /J`）を検出するには
+    os.path.isjunction()（Python 3.13+）も併用する必要がある（M-2 と同じ
+    規律・paths.py:73-80 の user_templates_dir() 参照）。
+    """
+    return p.is_symlink() or os.path.isjunction(p)
+
+
+def _remove_workdir_entry(p: Path) -> None:
+    """workdir 直下の1エントリを削除する（issue #83・レビュー指摘対応）。
+
+    reparse point（symlink・ジャンクション）はリンク先を辿らずリンク自体
+    だけを外す——rmtree をリンクに対して呼ぶと（Python/OS の組み合わせに
+    よっては）リンク先の中身ごと消える事故になるため、リンクの種別に応じて
+    os.rmdir（ディレクトリ型 reparse point）／unlink（ファイル型）を使い分け、
+    rmtree には通常のディレクトリだけを渡す。
+
+    読み取り専用ファイルは PermissionError になるため、chmod で書き込み
+    許可を復元してから一度だけ再試行する（_output_purge_targets の
+    「1件の失敗で残りを諦めない」規律をここでも踏襲——失敗はそのまま
+    OSError を呼び出し元へ伝播させ、続行判断は _purge_workdir に委ねる）。
+    """
+    if _is_reparse_point(p):
+        # lstat（リンク自体を見る・辿らない）でリンクの型を判定する
+        # （AZKi 指摘）。p.is_dir() はリンク先を辿って判定するため、リンク先
+        # が壊れている（dangling）ジャンクションでは判定できない・誤判定
+        # しうる。os.lstat().st_mode ならリンク自体の属性を見るので、
+        # リンク先の生死に関わらず正しく rmdir/unlink を選べる
+        if stat.S_ISDIR(os.lstat(p).st_mode):
+            os.rmdir(p)          # ジャンクション・ディレクトリ symlink
+        else:
+            p.unlink()           # ファイル symlink
+        return
+    if p.is_dir():
+        def _clear_readonly_and_retry(func, path, _exc_info):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        shutil.rmtree(p, onexc=_clear_readonly_and_retry)
+    else:
+        try:
+            p.unlink()
+        except PermissionError:
+            os.chmod(p, stat.S_IWRITE)
+            p.unlink()
+
+
+def _purge_workdir(wd: Path) -> tuple[bool, int, int]:
+    """workdir 配下を資格情報以外すべて削除する（issue #83・keep-list 方式）。
+
+    以前は shutil.rmtree(wd) で workdir ごと丸ごと消しており、workdir 直下に
+    置かれる暗号化資格情報 cred_store.blob_name()（cred.dpapi）まで巻き込んで
+    消えていた。「消してよいものを列挙する」方式は列挙漏れがそのまま個人情報
+    の残留・削除漏れになるため採らず、「残すものだけを cred.dpapi 1つに限定し、
+    それ以外は種類を問わず全部消す」fail-closed な keep-list 方式に切り替える
+    （PM判断・#83）。将来 workdir 配下の中間データの種類が増えても、この
+    keep-list には載らない限り自動で消える。
+
+    golden/・s2/ のような開発素材が workdir に同居していても、ここでは
+    特別扱いしない（purge の責務ではなく、workdir 構造側の別課題）。
+
+    reparse point 対策（#83 のレビュー指摘）: workdir 自身が
+    symlink・ジャンクションの場合はこの関数を呼ぶ前に cmd_purge が弾く
+    （wd.iterdir() は reparse point 越しにリンク先を列挙してしまうため、
+    ここへ来る時点で wd は実ディレクトリであることが前提）。配下の各
+    エントリが reparse point の場合は _remove_workdir_entry がリンク自体
+    だけを外す。cred.dpapi という名前の symlink は資格情報の実体ではない
+    ため keep 対象にしない（reparse point 判定を名前一致より先に見る）。
+
+    個々の削除は OSError を捕まえて続行する——1件の失敗（使用中・読み取り
+    専用）で残りを諦めると中途半端に個人情報が残るため。
+
+    戻り値: (cred.dpapi を残せたか, 削除できた件数, 削除できなかった件数)。
+    workdir が存在しない場合は (False, 0, 0)。
+    """
+    if not wd.exists():
+        return False, 0, 0
+    blob = cred_store.blob_name()
+    kept_cred = False
+    removed = failed = 0
+    for p in sorted(wd.iterdir()):
+        if not _is_reparse_point(p) and p.name == blob and p.is_file():
+            kept_cred = True
+            continue
+        try:
+            _remove_workdir_entry(p)
+            removed += 1
+        except OSError:
+            failed += 1
+    return kept_cred, removed, failed
+
+
 def cmd_purge(args) -> int:
     cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     if not args.yes:
@@ -899,10 +995,32 @@ def cmd_purge(args) -> int:
               file=sys.stderr)
         return 1
     wd = Path(cfg.workdir)
-    if wd.exists():
-        shutil.rmtree(wd)
-    event = {"event": "purged", "path": str(wd)}
+    # M-2 と同じ規律（paths.py の user_templates_dir()）。wd.iterdir() は
+    # reparse point 越しにリンク先を列挙してしまうため、削除前にここで弾く
+    # （fail-closed）——列挙してから個別に弾く方式だと、iterdir 自体が
+    # 意図しないリンク先の中身を返す時点で手遅れになる
+    if _is_reparse_point(wd):
+        print(f"workdir が symlink またはジャンクションになっているため削除しない"
+              f"（{wd}）。config.json の workdir 設定を確認してから再実行する。",
+              file=sys.stderr)
+        return 1
+    cred_kept, wd_removed, wd_failed = _purge_workdir(wd)
+    # cred.dpapi の中身やそのファイル自身のパスは出さない。既存の "path" は
+    # workdir のルートで元々出ていたもの（cfg.workdir・利用者が設定した値）。
+    # 資格情報側で新たに足すのは残せたかどうかの真偽値と削除件数のみ（S-MC）
+    event = {"event": "purged", "path": str(wd), "cred_kept": cred_kept,
+              "removed": wd_removed, "failed": wd_failed}
+    # --include-output 側（削除 N 件／対象外として残したファイル N 件）と
+    # 同じ形で、workdir 側も人が読む1行を必ず出す（AZKi 指摘: 消し損ねが
+    # あっても「purged」とだけ出て気づかれない事故を防ぐ）
+    cred_note = "資格情報は残した" if cred_kept else "資格情報は無かった"
+    print(f"中間データ {wd_removed} 件を削除した（{cred_note}）")
     rc = 0
+    if wd_failed:
+        print(f"workdir 内の {wd_failed} 件を削除できなかった（使用中または"
+              "権限の問題が残っている可能性がある）。閉じるか権限を確認して"
+              "から再実行する。", file=sys.stderr)
+        rc = 1
     if args.include_output:
         out_dir = Path(cfg.output_dir)
         targets, kept = _output_purge_targets(out_dir)
