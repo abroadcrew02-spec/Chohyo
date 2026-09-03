@@ -281,6 +281,17 @@ def test_invariant_a_holds_per_command_in_isolation(tmp_path):
     expand_log = _log_text("expand")
     assert expand_log.count("template_loaded") >= 1
 
+    # H-1（マリン指摘・2026-09-03）: detect-frames は不変条件Aを満たす
+    # 6本目の経路。以前は template_loaded を出しておらず、この経路単独の
+    # app.log からは cell_idx（将来 detect-frames が匿名識別子を出す場合）
+    # を復号できない穴があった
+    rc_detect_frames = cli.main(["--config", str(_cfg("detect_frames")), "detect-frames",
+                                 "--input", str(input_dir / "sample-1.png"),
+                                 "--template", str(tpl)])
+    assert rc_detect_frames == 0
+    detect_frames_log = _log_text("detect_frames")
+    assert detect_frames_log.count("template_loaded") >= 1
+
 
 def test_w3_w4_diagnostics_no_longer_silently_dropped(tmp_path):
     """W-3（adjacent_gap_w3）・W-4（hole_overlap_w4）の実害修正（08 §1.1）。

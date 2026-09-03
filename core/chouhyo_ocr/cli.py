@@ -662,6 +662,159 @@ def cmd_debug_images(args) -> int:
     return 0
 
 
+def cmd_detect_frames(args) -> int:
+    """ページ全体（領域指定なし）からの枠候補一括生成（issue #73 (b)・08 §4）。
+
+    `detect-grid`（`--region` 必須）とは独立の新系統。`--template` を渡すと
+    ①面の除外領域を検出前に白潰し ②候補への face_id 割り当て
+    ③既存セルとの重なり（overlaps_existing）判定 が有効になる（08 §4.1.5・
+    §4.2.3）。渡さなければ face_id は全候補 "page"・overlaps_existing は
+    常に False。
+
+    **テンプレートは「位置合わせ後・`image_size` と一致する寸法のページ
+    画像」を前提とする**（M-3）——`--input` の実寸とテンプレートの
+    `image_size` が一致しない場合、除外白潰し・face_id 割り当て・
+    `overlaps_existing` 判定を**行わず**、線分抽出のみ行う（`--template`
+    未指定と同じ扱い）。この場合 JSON へ `template_applied: false` と
+    `template_skip_reason: "size_mismatch"` を返す（寸法一致時は
+    `true`/`null`、`--template` 未指定時は `null`/`null`）。寸法の合わない
+    テンプレートをそのまま当てると、無関係な面座標に基づいて誤った
+    face_id・重なり判定を返しかねないため。
+
+    ログにはテンプレート名・欄名を出さない（Q-S1・FR-F50 の方針）。
+    """
+    import time as _time
+
+    import numpy as np
+    from PIL import Image
+
+    from .align import _otsu
+    from .align import template_hash as _tpl_hash
+    from .grid import detect_frames
+    from .ingest import IngestError, expand, pdf_page_count
+    from .template import Rect as _Rect
+    from .template import TemplateError, load_template
+
+    t0 = _time.perf_counter()
+    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9 と同じ流儀）
+    # M-6: expand() は out_dir 直下の同一 stem 残骸（-aligned.png 含む）を
+    # 展開のたびに掃除する（ingest.expand の仕様）。editor_pages と共用すると
+    # 編集画面が開いている -aligned.png を detect-frames の実行が消しうるため、
+    # 専用ディレクトリに分ける
+    out_dir = Path(cfg.workdir) / "detect_frames_pages"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    src = Path(args.input)
+
+    if not src.exists():
+        _progress({"event": "detect_frames", "ok": False, "error": "input_not_found"})
+        return 0
+    total = pdf_page_count(src) if src.suffix.lower() == ".pdf" else 1
+    if total is not None and not 1 <= args.page <= total:
+        _progress({"event": "detect_frames", "ok": False, "error": "expand_failed"})
+        return 0
+
+    template = None
+    dpi = args.dpi
+    if args.template:
+        try:
+            template = load_template(args.template)
+        except TemplateError:
+            _progress({"event": "detect_frames", "ok": False, "error": "template_invalid"})
+            return 0
+        # detect-frames も pipeline._load を経由しないため template_loaded を
+        # 自前で出す（cmd_verify/cmd_expand_page と同じ理由・不変条件A・
+        # Q-S1・FR-F50・08_frame_detection_design.md §1.4。H-1 レビュー指摘）
+        log.info("template_loaded", template_hash=_tpl_hash(
+            json.loads(Path(args.template).read_text(encoding="utf-8"))))
+        # --template 指定時はテンプレートの render_dpi を優先する
+        # （FR-F23・06 §7 の未配線を繰り返さない）
+        dpi = template.render_dpi
+
+    try:
+        # PDF は該当ページのみ展開（expand-page と同じ経路・PNG/JPG はそのまま）
+        pages = expand(src, dpi=dpi, out_dir=out_dir, page=args.page)
+    except IngestError:
+        _progress({"event": "detect_frames", "ok": False, "error": "expand_failed"})
+        return 0
+
+    try:
+        # LOW: Image.open 成功後 load() で失敗しても close されるよう
+        # with ブロックの中で読み切る（以前は img.load() 失敗時に
+        # close 漏れがあった）
+        with Image.open(pages[0]) as img:
+            img.load()
+            gray = np.asarray(img.convert("L"))
+            input_size = [img.width, img.height]
+    except (OSError, ValueError):
+        _progress({"event": "detect_frames", "ok": False, "error": "input_unreadable"})
+        return 0
+
+    # 二値化は align の流儀（08 §4.1.5）。align.binarize_face は面ローカルの
+    # 除外マスク前提のため使わない——ページ全体へ Otsu を適用するだけ
+    no_exclusion = np.zeros(gray.shape, dtype=bool)
+    th = _otsu(gray, no_exclusion)
+    binary = gray < th
+
+    # M-3: テンプレートの image_size と入力実寸が一致するときのみ、除外
+    # 白潰し・face_id 割り当て・overlaps_existing を有効にする
+    template_applied: bool | None = None
+    template_skip_reason: str | None = None
+    effective_template = None
+    if template is not None:
+        if input_size == [template.image_size[0], template.image_size[1]]:
+            template_applied = True
+            effective_template = template
+        else:
+            template_applied = False
+            template_skip_reason = "size_mismatch"
+
+    # --template 指定時（かつ寸法一致時）のみ、面の除外領域（ページ座標）を
+    # 検出前に白潰しする（08 §4.1.5）
+    exclusions: list[_Rect] = []
+    if effective_template is not None:
+        for f in effective_template.faces:
+            r = f.source_rect
+            for ex in f.exclusions:
+                exclusions.append(_Rect(r.x + ex.x, r.y + ex.y, ex.w, ex.h))
+
+    result = detect_frames(binary, dpi, exclusions=exclusions, existing=effective_template)
+
+    candidates: list[dict] = []
+    for t in result.tables:
+        candidates.append({
+            "kind": "table",
+            "face_id": t.face_id or "page",
+            "rect": {"x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "h": t.rect.h},
+            "blocks": [{"x": t.origin_x, "y": t.origin_y, "rows": t.rows}],
+            "row_pitch": t.row_pitch,
+            "row_height": t.row_height,
+            "columns": t.columns,
+            "residual_px": t.residual_px,
+            "overlaps_existing": t.overlaps_existing,
+        })
+    for fcand in result.fields:
+        candidates.append({
+            "kind": "field",
+            "face_id": fcand.face_id or "page",
+            "rect": {"x": fcand.rect.x, "y": fcand.rect.y,
+                    "w": fcand.rect.w, "h": fcand.rect.h},
+            "residual_px": fcand.residual_px,
+            "overlaps_existing": fcand.overlaps_existing,
+        })
+
+    elapsed_ms = int((_time.perf_counter() - t0) * 1000)
+    _progress({"event": "detect_frames", "ok": True,
+               "input_size": input_size,
+               "candidates": candidates,
+               "stats": result.stats,
+               "excluded": list(result.excluded),  # H-3: 除外理由の内訳を返す
+               "zero_reason": result.zero_reason,
+               "template_applied": template_applied,
+               "template_skip_reason": template_skip_reason,
+               "elapsed_ms": elapsed_ms})
+    return 0
+
+
 def cmd_detect_grid(args) -> int:
     """枠候補の生成（設計 §6.9）。テンプレート編集画面が呼ぶ・GUI なしでも検証可。"""
     from .grid import detect_ruled, make_uniform
@@ -851,6 +1004,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default=None)
     p.add_argument("--page", default=None, help="特定の帳票IDのみ出力")
     p.set_defaults(fn=cmd_debug_images)
+
+    p = sub.add_parser("detect-frames",
+                       help="ページ全体からの枠候補一括生成（領域指定なし・issue #73）")
+    p.add_argument("--input", required=True)
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--dpi", type=_render_dpi_arg, default=300,
+                   help="展開 dpi（既定 300・72〜1200）。--template 指定時は"
+                        "テンプレートの render_dpi を優先する")
+    p.add_argument("--template", default=None,
+                   help="任意。指定すると除外領域の白潰し・face_id 割り当て・"
+                        "既存枠との重なり判定が有効になる")
+    p.set_defaults(fn=cmd_detect_frames)
 
     p = sub.add_parser("detect-grid", help="枠候補の生成（罫線検出 or 等分割）")
     p.add_argument("--image", help="面画像（--mode ruled で必須）")
