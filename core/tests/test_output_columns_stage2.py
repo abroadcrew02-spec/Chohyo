@@ -26,12 +26,12 @@ import pytest
 
 from chouhyo_ocr.columns import META_COLUMNS, derive_columns
 from chouhyo_ocr.config import Config
-from chouhyo_ocr.mapping import CellContent, Symbol, assign, build_symbol_locator
+from chouhyo_ocr.mapping import CellContent, Symbol, assign
 from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.pipeline import remap, run
 from chouhyo_ocr.render_rows import UNCLEAR, build_row
 from chouhyo_ocr.store import Store
-from chouhyo_ocr.template import CellSpec, TemplateError, load_template
+from chouhyo_ocr.template import TemplateError, load_template
 from chouhyo_ocr.vision_client import ReplayClient
 
 TPL = app_root() / "templates" / "chouhyo-v1.json"
@@ -456,6 +456,11 @@ def test_ac_1_20_debug_images_field_origins_matches_assign_when_field_excluded(t
     """output=false の欄でも debug_images._field_origins と assign() の由来が
     一致し続けること（F-13・#60 M-1③・output は読み取りに一切影響しないため
     理論上は無変更で一致するはず——それをここで実測固定する）。
+
+    2026-09-03（#65-6）: 可視化は由来を再計算せず中間データの cell.origin を
+    読むようになった。ここで固定したいのは「可視化と assign() の結論が一致する」
+    ことなので、比較の対象はそのまま——ただし一致の理由が「同じ規則を2箇所で
+    実装しているから」ではなく「同じ1つの値を見ているから」に変わった。
     """
     from chouhyo_ocr.debug_images import _field_origins
 
@@ -474,14 +479,9 @@ def test_ac_1_20_debug_images_field_origins_matches_assign_when_field_excluded(t
     try:
         pid = store.pages()[0]["page_id"]
         tokens = store.tokens(pid)
+        origins_debug = _field_origins(store, pid)
     finally:
         store.close()
-
-    cells_by_face: dict[str, list[CellSpec]] = {}
-    for c in template.cells:
-        cells_by_face.setdefault(c.face_id, []).append(c)
-    locators = {fid: build_symbol_locator(cs) for fid, cs in cells_by_face.items()}
-    origins_debug = _field_origins(locators, tokens)
 
     by_face: dict[str, list[Symbol]] = {}
     for _seq, face, text, conf, x, y in tokens:

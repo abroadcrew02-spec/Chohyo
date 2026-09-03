@@ -20,7 +20,7 @@ from chouhyo_ocr.vision_client import ReplayClient
 @pytest.fixture()
 def isolated_counter(tmp_path, monkeypatch):
     """カウンタを一時ディレクトリへ隔離する（実カウンタを汚さない）。"""
-    monkeypatch.setenv("CHOUHYO_USAGE_DIR", str(tmp_path))
+    monkeypatch.setenv("CHOUHYO_USAGE_DIR_FOR_TESTS", str(tmp_path))
     return tmp_path
 
 
@@ -102,10 +102,86 @@ def test_config_carries_the_cap():
     assert Config().api_monthly_cap < api_budget.FREE_TIER_UNITS
 
 
-def test_corrupt_counter_does_not_block_work(isolated_counter):
-    """壊れたカウンタで運用を止めない（0 から数え直す）。"""
+def test_corrupt_counter_does_not_block_work(isolated_counter, tmp_path):
+    """壊れたカウンタで運用を止めない（0 から数え直す）。
+
+    issue #91: 数え直す方針は変えないが、**無音でリセットしない**。壊れた
+    ファイルを退避してログへ残す（旧実装はここが1行も出さず、上限分がまるごと
+    再消費されても利用者が気づく手段が無かった）。
+    """
+    from chouhyo_ocr import logging_safe
+
+    logging_safe.init(str(tmp_path / "logs"))
     p = api_budget.usage_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("{壊れた", encoding="utf-8")
     assert api_budget.used_this_month() == 0
     assert api_budget.check_and_count(1, cap=5) == 1
+
+    broken = list(p.parent.glob("api_usage.broken.*.json"))
+    assert len(broken) == 1, "壊れたカウンタを退避していない"
+    assert broken[0].read_text(encoding="utf-8") == "{壊れた"
+    log_text = (tmp_path / "logs" / "error.log").read_text(encoding="utf-8")
+    assert "api_usage_corrupt" in log_text and "state=quarantined" in log_text
+    # 退避先はファイル名のみ（絶対パスを出さない・設計 §8.1）
+    assert str(p.parent) not in log_text
+
+
+def test_counter_of_wrong_shape_is_quarantined(isolated_counter, tmp_path):
+    """JSON としては読めるが形が違う（配列）場合も破損扱いで退避する。"""
+    from chouhyo_ocr import logging_safe
+
+    logging_safe.init(str(tmp_path / "logs"))
+    p = api_budget.usage_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("[1, 2, 3]", encoding="utf-8")
+    assert api_budget.used_this_month() == 0
+    assert list(p.parent.glob("api_usage.broken.*.json"))
+
+
+def test_save_tmp_name_is_process_specific(isolated_counter, monkeypatch):
+    """一時ファイル名にプロセス ID が入る（issue #91）。
+
+    固定名（.json.tmp）だと別 workdir の2プロセスが同じ tmp を掴み、
+    書きかけの昇格・FileNotFoundError の2通りで壊れる。
+    """
+    import os
+
+    seen = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        seen.append(os.path.basename(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(api_budget.os, "replace", spy)
+    api_budget.check_and_count(1, cap=5)
+    assert seen and str(os.getpid()) in seen[0] and seen[0].endswith(".tmp")
+
+
+def test_failed_save_keeps_previous_counter(isolated_counter, monkeypatch):
+    """置き換えに失敗しても前のカウンタは壊れず、一時ファイルも残らない。"""
+    import os
+
+    api_budget.check_and_count(3, cap=10)
+    p = api_budget.usage_path()
+
+    def boom(src, dst):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(api_budget.os, "replace", boom)
+    with pytest.raises(OSError):
+        api_budget.check_and_count(1, cap=10)
+    assert api_budget.used_this_month() == 3
+    assert [q.name for q in p.parent.glob("*.tmp")] == []
+
+
+def test_docstring_describes_the_real_granularity():
+    """粒度の説明を実装（PC・ユーザー単位＋年月キー）に合わせる（issue #91 (4)）。
+
+    旧 docstring は「課金は GCP プロジェクト単位で合算されるため、カウンタも
+    同じ粒度で持つ」と説明していたが、実装のキーは年月だけで保存先は
+    %LOCALAPPDATA%。プロジェクトを切り替えても同じカウンタを消費する。
+    """
+    assert "GCP プロジェクト単位で合算" not in api_budget.__doc__
+    assert "年月" in api_budget.__doc__

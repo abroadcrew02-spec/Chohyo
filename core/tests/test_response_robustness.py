@@ -138,6 +138,90 @@ def test_received_page_reuses_saved_response(tmp_path):
     assert rows[0].status == "正常"
 
 
+# ---------- #92: 応答保存と state 更新の非原子性からの復旧 ----------
+
+def _force_state(cfg, state):
+    """「応答は保存済みだが state はまだ古い」状況を作る。"""
+    from chouhyo_ocr.pipeline import _store_path
+    from chouhyo_ocr.store import Store
+
+    store = Store(_store_path(cfg))
+    pid = store.pages()[0]["page_id"]
+    store.set_state(pid, state)
+    store.close()
+    return pid
+
+
+def test_crash_between_save_and_state_update_does_not_resend(tmp_path):
+    """API 成功 → 応答保存 → state 更新前にクラッシュ、で再送しない（issue #92）。
+
+    保存と state 更新は別ステップなので、間で落ちると **課金済みの応答を
+    持ったまま state=sending** で残り、次の run が同じページを再送していた。
+    """
+    cfg = make_cfg(tmp_path)
+    inp, respd = setup(tmp_path)
+    c1 = CountingReplay(respd)
+    run(inp, TPL, cfg, c1)
+    assert c1.calls == 1
+
+    pid = _force_state(cfg, "sending")
+    assert (tmp_path / "wd" / "responses" / f"{pid}.json").exists()
+
+    c2 = CountingReplay(respd)
+    summary = run(inp, TPL, cfg, c2)
+    assert c2.calls == 0, "課金済みの応答があるのに再送信した"
+    assert summary.recovered_responses == 1
+    _x, _c, rows = render(TPL, cfg, timestamp="recover")
+    assert rows[0].status == "正常"
+
+
+def test_partially_written_response_falls_back_to_resend(tmp_path):
+    """書きかけの壊れた応答が残っていたら復旧せず再送する（issue #92）。"""
+    cfg = make_cfg(tmp_path)
+    inp, respd = setup(tmp_path)
+    c1 = CountingReplay(respd)
+    run(inp, TPL, cfg, c1)
+    assert c1.calls == 1
+
+    pid = _force_state(cfg, "sending")
+    (tmp_path / "wd" / "responses" / f"{pid}.json").write_text(
+        '{"fullTextAnnotation": {"pa', encoding="utf-8")
+
+    c2 = CountingReplay(respd)
+    summary = run(inp, TPL, cfg, c2)
+    assert c2.calls == 1, "壊れた応答を再利用した"
+    assert summary.recovered_responses == 0
+
+
+def test_saved_response_records_the_sent_image_hash(tmp_path):
+    """保存済み応答に送信した画像のハッシュが紐づく（issue #92）。"""
+    from chouhyo_ocr.vision_client import saved_image_hash
+
+    cfg = make_cfg(tmp_path)
+    inp, respd = setup(tmp_path)
+    run(inp, TPL, cfg, CountingReplay(respd))
+    pid = _force_state(cfg, "received")
+    digest = saved_image_hash(tmp_path / "wd", pid)
+    assert digest and len(digest) == 64
+
+
+def test_changed_image_forces_resend(tmp_path):
+    """紐づいたハッシュと現在の画像が食い違うページは再利用しない（issue #92）。"""
+    from chouhyo_ocr.vision_client import response_meta_path
+
+    cfg = make_cfg(tmp_path)
+    inp, respd = setup(tmp_path)
+    run(inp, TPL, cfg, CountingReplay(respd))
+    pid = _force_state(cfg, "received")
+    # 別の画像を送ったときの応答が残っている状況を模す
+    response_meta_path(tmp_path / "wd", pid).write_text(
+        json.dumps({"image_sha256": "0" * 64}), encoding="utf-8")
+
+    c2 = CountingReplay(respd)
+    run(inp, TPL, cfg, c2)
+    assert c2.calls == 1, "別の画像に対する応答を再利用した"
+
+
 # ---------- #39: 1ページの破損がバッチ全体を道連れにしない ----------
 
 def test_broken_page_does_not_kill_whole_batch(tmp_path):

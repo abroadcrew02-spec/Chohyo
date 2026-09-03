@@ -199,24 +199,17 @@ def _build_residual(face: Face, det_h: "set[int]", det_v: "set[int]",
     return Residual(h=h, v=v, blocks=tuple(blocks))
 
 
-def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> ShiftEstimate:
-    """罫線射影による面の平行移動推定（D-25）。
+def _collect_table_lines(binary: "np.ndarray", face: Face, n_x: int, n_y: int,
+                         line_gap: int) -> tuple[set, set, list, list, list]:
+    """表の期待罫線での検出線収集（D-25 の従来経路）。
 
-    テンプレートのテーブル定義（罫線の期待位置）をアンカーに、検出線との
-    一致本数が最大になるシフトを探す。線が足りない・探索境界・次点と拮抗の
-    いずれかなら ok=False——0 で素通しせず「位置合わせ失敗」へ倒すのは、
-    ズレたまま正常顔で出すのが今回潰した故障そのものだから。
+    estimate_shift の中にあったループをそのまま関数へ移しただけで、定数も
+    引数も演算の順序も1つも変えていない（NFR-F08 の担保は純粋な関数分割で
+    あることによる・先例: `_face_estimate`／08 §2.3.6）。
 
-    dpi はテンプレートの render_dpi（汎用化 A-3）。projection.LINE_GAP・
-    SHIFT_RUNNER_DIST は BASE_DPI=300 較正の px 定数なので、dpi/BASE_DPI の
-    比でスケールしてから使う（S-1・S-2）。既定 dpi=BASE_DPI のときは
-    従来と完全に同じ値になる。
+    戻り値: (det_h, det_v, exp_h, exp_v, per_block_h)
     """
-    from .projection import H_COVERAGE, LINE_GAP, V_COVERAGE, line_positions
-    scale = dpi / BASE_DPI
-    line_gap = max(0, round(LINE_GAP * scale))
-    runner_dist = max(1, round(SHIFT_RUNNER_DIST * scale))
-    n_x, n_y = face.shift_limits
+    from .projection import H_COVERAGE, V_COVERAGE, line_positions
     h, w = binary.shape
     det_h: set[int] = set()
     det_v: set[int] = set()
@@ -239,6 +232,84 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
         strip_v = binary[y0:y1, :]
         det_v.update(line_positions(strip_v.sum(axis=0), (y1 - y0) * V_COVERAGE, gap=line_gap))
         exp_v += list(g.v_lines)
+    return det_h, det_v, exp_h, exp_v, per_block_h
+
+
+def _collect_field_anchor_lines(binary: "np.ndarray", face: Face, n_x: int, n_y: int,
+                                line_gap: int) -> tuple[set, set, list, list, list]:
+    """単発欄の枠線での検出線収集（issue #86・表を持たない面だけが通る経路）。
+
+    表の経路（`_collect_table_lines`）との違いは 2 点。
+
+    1. **面の全高／全幅のストリップを使わず、期待線の周辺の窓だけを見る。**
+       全高で拾うと、欄と無関係な位置のインク（印字文・別の欄の罫線）が検出
+       線集合に大量に入り、`format_check.classify` の few_lines 分岐が
+       「線はあるのに期待位置と合わない＝様式不一致」へ倒れる。正しい紙を
+       送信前に止めてしまうので、材料不足は素直に few_lines→判定不能へ倒す。
+       計算量も 1 欄あたり O(H×w) から O((h+2n)×(w+2n)) へ落ちる。
+    2. **被覆率のしきい値の分母は欄自身の幅／高さにする。** ストリップの寸法
+       を分母にすると ±n の余白が効いてしまい、たとえば高さ 20px の欄に
+       n_y=24 では 20/68 = 0.29 < V_COVERAGE=0.35 で自分の縦線を検出できない。
+
+    `line_positions` はストリップ内の相対座標を返すので、クロップした分
+    （y0／xv0）を足し戻して面ローカル座標へ戻す。
+
+    ブロック残差（per_block_h）は空リストを返す——ブロックの概念が無く、
+    `_build_residual` は face.table_geoms（この経路では空）と zip するため
+    面残差だけが記録される。
+    """
+    from .projection import H_COVERAGE, V_COVERAGE, line_positions
+    h, w = binary.shape
+    det_h: set[int] = set()
+    det_v: set[int] = set()
+    exp_h: list[int] = []
+    exp_v: list[int] = []
+    for g in face.field_geoms:
+        if g.h_lines:
+            x0 = max(0, g.x_min - n_x)
+            x1 = min(w, g.x_max + n_x)
+            y0 = max(0, g.y_min - n_y - line_gap)
+            y1 = min(h, g.y_max + n_y + line_gap)
+            strip = binary[y0:y1, x0:x1]
+            th = (g.x_max - g.x_min) * H_COVERAGE
+            det_h.update(y0 + p for p in line_positions(strip.sum(axis=1), th, gap=line_gap))
+            exp_h += list(g.h_lines)
+        if g.v_lines:
+            yv0 = max(0, g.y_min - n_y)
+            yv1 = min(h, g.y_max + n_y)
+            xv0 = max(0, g.x_min - n_x - line_gap)
+            xv1 = min(w, g.x_max + n_x + line_gap)
+            strip_v = binary[yv0:yv1, xv0:xv1]
+            th_v = (g.y_max - g.y_min) * V_COVERAGE
+            det_v.update(xv0 + p for p in line_positions(strip_v.sum(axis=0), th_v, gap=line_gap))
+            exp_v += list(g.v_lines)
+    return det_h, det_v, exp_h, exp_v, []
+
+
+def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> ShiftEstimate:
+    """罫線射影による面の平行移動推定（D-25）。
+
+    テンプレートのテーブル定義（罫線の期待位置）をアンカーに、検出線との
+    一致本数が最大になるシフトを探す。線が足りない・探索境界・次点と拮抗の
+    いずれかなら ok=False——0 で素通しせず「位置合わせ失敗」へ倒すのは、
+    ズレたまま正常顔で出すのが今回潰した故障そのものだから。
+
+    dpi はテンプレートの render_dpi（汎用化 A-3）。projection.LINE_GAP・
+    SHIFT_RUNNER_DIST は BASE_DPI=300 較正の px 定数なので、dpi/BASE_DPI の
+    比でスケールしてから使う（S-1・S-2）。既定 dpi=BASE_DPI のときは
+    従来と完全に同じ値になる。
+    """
+    from .projection import LINE_GAP
+    scale = dpi / BASE_DPI
+    line_gap = max(0, round(LINE_GAP * scale))
+    runner_dist = max(1, round(SHIFT_RUNNER_DIST * scale))
+    n_x, n_y = face.shift_limits
+    # アンカーの出どころは面ごとに排他（不変条件 A・issue #86）。表を1つでも
+    # 持つ面は従来の経路（_collect_table_lines）へ入り、この分岐から下は
+    # 1行も変わらない——表のある面の dx/dy・matched・reason・残差が変化しない
+    # ことを、テストではなく構造で保証する
+    collect = _collect_table_lines if face.table_geoms else _collect_field_anchor_lines
+    det_h, det_v, exp_h, exp_v, per_block_h = collect(binary, face, n_x, n_y, line_gap)
 
     dy, sy, ry, by = _axis_shift(sorted(det_h), exp_h, n_y, runner_dist)
     dx, sx, rx, bx = _axis_shift(sorted(det_v), exp_v, n_x, runner_dist)
@@ -279,14 +350,32 @@ def estimate_shift(binary: "np.ndarray", face: Face, dpi: int = BASE_DPI) -> Shi
     # 構造なので、丸1行ピッチずれた入力は「シフト0・中間線ほぼ全一致」に見える
     # （エイリアシング・実測: dy=104 で正常顔の誤値）。端の線は周期の外にある
     # ため、1行ズレでは必ず不一致になる——非周期アンカー（D-25）。
-    # 縦線には要求しない: 列間隔は非周期で gap 条件が効くうえ、実帳票の縦罫線は
-    # かすれで端の検出が不安定（実測: 無変換の実サンプルで偽陽性になった）。
+    # 表の経路では縦線に要求しない: 列間隔は非周期で gap 条件が効くうえ、実帳票の
+    # 縦罫線はかすれで端の検出が不安定（実測: 無変換の実サンプルで偽陽性になった）。
+    # 欄アンカーの経路では縦線にも要求する: 日付・金額の1文字ずつの記入枠は横に
+    # 等間隔で並ぶ周期構造で、x 方向にも同じ1ピッチずれが起こりうる（幅50pxの枠が
+    # 隣接すれば x ピッチ 50 > 探索上限 24）。※要較正——実帳票の縦罫線のかすれが
+    # 欄にも当てはまるなら v 軸の照合が正常系を落としうる（実検体で再判断する）。
     # 照合は ±2px（ブロック間の較正差を許容。1行ズレ=ピッチ数十px の検出力に影響なし）
     def hit(det: set[int], v: int) -> bool:
         return any((v + d) in det for d in (-2, -1, 0, 1, 2))
 
-    for g in face.table_geoms:
-        if not (hit(det_h, g.h_lines[0] + dy) and hit(det_h, g.h_lines[-1] + dy)):
+    if face.table_geoms:
+        for g in face.table_geoms:
+            if not (hit(det_h, g.h_lines[0] + dy) and hit(det_h, g.h_lines[-1] + dy)):
+                return _est(False, "edge_mismatch")
+    else:
+        # 欄アンカー面の非周期アンカー（issue #86）。面内の期待線の最外2本だけを
+        # 見る。未補正のずれ Δ≠0 では、Δ>0 なら最小の期待線が、Δ<0 なら最大の
+        # 期待線が必ず外れる（Δ だけ動いた集合に、元の集合の端は含まれない）
+        # ——1ピッチずれに限らず任意のずれ量を1つの検査で捉える。欄ごとの上下端を
+        # 要求しない理由は表と同じにできないから: 下線だけの欄が1つあるだけで面
+        # 全体が落ちてしまう
+        if exp_h_set and not (hit(det_h, min(exp_h_set) + dy)
+                              and hit(det_h, max(exp_h_set) + dy)):
+            return _est(False, "edge_mismatch")
+        if exp_v_set and not (hit(det_v, min(exp_v_set) + dx)
+                              and hit(det_v, max(exp_v_set) + dx)):
             return _est(False, "edge_mismatch")
     # 残差は成功が確定してからだけ組み立てる（08 §5.2）。判定（上のどの
     # return にも）には一切使わない——ここまでの判定経路は1行も変えていない
@@ -342,6 +431,19 @@ def _exclusion_mask(face: Face, dilate: int) -> "np.ndarray":
 
 
 def _otsu(gray: "np.ndarray", exclude: "np.ndarray") -> int:
+    """判別分析法の閾値。返す k は「輝度 k 以下が暗いクラス」を意味する。
+
+    既知の限界（2026-09-03 実測・意図的に直していない）: 呼び出し側は
+    `gray < th` でインクを切るが、_otsu の定義上は `<= th` が暗いクラスに
+    当たる。輝度が 2 値しかない画像（合成した真っ黒の線＋真っ白の地など）
+    では閾値が暗い側の輝度そのものになるため、`<` ではインクが全て落ちて
+    後段が few_lines へ倒れる。実素材は中間調があるので実害は無く、`<=` へ
+    直すと実素材の二値化が動く（実測: sample-1 で front 1773 画素・back
+    1221 画素が変化。`workdir/pages/sample-1.png` + `templates/chouhyo-v1.json`
+    ・2026-09-03）。golden のバイト一致が崩れる変更なので見送った。
+    **合成画像でこの関数を通す試験を書くときは、中間調を持たせること**
+    （ぼかす・拡大して縮小するなど）。
+    """
     vals = gray[~exclude]
     hist = np.bincount(vals.ravel(), minlength=256).astype(np.float64)
     total = hist.sum()

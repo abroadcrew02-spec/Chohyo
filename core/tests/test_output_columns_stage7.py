@@ -73,7 +73,7 @@ def isolated_counter(tmp_path, monkeypatch):
     """API 送信カウンタを一時ディレクトリへ隔離する（実カウンタを汚さない・
     test_api_budget.py の isolated_counter fixture と同内容を複製）。
     """
-    monkeypatch.setenv("CHOUHYO_USAGE_DIR", str(tmp_path / "usage"))
+    monkeypatch.setenv("CHOUHYO_USAGE_DIR_FOR_TESTS", str(tmp_path / "usage"))
     return tmp_path
 
 

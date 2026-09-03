@@ -4,7 +4,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -49,6 +51,15 @@ class Summary:
     # 送信前に止まった件数の内訳（原因不問の format_mismatch とは別に持つ・
     # 08 §2.4.3）。GUI（RunScreen.tsx）がこのキー名で参照する
     format_mismatch_pre_send: int = 0
+    # #53 L-9。今回の run が実際に処理したページ数（todo の件数）と、そのうち
+    # 失敗として確定した件数。cli.cmd_run の終了コード判定はこの2つだけを見る
+    # ——旧実装は store 全体の出力行数（過去の run が作った done 行を含む）と
+    # 今回の失敗数を比べていたため、**今回の入力が全滅しても過去の行が残って
+    # いれば exit 0** になっていた。送信上限で見送ったページはどちらにも
+    # 入らない（失敗ではなく「まだ送っていない」）ため、
+    # processed_pages - processed_failed が成功とは限らない
+    processed_pages: int = 0
+    processed_failed: int = 0
     api_calls: int = 0
     unclear_total: int = 0
     overflow: int = 0
@@ -57,6 +68,10 @@ class Summary:
     fallback_used: int = 0
     fallback_discarded: int = 0
     carve_hole: int = 0
+    # issue #92。実行開始時に「応答は保存済みなのに state が sending」だった
+    # ページを received へ戻した件数（＝再送＝再課金を止めた件数）。
+    # 既存の集計キーは変えない
+    recovered_responses: int = 0
     # issue #66 段2（FR-1.4・AC-1.10）。上記3件のうち output: false の欄が
     # 発火元のものだけの内訳（総数からは減らさない・値は記入値を含まない）
     fallback_discarded_excluded_field: int = 0
@@ -65,8 +80,36 @@ class Summary:
 
 
 def _png_bytes(img: "Image.Image") -> bytes:
+    """送信用 PNG エンコード（issue #52 M-15）。
+
+    実測（2026-09-03・実際の送信画像＝align_page の composite 2490×3510 RGB・
+    各3回・Pillow 12.3.0）:
+
+        level 0: 25.02MB / 0.932s   level 1: 3.31MB / 0.703s
+        level 3:  2.36MB / 0.890s   level 6:  2.26MB / 1.063s（=未指定と同一）
+
+    速いのは低圧縮だが、この出力は**ネットワークへ出る**ので、縮まない分だけ
+    アップロード時間が増える。損益分岐の上り速度は level 3 で約 4.6Mbps
+    （+0.10MB を 0.173s 以内に送れるか）、level 1 で約 23Mbps（+1.05MB を
+    0.360s 以内）——通信環境が不明な以上、level 1 は賭けになる。
+
+    それでも level 6（=現状）を選ぶ理由は、速さより**再送＝再課金**の側にある:
+    保存済み応答のサイドカーは「送信したバイト列の sha256」を持ち（issue #92）、
+    圧縮率を変えると同じ画像でもバイト列が変わって全件ハッシュ不一致
+    ——既存 workdir の受信済みページが一斉に再送になる。ハッシュ対象を
+    エンコード前のピクセル（img.tobytes()）へ移せばこの罠は消えるが、
+    実測で tobytes 123ms + sha256 185ms = 308ms/枚（PNG バイト列なら 19ms）で、
+    level 3 の節約 173ms を食い潰して逆に遅い。
+
+    未指定のままにせず level 6 を明示するのは、Pillow 側の既定値が将来
+    変わったときに、こちらは何も変えていないのにサイドカーが全件不一致
+    ——つまり黙って再課金——になるのを防ぐため（未指定と level 6 は
+    バイト単位で同一なことを確認済み: sha256 85eea166… 2,372,063 bytes・
+    2026-09-03）。level 3 へ動かすなら、サイドカーに圧縮率を記録して
+    旧レベルで再計算して照合する仕組みが要る（vision_client 側の変更）。
+    """
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", compress_level=6)
     return buf.getvalue()
 
 
@@ -100,6 +143,33 @@ def _extras_rows(template: Template, result) -> list[tuple[str, str, str]]:
 
 def _store_path(cfg: Config) -> Path:
     return Path(cfg.workdir) / "intermediate.sqlite"
+
+
+def _recover_sent_pages(store: Store, cfg: Config) -> int:
+    """応答は保存済みなのに state が sending のページを received へ戻す（issue #92）。
+
+    送信の成功後は「応答を responses/ へ保存 → state を received に更新」の
+    2ステップで、その間に落ちると**課金済みの応答を持ったまま state=sending**
+    で残る。次の run はその state を見て再送する（＝同じページに二重課金）。
+    実行開始時に一度だけ、応答が正常に読めるページの state を進めておく。
+
+    ここでは画像ハッシュを照合しない。state を進めるだけで、実際に再利用して
+    よいかは従来どおり送信直前の load_saved_response が決める（ハッシュが
+    食い違えば、その場で再送に倒れる）。応答が無い・壊れているページは
+    触らない＝従来どおり再送する。
+    """
+    recovered = 0
+    for row in store.pages():
+        if row["state"] != "sending":
+            continue
+        if load_saved_response(cfg.workdir, row["page_id"]) is None:
+            continue
+        store.set_state(row["page_id"], "received")
+        log.info("recovered_saved_response", page_id=row["page_id"])
+        recovered += 1
+    if recovered:
+        log.info("recovered_saved_response_total", count=recovered)
+    return recovered
 
 
 def _load(template_path: str | Path) -> tuple[Template, dict, str]:
@@ -166,8 +236,9 @@ def check_reusable(store: Store, geo_hash: str, tpl_hash: str,
     template_hash 不一致は当然（check_template=False）。初回（空）は通す。
 
     store は閉じない（Q-MG）——「閉じるのは開いた側」に一本化した。全呼び出し元
-    （_render_locked・remap・cli.cmd_debug_images）が `with Store(...) as store:`
-    で包んでおり、ここで raise した例外は with の __exit__ が確実に close する。
+    （_render_locked・_remap_locked・cli.cmd_debug_images・cli.cmd_diag_overflow）
+    が `with Store(...) as store:` で包んでおり、ここで raise した例外は with の
+    __exit__ が確実に close する。
     """
     from .align import ALGO_VERSION
     stored_geo = store.geometry_hashes()
@@ -284,10 +355,10 @@ def _map_and_score(store: Store, template: Template, page_id: str,
     total_syms = sum(len(v) for v in by_face.values())
     page_total = len(page_syms)
 
-    store.replace_tokens(page_id, [
+    token_rows = [
         (seq, fid, s.text, s.conf, s.x, s.y)
         for seq, (fid, s) in enumerate(
-            (fid, s) for fid, syms in by_face.items() for s in syms)])
+            (fid, s) for fid, syms in by_face.items() for s in syms)]
 
     result = assign(template.cells, by_face, template.faces, dpi=template.render_dpi)
 
@@ -299,11 +370,6 @@ def _map_and_score(store: Store, template: Template, page_id: str,
                           content.text if content else "",
                           content.conf_min if content else None,
                           cell.kind, int(is_empty)))
-    store.upsert_cells(page_id, cell_rows)
-    # U-04/#62: 文字単位信頼度・値の由来を cell_rows と同じ内容から作り、
-    # 同じ page_id へ拡張列として保存する（store.cells() の戻り値は不変のまま・
-    # 設計 §10.2）
-    store.upsert_cell_extras(page_id, _extras_rows(template, result))
 
     binaries = {f.face_id: f.binary for f in aligned_faces}
     era_scores: dict[str, dict] = {}
@@ -313,9 +379,26 @@ def _map_and_score(store: Store, template: Template, page_id: str,
         if (cell.table_id, cell.row_no) in result.empty_rows:
             continue  # 空行に丸印判定を走らせない（要件 §5.4）
         era_scores[cell.field_id] = era.score_cell(binaries[cell.face_id], cell)
-    store.upsert_eras(page_id, era_scores)
 
-    store.set_unassigned(page_id, result.unassigned_below_table, result.unassigned_other)
+    # 書き込みは計算を終えてから1トランザクションで（issue #93）。1ページ分の
+    # 中間データが「token は新しいが cell は旧」のような中途半端な組み合わせで
+    # 残らないようにする。割付・丸印判定はこの外側で終わっているので、
+    # 書き込みロックを保持するのは SQLite の実行時間だけ。
+    # 直後の set_status / set_template_hash / set_state（呼び出し側の成功時
+    # 処理）は別トランザクションになるが、その間に落ちても state が done へ
+    # 進んでいないため render の母集団にも check_reusable の母集団
+    # （state='done'）にも入らない——次回の run が保存済み応答から割付を
+    # やり直す（送信＝課金は発生しない）
+    with store.transaction():
+        store.replace_tokens(page_id, token_rows)
+        store.upsert_cells(page_id, cell_rows)
+        # U-04/#62: 文字単位信頼度・値の由来を cell_rows と同じ内容から作り、
+        # 同じ page_id へ拡張列として保存する（store.cells() の戻り値は不変の
+        # まま・設計 §10.2）
+        store.upsert_cell_extras(page_id, _extras_rows(template, result))
+        store.upsert_eras(page_id, era_scores)
+        store.set_unassigned(page_id, result.unassigned_below_table,
+                             result.unassigned_other)
     return (result.unassigned_below_table, result.unassigned_other,
             total_syms, page_total,
             result.fallback_used, result.fallback_discarded, result.carve_hole,
@@ -323,10 +406,18 @@ def _map_and_score(store: Store, template: Template, page_id: str,
             result.carve_hole_excluded_field, result.conflict_excluded_field)
 
 
-def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
-        client: OcrClient, progress: Progress = lambda e: None,
-        resend_on_template_change: bool = False) -> Summary:
-    """一括処理。同一 workdir の多重起動はロックで断る（issue #35）。"""
+@contextmanager
+def _run_lock(cfg: Config):
+    """workdir の実行ロックを取る（issue #35・#93）。
+
+    取れなければ RunLockError を OperationRefused へ翻訳する——CLI は
+    OperationRefused を「業務的な拒否」として exit 0 + refused イベントで
+    扱う契約（cli.main）で、二重起動はまさにそれ。
+
+    run / render / remap / remap_and_render の4経路が同じ形でこれを使う。
+    remap だけロックを取っていなかったのが #93（共有 SQLite を無防備に
+    書き換えていた）。
+    """
     from .runlock import RunLock, RunLockError
     lock = RunLock(cfg.workdir)
     try:
@@ -334,10 +425,18 @@ def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
     except RunLockError as e:
         raise OperationRefused(str(e)) from None
     try:
-        return _run_locked(input_dir, template_path, cfg, client, progress,
-                           resend_on_template_change)
+        yield
     finally:
         lock.release()
+
+
+def run(input_dir: str | Path, template_path: str | Path, cfg: Config,
+        client: OcrClient, progress: Progress = lambda e: None,
+        resend_on_template_change: bool = False) -> Summary:
+    """一括処理。同一 workdir の多重起動はロックで断る（issue #35）。"""
+    with _run_lock(cfg):
+        return _run_locked(input_dir, template_path, cfg, client, progress,
+                           resend_on_template_change)
 
 
 def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
@@ -401,6 +500,11 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             # 減る差し替えでは余った行が幽霊として残り、stale 検知にもかからない
             prev = store.hash_of_source(source.name)
             if prev is not None and prev != digest:
+                # 消したページの ID は採番集合から外す（#53 L-5）。残したままだと
+                # 差し替えたファイルの帳票 ID が「使用済み」を避けて
+                # `<stem>_<hash8>_p0001` へ逃げる——旧行はもう無いので、
+                # 元の `<stem>_p0001` をそのまま再利用してよい
+                taken -= set(store.page_ids_of(source.name))
                 dropped = store.drop_pages_of(source.name)
                 store.forget_source(source.name)
                 log.info("source_content_changed", source_file=source.name,
@@ -425,6 +529,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     # （課金）ことになる。実測: 1ファイルの入力に対し api=1・
                     # 「正常」行が2行（旧名の stale と新名）並んでいた
                     if states:
+                        taken -= set(store.page_ids_of(source.name))  # #53 L-5
                         store.drop_pages_of(source.name)
                     moved = store.rename_source(seen_as, source.name)
                     log.info("source_renamed", source_file=source.name, count=moved)
@@ -490,9 +595,18 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     continue
                 store.upsert_page(pid, source.name, i, "expanded", str(img_path))
 
+        # 応答保存と state 更新の非原子性からの復旧（issue #92）。**all_pages を
+        # 読む前**に実行する——この後のループは state のスナップショットで
+        # 再利用可否を判断するので、先に直しておかないと今回の run が再送する
+        recovered_responses = _recover_sent_pages(store, cfg)
+
         # 今回の入力に無いページが中間データに残っていれば可視化する（issue #28）。
         # render は store の全ページを出力するため、消えた入力の行が黙って
-        # Excel に残り続ける——検知だけでも見えるようにする（削除は purge のみ）
+        # Excel に残り続ける——ここでは検知だけで、この経路では消さない。
+        # 中間データが消えるのは `purge --yes`（全削除）と、同名で中身が
+        # 変わった入力に対する drop_pages_of（そのファイル分だけ・上の
+        # source_replaced 経路）の2つ（#53 L-3: 旧コメントは前者だけを
+        # 「唯一の削除経路」と書いていたが、H-B の修正で後者が入っている）
         all_pages = store.pages()
         missing_inputs = sorted({p["source_file"] for p in all_pages
                                  if p["source_file"] not in input_names})
@@ -508,6 +622,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         progress({"event": "start", "total": page_count, "todo": len(todo)})
 
         summary = Summary(pages=page_count)
+        summary.processed_pages = len(todo)  # #53 L-9
+        summary.recovered_responses = recovered_responses
         # 既に done なページ（todo から外れて無言で再利用される）を可視化する
         # （コーディネーター指示 2026-09-02）。API へは送らない・状態も動かさない
         # ——今回の run では何もしていないことをそのまま伝えるだけの通知
@@ -522,6 +638,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             # 進捗イベントを出さずに continue すると、todo に数えたページの分だけ
             # バーが埋まらず「4/5」で完了する（レビュー M-7）。失敗も1件として進める
             if page["state"] == "failed" and page["status"] == render_rows.STATUS_EXPAND_FAILED:
+                summary.processed_failed += 1  # #53 L-9
                 progress({"event": "page", "page_id": pid,
                           "status": render_rows.STATUS_EXPAND_FAILED})
                 continue
@@ -530,6 +647,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             except Exception:
                 store.set_state(pid, "failed")
                 store.set_status(pid, render_rows.STATUS_EXPAND_FAILED)
+                summary.processed_failed += 1  # #53 L-9
                 log.error("open_failed", page_id=pid)
                 progress({"event": "page", "page_id": pid,
                           "status": render_rows.STATUS_EXPAND_FAILED})
@@ -567,6 +685,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH, reason="frame_size")
                 summary.format_mismatch += 1
                 summary.format_mismatch_pre_send += 1
+                summary.processed_failed += 1  # #53 L-9
                 _record_format_result(
                     store, pid, format_check.PageVerdict("mismatch", "size", -1.0, ()))
                 log.error("page_size_mismatch", page_id=pid)
@@ -608,6 +727,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                         reason="frame_" + (pv.reason if pv else "check_failed"))
                     summary.align_failed += 1
                     page_status = render_rows.STATUS_ALIGN_FAILED
+                summary.processed_failed += 1  # #53 L-9（様式不一致・位置合わせ失敗の両分岐）
                 _record_format_result(store, pid, pv)  # 判定不能でもスコアは残す（FR-F12）
                 progress({"event": "page", "page_id": pid, "status": page_status,
                           "reason_code": "frame_" + (pv.reason if pv else "check_failed")})
@@ -668,13 +788,23 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
 
             # --- F6: 送信（上限・1リクエスト=1画像）---
             if sends >= cfg.send_limit:
+                # 上限で見送ったページは processed_failed に数えない（#53 L-9）
+                # ——分割送信は通常運用で、失敗ではなく「まだ送っていない」
                 store.set_status(pid, render_rows.STATUS_CAP)
                 progress({"event": "page", "page_id": pid, "status": render_rows.STATUS_CAP})
                 continue
             # 保存済み応答があれば再送しない（issue #38）。受信後・割付前で落ちた
             # ページは応答を持っているので、再実行のたびに送り直すのは課金の無駄。
             # vision_client の docstring が約束していた契約をここで実装する
-            saved = load_saved_response(cfg.workdir, pid)
+            # 送信するバイト列と、保存済み応答に紐づけるハッシュは同一のものを
+            # 使う（issue #92）。「この応答はこの画像に対するもの」を後から
+            # 検証できるようにし、入力が差し替わっていれば再利用しない。
+            # PNG 化を再利用経路でも払うことになるが、対象は state=received の
+            # ページだけ（done は todo に入らない）で、送信するページは
+            # どのみち同じバイト列が要る
+            png = _png_bytes(composite)
+            image_sha256 = hashlib.sha256(png).hexdigest()
+            saved = load_saved_response(cfg.workdir, pid, image_sha256=image_sha256)
             if saved is not None and page["state"] == "received":
                 resp = saved
                 log.info("reuse_saved_response", page_id=pid)
@@ -683,16 +813,17 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 store.bump_attempt(pid)
                 sends += 1
                 try:
-                    resp = client.annotate(_png_bytes(composite), pid)
+                    resp = client.annotate(png, pid)
                 except SendError as e:
                     store.set_state(pid, "failed")
                     store.set_status(pid, render_rows.STATUS_SEND_FAILED)
+                    summary.processed_failed += 1  # #53 L-9
                     log.error("send_failed", page_id=pid, error_code=e.code)
                     progress({"event": "page", "page_id": pid,
                               "status": render_rows.STATUS_SEND_FAILED})
                     continue
                 summary.api_calls += 1
-                save_response(cfg.workdir, pid, resp)
+                save_response(cfg.workdir, pid, resp, image_sha256=image_sha256)
                 store.set_state(pid, "received")
 
             # --- F7/F8: 割付・丸印 ---
@@ -710,6 +841,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH,
                                  reason="map_failed")
                 summary.format_mismatch += 1
+                summary.processed_failed += 1  # #53 L-9
                 log.error("map_failed", page_id=pid, error_code=type(e).__name__)
                 progress({"event": "page", "page_id": pid,
                           "status": render_rows.STATUS_FORMAT_MISMATCH,
@@ -732,6 +864,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                                  reason="outside_ratio")
                 store.set_state(pid, "failed")
                 summary.format_mismatch += 1
+                summary.processed_failed += 1  # #53 L-9
                 log.error("format_mismatch", page_id=pid, count=other)
                 progress({"event": "page", "page_id": pid,
                           "status": render_rows.STATUS_FORMAT_MISMATCH,
@@ -742,9 +875,13 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             # set_status の既定 reason=""（M-2）が status_reason も同時に
             # 空へ戻す——以前の失敗（frame_lines 等）の理由コードが再送・
             # 再処理後の成功ページに残留しない
-            store.set_status(pid, "")
-            store.set_template_hash(pid, tpl_hash)  # この cell を割り付けた版の印（#25）
-            store.set_state(pid, "done")
+            # done と template_hash は必ず揃える（issue #93）。片方だけ残ると
+            # check_reusable（母集団は state='done'）が旧世代のハッシュを
+            # 見て、次の render を「テンプレートが変わっている」と誤って拒否する
+            with store.transaction():
+                store.set_status(pid, "")
+                store.set_template_hash(pid, tpl_hash)  # この cell を割り付けた版の印（#25）
+                store.set_state(pid, "done")
             if below >= render_rows.OVERFLOW_MIN_SYMBOLS:
                 summary.overflow += 1
             summary.fallback_used += fb_used
@@ -772,7 +909,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # render_seconds は P-H1（全件再レンダー累積）の可視化用実測値
         # （えーちゃん指示 2026-09-02・GUI 側の閾値超バナーが使う）
         _render_t0 = time.perf_counter()
-        xlsx, csvp, rows = _render_locked(template_path, cfg, None)
+        xlsx, csvp, rows = _render_locked(template_path, cfg, None, progress)
         render_seconds = round(time.perf_counter() - _render_t0, 1)
         summary.rows = len(rows)
         summary.unclear_total = sum(r.unclear_count for r in rows)
@@ -792,6 +929,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                   # 件数（GUI RunScreen.tsx の出口2択・完了案内が参照するキー名）
                   "format_mismatch_pre_send": summary.format_mismatch_pre_send,
                   "api_calls": summary.api_calls,
+                  # issue #92: 応答が保存済みなのに state が古かったページを
+                  # 復旧した件数（＝再送＝再課金を止めた件数）
+                  "recovered_responses": summary.recovered_responses,
                   "unclear_cells": summary.unclear_total, "overflow": summary.overflow,
                   "risky_cells": len(risky),
                   # U-04/U-07（設計 §10.3）。risky_cells と同じ扱いの追加項目
@@ -813,27 +953,41 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         return summary
 
 
+# render 段が自分で付ける status_reason（issue #80）。成功時に status を
+# クリアしてよいのはこの2つが付いているページだけ——他の経路（送信前の様式
+# 判定・送信後の割付失敗など）が付けた印を render が消すと、失敗の記録が
+# 出力し直しただけで黙って消える
+_RENDER_OWNED_REASONS = frozenset({"row_build_failed", "row_build_bug"})
+
+# 中間データの壊れ方として説明がつく例外だけを列挙する（issue #80・決定13）。
+# ここに無い例外は「コード欠陥の疑い」（row_build_bug）へ倒す＝許可リスト方式。
+# ValueError は json.JSONDecodeError・float() の失敗・UnicodeDecodeError を含む。
+# TypeError は意図的にコード欠陥側へ置く: データ起因でも起こりうるが、モジュール
+# 境界の引数追加で最初に出るのも TypeError で、取り違えたときの損害が非対称
+# （過剰報告は triage で解けるが、逆向きは不具合を様式の問題として隠す）。
+# KeyboardInterrupt・SystemExit は BaseException 派生なのでそもそもここに来ない
+_ROW_BUILD_DATA_ERRORS = (ValueError, KeyError, IndexError, sqlite3.Error)
+
+
 def render(template_path: str | Path, cfg: Config,
-           timestamp: str | None = None) -> tuple[Path, Path, list[Row]]:
+           timestamp: str | None = None,
+           progress: Progress = lambda e: None) -> tuple[Path, Path, list[Row]]:
     """cell / era_score から再出力する（API 送信なし・要件 §5.8）。
 
     run と同じロックを取る（レビュー L-5）。一時ファイル名が固定なので、
     同一秒に2つの render が走ると互いの tmp をすり替えうる。
+
+    progress は既定引数（issue #80）——`render(TPL, cfg, timestamp=tag)` で
+    呼んでいる既存の呼び出し側・テストは無改修で通る。
     """
-    from .runlock import RunLock, RunLockError
-    lock = RunLock(cfg.workdir)
-    try:
-        lock.acquire()
-    except RunLockError as e:
-        raise OperationRefused(str(e)) from None
-    try:
-        return _render_locked(template_path, cfg, timestamp)
-    finally:
-        lock.release()
+    with _run_lock(cfg):
+        return _render_locked(template_path, cfg, timestamp, progress)
 
 
 def _render_locked(template_path: str | Path, cfg: Config,
-                   timestamp: str | None) -> tuple[Path, Path, list[Row]]:
+                   timestamp: str | None,
+                   progress: Progress = lambda e: None
+                   ) -> tuple[Path, Path, list[Row]]:
     template, raw, geo_hash = _load(template_path)
     from .align import template_hash as _tpl_hash
     columns = derive_columns(template)
@@ -841,32 +995,61 @@ def _render_locked(template_path: str | Path, cfg: Config,
         # 出力を1バイトも書く前に、中間データが現テンプレートの産物かを検査（#25）
         check_reusable(store, geo_hash, _tpl_hash(raw), check_template=True)
         rows: list[Row] = []
-        build_failures: list[str] = []
+        data_failures: list[str] = []
+        bug_failures: list[str] = []
         for page in store.pages():
             p = dict(page)
             if page["state"] == "done":
+                # render が前回付けた印は、組み立てる前に剥がす（issue #80）。
+                # 剥がさないと compose_status が「今回は成功した行」に前回の
+                # 失敗ステータスを載せ、直った後もずっと全〓行が出続ける
+                # （08 §2.4.3 が未配線の理由に挙げていた残留そのもの）。
+                # 剥がすのは render 自身が付けた印だけ——run が付けた status を
+                # 消すと「送信前に止まった」等の記録が黙って失われる
+                stale = p.get("status_reason", "") in _RENDER_OWNED_REASONS
+                if stale:
+                    p["status"] = ""
+                    p["status_reason"] = ""
                 # 1ページの破損がバッチ全体の出力を失わせない（issue #39）。
                 # 中間データに型不正が残っていた場合、旧実装は render/remap/run の
                 # どれを叩いても同じ箇所で落ち、送信済み（＝課金済み）の正常ページも
                 # 二度と取り出せなかった（回復手段は purge のみだった）
                 try:
-                    rows.append(build_row(template, p, store.cells(page["page_id"]),
-                                          store.era_scores(page["page_id"]), cfg,
-                                          extras=store.cell_extras(page["page_id"])))
-                    continue
+                    row = build_row(template, p, store.cells(page["page_id"]),
+                                    store.era_scores(page["page_id"]), cfg,
+                                    extras=store.cell_extras(page["page_id"]))
                 except Exception as e:  # noqa: BLE001
                     import traceback
                     # 型名だけだと自コードのバグが全ページ「様式不一致」に化け、
                     # 利用者はテンプレートを疑う（レビュー M-2）。スタックは
-                    # error.log へ（frame のみ・記入値は含まない）
-                    log.error("row_build_failed", page_id=page["page_id"],
+                    # error.log へ（frame のみ・記入値は含まない）。
+                    # issue #80: データ起因（_ROW_BUILD_DATA_ERRORS）と
+                    # コード欠陥の疑い（それ以外）を理由コードで割る
+                    is_data = isinstance(e, _ROW_BUILD_DATA_ERRORS)
+                    code = "row_build_failed" if is_data else "row_build_bug"
+                    log.error(code, page_id=page["page_id"],
                               error_code=type(e).__name__)
                     log.error_trace(type(e).__name__,
                                     "".join(traceback.format_tb(e.__traceback__)))
-                    p["status"] = render_rows.STATUS_FORMAT_MISMATCH
+                    p["status"] = render_rows.STATUS_RENDER_FAILED
                     rows.append(build_failure_row(template, p))
-                    build_failures.append(page["page_id"])
+                    (data_failures if is_data else bug_failures).append(page["page_id"])
+                    # state は動かさない（done のまま）。failed に落とすと次の
+                    # run の todo に入り、送信済みページを再送＝再課金する
+                    if (page["status"], page["status_reason"]) != (
+                            render_rows.STATUS_RENDER_FAILED, code):
+                        # set_status は毎回 commit する。値が変わるときだけ呼ぶ
+                        # （全 done ページで無条件に呼ぶと 1 万ページ＝1 万 commit）
+                        store.set_status(page["page_id"],
+                                         render_rows.STATUS_RENDER_FAILED, reason=code)
+                    progress({"event": "render_page_failed", "page_id": page["page_id"],
+                              "status": render_rows.STATUS_RENDER_FAILED,
+                              "reason_code": code})
                     continue
+                rows.append(row)
+                if stale:  # 直った。render が付けた印だけを剥がす
+                    store.set_status(page["page_id"], "")
+                continue
             else:
                 if not p.get("status"):
                     p["status"] = render_rows.STATUS_INTERRUPTED
@@ -882,6 +1065,11 @@ def _render_locked(template_path: str | Path, cfg: Config,
         xlsx, csvp, risky = write_outputs(cfg.output_dir, ts, columns, rows,
                                           unclear_char_level=cfg.unclear_char_level)
         _warn_risky(risky, columns)
+        build_failures = data_failures + bug_failures
+        if bug_failures:
+            # コード欠陥の疑いは件数も別に出す（issue #80）。データ起因の破損と
+            # 混ぜて数えると、開発側が「テンプレートの問題」として片付けてしまう
+            log.error("row_build_bug_total", count=len(bug_failures))
         if build_failures:
             # 全ページ破損＝コード／テンプレの問題で、1ページの破損とは意味が違う
             # （レビュー M-1）。旧実装は件数をどこにも出さず exit 0 だった
@@ -891,12 +1079,52 @@ def _render_locked(template_path: str | Path, cfg: Config,
                 raise OperationRefused(
                     f"処理済みページ {len(done)} 件すべてで行の組み立てに失敗した。"
                     "テンプレートと中間データの整合を確認する（詳細は error.log）")
+        # 全滅時は上の OperationRefused が優先して、このサマリは出ない
+        # （GUI へは refused イベントで届く）
+        progress({"event": "render_summary", "pages": len(rows),
+                  "row_build_failed": len(data_failures),
+                  "row_build_bug": len(bug_failures)})
         return xlsx, csvp, rows
 
 
 def remap(template_path: str | Path, cfg: Config,
           progress: Progress = lambda e: None) -> int:
     """保存済み token から cell を作り直す（テンプレートの非幾何変更後・§6.7）。
+
+    run / render と同じロックを取る（issue #93）。取らずに共有 SQLite を
+    書き換えていたため、run と並走するとページごとに異なるテンプレート世代の
+    セルが混ざり、結果がタイミング依存になっていた。
+
+    remap の直後に render する CLI 経路は remap_and_render() を使う——
+    ここで取ったロックは戻り値を返す時点で解放されるので、単体で2回呼ぶと
+    その間に別プロセスが割り込める。
+    """
+    with _run_lock(cfg):
+        return _remap_locked(template_path, cfg, progress)
+
+
+def remap_and_render(template_path: str | Path, cfg: Config,
+                     progress: Progress = lambda e: None,
+                     timestamp: str | None = None
+                     ) -> tuple[int, Path, Path, list[Row]]:
+    """remap → render を**ロックを保持したまま**続けて実行する（issue #93）。
+
+    CLI の remap コマンドは「割付をやり直して出力し直す」1つの操作で、
+    途中に別プロセスの run が割り込むと、出力が「新テンプレートで割り付けた
+    セル」と「割り込みが書いた別世代のセル」の混成になる。remap 単体・
+    render 単体の API はそのまま残す（GUI・テストが個別に使う）。
+
+    戻り値は (割付し直したページ数, xlsx, csv, 行)。
+    """
+    with _run_lock(cfg):
+        n = _remap_locked(template_path, cfg, progress)
+        xlsx, csvp, rows = _render_locked(template_path, cfg, timestamp, progress)
+        return n, xlsx, csvp, rows
+
+
+def _remap_locked(template_path: str | Path, cfg: Config,
+                  progress: Progress) -> int:
+    """remap の本体（ロックは呼び出し側が保持している前提）。
 
     幾何セクションが変わっていたら拒否して `run` を促す。
     """
@@ -929,11 +1157,6 @@ def remap(template_path: str | Path, cfg: Config,
                                   content.text if content else "",
                                   content.conf_min if content else None,
                                   cell.kind, int(is_empty)))
-            store.upsert_cells(pid, cell_rows)
-            # U-04/#62: run と同じ変換（_extras_rows）で char_confs/origin も
-            # 作り直す。ここを直さないと、再割付のたびに由来印・文字単位〓の
-            # 材料が既定値 '' へ巻き戻る（設計 §12「remap にも同じ変更が要る」）
-            store.upsert_cell_extras(pid, _extras_rows(template, result))
             fb_used_total += result.fallback_used
             fb_discarded_total += result.fallback_discarded
             carve_hole_total += result.carve_hole
@@ -961,13 +1184,27 @@ def remap(template_path: str | Path, cfg: Config,
                 from .align import binarize_face
                 binary = binarize_face(gray, template.face(cell.face_id), dpi=template.render_dpi)
                 era_scores[cell.field_id] = era.score_cell(binary, cell)
-            store.upsert_eras(pid, era_scores)
-            store.set_template_hash(pid, tpl_hash)  # 割付し直した版の印（#25）
+
+            # 1ページ分の5更新を1トランザクションにまとめる（issue #93）。
+            # 個別 commit のままだと、途中で落ちたページが「cell は新テンプレート
+            # の割付なのに page.template_hash は旧のまま」という自己矛盾した
+            # 状態で残り、次の render が check_reusable で誤って拒否する。
+            # 位置合わせ画像の読み込み・丸印の再スコアはこの外側で終えてある
+            # ——重い処理を中に入れると書き込みロックを持つ時間が延びる
+            with store.transaction():
+                store.upsert_cells(pid, cell_rows)
+                # U-04/#62: run と同じ変換（_extras_rows）で char_confs/origin も
+                # 作り直す。ここを直さないと、再割付のたびに由来印・文字単位〓の
+                # 材料が既定値 '' へ巻き戻る（設計 §12「remap にも同じ変更が要る」）
+                store.upsert_cell_extras(pid, _extras_rows(template, result))
+                store.upsert_eras(pid, era_scores)
+                store.set_template_hash(pid, tpl_hash)  # 割付し直した版の印（#25）
+                store.set_unassigned(pid, result.unassigned_below_table,
+                                     result.unassigned_other)
             if missing_aligned:
                 log.error("remap_missing_aligned", page_id=pid, count=missing_aligned)
                 progress({"event": "remap_warning", "page_id": pid,
                           "missing_aligned_cells": missing_aligned})
-            store.set_unassigned(pid, result.unassigned_below_table, result.unassigned_other)
             n += 1
         # U-04/U-07（設計 §10.3）: remap は戻り値が既存契約で n（ページ数）の
         # int 固定のため（cli.py の cmd_remap・既存テストが n の型に依存）、

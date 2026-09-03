@@ -280,6 +280,30 @@ def classify(est: ShiftEstimate) -> tuple[Verdict, str]:
 `page_size_verdict` 不一致は `estimate_shift` に到達しないため、呼び出し側が
 `PageVerdict("mismatch", "size", score=-1.0, faces=())` を直接組む。
 
+**表を持たない面（欄アンカー）の扱い**（2026-09-03・issue #86）。`classify` も
+`fold` も**変更しない**——欄の枠線をアンカーにする面は `estimate_shift` の中で
+期待線の作り方と検出の走査範囲だけが変わり、そこから先（`need_*`・`by/bx`・
+`SHIFT_GAP_MIN`・スコア）は表の面と同じ条件式を通る。ただし判定の**分布**は変わる:
+
+- 検出は期待位置の周辺の窓だけを見るので、材料不足のとき `det_*_count` が
+  `exp_*_uniq * FEW_LINES_DETECT_RATIO` を下回り、★2 の `sparse_*` を通って
+  `undecidable, "few_lines"` へ倒れる。**`mismatch, "lines"` にはほぼ到達しない**。
+  全高ストリップで拾えば `det` が印字文で埋まって `mismatch` を作れるが、それは
+  正しい紙を送信前に止める副作用と表裏なので採らない（02_design.md §6.2 手順6）。
+- `edge_mismatch` の発火元は 2 つある。表の面は**ブロックごとの上端・下端**の横罫線、
+  欄アンカーの面は**面内の期待線の最外 2 本**（h 軸は期待横線の最小と最大、v 軸は期待
+  縦線の最小と最大）。欄で per-block にしないのは、枠の無い欄が 1 つあるだけで面全体が
+  落ちるため（決定 7 → 決定 7'）。写像先は表と同じ `undecidable, "edge"` で、理由コード
+  も判定表も増やしていない。
+- M-4 の分岐（`exp_h_uniq + exp_v_uniq == 0` → 判定不能）は、`load_template` が
+  「横線か縦線が 1 本も作れない面」を拒否するようになったため、欄アンカーの面では
+  到達しなくなった。表を持たない面が期待線 0 本でここまで来る経路が塞がっている。
+- 同寸の欄が等間隔に縦積み（横並び）された面で 1 ピッチずれた入力は、最外照合で
+  `edge_mismatch` → `undecidable, "edge"` へ倒れる。`ambiguous` では捉えられない
+  ——1 ピッチずれ解は探索上限（24px）の外にあり次点として現れないため。
+  `core/tests/test_field_anchor.py::test_t5b_*`（縦・pitch 80/120/200）と
+  `::test_t5f_*`（横・pitch 100）が固定している。
+
 #### 2.3.4 3つの変更の根拠（`testdata/formC/README.md`・2026-09-02 実測）
 
 **★1 `edge_mismatch` を「不一致」から「判定不能」へ倒す**
@@ -386,11 +410,15 @@ except AlignError as e:
 
 #### 2.4.3 理由コードの一覧（FR-F09 の「分離」）
 
-> `row_build_failed` は**未配線**（2026-09-02・(a') 実装時の判断）: `_render_locked` は `page.status` をローカル辞書にしか書かず DB を更新せず、render 経路にはページ単位の progress イベントも無い。片側だけ永続化すると成功時にクリアする経路が無く新しい残留を生むため、render 側の状態更新設計が別途要る。GUI は未知コードを注記なしで扱うので実害なし。
+> `row_build_failed` は **#80 で配線済み**（2026-09-03）。それまでは未配線だった（2026-09-02・(a') 実装時の判断）: `_render_locked` は `page.status` をローカル辞書にしか書かず DB を更新せず、render 経路にはページ単位の progress イベントも無かった。片側だけ永続化すると成功時にクリアする経路が無く新しい残留を生む、というのが保留の理由。#80 はこの「クリアする経路」を先に決めてから配線した——`_render_locked` は自分が付けた理由コード（`row_build_failed` / `row_build_bug`）が残っているページに限って組み立て前に印を剥がし、成功したらその印を DB からも消す。他の経路が付けた status には触らない。
+>
+> あわせて **#80 で `row_build_failed` の status を `様式不一致` から新設の `出力失敗` へ移した**（下の表に反映済み）。render 段は「送信済み・割付済みのデータから Excel を組む」段で、そこでの失敗は様式の問題ではない。`様式不一致` のままだと、保管される xlsx のステータス列が利用者にテンプレートを疑わせ続ける（06 §7 の指摘は理由コードを分けるだけでは半分しか閉じない）。これは §2.11 不変条件4「既存8値を増やさない」からの意図的な逸脱で、(a') のスコープ宣言を #80 が更新した形。`未処理（中断）` の流用は却下した——「次回実行時に処理されます」の含意があり、送信済み（＝課金済み）ページの再送を促す。
+>
+> **`page.state` は動かさない。** render の失敗は「done なページの出力に失敗した」であって処理段階の後退ではない。`failed` へ落とすと次の run の todo に入り、送信済みページが再送＝再課金される。
 
-> 未知の reason（将来 `estimate_shift` に理由が増えた場合）は `classify` が安全側の `undecidable` と `frame_<reason>` で返す。GUI（`REASON_CODE_JA`）は未知コードを注記なしで表示するので壊れない。10 コードの表を更新するのは、理由を追加した本人の責務。
+> 未知の reason（将来 `estimate_shift` に理由が増えた場合）は `classify` が安全側の `undecidable` と `frame_<reason>` で返す。GUI（`REASON_CODE_JA`）は未知コードを注記なしで表示するので壊れない。この表（#80 で `row_build_bug` を足して 11 コード）を更新するのは、理由を追加した本人の責務。
 
-`page.status_reason` に入る値。**`page.status` の既存値（8種）は1つも変えない。**
+`page.status_reason` に入る値。**`page.status` の既存値は書き換えない**（意味を変えない）。値域は #80 で `出力失敗` を足して 8 → 9 種になった。
 
 | status | status_reason | 発火点 | 送信前/後 |
 |---|---|---|---|
@@ -399,7 +427,8 @@ except AlignError as e:
 | 様式不一致 | `frame_ambiguous` | `ambiguous` | 前 |
 | 様式不一致 | `map_failed` | `_map_and_score` の構造異常（`pipeline.py:581`） | 後 |
 | 様式不一致 | `outside_ratio` | D-15 枠外率（`pipeline.py:598`） | 後 |
-| 様式不一致 | `row_build_failed` | 行組み立て失敗（`pipeline.py:721`） | 後 |
+| 出力失敗 | `row_build_failed` | 行組み立て失敗のうちデータ起因（`_render_locked`・#80。`ValueError`／`KeyError`／`IndexError`／`sqlite3.Error`） | 後 |
+| 出力失敗 | `row_build_bug` | 行組み立て失敗のうちコード欠陥の疑い（#80。上の許可リスト外の例外＝`TypeError` 等。fail-closed でこちらへ倒す） | 後 |
 | 位置合わせ失敗 | `frame_few_lines` | `few_lines` かつ**軸別**の検出が乏しい（★2） | 前 |
 | 位置合わせ失敗 | `frame_edge` | `edge_mismatch`（★1・07 は不一致に置いている） | 前 |
 | 位置合わせ失敗 | `frame_boundary` | `boundary`（★3 の分岐を含む） | 前 |
@@ -551,12 +580,14 @@ export function visibleFields(
 
 - 進捗イベント `page` に `reason_code` を足す（`{"event":"page","page_id":...,"status":"様式不一致","reason_code":"frame_lines"}`）
 - `type Failure = { page_id: string; status: string; reason_code?: string }`
-- `STATUS_JA`（`RunScreen.tsx:84-97`）はそのまま。**理由コード → 平易な言葉**の対応表を1つ足す:
+- `STATUS_JA`（`RunScreen.tsx`）は (a') の時点では変えなかった（#80 で `出力失敗` を 1 つ足した・§2.4.3）。**理由コード → 平易な言葉**の対応表を1つ足す:
 
 | reason_code | 表示 |
 |---|---|
 | `frame_size` / `frame_lines` / `frame_ambiguous` / `frame_edge` | 「様式が違うため**送信前に**止めました」 |
-| `map_failed` / `outside_ratio` / `row_build_failed` | 「送信後に様式不一致と判定しました」 |
+| `map_failed` / `outside_ratio` | 「送信後に様式不一致と判定しました」 |
+| `row_build_failed`（#80） | 「出力する行を組み立てられませんでした（中間データが壊れている可能性があります）」 |
+| `row_build_bug`（#80） | 「行の組み立てでエラーが発生しました（プログラムの不具合の可能性。ログを確認してください）」 |
 | `frame_few_lines` / `frame_boundary` | 「罫線が読み取れず位置合わせできませんでした」 |
 
 - **出口2択**（FR-F10）: `format_mismatch_pre_send > 0` のとき、一覧の下に固定文で2つ示す。①実行画面でテンプレートを選び直す（(t) 実装前は「テンプレート選択は次段で追加予定」と書かず、**現状の導線（編集画面でテンプレートを開き直す）**を案内する）②編集画面でこの紙のテンプレートを作る
@@ -576,7 +607,7 @@ export function visibleFields(
 | AC-F08 | gui-logic | `canvasInteractionAllowed(true, tool)===true`（不一致でも変わらないこと） | 合成 |
 | AC-F09 | **unit（gui-logic）** | `expandAlignNotice` の優先順 template>size>mismatch>undecidable>match と帯色 | 合成 |
 | AC-F10 | gui-logic | 新設文言が純関数として単体検証できる形になっている | 合成 |
-| AC-F11 | gui-logic ＋ 目視 | 判定不能で描画を弱め案内を強調・色以外の手掛かり（線種の破線化など） | 目視は L3 |
+| AC-F11 | gui-logic ＋ 目視 | 判定不能で描画を弱め案内を強調・色以外の手掛かり（線種の破線化など）。**実装: `frameStyleFor`（alpha 0.55・破線 [10,6]＝参照先の [8,5] と別パターン）／案内は `.msg` から warnbox（`level:"warn"`・先頭に「※判定できませんでした:」）・2026-09-03** | 目視は L3 |
 | AC-F12 | integration ＋ gui-logic | 一部不一致のバッチで全ページ分の行が出る／`format_mismatch_pre_send` が区別表示される | 合成テンプレ＋既存応答 |
 | AC-F13 | integration | 全ページの `format_verdict`／`format_score`／`detected`／`expected` が page 行とログに残る（**一致ページも**） | 既存の replay 素材 |
 | AC-F14 | integration（例外注入） | `format_check.from_diag` を monkeypatch で例外化 → status は `位置合わせ失敗` のまま・`format_check_failed` とスタックが残る・`様式不一致` にならない | 合成 |
@@ -627,6 +658,7 @@ assert all(v == "〓" for v in row.values)
 2. **スコアは判定に使わない。** 判定は既存の `need_y`／`need_x`。スコアは記録と (t) の比較専用（07 FR-F01）
 3. **スコアの分子と分母は同じ基準（重複排除）で揃える。** `matched`（連結リスト基準）を重複排除分母で割らない（front で 1.375 になる）
 4. **`page.status` の既存8値を増やさない。** 新しい区別は `status_reason` で持つ
+   - ※ これは (a') のスコープ宣言。**#80 で 9 値へ拡張した**（`出力失敗` を追加・§2.4.3 の注記に経緯）。render 段の失敗を `様式不一致` に載せると、保管される xlsx が利用者にテンプレートを疑わせ続けるため。以後 `page.status` の値を足すときは §2.4.3 と `RunScreen.STATUS_JA`・`render_rows._FAILURE_STATUSES` の 3 箇所を同時に更新する
 5. **判定関数の例外は `様式不一致` に化けない。** 例外時は現行バケツへ落とし `format_check_failed` を残す（AC-F14）
 6. **枠の可視判定は1箇所。** 描画とヒットテストが同じ `visibleFields` を見る
 7. **`fields`／`tables`／`excls` の実体を判定結果で削らない。** 消すのは描画だけ
@@ -805,6 +837,8 @@ fn validate_user_template_name(
 
 staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親が user dir なので、この roots だけで通る。`is_staged_of_picked` の特例（`lib.rs:268`）は触らない。
 
+**実装は上の表より狭い**（2026-09-03 実測・#90 備考）。`check_arg_scopes` へ渡す roots は `allowed_roots()`（repo_root ＋ workdir/editor_pages）のままで、`--template` だけ user dir を足す分岐は入れていない。webview 発の引数が user dir のテンプレートを指す経路が無いため——実行時のテンプレート解決は Rust 内の `resolve_last_template` → `inject_default_template` が**スコープ検査の後**に行い（`lib.rs` の `run_core`／`run_core_capture` とも同じ順序）、保存時の `verify` は `save_user_template` が自分で組み立てた引数で走る。webview から user dir のテンプレートを名指しできるようにするときは、この分岐が要る。
+
 #### 3.2.6 `cargo test` の許可／拒否表（AC-F51・AC-F59）
 
 | # | 入力 | 期待 |
@@ -824,6 +858,10 @@ staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親�
 | 13 | user dir 内のエントリが symlink | 列挙から除外・読み取り拒否（AC-F59） |
 | 14 | `x.json.saving.json`・`x.json.bak`・サブディレクトリ | 列挙から除外 |
 | 15 | 5 MB 超のファイル | `excluded:"size"` として列挙結果に現れる |
+| 16 | staged（`<名前>.json.saving.json`）の位置に reparse point | **保存を拒否**（#89。`fs::write` はリンクを辿るため書き込み前に弾く。非昇格で作れるディレクトリジャンクションで実証する——#13 と同じ作り方） |
+| 17 | staged の位置に**ハードリンク**（範囲外のファイルへの別名） | **リンク先を書き換えない**（#69 セキュリティ LOW (a)。ハードリンクは reparse point ではないので 16 の検査に掛からない。リンク数を読む `MetadataExt::number_of_links` は stable では使えない〔`windows_by_handle`・rustc 1.94.1 で E0658〕ため、**名前を外してから `create_new` で作る**方式で防ぐ。`std::fs::hard_link` で実証） |
+
+**ジャンクション残余（LOW 受容）の再評価トリガ**: 読み取りルート配下にジャンクションを張られた場合の残余リスクは LOW として受容している。前提は「読めるのは roots 配下の限られた拡張子だけ」「roots は repo_root と `workdir/editor_pages` の2つだけ」。次のいずれかに手を入れるときは **HIGH 相当として再評価**すること——(1) roots を参照するコマンドの許可拡張子を増やす (2) `read_text` に roots を許す（現在は pick 済みパスのみ） (3) `workdir` を GUI から自由入力できるようにする。コード側の同じ注意書きは `gui/src-tauri/src/lib.rs` の `allowed_roots` に置いてある。
 
 ### 3.3 照合提示（FR-F28・FR-F46・NFR-F09）
 
@@ -838,6 +876,7 @@ staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親�
 - `--candidate` は反復指定。`check_args_v2`（`lib.rs:70-118`）は同一フラグの重複を弾かないので**そのまま通る**（2026-09-02 コード確認）。20 件 × 260 文字程度＝約 5 KB で、Windows のコマンドライン上限 32 KB に収まる
 - **出荷テンプレートも `--candidate` の1つとして Rust が積む**（列挙はしない・07 §7.3）。core 側に「出荷か利用者か」の区別を持たせないため、`kind` は Rust が付けて GUI へ渡すのではなく、**core が受け取った順序の先頭1件を shipped として扱う**のではなく——**`--shipped <path>` と `--candidate <path>` の2フラグに分ける**。core は前者を `kind:"shipped"`、後者を `kind:"user"` として出力に載せる
 - Rust 側の許可フラグ表（`allowed_flags`）と `ALLOWED_SUBCOMMANDS` に `match-templates` を追加する
+  - **実装は追加していない**（2026-09-03 実測・#90 備考）。`match-templates` は専用コマンド `match_templates` が引数を組み立てて `core_output_stdout_only` を直接呼ぶため、白リスト（webview 発の `run_core_capture` が通る表）に載せる必要がない。載せていない分だけ狭い——webview から任意の `--candidate` を渡す経路が存在しない。この経路を webview へ開くときだけ白リストへの追加を検討する
 
 #### 3.3.2 JSON 契約
 
@@ -858,12 +897,52 @@ staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親�
 - `verdict`／`reason`／`score`／`detected`／`expected` は (a') の `PageVerdict`／`FaceVerdict` の値をそのまま使う。**面ごとの内訳は返さない**（照合提示に要るのはページ単位の1行だけ）
 - `excluded[].reason` は `parse`（JSON として読めない）／`schema`（`load_template`・`validate_v1` が拒否）／`size`（5 MB 超・Rust が付ける）／`limit`（件数上限で照合しなかった）。**1件の不正で照合ループを止めない**（FR-F28）——`try/except` は候補1件ごとに閉じる
 - `truncated` は件数上限（20）または合計時間上限（3.0 秒）で打ち切ったことを示す。打ち切り時点以降の候補は `excluded reason:"limit"` として名前だけ載せる（FR-F46 ⑤）
-- **画像は1回だけ読む。** `check_page` はテンプレートごとに `resize` と面切りを行うため、テンプレートの `image_size` が異なると再 resize が要る。同じ寸法のテンプレートが続く場合に resize 結果を使い回すキャッシュを1段だけ持つ（NFR-F09 の 3.0 秒に効く）
+- **画像は1回だけ読む。** さらに `check_page` の前処理そのものを候補間で共有する（§3.3.4）。テンプレートごとに `resize`・面切り・二値化をやり直すと NFR-F09 の 3.0 秒を候補7件で使い切る
 - `cells`／`tables` は `len(template.cells)` と面をまたいだ `table_id` のユニーク数
 
 #### 3.3.3 時間上限の実装
 
 合計 3.0 秒・1件 1.0 秒・20 件（NFR-F09）。**打ち切りはテンプレート単位**（`check_page` の途中では止めない——面の途中で止めると `fold` が誤った verdict を返す）。1件ごとに経過を測り、次の1件を始める前に合計上限を超えていれば残りを `limit` として積む。
+
+#### 3.3.4 前処理の候補間再利用（#82・2026-09-03 実装）
+
+`check_page` は2つの部分でできている。
+
+| 部分 | 内容 | 依存するもの |
+|---|---|---|
+| 前処理 | ページの `resize` → 探索余白つきキャンバス → 面の切り出し → グレースケール化 → Otsu → 傾き推定 → （必要なら回転してやり直し）→ 粗マスク二値化 | 入力ページ・`image_size`・`shift_limits`・`source.rect`・`exclusions`・`render_dpi`（`COARSE_DILATE` のスケールにのみ効く） |
+| 照合 | `align.estimate_shift` → `classify` → `fold` | 上の二値画像・`table_geoms`（期待罫線）・`shift_limits` |
+
+**前処理は期待罫線に依存しない。** (t) の候補は「出荷テンプレートを写して一部だけ直した利用者テンプレート」が主なので、面の幾何が一致する候補どうしでは前処理の結果が完全に同じになる——分離前はこれを候補ごとに作り直していた。
+
+実装は `format_check.PageContext`（1枚の入力ページに束縛される使い捨ての作業領域）。`cmd_match_templates` が候補ループの前に1つ作り、`ctx.check(template)` を候補ごとに呼ぶ。キャッシュは3段:
+
+| 段 | キー | 保持するもの |
+|---|---|---|
+| ページ | `(W, H, pad)` | 探索余白つき RGB キャンバス |
+| 面（除外に依存しない） | `(source_rect, pad)` | 切り出した `big` とグレースケール |
+| 面（除外に依存する） | `(source_rect, pad, exclusions, dilate)` | 粗マスク二値 |
+
+キーは前処理の入力そのものなので、**判定結果は1件ずつ `check_page` を呼んだときと同一**になる。`check_page(page_img, template)` は `PageContext(page_img).check(template)` を呼ぶ互換ラッパとして残す（`pipeline.py` の run 経路・既存テストはそのまま通る）。常駐量が候補数に比例して膨らまないよう、各段は直近使用順で上限件数（ページ2・面4）を超えたものから捨てる。
+
+⚠️ **`align._face_estimate` の手順を `PageContext` が複製している**（`align.py` を変更しない範囲での分割のため）。複製が黙って古くなるのを防ぐため、`core/tests/test_format_check_shared_prep.py` が素材3×テンプレート2の全組み合わせで `align._face_estimate` 由来の判定と一致することを固定する。`align.py` の前処理を変えたらこのテストが落ちる。
+
+**実測（2026-09-03・候補7件＝出荷テンプレート＋その複製6件・`workdir/pages/sample-1.png` 2490×3510）**
+
+候補ループ相当（stat → JSON 読み → `load_template` → `validate_v1` → 照合）を before/after 交互に3回ずつ。
+
+| | 照合（7件合計） | `load_template`＋`validate_v1`（7件合計） | 合計 |
+|---|---:|---:|---:|
+| 分離前 | 4032 / 4042 / 4158 ms（平均 4077） | 平均 1906 ms | 平均 5983 ms |
+| 分離後 | 937 / 1039 / 1086 ms（平均 1021） | 平均 1912 ms | 平均 2933 ms |
+
+照合だけで **4077 → 1021 ms（75% 減・4.0倍）**。CLI 実走（`match-templates` に候補7件・予算 3.0 秒のまま3回）では、分離前が3回とも `truncated:true`（評価できた候補 1／3／5 件）だったのに対し、分離後は 6／7／7 件・`truncated` は3回中1回に減った。
+
+**残る支配項は照合ではなく `load_template`。** 7件で 1906 ms（1件 272 ms）を占め、`jsonschema.validate()` が呼び出しのたびにメタスキーマ検証（`check_schema`）をやり直すぶんが 7件で約 640 ms ある（実測: `validate` 971 ms に対し、`validator_for(schema)(schema)` を作り置きして `validate` だけ呼ぶと 332 ms）。スキーマ**ファイル**のキャッシュ（`template._schema_cache`）は既にあるが、**バリデータ実体のキャッシュが無い**。予算 3.0 秒に余裕を持たせるにはここが次の一手になる（`template.py` の変更が要るため #82 の範囲外）。
+
+**分離前の内訳（1件 578 ms・sample-1・出荷テンプレート・7回の平均）**: Otsu 142・グレースケール化 104・`resize` 78・`estimate_shift` 78・傾き推定 60・キャンバス確保 52・切り出し 34・二値化 25・除外マスク 7。**候補間で共有できるのは `estimate_shift` 以外のすべて＝ 86%。**
+
+**GUI 側の非同期化（#82 の3点目）は対応済み。** `Editor.tsx` の `loadImage` は画像の描画（`im.onload`）を待たずに `void runMatchTemplates(imagePath)` を投げ、`matchLoading` で照合パネルだけを待たせる（`gui/src/Editor.tsx:2705`・2026-09-03 確認）。枠の表示が照合を待つことはない。
 
 ### 3.4 提示の並び（FR-F46・AC-F53・AC-F54）
 
@@ -1121,7 +1200,8 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
    - 行数 >= 2 が表の条件。1行しかない run は表にしない
    - 表候補 = {origin(x,y), rows, row_pitch(平均), row_height(セル高の中央値),
               columns: [{x_offset, width}], residual_px}
-     residual_px は行境界の実測 y と等ピッチ当てはめの最大差（grid.GridFit と同じ定義）
+     residual_px は max(行境界の実測 y と等ピッチ当てはめの最大差,
+                        構成する原子セルのレール散らばりの最大値)  ※#85 N-1 で後者を追加
 6. 欄候補: 表に吸収されなかった原子セル -> Rect（単発欄候補）
 ```
 
@@ -1167,12 +1247,24 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 | 重複 | 同一矩形（±COLLINEAR_TOL）は1つに畳む | レールのゆらぎ由来 |
 | 表に吸収済み | 表ブロックを構成した原子セルは欄候補に出さない | 二重提示の防止 |
 | 非矩形の連結成分 | L 字・凹み・穴のある連結成分は候補にしない（`excluded` の `non_rectangular`） | 実装がグリッドセル単位の連結成分で近似しているため（§4.2.1 の⚠️）。原案の定義には無い除外で、近似の代償 |
+| 閉じていない連結成分 | 形は矩形でも外周4辺のどれかが `EDGE_COVER`(0.90) に満たない成分は候補にしない（`excluded` の `not_closed`） | 手順3 の辺被覆判定そのもの。以前は理由を出さずに落としており、`components` と `rects` の差の一部が説明できなかった（#85 N-2・sample-1 で 11 件） |
 
 #### 4.2.3 面の割り当てと座標系
 
 - **返す座標は「ページ座標」で統一する。** 編集画面は `fields`／`tables` をページ座標で保持し、保存時に `splitY` で面ローカルへ変換している（`Editor.tsx:660-672`）。core が面ローカルで返すと GUI 側に逆変換が要り、座標系の取り違えという最も高くつくバグの余地を作る
 - `--template` が**あり寸法が一致する**場合: 各候補の中心が入る面の `face_id` を付ける。面の境界をまたぐ候補は候補から外し、`excluded` に `reason:"straddles_face"` として出す（黙って消さない）
 - `--template` が**ない**場合、または**寸法が違って適用をやめた**場合: `face_id` は `null`（CLI 出力では `"page"`）。面の割り当ては GUI が自分の `splitY` と `faceRangeContains`（`Editor.tsx:598-609`）で行う。**core に GUI の編集中状態（splitY）を渡さない**
+
+**`excluded` の内訳は2つの台帳が並んだもの（#85 N-2・2026-09-03）。** 同じ配列に入っているが、引かれる母数が違う:
+
+| 台帳 | reason | 母数 |
+|---|---|---|
+| 成分の台帳 | `non_rectangular` / `not_closed` | 連結成分（`stats.components`） |
+| セルの台帳 | `page_outline` / `too_small` / `straddles_face` | 原子セル（`stats.rects`）から先の絞り込み |
+
+成分の台帳は**必ず閉じる**: `stats.components == stats.rects + non_rectangular + not_closed`（`test_detect_frames.py::test_n2_component_ledger_closes_on_*` で formB・formC・sample-1 に対して固定）。⚠️ **`components - rects - Σ(全 reason の count)` は 0 にならない**——`too_small` などのセル側の除外を二重に数えるため（sample-1 実測で -8）。読むときは台帳を分けること。
+
+`straddles_face` だけは数え方の単位も違う（原子セルの個数ではなく、**候補の個数**——表候補1件は複数セルから成る）。面をまたいで落ちた表候補が何セルぶんだったかは `excluded` からは復元できない。
 
 #### 4.2.4 成立条件と不成立の明示（FR-F17）
 
@@ -1252,20 +1344,30 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 | `id`（`"c1"`…） | **無し** | GUI が受け取り順で仮 ID を振る。core が振ると「同一応答内で一意」を両側が管理することになり、採用・除去の対象取り違えの余地が増える |
 | `source`（`"ruled"` 固定） | **無し** | 1値しか取らないフィールドは分岐の保険にならない。増えたときに足す |
 | `blocks:[{"origin":{"x","y"},"rows"}]` | `blocks:[{"x","y","rows"}]` | `template.py` の `tables[].blocks[]` が平坦な `{x, y, rows}`。GUI の `detect-grid` 受け取りコードと同形にする |
-| `excluded` の `reason` 3種・count 0 も列挙 | `page_outline` / `too_small` / `straddles_face` / **`non_rectangular`** の4種。**0 件の reason は出さない** | `non_rectangular` は §4.2.1 手順4 の近似で落ちた連結成分（L 字など）。0 件を並べても読み手の判断は変わらない |
+| `excluded` の `reason` 3種・count 0 も列挙 | `page_outline` / `too_small` / `straddles_face` / **`non_rectangular`** / **`not_closed`** の5種。**0 件の reason は出さない** | `non_rectangular` は §4.2.1 手順4 の近似で落ちた連結成分（L 字など）、`not_closed` は手順3 の辺被覆に届かなかった成分（#85 N-2）。0 件を並べても読み手の判断は変わらない |
 | `face_id` は `--template` 無しで `null` | `--template` 無しは **`"page"`** | GUI 側で `null` と面 ID の2系統に分岐させない。`grid.detect_frames` の返り値は設計どおり `None` で、畳むのは CLI 出力の段 |
 | （記載なし） | `input_size`: `[width, height]` | 開いた画像と core が見た画像の寸法が同じかを GUI が確かめられる |
 | （記載なし） | `template_applied`（`true` / `false` / `null`）と `template_skip_reason` | 下記 |
-| `stats` は線分・矩形・レール数 | `components` を追加 | 手順4の連結成分の総数。`rects`（＝原子セルの数）との差が `non_rectangular` の発生量になり、検出が崩れた面の切り分けに使う |
+| `stats` は線分・矩形・レール数 | `components` を追加 | 手順4の連結成分の総数。`rects`（＝原子セルの数）との差が `non_rectangular` ＋ `not_closed` の発生量になり（§4.2.3 の成分の台帳）、検出が崩れた面の切り分けに使う |
 
 **`template_applied` / `template_skip_reason`（2026-09-03 追加）**: `--template` を渡しても、入力画像の寸法がテンプレートの `image_size` と違えば座標系が一致しない。この状態で除外領域を白潰しすると**関係ない場所を消し**、面割り当てと重なり判定も別の紙の座標で行うことになる。そこで寸法が違う場合は3つの処理をいずれも行わず、`template_applied:false`・`template_skip_reason:"size_mismatch"` を返して `face_id:"page"`・`overlaps_existing:false` に落とす（`--template` 無しと同じ扱い）。**黙って「テンプレートを適用したつもりの結果」を返さない。** テンプレートを渡していない場合は **`template_applied:null`**・`template_skip_reason:null`——「適用しなかった」（false）と「適用する対象が無かった」（null）を区別する。
 
 - **座標はページ座標**（§4.2.3）。`rect` は表候補にも付ける（GUI が候補を1つの矩形として描くため）
 - `kind:"table"` の `blocks`／`row_pitch`／`row_height`／`columns` は `template.py` の `tables[]` スキーマにそのまま写る形。`row_height` は**セル高の中央値そのまま**で、`grid.ROW_INSET`（罫線ぶんの控え）は引かない——あれは領域指定の等分割側の経験則で、本節の閾値表（§4.1.4）に無い量だから。formB では `row_pitch` 80 に対し `row_height` 80 が返る（罫線1本ぶんの差は採用後に人が詰める前提）
-- `residual_px` は**表候補**では行境界の実測 y と等ピッチ当てはめの最大差、**欄候補**では矩形の4辺と実測線分のずれの最大値（formB の欄候補3件で 0.3／0.0／0.3・2026-09-03 実測）。歪んだ紙・かすれた罫線で候補の信頼度を人が判断するための値（FR-F25）
+- `residual_px` は**表候補**では「行境界の実測 y と等ピッチ当てはめの最大差」と「構成する原子セルのレール散らばりの最大値」の**大きい方**、**欄候補**では矩形の4辺と実測線分のずれの最大値（formB の欄候補3件で 0.3／0.0／0.3・2026-09-03 実測）。歪んだ紙・かすれた罫線で候補の信頼度を人が判断するための値（FR-F25）
+
 - `overlaps_existing` は `template_applied:true` のときのみ意味を持つ。判定は既存 `template.cells` の全 rect と候補矩形の重なり。GUI 側は編集中の枠が core の知らない状態にあるため、受け取った値と**現在の枠での再判定を OR して**使う（`Editor.tsx` 実装済み）
 - `zero_reason` は候補が0件のときだけ値が入る（§4.2.4）
 - **PDF の展開先は `workdir/detect_frames_pages/`**。編集画面の下地（`workdir/editor_pages/`）と分ける——同じ場所に混ぜると、候補生成のために展開した画像が編集画面の掃除で消えたり、その逆が起きたりする。どちらも `workdir` 配下なので `purge --yes` の対象（README の中間データの説明と同じ扱い）
+
+**表候補の `residual_px` にレール散らばりを入れた理由（#85 N-1・2026-09-03）**: 等ピッチ当てはめの残差は行が2つの run では**定義上つねに 0**（2 点は必ず直線に乗る）。sample-1 の実測では表候補10件中8件が `rows==2` で、ピッチが行高に対して極端な 512／537 の候補まで 0.0 になり、`residual_px` が判別に使えなかった。原子セル側は同じ量（レール代表位置と実測線分のずれ）を `cell_residual` として測っているのに表側で捨てていたため、**大きい方を採る**形に変えた（sample-1・`align_page` 経路で 512／537 の候補が 0.0 → 2.1 になることを実測）。
+
+`rail_residual_px` を別キーで併記する案は採らなかった。理由は2つ:
+
+1. **GUI が読むのは `residual_px` 1つだけ**（`Editor.tsx:1530` で `residual` へ写し、候補一覧に「残差 N.Npx」と出す）。別キーを足しても GUI 側の変更なしには `rows==2` の候補が 0.0 に見えたままで、指摘された問題が解決しない
+2. 値の意味は「候補の信頼度の目安」（FR-F25）のままで、**大きい方を採るのは単調な悪化方向**——同じ候補で値が下がることはないので、既存クライアントが `residual_px` を閾値で使っていても「良い候補を悪いと誤読する」側にしか振れない
+
+⚠️ **これでも 0.0 は出る。** レールが本当に1本の線分だけで構成されていれば散らばりは 0 で、`rows==2` の候補は 0.0 のままになる（sample-1 の生画像経路の実測で表候補13件中7件が該当）。`residual_px` は**線の位置のばらつき**の量であって、「ピッチが行高に対して極端」という疑わしさは測っていない。後者は閾値較正の課題（Q-F6 相当・§4.10）として残す。
 
 **Rust 側の白リスト追加が要る**: `ALLOWED_SUBCOMMANDS`（`lib.rs:23`）へ `detect-frames`、`allowed_flags`（`lib.rs:35`）へ `("--input", true)`・`("--page", true)`・`("--dpi", true)`・`("--template", true)`、`TEMPLATE_ACCEPTING_SUBCOMMANDS`（`lib.rs:125`）へも追加（`inject_default_template` の対象にする）。`--input` は既存の `check_scope_dir` で `editor_pages` ＋ picked に限定される。
 
@@ -1361,10 +1463,14 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 
 ```
 生画像経路  stats: lines_h 47, lines_v 27, rects 145, rails_h 41, rails_v 26, components 160
-            excluded: non_rectangular 2, too_small 6, straddles_face 3
+            excluded: non_rectangular 2, not_closed 13, too_small 6, straddles_face 3
 align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, components 157
-            excluded: non_rectangular 3, too_small 5, straddles_face 3
+            excluded: non_rectangular 3, not_closed 11, too_small 5, straddles_face 3
 ```
+
+⚠️ `not_closed` は **#85 N-2 で追加した内訳**（2026-09-03・生画像経路は `detect-frames --input ..\workdir\pages\sample-1.png --template ..\templates\chouhyo-v1.json`、align 経路は `align_page` の合成画像を `detect_frames` へ直接）。追加前はこの成分が `excluded` のどこにも出ず、`components` と `rects` の差（生画像 160-145=15、align 157-143=14）のうち `non_rectangular` で説明できない 13／11 件が宙に浮いていた。追加後は成分の台帳（§4.2.3）が両経路とも閉じる。
+
+**表候補の残差（#85 N-1 の効果・align 経路）**: 変更前は表候補10件のうち `rows==2` の8件がすべて `residual_px` 0.0 だった。変更後は 8 件とも 0 より大きくなる（pitch 536.90／512.40 の候補がいずれも 2.1、他は 0.7〜2.1）。⚠️ 生画像経路では表候補13件中 `rows==2` が12件あり、うち7件は変更後も 0.0 のまま——こちらはレールが単一線分で散らばりが実際に 0 のため（§4.4 の⚠️）。
 
 **detail 側（back 面）は pitch が定義どおり出る。** テンプレート定義は pitch 104・14行×2ブロック。`align_page` 経路では pitch 104.18／104.25 の2件に割れ、生画像経路では 14行1件にまとまる——**どちらも pitch は定義と一致し、割れ方だけが前処理で変わる。** テストが条件にしている「`face_id=="back"` かつ pitch 104±2 の表候補が2件以上」は `align_page` 経路で成立する。⚠️ **生画像経路では back の候補が1件なので、この条件は満たさない。** テストと CLI で前処理が違う点は §4.10 R-7 に残す。
 
@@ -1373,6 +1479,24 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 **この面では、候補をそのまま採用しても family 表にはならない。** 利用者は front 側の表候補を捨てて、既存の「くり返し行」からの生成（範囲指定）か手描きに回ることになる。テストが front 側の個数・pitch を条件に含めないのはこのため（実測に基づく判断で、期待値の後付けではない）。
 
 **性能**: 0.757〜0.830 秒。NFR-F02 の 3.0 秒に収まる。formB（0.23 秒）・formC（1.01 秒）との差はレール数（41×26 / 37×20）で説明がつく。
+
+#### 4.7.2 NFR-F02 の実機再計測（#87 項目2・2026-09-03）
+
+`scripts/perf_check.py --only frames` を追加し、`detect-frames` 1 枚の所要を素材3種×3回で測れるようにした（出力は `workdir_build/perf/`）。§4.7.1 は `detect_frames` 単体だけを測っていたが、**利用者が待つのは CLI 1 プロセスぶん**なので2つの尺度を並べる。
+
+| 素材 | `elapsed_ms`（CLI 全体・3回） | `detect_frames` 単体（3回） | rails h/v | 候補 |
+|---|---|---|---|---|
+| sample-1 ＋ 出荷テンプレート | 3304 / 2049 / 2739 | 1699 / 1966 / 1859 | 41/26 | 23 |
+| formB-1 ＋ formB テンプレート | 700 / 577 / 715 | 300 / 396 / 271 | 10/8 | 4 |
+| formC-1（テンプレートなし） | 1883 / 1375 / 2787 | 2346 / 1903 / 1496 | 37/9 | 1 |
+
+**§4.7.1 の測定より 2〜4 倍遅いという観測（#85 あくあ・2026-09-03）は追認できる。** 同じ素材・同じ測り方（`detect_frames` 単体）で 0.830 秒 → 1.70〜1.97 秒。倍率は約 2.2 で、報告の下限にあたる。実機が遅いのであって実装が退化したのではない——§4.7.1 と同じ経路・同じ入力で比が一定に出ている。
+
+**NFR-F02（ページ 1 枚 3.0 秒）には実際に触れる。** `elapsed_ms` は 3 回中 1 回が 3304 ms で予算を超えた（実行環境の負荷が高い時間帯には 3 回中 2 回が 3171／3655 ms で超過するのも観測している）。内訳は `detect_frames` 本体 1.7〜2.0 秒＋残り 0.6〜0.9 秒（プロセス起動・設定読み込み・画像読み込み・ページ全体の Otsu）。**本体だけなら予算内で、超過はプロセス1回ぶんの固定費を足したときに起きる。** 予算をどちらの尺度で測るかは Q-F13 の判断に含める（未確定）。
+
+**打ち切り案内（`too_many_lines`）の発火条件は `grid.MAX_RAILS = 200`（軸ごと）。** 205 本の横罫線を引いた合成画像で `rails_h=205` → `zero_reason:"too_many_lines"` を実測した（`--only frames` が毎回確認する）。実素材のレール数は sample-1 が 41/26・formC が 37/9・formB が 10/8 なので、実運用で上限に当たるのはよほど密な帳票に限られる。
+
+⚠️ 合成画像は罫線の厚み方向に濃淡（0 と 40）を付けている。真っ黒と真っ白だけの画像では `align._otsu` が閾値 0 を返し（この関数は「閾値以下を暗いクラス」とする定義で値を返すのに、呼び出し側は `gray < th` で切る）、インクが 1 画素も残らず `no_lines` になってしまう。実写・合成どちらの実素材でも中間調があるため実害は無いが、合成画像でテストを組むときは踏む。
 
 ### 4.8 変更ファイルと分担
 

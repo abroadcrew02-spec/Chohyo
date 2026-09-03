@@ -362,6 +362,20 @@ ID は 3層構成。**FR-0.x = 両弾の共通基盤／FR-1.x = 第1弾（出力
 
 検証スクリプト（scratchpad・リポジトリ非追跡）: `verify_a11y.py`（AC-1.21・1.22・1.23・1.24・1.25の主測定）／`verify_a11y_table.py`（AC-1.21の表列側の補足測定）。実施日: 2026-09-01。
 
+**Should 5件の消化（2026-09-03）**: issue #67 へ移管した5件は `fixing-accessibility` の再判定（2026-09-03）で判定を付け直し、同日すべて実装した——①ハッチ不透明度=Should、②〜⑤は Must。実装は `gui/src/Editor.tsx`、検査は `gui/tests/gui-logic.test.mjs`。
+
+| # | 再判定 | 実装 | 検査（gui-logic.test.mjs） |
+|---|---|---|---|
+| ① ハッチ不透明度 | Should | `HATCH_STROKE_STYLE` を 30%→45%（`hatchArea` が参照する定数へ切り出し） | 定数値を固定 |
+| ② 並べ替えの aria-live | Must（SC 4.1.3） | `reorderAnnouncement()` の文を専用の sr-only ライブ領域（`role="status" aria-live="polite"`）へ出す。`framesMsg` の領域とは分ける——同居させると片方の更新でもう片方の読み上げが打ち切られる | 文言の組み立てを固定 |
+| ③ 並べ替え後の再フォーカス | Must | 移動先の行のボタンへ明示的にフォーカスし、境界で無効化される側は `nextReorderFocusDir()` で反対へ寄せる。表内列は「押したスロット」ではなく移動先の添字のボタンを指す（`.colrow` の key が添字のままでもフォーカスが列を追う） | 向きの判定を固定（実際のフォーカス移動は L3） |
+| ④ disabled の理由提示 | Must | 保存前確認モーダルの `busy` 中に `saveConfirmButtonLabel()`／`saveConfirmButtonTitle()`／`aria-busy` を付ける | ラベル・title を固定 |
+| ⑤ `#ffd54a` の低コントラスト | Must（SC 1.4.11） | `SELECTION_COLOR = #a06800` を新設して枠色7箇所を置換。判定用に `relativeLuminance()`／`contrastRatio()` を実装 | 新色が白紙面・キャンバス既定背景の両方で 3:1 以上／旧色が両方で未達、を式で固定 |
+
+⑤ のコントラスト実測（2026-09-03・`contrastRatio` を node で実行）: 旧 `#ffd54a` は白 `#ffffff` に対し **1.41:1**、キャンバス既定背景 `#e7ebf1` に対し **1.18:1**。新 `#a06800` は同じ背景で **4.69:1** / **3.92:1**。選択時のハイライト塗り（`SELECTION_FILL_STYLE`）は据え置いた——状態を伝えているのは線側で、塗りを濃くすると下の走査画像が読めなくなる。
+
+③ の実際のフォーカス移動と ② の実読み上げは**未実測**（※要検証）。gui-logic で固定できるのは純関数までで、DOM のフォーカス遷移とスクリーンリーダーの発話は Playwright／実機の担当になる。
+
 ### 7.3 第2弾: 列の並べ替え
 
 | ID | 内容 | 対応 | L |

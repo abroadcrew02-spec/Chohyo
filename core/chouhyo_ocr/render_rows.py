@@ -19,6 +19,36 @@ from .template import Template, output_cells
 
 UNCLEAR = "〓"
 
+# 信頼度を人へ見せるときの桁数（issue #65-10）。store.cell.char_confs の直列化
+# （pipeline._serialize_char_confs の "%.3f"）と同じ精度で、最低信頼度列
+# （META_COLUMNS の「最低信頼度」）もこの桁で書く。
+CONF_DECIMALS = 3
+
+
+def round_conf(v: float) -> float:
+    """最低信頼度の母集団へ入れる前に桁を揃える（issue #65-10）。
+
+    build_row には信頼度の出どころが2つある: 通常分岐が使う `cell.conf`（DB の
+    REAL 列・丸めなし）と、文字単位分岐が使う `char_confs`（TEXT 列に3桁で
+    直列化済み＝丸め済み）。旧実装は両方を同じ `confs` リストへそのまま入れて
+    いたため、同じ行の中で丸め済みと未丸めが混ざり、min() がどちらの精度で
+    比較されるかが分岐に依存していた。入口をこの1関数に絞って精度を揃える。
+
+    **`cell.conf`（中間データ）そのものは丸めない**。〓判定
+    （unclear_reason）は丸める前の値で行う必要がある——3桁へ丸めると
+    conf=0.8496 が 0.850 になり、閾値 0.85 を「上回る」判定に反転して、
+    読み取り品質に疑義のあるセルが〓にならずそのまま出る（H-2 で
+    「unclear_reason 側を正とする」と決めた安全側の向きが逆転する）。
+    揃えるのは**表示用の集計に入る値**だけで、判定に使う値ではない。
+    """
+    return round(v, CONF_DECIMALS)
+
+
+def format_conf(v: float) -> str:
+    """最低信頼度列の書式（"0.812" 形式）。"""
+    return f"{v:.{CONF_DECIMALS}f}"
+
+
 # xlsx に書けない制御文字（openpyxl の ILLEGAL_CHARACTERS_RE と同範囲）。
 # Vision がこれを返した読取値は書き込み時に例外になるうえ内容も信頼できない
 # ため、〓へ倒して目検に回す（issue #2・値がそのまま例外メッセージへ乗るのを防ぐ）
@@ -34,12 +64,21 @@ STATUS_INTERRUPTED = "未処理（中断）"
 # 「未処理」を名乗らせない（PM 裁定・2026-08-28）: §5.8 で「未処理」は再送対象の
 # 含意が確立しており、重複は再実行でも送信しない。名前は仕様である
 STATUS_DUPLICATE = "スキップ（重複）"
+# render 段（保存済みデータから Excel を組む段）で行の組み立てに失敗したページ
+# （issue #80）。送信済み・割付済みのデータから出力を作る所で落ちているので、
+# 様式の問題ではない——STATUS_FORMAT_MISMATCH を流用すると、xlsx を受け取った
+# 利用者が正しいテンプレートを疑う（06 §7）。理由コード（page.status_reason）は
+# データ起因なら row_build_failed、コード欠陥の疑いなら row_build_bug。
+# 「未処理（中断）」を流用しない理由: あれは「次回実行時に処理されます」の含意を
+# 持ち、送信済み（＝課金済み）ページの再送を促しうる
+STATUS_RENDER_FAILED = "出力失敗"
 STATUS_OVERFLOW = "超過あり"
 STATUS_OK = "正常"
 # 失敗系（全〓行になるステータス）。compose_status がページ status を通す集合
 _FAILURE_STATUSES = frozenset([
     STATUS_EXPAND_FAILED, STATUS_ALIGN_FAILED, STATUS_FORMAT_MISMATCH,
-    STATUS_SEND_FAILED, STATUS_CAP, STATUS_INTERRUPTED, STATUS_DUPLICATE])
+    STATUS_SEND_FAILED, STATUS_CAP, STATUS_INTERRUPTED, STATUS_DUPLICATE,
+    STATUS_RENDER_FAILED])
 
 OVERFLOW_MIN_SYMBOLS = 3  # D-06（定数・実物で調整）
 
@@ -223,7 +262,7 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
                     # 最低信頼度は「置換されなかった文字」の最小値のみを混ぜる
                     # （B-1 の文字単位への延長・設計 §8.2）
                     if kept:
-                        confs.append(min(kept))
+                        confs.append(round_conf(min(kept)))
             else:
                 # 判定表 #13: 機能OFF・subfields・amount・char_confs不正 は
                 # 従来どおり欄全体〓
@@ -239,7 +278,7 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
             if parts:
                 values.extend(parts)
                 origins.extend([origin] * len(out_cols))
-                confs.append(conf)
+                confs.append(round_conf(conf))
             else:
                 values.extend([UNCLEAR] * len(out_cols))
                 origins.extend([""] * len(out_cols))
@@ -248,14 +287,14 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
             if amount is not None:
                 values.append(amount)
                 origins.append(origin)
-                confs.append(conf)
+                confs.append(round_conf(conf))
             else:
                 values.append(UNCLEAR)
                 origins.append("")
         else:
             values.append(raw)
             origins.append(origin)
-            confs.append(conf)
+            confs.append(round_conf(conf))
 
     # U-13: 要確認セル数は「〓を含む」で数える（完全一致のままだと文字単位〓が
     # 出荷ゲートをすり抜ける・設計 §8.3）。ただし QA 再判定（2026-08-31・T-16
@@ -268,7 +307,7 @@ def build_row(template: Template, page: dict, cells: dict[str, tuple],
         unclear_count = sum(1 for v in values if isinstance(v, str) and UNCLEAR in v)
     else:
         unclear_count = sum(1 for v in values if v == UNCLEAR)
-    min_conf = f"{min(confs):.3f}" if confs else ""
+    min_conf = format_conf(min(confs)) if confs else ""
     status = compose_status(page.get("status", ""), page.get("unassigned_below_table", 0),
                             processed=True)
     return Row(page["page_id"], page["source_file"], page["page_no"],

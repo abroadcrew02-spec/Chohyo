@@ -35,11 +35,23 @@ def _credentials_event(tmp_path, capsys):
     return next(e for e in events if e.get("check") == "credentials")
 
 
+# issue #97 以降、credentials_state は復号と形の検証まで行う（存在だけを見て
+# いた頃はダミーのバイト列で足りた）。壊れた blob は "broken" に落ちるので、
+# 「取り込み済み」の状態を作るには実際に DPAPI 暗号化して置く必要がある
+_SERVICE_ACCOUNT = {
+    "type": "service_account",
+    "project_id": "example-project",
+    "private_key": "-----BEGIN PRIVATE KEY-----\nZHVtbXk=\n-----END PRIVATE KEY-----\n",
+    "client_email": "svc@example-project.iam.gserviceaccount.com",
+}
+
+
 def _put_dpapi_blob(tmp_path):
     wd = tmp_path / "wd"
     wd.mkdir(parents=True, exist_ok=True)
-    # 復号はしない（credentials_state は存在だけを見る）ためダミーで足りる
-    (wd / cred_store._BLOB_NAME).write_bytes(b"dummy")
+    src = tmp_path / "service_account.json"
+    src.write_text(json.dumps(_SERVICE_ACCOUNT), encoding="utf-8")
+    cred_store.import_credentials(src, wd)
 
 
 def test_env_credentials_present_reads_env_only(monkeypatch, tmp_path):

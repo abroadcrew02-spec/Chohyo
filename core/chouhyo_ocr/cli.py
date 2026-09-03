@@ -62,6 +62,69 @@ def _render_dpi_arg(value: str) -> int:
     return n
 
 
+class _DefaultTemplate(str):
+    """`--template` を省略したときの既定値であることを示す印（issue #65-4）。
+
+    値としては従来どおり `app_root()/templates/chouhyo-v1.json` の絶対パス
+    文字列で、そのまま使っても挙動は変わらない。「利用者が明示指定したのか、
+    argparse の既定値なのか」を型で区別するためだけの薄い派生。
+    """
+
+
+def _resolve_default_template(args) -> None:
+    """frozen 配布の exe を `--template` なしで直接叩いたときの解決（#65-4）。
+
+    開発実行（`python -m chouhyo_ocr.cli`）では `app_root()` がリポジトリ
+    ルートを指し、GUI が注入するパスと同じ実体になるので既定値のままでよい。
+    frozen（PyInstaller）の `app_root()` は **exe の親ディレクトリ**を指す
+    ため、GUI 経由（Rust が config.json の `last_template` を解決して
+    `--template` を必ず付ける・lib.rs inject_default_template）と CLI 直叩き
+    とで別のファイルを読みうる——#58 の「テンプレート二重実体」の再発余地。
+
+    - `last_template == "shipped"`: GUI が注入するのも同梱の
+      `templates/chouhyo-v1.json` なので既定値のまま使う（実体は同じ）。
+      ただし同梱物が見当たらないときは黙って進めず止める
+    - `last_template == "user:<表示名>"`: 利用者テンプレートの保存先は Rust
+      だけが知っており、`CHOUHYO_USER_DIR` 経由でしか core へ渡らない
+      （paths.user_templates_dir）。GUI を通さない直叩きではその値が無いので
+      **解決できない**——出荷テンプレートで代用すると、編集したはずの欄が
+      反映されない結果が「正常」として出る。`--template` を要求して止める
+
+    config.json はここで一度読むが、log.init 前なので警告は出さない
+    （フォールバック理由の警告は各コマンドの
+    `_load_config_and_init_log` が従来どおり出す）。frozen 以外では
+    config を読まない——開発実行の挙動を1バイトも変えないため。
+    """
+    tpl = getattr(args, "template", None)
+    if not isinstance(tpl, _DefaultTemplate):
+        return  # 明示指定、または --template を持たないコマンド
+    if not getattr(sys, "frozen", False):
+        return  # 開発実行は従来どおり app_root() 相対の既定値
+    last = load_config(args.config).last_template
+    if last.startswith("user:"):
+        raise ConfigError(
+            "配布版を直接実行するときは --template でテンプレートのパスを"
+            "指定してください（前回は利用者テンプレートを使っており、"
+            "その保存先は画面から起動したときにだけ分かります）")
+    if not Path(tpl).exists():
+        raise ConfigError(
+            f"同梱のテンプレートが見つかりません（{tpl}）。"
+            "--template でテンプレートのパスを指定してください")
+
+
+def _band_scale_arg(value: str) -> float:
+    """diag-overflow の `--band-scale` の範囲検証（issue #63）。
+
+    帯幅＝欄の高さ × この倍率。0 以下は帯が消えて常に0件になり、大きすぎると
+    ページの反対側まで拾って「溢れ」の意味を失う。0 より大きく 10 以下に限る。
+    """
+    v = float(value)
+    if not 0 < v <= 10:
+        raise argparse.ArgumentTypeError(
+            f"--band-scale は 0 より大きく 10 以下にする（指定: {v}）")
+    return v
+
+
 def _client(cfg: Config, replay_dir: str | None):
     if replay_dir:
         from .vision_client import ReplayClient
@@ -87,20 +150,25 @@ def cmd_run(args) -> int:
     # 1ページも正常に処理できなかった場合は失敗として返す（レビュー M-11）。
     # 常に 0 を返すとスクリプトから成否を判定できない。部分失敗（一部だけ
     # 〓行）は 0 のまま——出力は作られており、判断は要確認セル数で行う。
-    # 母集団は align_failed（位置合わせ失敗）＋format_mismatch（様式不一致・
-    # Q-H1 の PageSizeMismatch を含む）——後者だけを見ていると、寸法不一致や
-    # 応答構造異常で全ページが様式不一致に倒れた実行が exit 0（成功扱い）に
-    # なってしまう（Q-H1 着手時のレビュー指摘）
-    total_failed = summary.align_failed + summary.format_mismatch
-    if summary.rows > 0 and summary.rows == total_failed:
+    #
+    # 母集団は**今回処理したページだけ**（#53 L-9）。旧実装は store 全体の
+    # 出力行数（summary.rows）と今回の失敗数を比べていたため、過去の run が
+    # 残した done 行が1件でもあれば、今回の入力が全滅しても行数の方が多くなり
+    # exit 0（成功扱い）になっていた。
+    # 送信上限・月次上限で見送ったページは失敗に数えない（分割送信は通常運用・
+    # #45）——「まだ送っていない」であって「失敗した」ではないため、上限で
+    # 止まった実行は従来どおり exit 0。処理対象が0件（全ページが再利用・重複
+    # スキップ／入力なし）も従来どおり成功
+    if (summary.processed_pages > 0
+            and summary.processed_failed == summary.processed_pages):
         return 1
-    return 0 if summary.rows > 0 or summary.pages == 0 else 1
+    return 0
 
 
 def cmd_render(args) -> int:
     cfg = _load_config_and_init_log(args.config)
     from .pipeline import render
-    xlsx, csvp, rows = render(args.template, cfg)
+    xlsx, csvp, rows = render(args.template, cfg, progress=_progress)
     _progress({"event": "rendered", "rows": len(rows),
                "xlsx": str(xlsx), "csv": str(csvp)})
     return 0
@@ -108,9 +176,12 @@ def cmd_render(args) -> int:
 
 def cmd_remap(args) -> int:
     cfg = _load_config_and_init_log(args.config)
-    from .pipeline import remap, render
-    n = remap(args.template, cfg, progress=_progress)
-    xlsx, csvp, rows = render(args.template, cfg)
+    # remap と render をロックを保持したまま続けて実行する（issue #93）。
+    # 以前は remap（当時はロック無し）→ render（ロック有り）の2段で、
+    # 間に別プロセスの run が割り込めた——出力が「新テンプレートで割り付けた
+    # セル」と割り込みが書いた別世代のセルの混成になりうる
+    from .pipeline import remap_and_render
+    n, xlsx, csvp, _rows = remap_and_render(args.template, cfg, progress=_progress)
     _progress({"event": "remapped", "pages": n, "xlsx": str(xlsx), "csv": str(csvp)})
     return 0
 
@@ -217,6 +288,17 @@ def cmd_verify(args) -> int:
     ok = ok and left > 0
     # 資格情報（値は出さない）
     state = cred_store.credentials_state(cfg.workdir)
+    # issue #97: cred.dpapi が壊れている（復号できない・サービスアカウント
+    # JSON の形をしていない）場合、credentials_state は4値目の "broken" を
+    # 返す。JSON Lines の `state` は3値契約（dpapi/env/missing）のまま
+    # `missing` として出し、理由は別キー（cred_error）で添える——GUI
+    # （RunScreen.tsx）は `state` をそのまま持ち回り、`missing` 以外なら実行
+    # ボタンを開けてしまうため、未知の値を渡すと「壊れた鍵で run を始めて
+    # 送信段階で落ちる」経路が開く。missing に畳めば実行前に止まり、案内
+    # （認証キーを選び直す）も正しいまま
+    broken = state == "broken"
+    if broken:
+        state = "missing"
     # 環境変数の平文鍵は state と独立に見る（S-MB）。state は3値契約
     # （dpapi/env/missing）のまま dpapi を優先するため、両方ある環境では state
     # だけでは平文鍵の残置に気づけない。ok は変えない——env でも実行はできる
@@ -224,6 +306,14 @@ def cmd_verify(args) -> int:
     cred_event = {"event": "verify", "check": "credentials",
                   "ok": state != "missing", "state": state,
                   "env_present": env_present}
+    if broken:
+        # 既存の `reason`（env_plaintext・警告用）とは別キーにする。両方が
+        # 同時に成り立つ（壊れた blob ＋ 環境変数の平文鍵）ため、同じキーへ
+        # 入れると片方が消える
+        cred_event["cred_error"] = "broken"
+        print("エラー: 取り込み済みの認証キー（cred.dpapi）が読めない。"
+              "壊れているか、別の Windows アカウントで取り込まれている。"
+              "import-credentials で取り込み直すこと。", file=sys.stderr)
     if state == "env" or env_present:
         cred_event["warn"] = True
         cred_event["reason"] = "env_plaintext"
@@ -237,10 +327,35 @@ def cmd_verify(args) -> int:
 
 
 def cmd_import_credentials(args) -> int:
+    """資格情報 JSON を DPAPI 暗号化で取り込む（--delete-source で元を消す）。
+
+    issue #52 M-10: 取り込み後も元の平文鍵が残る設計だと、issue #1 と同じ状態
+    ——有効な秘密鍵が平文でディスクに置かれたまま——を取り込みのたびに作り直す。
+    削除は DPAPI 書き込みが**成功した後**にだけ行い、失敗したら「成功」とは
+    言わずに警告を出す（利用者が手で消せるように）。
+    """
     cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
     p = cred_store.import_credentials(args.json_path, cfg.workdir)
     _progress({"event": "credentials_imported", "path": str(p)})
-    print("取り込み完了。元の平文 JSON は不要になったら削除すること。", file=sys.stderr)
+    if not getattr(args, "delete_source", False):
+        # 許可の言い回し（「削除して構いません」）をやめる（M-10）。残るのは
+        # 平文の秘密鍵で、放置は選択肢ではない
+        print("取り込み完了。元のファイルは削除してください"
+              "（鍵が平文のまま残ります）。", file=sys.stderr)
+        return 0
+    try:
+        cred_store.shred(args.json_path)
+    except OSError:
+        # 取り込みは成功しているので exit 0 のまま。ただし「完了」だけを出すと
+        # 平文の鍵が残っているのに片付いたと誤解される。残存パスは出さない
+        # （設計 §8.1・鍵ファイルの所在をログ/画面へ残さない）
+        _progress({"event": "credentials_source_kept", "warn": True})
+        print("警告: 取り込みは完了したが、元のファイルを削除できなかった。"
+              "元のファイルが残っています（鍵が平文のまま）。手作業で削除して"
+              "ください。", file=sys.stderr)
+    else:
+        _progress({"event": "credentials_source_deleted"})
+        print("取り込み完了。元のファイルは削除しました。", file=sys.stderr)
     return 0
 
 
@@ -495,6 +610,11 @@ def cmd_match_templates(args) -> int:
     try:
         with img:
             input_size = [img.width, img.height]
+            # 前処理（ページの正規化・面の切り出し・二値化・傾き推定）を候補間で
+            # 共有する（issue #82・08 §3.3.4）。期待罫線に依存しないぶんだけを
+            # 幾何をキーに持ち回るので、判定結果は1件ずつ check_page を呼んだ
+            # ときと同一。ctx はこのコマンドの寿命で捨てる
+            ctx = format_check.PageContext(img)
             # M-3（2026-09-02 マリン指摘）: 予算の起点を画像の読み込み完了後
             # （候補ループ直前）に移す——展開（PDF ラスタライズ）にかかる時間は
             # 候補照合そのものではないため、予算から除く。elapsed_ms は
@@ -557,7 +677,7 @@ def cmd_match_templates(args) -> int:
                 # 起きても、既にできている results／excluded を捨てず次の
                 # 候補へ進む
                 try:
-                    pv = format_check.check_page(img, template)
+                    pv = ctx.check(template)
                 except Exception as e:  # noqa: BLE001
                     import traceback
                     excluded.append({"name": name, "reason": "check_failed"})
@@ -686,6 +806,65 @@ def cmd_debug_images(args) -> int:
                "count": len(made), "dir": str(out_dir.resolve())})
     for m in made:
         print(str(m.resolve()))
+    return 0
+
+
+def cmd_diag_overflow(args) -> int:
+    """欄からの溢れの疑いを数える（診断・API 送信なし・issue #63）。
+
+    「主枠に部分的に記入され、残りが右隣へ溢れる」型は現行のどのカウンタにも
+    掛からない（実測: 郵便番号1が部分値のまま確定し、溢れた1文字が住所欄を
+    汚染しても status は正常）。検知の閾値を決める前に頻度を測るための
+    コマンドで、**数えるだけで何も直さない**。
+
+    材料は保存済み token だけ——送信も中間データの書き換えも起きない。
+    出力は JSON Lines で、候補1件につき1行（page_id・field_id・件数のみ。
+    記入値と座標は出さない）と、最後に集計1行。
+    """
+    from .align import geometry_hash, template_hash as _tpl_hash
+    from .columns import validate_v1
+    from .diag_overflow import scan, target_fields
+    from .pipeline import check_reusable
+    from .store import Store
+    from .template import load_template
+    cfg = _load_config_and_init_log(args.config)
+    db = Path(cfg.workdir) / "intermediate.sqlite"
+    if not db.exists():
+        _progress({"event": "diag_overflow", "ok": False, "reason": "no_store",
+                   "error": "中間データが無い（run で処理してから実行する）"})
+        return 0
+    template = load_template(args.template)
+    raw = json.loads(Path(args.template).read_text(encoding="utf-8"))
+    # debug-images・verify と同じ理由でここでも出す（不変条件A・Q-S1・FR-F50）
+    log.info("template_loaded", template_hash=_tpl_hash(raw))
+    validate_v1(template)
+    with Store(db) as store:
+        # 幾何が変わっていれば token の座標は現テンプレートの枠と噛み合わない
+        # ——数えても意味が無いので拒否する。割付結果（cell）は使わないので
+        # テンプレート世代の一致（check_template）までは要求しない
+        check_reusable(store, geometry_hash(raw), _tpl_hash(raw),
+                       check_template=False)
+        report = scan(template, store, band_scale=args.band_scale)
+    for c in report.candidates:
+        _progress({"event": "overflow_candidate", "page_id": c.page_id,
+                   "field_id": c.field_id, "main_symbols": c.main_symbols,
+                   "expected_digits": c.expected_digits,
+                   "right_symbols": c.right_symbols,
+                   "right_outside_fields": c.right_outside_fields})
+    # 欄名は stdout の JSON Lines には出してよいが app.log へは出さない
+    # （logging_safe の白リスト・Q-S1）。ログに残すのは件数だけ
+    log.info("diag_overflow", count=len(report.candidates))
+    _progress({"event": "diag_overflow", "ok": True,
+               "pages": report.pages_scanned,
+               "candidates": len(report.candidates),
+               "empty_main_skipped": report.empty_main_skipped,
+               "band_scale": args.band_scale,
+               # 期待桁数を何を根拠に決めたか（欄ごと）。桁数の属性を持つ
+               # テンプレート仕様が無いため欄名から導いている
+               "fields": [{"field_id": f.field_id,
+                           "expected_digits": f.expected_digits,
+                           "rule": f.rule}
+                          for f in target_fields(template)]})
     return 0
 
 
@@ -1086,7 +1265,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="chouhyo-ocr")
     ap.add_argument("--config", default=None, help="設定ファイル（既定: config.json）")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    default_tpl = str(app_root() / "templates" / "chouhyo-v1.json")
+    # 既定値は「明示指定ではない」印を付けて渡す（#65-4）。値は従来と同じ絶対パス
+    default_tpl = _DefaultTemplate(app_root() / "templates" / "chouhyo-v1.json")
 
     p = sub.add_parser("run", help="一括処理（API 送信あり）")
     p.add_argument("--input", required=True)
@@ -1119,6 +1299,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("import-credentials", help="資格情報 JSON を DPAPI 暗号化で取り込む")
     p.add_argument("json_path")
+    p.add_argument("--delete-source", action="store_true",
+                   help="取り込みに成功したら元の JSON をランダム上書き3回の"
+                        "うえ削除する（issue #52 M-10）。既定は残す")
     p.set_defaults(fn=cmd_import_credentials)
 
     p = sub.add_parser("expand-page", help="PDF の1ページを PNG 展開（編集画面用）")
@@ -1147,6 +1330,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", default=None)
     p.add_argument("--page", default=None, help="特定の帳票IDのみ出力")
     p.set_defaults(fn=cmd_debug_images)
+
+    # 診断コマンド（CLI 専用）。GUI の白リスト（lib.rs ALLOWED_SUBCOMMANDS）へは
+    # 足さない——画面から使う機能ではなく、頻度を測るための開発・運用向け
+    p = sub.add_parser("diag-overflow",
+                       help="欄からの溢れの疑いを数える（診断・API 送信なし・issue #63）")
+    p.add_argument("--template", default=default_tpl)
+    p.add_argument("--band-scale", type=_band_scale_arg, default=1.0,
+                   help="右隣を見る帯の幅（欄の高さの倍率・既定 1.0）")
+    p.set_defaults(fn=cmd_diag_overflow)
 
     p = sub.add_parser("detect-frames",
                        help="ページ全体からの枠候補一括生成（領域指定なし・issue #73）")
@@ -1184,6 +1376,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = ap.parse_args(argv)
     try:
+        _resolve_default_template(args)  # #65-4（frozen で --template 省略時）
         return args.fn(args)
     except KeyboardInterrupt:
         print("INTERRUPTED", file=sys.stderr)
@@ -1200,8 +1393,11 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         # 設定エラーはメッセージをそのまま出す（内容は設定キー名と設定値のみで
         # 帳票の記入値は含まれない）。固定文言に潰すと利用者が config.json の
-        # どこを直せばよいか分からない（レビュー N-2）
-        print(f"ERROR ConfigError: {e}", file=sys.stderr)
+        # どこを直せばよいか分からない（レビュー N-2）。issue #97 で
+        # cred_store.CredentialError（ConfigError の派生）と config.json の
+        # JSON 構文エラーもこの分岐に載せたため、型名は固定文字列ではなく
+        # 実際の型から出す（ConfigError 自身の出力は従来と同一）
+        print(f"ERROR {type(e).__name__}: {e}", file=sys.stderr)
         return 1
     except Exception as e:  # noqa: BLE001
         # 記入値の漏出防止（issue #2）: 例外メッセージには帳票の値が乗りうる

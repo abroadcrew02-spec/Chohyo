@@ -103,7 +103,7 @@ def test_normal_write_is_unaffected(tmp_path):
 @pytest.fixture()
 def isolated_counter(tmp_path, monkeypatch):
     """カウンタを一時ディレクトリへ隔離する（実カウンタを汚さない）。"""
-    monkeypatch.setenv("CHOUHYO_USAGE_DIR", str(tmp_path))
+    monkeypatch.setenv("CHOUHYO_USAGE_DIR_FOR_TESTS", str(tmp_path))
     return tmp_path
 
 
@@ -177,21 +177,35 @@ class _ErrorResponse:
     error = _Error()
 
 
+class _DeterministicErrorResponse:
+    """決定的な応答内エラー（PERMISSION_DENIED）。再送しても結果は変わらない。"""
+
+    class _Error:
+        message = "The caller does not have permission"
+        code = 7
+
+    error = _Error()
+
+
 class _CountingClient:
-    def __init__(self):
+    def __init__(self, response=None, raises=None):
         self.calls = 0
+        self._response = response or _ErrorResponse()
+        self._raises = raises
 
     def document_text_detection(self, **kw):
         self.calls += 1
-        return _ErrorResponse()
+        if self._raises is not None:
+            raise self._raises
+        return self._response
 
 
-def _client_with(cap: int):
+def _client_with(cap: int, response=None, raises=None):
     from chouhyo_ocr import vision_client
     c = vision_client.RealVisionClient.__new__(vision_client.RealVisionClient)
     c._vision = _FakeVisionModule()
     c._to_dict = lambda x: {}
-    c.client = _CountingClient()
+    c.client = _CountingClient(response, raises)
     c.monthly_cap = cap
     c.BACKOFF_INITIAL = 0        # テストを待たせない（バックオフ自体は別責務）
     return c
@@ -215,3 +229,85 @@ def test_retry_stops_at_cap_without_exceeding(isolated_counter):
         c.annotate(b"png", "p1")
     assert c.client.calls == 3, "上限を超えて送信した"
     assert api_budget.used_this_month() == 3
+
+
+# ---------- #99: 応答内エラーの種別で再送可否を分ける ----------
+
+def test_deterministic_api_error_stops_after_one_attempt(isolated_counter):
+    """決定的な応答内エラー（PERMISSION_DENIED）は再送しない（issue #99）。
+
+    旧実装は種別を見ずに MAX_ATTEMPTS 回まで再送し、ページ1枚あたり
+    5ユニットと約15秒を確定で失っていた。カウンタ消費は従来どおり
+    「試行の直前に1」なので、1ユニットで止まる。
+    """
+    from chouhyo_ocr import vision_client
+
+    c = _client_with(cap=100, response=_DeterministicErrorResponse())
+    with pytest.raises(vision_client.SendError) as ei:
+        c.annotate(b"png", "p1")
+    assert c.client.calls == 1, "決定的エラーで再送した"
+    assert api_budget.used_this_month() == 1
+    assert ei.value.code == "SEND_API_7"
+
+
+def test_transient_api_error_still_retries(isolated_counter):
+    """一時エラー（code=13 INTERNAL）は従来どおり最大 MAX_ATTEMPTS 回。"""
+    from chouhyo_ocr import vision_client
+
+    c = _client_with(cap=100)          # _ErrorResponse は code=13
+    with pytest.raises(vision_client.SendError):
+        c.annotate(b"png", "p1")
+    assert c.client.calls == vision_client.RealVisionClient.MAX_ATTEMPTS
+
+
+class _RenamedPermissionDenied(Exception):
+    """名前の集合に載っていないが gRPC ステータスは決定的な例外（issue #99）。"""
+
+    class _Status:
+        value = (7, "permission denied")
+
+    grpc_status_code = _Status()
+
+
+def test_exception_is_classified_by_grpc_status_when_name_is_unknown(isolated_counter):
+    """例外側は名前照合に加えて grpc_status_code でも判定する（二段構え）。"""
+    from chouhyo_ocr import vision_client
+
+    c = _client_with(cap=100, raises=_RenamedPermissionDenied("denied"))
+    with pytest.raises(vision_client.SendError) as ei:
+        c.annotate(b"png", "p1")
+    assert c.client.calls == 1, "決定的エラーで再送した"
+    assert api_budget.used_this_month() == 1
+    assert ei.value.code == "SEND__RenamedPermissionDenied"
+
+
+class _RenamedInternalError(Exception):
+    class _Status:
+        value = (13, "internal")
+
+    grpc_status_code = _Status()
+
+
+def test_transient_exception_still_retries(isolated_counter):
+    """一時的な gRPC ステータス（13 INTERNAL）は従来どおり再送する。"""
+    from chouhyo_ocr import vision_client
+
+    c = _client_with(cap=100, raises=_RenamedInternalError("boom"))
+    with pytest.raises(vision_client.SendError):
+        c.annotate(b"png", "p1")
+    assert c.client.calls == vision_client.RealVisionClient.MAX_ATTEMPTS
+
+
+def test_status_number_reads_real_google_exceptions():
+    """google.api_core 例外の grpc_status_code の形を実物で固定する（issue #99）。
+
+    `.value` が `(番号, 説明)` のタプルで番号自体も IntEnum、という前提で
+    `_status_number` を書いている。ライブラリ側が形を変えたらここで落ちる。
+    """
+    exceptions = pytest.importorskip("google.api_core.exceptions")
+    from chouhyo_ocr.vision_client import _status_number
+
+    assert _status_number(exceptions.PermissionDenied("x").grpc_status_code) == 7
+    assert _status_number(exceptions.Unauthenticated("x").grpc_status_code) == 16
+    assert _status_number(exceptions.InternalServerError("x").grpc_status_code) == 13
+    assert _status_number(None) is None

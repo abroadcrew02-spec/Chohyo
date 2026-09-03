@@ -9,10 +9,18 @@
      すると通らない**ため、replay 中心の計測では支配的コストを見落とす
   2. パイプライン全体 — replay で N ページを流し、RSS の推移を見る
 
+既定（--only all）はこの2部だけを走らせる。ベースライン（100ページ 142.2s）の
+意味を変えないため、以下の2つは opt-in にしてある:
+
+  3. 枠検出 1 枚の所要時間（--only frames・issue #87 項目2・AC-F47/NFR-F02）
+  4. run を繰り返したときの再レンダー時間の伸び（--only cumulative・issue #100）
+
 実行:
-  .venv/Scripts/python.exe scripts/perf_check.py                 # 両方
+  .venv/Scripts/python.exe scripts/perf_check.py                 # 1と2
   .venv/Scripts/python.exe scripts/perf_check.py --only expand   # 展開のみ
   .venv/Scripts/python.exe scripts/perf_check.py --pages 250     # 枚数を変える
+  .venv/Scripts/python.exe scripts/perf_check.py --only frames   # 枠検出1枚
+  .venv/Scripts/python.exe scripts/perf_check.py --only cumulative --runs 5 --pages 20
 """
 import argparse
 import json
@@ -29,6 +37,12 @@ BASE = ROOT / "workdir_build" / "perf"
 PAGE = ROOT / "workdir" / "pages" / "sample-1.png"
 RESP = ROOT / "workdir" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 TPL = ROOT / "templates" / "chouhyo-v1.json"
+FORMB_PNG = ROOT / "testdata" / "formB" / "formB-1.png"
+FORMB_TPL = ROOT / "testdata" / "formB" / "formB-v1.json"
+FORMC_PNG = ROOT / "testdata" / "formC" / "formC-1.png"
+
+# NFR-F02（07 §6）: 枠候補の一括生成はページ 1 枚あたり 3.0 秒以内
+FRAMES_BUDGET_S = 3.0
 
 
 def measure_expand() -> int:
@@ -165,16 +179,271 @@ def measure_pipeline(N: int) -> int:
     return 0 if ok else 1
 
 
+def _run_core(cfg: Path, argv: list[str]) -> dict | None:
+    """コアの CLI を1プロセス実行し、JSON Lines の最後のイベント行を返す。"""
+    py = ROOT / ".venv" / "Scripts" / "python.exe"
+    proc = subprocess.run(
+        [str(py), "-X", "utf8", "-m", "chouhyo_ocr.cli", "--config", str(cfg), *argv],
+        cwd=ROOT / "core", capture_output=True, text=True, encoding="utf-8",
+        errors="replace")
+    if proc.returncode != 0:
+        print("NG: 終了コード", proc.returncode)
+        print(proc.stderr[-800:])
+        return None
+    last = None
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                last = json.loads(line)
+            except json.JSONDecodeError:
+                pass
+    return last
+
+
+def _perf_config(name: str) -> Path:
+    """計測用の使い捨て config（出力・作業・ログを workdir_build/perf 配下へ）。"""
+    base = BASE / name
+    if base.exists():
+        shutil.rmtree(base)
+    base.mkdir(parents=True)
+    cfg = base / "config.json"
+    cfg.write_text(json.dumps({
+        "output_dir": str(base / "out"),
+        "workdir": str(base / "wd"),
+        "log_dir": str(base / "logs"),
+    }), encoding="utf-8")
+    return cfg
+
+
+def _detect_only_ms(png: Path, tpl: "Path | None", repeat: int) -> list[int]:
+    """`grid.detect_frames` 単体の所要（ms）。08 §4.7.1 と同じ測り方。
+
+    CLI の `elapsed_ms` との差が、プロセス起動・設定読み・画像読み・ページ全体の
+    Otsu にかかっているぶん。CLI（cmd_detect_frames）と同じ前処理を再現する。
+    """
+    sys.path.insert(0, str(ROOT / "core"))
+    import numpy as np
+    from PIL import Image
+
+    from chouhyo_ocr.align import _otsu
+    from chouhyo_ocr.grid import detect_frames
+    from chouhyo_ocr.template import Rect, load_template
+
+    template = load_template(tpl) if tpl is not None else None
+    dpi = template.render_dpi if template is not None else 300
+    with Image.open(png) as img:
+        img.load()
+        gray = np.asarray(img.convert("L"))
+        size = [img.width, img.height]
+    binary = gray < _otsu(gray, np.zeros(gray.shape, dtype=bool))
+
+    exclusions: list = []
+    effective = None
+    if template is not None and size == list(template.image_size):
+        effective = template
+        for f in template.faces:
+            r = f.source_rect
+            exclusions += [Rect(r.x + ex.x, r.y + ex.y, ex.w, ex.h) for ex in f.exclusions]
+
+    out = []
+    for _ in range(repeat):
+        t0 = time.perf_counter()
+        detect_frames(binary, dpi, exclusions=exclusions, existing=effective)
+        out.append(int((time.perf_counter() - t0) * 1000))
+    return out
+
+
+def measure_frames(repeat: int = 3) -> int:
+    """枠候補の一括生成（detect-frames）1 枚の所要時間（issue #87 項目2）。
+
+    受入基準 AC-F47・NFR-F02（ページ 1 枚 3.0 秒）の実測。素材は
+    sample-1（実サンプル・出荷テンプレート付き）・formB-1・formC-1 の3種を
+    それぞれ repeat 回。あわせて打ち切り案内（zero_reason="too_many_lines"）が
+    出る条件を、レール数の上限を超える合成画像で1回だけ確認する。
+
+    2つの尺度を並べる。GUI が待たされるのは前者:
+
+    - `elapsed_ms`: CLI 1 プロセスぶん（起動・設定読み・画像展開・ページ全体の
+      Otsu・検出）。GUI の待ち時間はこれに Rust の呼び出し分が乗る
+    - `detect_ms`: `grid.detect_frames` 単体（08 §4.7.1 の測り方と同じ。
+      二値画像を作るところまでは計測外）
+    """
+    cases = [
+        ("sample-1 + 出荷テンプレ", PAGE, TPL),
+        ("formB-1 + formB テンプレ", FORMB_PNG, FORMB_TPL),
+        ("formC-1 (テンプレなし)", FORMC_PNG, None),
+    ]
+    missing = [str(png) for _n, png, _t in cases if not png.exists()]
+    if missing:
+        print("枠検出計測: SKIP（素材が無い）:")
+        for m in missing:
+            print("  -", m)
+        print("  formC は testdata/formC/make_formC.py で生成する")
+        return 0
+
+    cfg = _perf_config("frames")
+    print(f"枠検出計測（AC-F47・NFR-F02 予算 {FRAMES_BUDGET_S:.1f}s・各{repeat}回）")
+    print(f"  {'素材':24s} {'elapsed_ms(CLI)':>20s} {'detect_ms(単体)':>18s} "
+          f"{'rails h/v':>10s} {'候補':>5s}  zero_reason")
+    worst = 0
+    for label, png, tpl in cases:
+        argv = ["detect-frames", "--input", str(png)]
+        if tpl is not None:
+            argv += ["--template", str(tpl)]
+        times, last = [], None
+        for _ in range(repeat):
+            ev = _run_core(cfg, argv)
+            if ev is None or not ev.get("ok"):
+                print(f"  {label}: NG {ev}")
+                return 1
+            times.append(ev["elapsed_ms"])
+            last = ev
+        st = last.get("stats", {})
+        worst = max(worst, max(times))
+        inner = _detect_only_ms(png, tpl, repeat)
+        cell = "/".join(str(t) for t in times)
+        rails = f"{st.get('rails_h', 0)}/{st.get('rails_v', 0)}"
+        print(f"  {label:24s} {cell:>20s} "
+              f"{'/'.join(str(t) for t in inner):>18s} {rails:>10s} "
+              f"{len(last.get('candidates', [])):5d}  {last.get('zero_reason')}")
+
+    # 打ち切り案内の発火条件（grid.MAX_RAILS を1軸で超える合成画像）
+    sys.path.insert(0, str(ROOT / "core"))
+    import numpy as np
+    from PIL import Image
+
+    from chouhyo_ocr.grid import MAX_RAILS
+    n = MAX_RAILS + 5
+    dense = np.full((n * 8 + 8, 1200), 255, dtype=np.uint8)
+    for i in range(n):
+        # 横罫線を上限より多く引く。厚み方向に濃淡を付けるのは、真っ黒と
+        # 真っ白の2値だけの画像だと Otsu の閾値が 0 になり（align._otsu は
+        # 「閾値以下が暗いクラス」を返すのに呼び出し側は gray < th で切る）
+        # インクが1画素も残らないため
+        dense[i * 8, 50:1150] = 0
+        dense[i * 8 + 1, 50:1150] = 40
+    dense_png = BASE / "frames" / "dense.png"
+    Image.fromarray(dense).save(dense_png)
+    ev = _run_core(cfg, ["detect-frames", "--input", str(dense_png)]) or {}
+    st = ev.get("stats", {})
+    print(f"  打ち切り確認: MAX_RAILS={MAX_RAILS}（軸ごと）に対し "
+          f"rails_h={st.get('rails_h')} rails_v={st.get('rails_v')} "
+          f"→ zero_reason={ev.get('zero_reason')}")
+
+    ok = worst <= FRAMES_BUDGET_S * 1000
+    print(f"  最大 {worst} ms / 予算 {int(FRAMES_BUDGET_S * 1000)} ms: "
+          + ("PASS" if ok else "予算超過（NFR-F02 に抵触）"))
+    return 0 if ok else 1
+
+
+def _report_cumulative(rows: list) -> None:
+    """累積計測の要約（最小二乗の傾きと外挿）。rows は (run, done, render_s, wall)。"""
+    if len(rows) < 2:
+        print("  （run が1回ぶんしか取れていないので傾きは出せない）")
+        return
+    xs = [done for _r, done, _rs, _w in rows]
+    ys = [rs * 1000 for _r, _d, rs, _w in rows]
+    if len(set(xs)) < 2:
+        return
+    n = len(xs)
+    mx, my = sum(xs) / n, sum(ys) / n
+    var = sum((x - mx) ** 2 for x in xs)
+    slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / var
+    intercept = my - slope * mx
+    # 1頁あたりの値をそのまま比べると、件数に依らない固定費（切片）が
+    # 小さい run ほど大きく見えて紛れる。傾きで見る
+    print(f"  最小二乗: render_ms ≒ {slope:.1f} x 累積頁数 + {intercept:.0f}")
+    for target in (1000, 5000):
+        print(f"    → 累積 {target} ページのときの render 見込み: "
+              f"{(slope * target + intercept) / 1000:.0f} 秒/回")
+    share = [rs / w * 100 for _r, _d, rs, w in rows if w]
+    if share:
+        print(f"  render が run 全体に占める割合: {min(share):.0f}〜{max(share):.0f}%")
+    print("  ※ render は毎回 Store の全 done ページを作り直す（issue #100）。"
+          "件数に比例して伸びるのが期待どおりの挙動。傾きが 0 に近ければ差分出力の"
+          "必要は薄く、大きければ #100 の着手根拠になる")
+    print("  ※ この規模では render は run 全体のごく一部で、実行環境の負荷ゆらぎの"
+          "ほうが大きい。判断に使うなら --pages を増やして測り直す")
+
+
+def measure_cumulative(runs: int, pages_per_run: int) -> int:
+    """run を繰り返したときの再レンダー時間の伸び（issue #100）。
+
+    run() は毎回 Store 内の全 done ページを対象に出力を作り直す。同じ workdir へ
+    pages_per_run ページずつ追加しながら runs 回実行し、run ごとの
+    `render_seconds`（summary が既に返している値）と累積 done 頁数を並べる。
+    差分レンダーは実装しない（issue #100 は「実運用を見てから」）——ここで
+    測るのは伸び方の形だけ。
+    """
+    missing = [p for p in (PAGE, RESP) if not p.exists()]
+    if missing:
+        print("累積計測に必要な素材がありません:")
+        for p in missing:
+            print(f"  - {p}")
+        return 2
+
+    cfg = _perf_config("cumulative")
+    base = PAGE.read_bytes()
+    print(f"累積計測（{runs} 回 x {pages_per_run} ページ・同一 workdir へ追加）")
+    print(f"  {'run':>3s} {'追加':>5s} {'累積done':>9s} {'render_s':>9s} "
+          f"{'run全体_s':>10s} {'render_ms/頁':>13s}")
+    rows = []
+    seq = 0
+    for r in range(1, runs + 1):
+        inp = BASE / "cumulative" / f"in{r:02d}"
+        resp = BASE / "cumulative" / f"resp{r:02d}"
+        inp.mkdir(parents=True)
+        resp.mkdir(parents=True)
+        for _ in range(pages_per_run):
+            seq += 1
+            name = f"cum{seq:04d}"
+            # 二重取り込み検知に食われないよう内容をユニーク化（IEND 後の1バイト）
+            (inp / f"{name}.png").write_bytes(
+                base + bytes([seq % 250 + 1, (seq // 250) % 250]))
+            shutil.copy(RESP, resp / f"{name}_p0001.json")
+        t0 = time.perf_counter()
+        ev = _run_core(cfg, ["run", "--input", str(inp), "--replay", str(resp)])
+        wall = time.perf_counter() - t0
+        if ev is None or ev.get("event") != "summary":
+            # 途中の run が落ちても、そこまでの表と傾きは出す（計測できた分を
+            # 捨てない）。戻り値では失敗を伝える
+            print(f"  run {r}: NG（summary が出ていない）: {ev}")
+            _report_cumulative(rows)
+            return 1
+        # total_done_pages = store に蓄積された state=="done" の累積件数
+        # （pipeline.py の summary が既に返している。P-H1 可視化）
+        done = ev.get("total_done_pages") or seq
+        rs = ev.get("render_seconds", 0.0)
+        rows.append((r, done, rs, wall))
+        print(f"  {r:3d} {pages_per_run:5d} {done:9d} {rs:9.1f} {wall:10.1f} "
+              f"{(rs * 1000 / done if done else 0):13.1f}")
+
+    _report_cumulative(rows)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="性能 NFR の実測")
-    ap.add_argument("--pages", type=int, default=100, help="replay で流す枚数")
-    ap.add_argument("--only", choices=["all", "expand", "pipeline"], default="all")
+    ap.add_argument("--pages", type=int, default=100,
+                    help="replay で流す枚数（--only cumulative では 1 run あたりの追加枚数）")
+    ap.add_argument("--only", default="all",
+                    choices=["all", "expand", "pipeline", "frames", "cumulative"],
+                    help="all は展開＋パイプライン（従来どおり）。frames と cumulative は opt-in")
+    ap.add_argument("--runs", type=int, default=5,
+                    help="--only cumulative のときの run 回数（issue #100）")
+    ap.add_argument("--repeat", type=int, default=3,
+                    help="--only frames のときの素材あたり反復回数")
     a = ap.parse_args()
     rc = 0
     if a.only in ("all", "expand"):
         rc |= measure_expand()
     if a.only in ("all", "pipeline"):
         rc |= measure_pipeline(a.pages)
+    if a.only == "frames":
+        rc |= measure_frames(a.repeat)
+    if a.only == "cumulative":
+        rc |= measure_cumulative(a.runs, a.pages)
     return rc
 
 

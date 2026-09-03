@@ -6,19 +6,70 @@ scores だけを永続化し、5値への変換は render 時に毎回導出す�
 """
 from __future__ import annotations
 
+from typing import Sequence
+
 import numpy as np
 
-from .template import CellSpec
+from .template import CellSpec, Rect
 
 BAND_PAD = 8          # 帯の外側幅（px）※実物で調整
 BAND_PAD_IN = 6       # 帯の内側幅（px・issue #23）※実物で調整
 DECIDE_GAP = 0.05     # 判定不能の閾: 1位と2位のスコア差がこれ未満なら不能 ※実物で調整
 
+# 帯が欄の矩形の外へ出てよい幅（px・BASE_DPI=300 較正・issue #52 M-1）。
+# 手書きの丸は罫線の枠をわずかに越えて描かれるため 0 にはできない: 出荷テンプレの
+# person_生年月日_元号（欄 x=1758 w=75・右端 1833）では 平 の丸が右へ 3px はみ出て
+# おり、slack=0 で切ると当該セルのトップ値が 0.0676→0.0477 と era_threshold=0.05 を
+# 割り、判定が 平→未選択 へ反転する（2サンプル8箇所で 8/8→7/8・2026-09-03 実測）。
+# 実測スイープ（slack=0..9）では 3〜8 が同じ最良値（min_top 0.0676・min_gap 0.0669）で
+# 頭打ちになる。その平坦域から、既に較正済みの同種の許容値
+# （template.CHOICE_MARK_MARGIN_PX＝マークが欄からはみ出してよい幅）と同じ 4 を採る
+BAND_OUT_SLACK = 4
+
 UNSELECTED = "未選択"
 UNDECIDED = "判定不能"
 
 
-def score_cell(binary_face: "np.ndarray", cell: CellSpec) -> dict[str, float]:
+def occluders_for(cells: Sequence[CellSpec], cell: CellSpec) -> tuple[Rect, ...]:
+    """`cell` の帯から必ず除くべき矩形（同じ面の**他の欄**の受け皿）を集める。
+
+    「他の欄が記入を受け取る場所」＝その欄の全領域（主＋追加）と参照先の枠。
+    自分自身は含めない。load_template が同一面のセル矩形の重なりを拒否している
+    （issue #24）ため、ここで集めた矩形は自欄の rect とは交わらない——帯のうち
+    自欄の外へ出た部分だけがトリムされる。
+
+    score_cell へ渡さなければ従来どおり（BAND_OUT_SLACK までのはみ出しを許す）。
+    """
+    out: list[Rect] = []
+    for other in cells:
+        if other.field_id == cell.field_id or other.face_id != cell.face_id:
+            continue
+        out.extend(other.all_rects())
+        if other.fallback_rect is not None:
+            out.append(other.fallback_rect)
+    return tuple(out)
+
+
+def _trim(x0: int, x1: int, y0: int, y1: int,
+          occluders: Sequence[Rect]) -> tuple[int, int]:
+    """水平区間 [x0,x1) から、y で重なる occluder に食われた端を削る。
+
+    帯は横方向にしか伸びないので、削るのも x の両端だけ。occluder が区間の
+    内側だけを塞ぐ（帯を2つに割る）形は、セル矩形の重なり禁止（issue #24）と
+    「帯は自欄からはみ出した分しか外へ出ない」ことから起こらない。
+    """
+    for r in occluders:
+        if min(y1, r.y + r.h) <= max(y0, r.y):
+            continue                       # y が重ならない＝この帯には関係ない
+        if r.x <= x0 < r.x + r.w:
+            x0 = max(x0, r.x + r.w)
+        if r.x < x1 <= r.x + r.w:
+            x1 = min(x1, r.x)
+    return x0, x1
+
+
+def score_cell(binary_face: "np.ndarray", cell: CellSpec,
+               occluders: Sequence[Rect] = ()) -> dict[str, float]:
     """choice セル1つの各選択肢スコア（マークの左右帯のインク画素比）。
 
     帯は**左右のみ**。マークは縦積みで上下の帯は隣マークの印字・行罫線を
@@ -32,19 +83,47 @@ def score_cell(binary_face: "np.ndarray", cell: CellSpec) -> dict[str, float]:
     ——実測で「目視では明瞭な丸なのにスコア 0.0000」が p0002 の家族欄3行で
     起きていた（issue #23）。内側6px を足すと、既存の閾値のまま実サンプル
     8箇所すべてが正解する（トップ値の最小 0.0658・1位2位差の最小 0.0647）。
+
+    帯は面サイズだけでなく**欄の矩形でもクランプする**（issue #52 M-1）。
+    面サイズだけで切ると外側 BAND_PAD 分が隣の欄へそのまま伸びる: 出荷
+    テンプレート family_01_生年月日_元号（欄 x=1060 w=50）の右帯は
+    x=[1105,1119) で、うち 9px が隣の手書き日付欄（x=1110 から）の内側に入る
+    ——隣欄の左端寄りに書かれた数字が特定のマークの帯にだけ乗ると、丸の有無
+    ではなく隣の記入内容で順位が動きうる。issue #24 が「重なり帯へ落ちた
+    symbol の行き先が定義順で決まるのは危険」としてセル矩形の重なりを拒否して
+    いるのと同じ原則を、丸印スコアの測定窓にも適用する。
+
+    クランプの外周は「欄の矩形を BAND_OUT_SLACK だけ広げたもの」。0 にすると
+    枠をわずかに越える手書きの丸そのものを削って判定が反転する（定数の
+    コメント参照）。`occluders`（occluders_for が返す他欄の受け皿）を渡すと、
+    はみ出しが許されるのは**どの欄にも属さない余白だけ**になり、隣欄への
+    食い込みは 0px になる。省略時は余白と隣欄を区別しないため、上記の
+    family 欄では 9px の食い込みが 4px まで縮む（完全には消えない）。
     """
     H, W = binary_face.shape
+    # 帯の外周（面ローカル）。マークが欄からはみ出すことは load_template が
+    # CHOICE_MARK_MARGIN_PX まででしか認めないため、これで帯が空になることはない
+    cx0 = max(0, cell.rect.x - BAND_OUT_SLACK)
+    cx1 = min(W, cell.rect.x + cell.rect.w + BAND_OUT_SLACK)
+    cy0 = max(0, cell.rect.y - BAND_OUT_SLACK)
+    cy1 = min(H, cell.rect.y + cell.rect.h + BAND_OUT_SLACK)
     scores: dict[str, float] = {}
     for mark in cell.choice_marks:
         r = mark.rect
-        y0, y1 = max(0, r.y), min(H, r.y + r.h)
-        lx0, lx1 = max(0, r.x - BAND_PAD), min(W, r.x + BAND_PAD_IN)
-        rx0, rx1 = max(0, r.x + r.w - BAND_PAD_IN), min(W, r.x + r.w + BAND_PAD)
-        area = (y1 - y0) * ((lx1 - lx0) + (rx1 - rx0))
+        y0, y1 = max(cy0, r.y), min(cy1, r.y + r.h)
+        spans = [
+            _trim(max(cx0, r.x - BAND_PAD), min(cx1, r.x + BAND_PAD_IN),
+                  y0, y1, occluders),
+            _trim(max(cx0, r.x + r.w - BAND_PAD_IN), min(cx1, r.x + r.w + BAND_PAD),
+                  y0, y1, occluders),
+        ]
+        # クランプ・トリムで区間が反転しうる。幅・高さを負のまま面積に使うと
+        # area が過小・負になり、インク比が跳ねる
+        area = max(0, y1 - y0) * sum(max(0, b - a) for a, b in spans)
         if area <= 0:
             scores[mark.value] = 0.0
             continue
-        ink = int(binary_face[y0:y1, lx0:lx1].sum()) + int(binary_face[y0:y1, rx0:rx1].sum())
+        ink = sum(int(binary_face[y0:y1, a:b].sum()) for a, b in spans if b > a)
         scores[mark.value] = ink / area
     return scores
 

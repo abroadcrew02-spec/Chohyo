@@ -949,6 +949,14 @@ export default function RunScreen(
               setFailureTotal((n) => n + 1);
             }
           }
+          // render 経路の失敗（issue #80・`出力失敗`）。ページ単位の進捗は
+          // `page` イベントが担うので setDone は呼ばない（進捗バーの二重進行を
+          // 避ける）。state は done のままなので次回 run で再送はされない
+          if (ev.event === "render_page_failed") {
+            setFailures((f) => appendFailure(f,
+              { page_id: ev.page_id, status: ev.status, reason_code: ev.reason_code }));
+            setFailureTotal((n) => n + 1);
+          }
           const n = noticeFor(ev);
           if (n) setNotices((ns) => [...ns, n]);
           // 業務的な拒否（テンプレ変更・多重起動など）を正しく伝える（H-C）。

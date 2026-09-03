@@ -161,7 +161,7 @@ class TableCandidate:
     row_pitch: float
     row_height: int
     columns: list[dict]       # [{"x_offset": int, "width": int}]
-    residual_px: float
+    residual_px: float        # max(等ピッチ当てはめの残差, 構成セルのレール散らばり)・#85 N-1
     face_id: str | None = None
     overlaps_existing: bool = False
 
@@ -189,6 +189,12 @@ def _cluster_rails(segs: list["Segment"], tol: int) -> list[tuple[float, list["S
     """pos が tol 以内で連続する線分を1つのレールへ束ねる（連鎖クラスタリング）。
 
     戻り値は pos 昇順の [(レール代表位置, そのレールに属する線分群), ...]。
+    代表位置は**同一クラスタの全線分の pos の平均**で、線分どうしの区間
+    （start/end）が重なるかは問わない——ページの別の場所にある短い線でも、
+    pos が tol 以内なら同じレールへ入り、代表位置＝報告される矩形の辺を
+    引っ張る（#85 LOW・レビュー実測）。この引っ張りは残差に表れる
+    （原子セルの `cell_residual`。#85 N-1 で表候補の `residual_px` にも
+    反映するようにした）ので、座標だけが黙ってずれることはない。
     """
     ordered = sorted(segs, key=lambda s: s.pos)
     clusters: list[list["Segment"]] = []
@@ -229,7 +235,7 @@ def _coverage(segs: list["Segment"], lo: float, hi: float) -> float:
 def _grid_atomic_cells(h_rails: list[tuple[float, list["Segment"]]],
                        v_rails: list[tuple[float, list["Segment"]]],
                        edge_cover: float
-                       ) -> tuple[list[tuple[float, float, float, float, float]], int, int]:
+                       ) -> tuple[list[tuple[float, float, float, float, float]], int, int, int]:
     """レールが作る基本グリッドセルを、閉じていない内壁を挟んで結合し、
     4辺すべてが閉じている矩形（原子セル）を列挙する。
 
@@ -248,12 +254,21 @@ def _grid_atomic_cells(h_rails: list[tuple[float, list["Segment"]]],
     「4隅が交点」の明示チェックはしない——辺の被覆率が edge_cover(0.90) 以上
     あれば、その両端付近もほぼ確実に線を持つため、別立ての交点判定は不要。
 
+    矩形ではあるが外周4辺のどれかが閉じていない（被覆率 edge_cover 未満）
+    連結成分も、以前は理由ゼロで黙って落としていた（#85 N-2。sample-1 の
+    実測で 157 成分中 11 個がこれに当たり、`stats.components` と `rects` の
+    差として現れるだけで内訳が無かった）。落ちた数を戻り値の3番目で返し、
+    呼び出し元が `excluded` へ `reason:"not_closed"` として計上する。
+
     実装はレール対の全組み合わせ（O(nh^2 * nv^2)）を試す素朴な方式ではなく、
     基本セル単位の Union-Find（O(nh*nv)）にした——罫線が密なテーブル
     （行数の多い formC 実測で 37×9 レール）では前者が数千万回規模の比較に
     膨らみ、性能検証中に 50 秒超を実測したための設計変更（NFR-F02）。
 
-    戻り値: (原子セル配列, 非矩形として除外した連結成分の数, 連結成分の総数)。
+    戻り値: (原子セル配列, 非矩形として除外した連結成分の数,
+    4辺が閉じずに除外した連結成分の数, 連結成分の総数)。4つの数は
+    「総数 = 原子セル数 + 非矩形 + 閉じていない」で閉じる（成分の台帳・
+    08 §4.2.3・#85 N-2）。
     原子セルは (y1, x1, y2, x2, residual_px)。`residual_px` は4辺それぞれの
     実測線分位置とレール代表位置とのずれの最大値（M-4）——レールは複数の
     線分束をクラスタリングした代表位置なので、束ねられた個々の線分の
@@ -261,7 +276,7 @@ def _grid_atomic_cells(h_rails: list[tuple[float, list["Segment"]]],
     """
     nh, nv = len(h_rails), len(v_rails)
     if nh < 2 or nv < 2:
-        return [], 0, 0
+        return [], 0, 0, 0
     n_rows, n_cols = nh - 1, nv - 1
 
     # 水平レール i の [v_rails[j], v_rails[j+1]] 区間に対する被覆（=そのセル
@@ -291,6 +306,7 @@ def _grid_atomic_cells(h_rails: list[tuple[float, list["Segment"]]],
 
     atomic: list[tuple[float, float, float, float, float]] = []
     non_rectangular = 0
+    not_closed = 0
     for members in groups.values():
         is_ = [m[0] for m in members]
         js_ = [m[1] for m in members]
@@ -301,13 +317,13 @@ def _grid_atomic_cells(h_rails: list[tuple[float, list["Segment"]]],
         if len(members) != (i_max - i_min + 1) * (j_max - j_min + 1):
             non_rectangular += 1
             continue
-        if not all(h_closed[i_min][j] for j in range(j_min, j_max + 1)):
-            continue
-        if not all(h_closed[i_max + 1][j] for j in range(j_min, j_max + 1)):
-            continue
-        if not all(v_closed[i][j_min] for i in range(i_min, i_max + 1)):
-            continue
-        if not all(v_closed[i][j_max + 1] for i in range(i_min, i_max + 1)):
+        # 外周4辺の閉じ判定。1辺でも被覆率 edge_cover に満たなければ矩形と
+        # 認めず、`not_closed` として数える（#85 N-2・黙って消さない）
+        if not (all(h_closed[i_min][j] for j in range(j_min, j_max + 1))
+                and all(h_closed[i_max + 1][j] for j in range(j_min, j_max + 1))
+                and all(v_closed[i][j_min] for i in range(i_min, i_max + 1))
+                and all(v_closed[i][j_max + 1] for i in range(i_min, i_max + 1))):
+            not_closed += 1
             continue
         y1, y2 = h_rails[i_min][0], h_rails[i_max + 1][0]
         x1, x2 = v_rails[j_min][0], v_rails[j_max + 1][0]
@@ -320,7 +336,7 @@ def _grid_atomic_cells(h_rails: list[tuple[float, list["Segment"]]],
             max((abs(s.pos - x2) for s in right_segs), default=0.0),
         )
         atomic.append((y1, x1, y2, x2, residual))
-    return atomic, non_rectangular, len(groups)
+    return atomic, non_rectangular, not_closed, len(groups)
 
 
 _STRADDLE_FACE = "__straddle__"  # _assign_face のセンチネル（正規の face_id と衝突しない内部専用値）
@@ -404,12 +420,19 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
     if len(h_rails) > MAX_RAILS or len(v_rails) > MAX_RAILS:
         return FrameCandidates((), (), (), stats, "too_many_lines")
 
-    atomic_raw, non_rectangular, components = _grid_atomic_cells(h_rails, v_rails, EDGE_COVER)
+    atomic_raw, non_rectangular, not_closed, components = _grid_atomic_cells(
+        h_rails, v_rails, EDGE_COVER)
     stats["rects"] = len(atomic_raw)
     stats["components"] = components
+    # `excluded` には2つの台帳が混ざる（08 §4.2.3）。成分の台帳は
+    # components = rects + non_rectangular + not_closed で閉じ、セルの台帳
+    # （page_outline・too_small・straddles_face）は rects から引かれる。
+    # 全 reason を単純に足して components と引き算しない
     excluded_counts: dict[str, int] = {}
     if non_rectangular:
         excluded_counts["non_rectangular"] = non_rectangular
+    if not_closed:
+        excluded_counts["not_closed"] = not_closed
     if not atomic_raw:
         excluded = tuple({"reason": k, "count": v} for k, v in excluded_counts.items())
         return FrameCandidates((), (), excluded, stats, "no_rect")
@@ -422,6 +445,10 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
         if w >= page_w * 0.9 and h >= page_h * 0.9:
             excluded_counts["page_outline"] = excluded_counts.get("page_outline", 0) + 1
             continue
+        # `too_small` は死んだ分岐ではない——`segments.MIN_SEG_LEN` は「レールが
+        # 立つか」の閾値で、原子セルの辺長とは独立に効く（長いレール2本が
+        # 20px 未満の間隔で並べば小さい原子セルができる。sample-1 の実測で
+        # 5件発火）。発火しないように見えてもデッドコードとして削らない（#85 LOW）
         if w < min_rect_size or h < min_rect_size:
             excluded_counts["too_small"] = excluded_counts.get("too_small", 0) + 1
             continue
@@ -501,7 +528,14 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
         pitches = [run[i + 1]["y1"] - run[i]["y1"] for i in range(len(run) - 1)]
         row_pitch = sum(pitches) / len(pitches)
         fitted = [origin_y + row_pitch * i for i in range(len(run))]
-        residual = max(abs(ri["y1"] - f) for ri, f in zip(run, fitted))
+        pitch_residual = max(abs(ri["y1"] - f) for ri, f in zip(run, fitted))
+        # #85 N-1: 等ピッチ当てはめの残差だけでは rows==2 の候補で判別力が
+        # ゼロになる（2点は必ず直線に乗るので定義上つねに 0）。sample-1 の
+        # 実測では表候補10件中8件が rows==2 で、ピッチが行高に対して極端な
+        # 512／537 の候補まで 0.0 だった。原子セル側が測っているレールの
+        # 散らばり（cell_residual）と合わせ、大きい方を候補の残差とする
+        rail_residual = max((c[4] for ri in run for c in ri["cells"]), default=0.0)
+        residual = max(pitch_residual, rail_residual)
         # セル高の中央値（08 §4.2.1 手順5）。既存 detect_ruled のように
         # ROW_INSET（罫線ぶんの控え）は引かない——ここでの高さは実測した
         # 罫線間の距離そのもので、`grid.ROW_INSET` は「等分割・領域内検出」

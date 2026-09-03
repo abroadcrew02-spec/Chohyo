@@ -9,8 +9,12 @@ Google Cloud Vision は**月 1,000 ユニットまで無料**（1画像=1ユニ�
 前提で設計すべきで、課金は後から取り消せないため。
 
 カウントの置き場は workdir の外（%LOCALAPPDATA%）。workdir は purge で消え、
-複数の作業フォルダを使うこともあるが、**課金は GCP プロジェクト単位で合算**
-されるため、カウンタも同じ粒度で持つ必要がある。
+複数の作業フォルダを使うこともあるため、作業フォルダに依存しない場所へ置く。
+
+**粒度は「この PC のこの Windows ユーザー ＋ 年月」**（issue #91）。保存先が
+%LOCALAPPDATA% でキーが年月だけなので、GCP プロジェクトを切り替えても同じ
+カウンタを消費する（＝プロジェクト別には数えない）。逆に同じプロジェクトを
+2台の PC から使えば、それぞれが別々に 0 から数える。
 
 **限界（正直に記す）**: このカウンタが数えるのは「このツールがこの PC から
 送った回数」だけ。別の PC・別のツール・GCP コンソールからの利用は数えられない。
@@ -23,6 +27,7 @@ import os
 import time
 from pathlib import Path
 
+from . import logging_safe as log
 from .pipeline_errors import OperationRefused
 
 FREE_TIER_UNITS = 1000   # 公式: 月 1,000 ユニットまで無料
@@ -49,7 +54,27 @@ class BudgetExceededError(OperationRefused):
 
 
 def usage_path() -> Path:
-    base = os.environ.get("CHOUHYO_USAGE_DIR") or os.environ.get("LOCALAPPDATA")
+    """カウンタの場所（%LOCALAPPDATA%\\ChouhyoOCR\\api_usage.json）。
+
+    **`CHOUHYO_USAGE_DIR_FOR_TESTS` はテスト専用**（本番では設定しない・
+    issue #52 M-6）。テストが実行環境の本物のカウンタを踏まないための
+    差し替え口で、運用上の設定項目ではない。旧名は `CHOUHYO_USAGE_DIR` で、
+    用途が名前から読めず文書化も無かったため「文書化されていない秘密の設定
+    経路で上限を回避できる」という指摘（M-6 の③）を受けて改名した。名前に
+    用途を書いておけば、設定した人にもレビューする人にも意図が見える。
+
+    カウンタの場所は運用では**変えられない**。作業フォルダを複数使っても、
+    config.json を差し替えても、同じ Windows ユーザーなら同じファイルを数える。
+
+    **ファイルを消せば 0 に戻る**——これは仕様として残す（M-6 の①）。守ろうと
+    しているのは「暴走で気づかないうちに課金される」ことであって、利用者自身が
+    意図して上限を外す操作ではない。後者まで防ごうとすると、消せない場所への
+    書き込みや改ざん検知が要り、デスクトップツールの実装として釣り合わない
+    （M-6 本文も HMAC 等は過剰と結論している）。実際の請求は GCP の課金
+    ダッシュボードが正本で、このカウンタは歯止めであって請求書ではない。
+    """
+    base = (os.environ.get("CHOUHYO_USAGE_DIR_FOR_TESTS")
+            or os.environ.get("LOCALAPPDATA"))
     if not base:
         base = str(Path.home() / ".chouhyo_ocr")
     return Path(base) / "ChouhyoOCR" / "api_usage.json"
@@ -59,26 +84,70 @@ def current_month() -> str:
     return time.strftime("%Y-%m")
 
 
+def _quarantine(p: Path) -> None:
+    """壊れたカウンタを退避してログへ残す（issue #91）。
+
+    0 から数え直す方針自体は変えない（壊れたファイルで運用を止めるほうが害が
+    大きい）が、**無音でリセットしない**。退避しておけば「上限分がまるごと
+    再消費された」ことに後から気づける。退避に失敗しても数え直しは続ける
+    ——ここで例外を投げると、壊れたカウンタ1つで送信そのものが止まる。
+    """
+    dest = p.with_name(f"api_usage.broken.{time.strftime('%Y%m%d_%H%M%S')}.json")
+    try:
+        os.replace(p, dest)
+    except OSError:
+        # 退避できなかった（ロック中・権限）。次回の _load がまた壊れた
+        # ファイルを読んで同じ経路を通る＝ログは出続ける
+        log.error("api_usage_corrupt", path=p.name, state="kept")
+    else:
+        # ファイル名のみ（絶対パスは出さない・設計 §8.1）
+        log.error("api_usage_corrupt", path=dest.name, state="quarantined")
+
+
 def _load() -> dict:
     p = usage_path()
     if not p.exists():
         return {}
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         # 読めないカウンタは「使用量不明」＝安全側で上限扱いにはせず、
-        # 0 から数え直す。壊れたファイルで運用を止めるほうが害が大きい
+        # 0 から数え直す。壊れたファイルで運用を止めるほうが害が大きい。
+        # ただし退避＋ログは残す（issue #91: 旧実装はここが完全に無音で、
+        # リセットが起きても利用者が気づく手段が無かった）。
+        # issue #52 M-6 は逆に「破損時は上限到達扱い（fail-closed）」を提案して
+        # いたが、issue #91 で「退避＋ログ＋0 から数え直す」に確定した——
+        # 月初にカウンタが1つ壊れただけで月次バッチが丸ごと止まる副作用のほうが
+        # 実害が大きく、破損の事実は退避ファイルとログで追える
+        _quarantine(p)
         return {}
+    if not isinstance(data, dict):
+        # JSON としては読めるが形が違う（配列・数値）。破損と同じ扱い
+        _quarantine(p)
+        return {}
+    return data
 
 
 def _save(data: dict) -> None:
     p = usage_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                   encoding="utf-8")
-    os.replace(tmp, p)  # 途中で落ちてもカウンタを壊さない
+    # tmp 名はプロセス固有にする（issue #91）。固定名（.json.tmp）だと別
+    # workdir の2プロセスが同じ tmp を掴み、(a) 書きかけの内容が os.replace で
+    # 正本へ昇格して JSON が壊れる (b) 先に replace した側が tmp を消し、
+    # 後続の os.replace が FileNotFoundError を投げて処理全体が異常終了する
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)  # 途中で落ちてもカウンタを壊さない
+    except BaseException:
+        # replace まで届かなかった tmp を残さない。後始末自体の失敗は本題では
+        # ないので握りつぶし、元の例外を伝播させる
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def used_this_month() -> int:
@@ -96,6 +165,12 @@ def check_and_count(units: int = 1, cap: int = DEFAULT_CAP) -> int:
     （多めに数えるほうが、少なく数えて課金するより安全）。
     戻り値は加算後の当月使用量。
     """
+    # ⚠️ 読む→加算→書く の間にプロセス間の排他は無い（issue #91・今回は入れ
+    # ない方針）。別 workdir の2プロセスが同時にここへ入ると、双方が同じ
+    # `now` を読んで 1 ユニットずつ上書きし、1衝突あたり最大1ユニットの
+    # 過小記録になる（cap=900・使用量899 で両方が cap 判定を通過し、記録900・
+    # 実送信2件）。想定運用（1つの入力フォルダを1人が一括処理）では起きにくい
+    # ため、実害が観測されてから msvcrt.locking 等を検討する
     data = _load()
     month = current_month()
     now = int(data.get(month, 0))

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # state: pending → expanded → aligned → sending → received → done
@@ -80,9 +81,19 @@ CREATE TABLE IF NOT EXISTS source_file(
 """
 
 
+class StoreError(RuntimeError):
+    """中間データの書き込みが前提を満たさなかった（呼び順の誤りなど）。
+
+    利用者の入力ではなくコード側の不整合を表す。メッセージには page_id と
+    件数だけを載せる（帳票の記入値は含めない・§8.1）。
+    """
+
+
 class Store:
     def __init__(self, db_path: str | Path):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        # transaction() の入れ子深度（0 = 各メソッドが自分で commit する従来動作）
+        self._tx_depth = 0
         self.con = sqlite3.connect(db_path)
         self.con.execute("PRAGMA journal_mode=WAL")
         # WAL では NORMAL で十分な耐久性（アプリクラッシュ・プロセス強制終了では
@@ -92,6 +103,13 @@ class Store:
         # うる）。巻き戻ったページは次回 run が未処理として再処理するため、実害は
         # その分の API 再送（課金重複）にとどまる——再開設計（§6.7）が吸収する
         self.con.execute("PRAGMA synchronous=NORMAL")
+        # ロック衝突時に即 `database is locked` を投げない（issue #80）。
+        # run は自分の接続を開いたまま末尾で render を呼び、render は同じ DB に
+        # 別接続を開く。render が page.status を書くようになったため、WAL でも
+        # 書き込み同士は直列化される（1 プロセス内でも別接続なら待ちが要る）。
+        # 既定は 0 = 即例外。各メソッドが即 commit する作りなので保持時間は
+        # ミリ秒級で、5 秒あれば通常の衝突は待ちで吸収できる
+        self.con.execute("PRAGMA busy_timeout=5000")
         self.con.executescript(_SCHEMA)
         # 既存 DB への列追加（CREATE TABLE IF NOT EXISTS は既存テーブルに効かない）。
         # 追加列の既定 '' は「旧版が作った・出所を証明できない」印として扱う（#25）
@@ -130,6 +148,43 @@ class Store:
         if column not in cols:
             self.con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
+    def _commit(self) -> None:
+        """メソッド単位の commit。transaction() の内側では何もしない（issue #93）。"""
+        if self._tx_depth == 0:
+            self.con.commit()
+
+    @contextmanager
+    def transaction(self):
+        """複数の更新を1回の commit にまとめる（issue #93）。
+
+        1ページ分の更新（cell / cell の拡張列 / era_score / template_hash /
+        unassigned）は、どれか1つでも欠けると中間データが自己矛盾する
+        ——例えば cell だけ新テンプレートで書けて page.template_hash が旧のまま
+        残ると、次の render の check_reusable が「テンプレートが変わっている」
+        と誤って拒否する。個別 commit のままだと、その途中経過がクラッシュ時に
+        そのまま残る。
+
+        中では各メソッドの commit を抑止し、正常終了で1回 commit、例外で
+        rollback する。入れ子は最も外側の1回にまとめる（内側の with が
+        途中 commit しない）。
+
+        **外部 API 呼び出しをこの中に入れてはいけない**——ロールバックできない
+        副作用（送信・課金）が DB のロールバックと食い違う。run の送信は
+        この外側で行う（pipeline._run_locked）。
+        """
+        self._tx_depth += 1
+        try:
+            yield self
+        except BaseException:
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                self.con.rollback()
+            raise
+        else:
+            self._tx_depth -= 1
+            if self._tx_depth == 0:
+                self.con.commit()
+
     def close(self) -> None:
         self.con.close()
 
@@ -159,12 +214,12 @@ class Store:
                  image_path=COALESCE(excluded.image_path, page.image_path),
                  updated_at=excluded.updated_at""",
             (page_id, source_file, page_no, state, image_path, time.time()))
-        self.con.commit()
+        self._commit()
 
     def set_state(self, page_id: str, state: str) -> None:
         self.con.execute("UPDATE page SET state=?, updated_at=? WHERE page_id=?",
                          (state, time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def page_id_of(self, source_file: str, page_no: int) -> str | None:
         """既存行の page_id（レビュー H-A）。
@@ -187,7 +242,7 @@ class Store:
         self.con.execute(
             "UPDATE page SET image_path=?, updated_at=? WHERE page_id=?",
             (image_path, time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def set_status(self, page_id: str, status: str, reason: str = "") -> None:
         """page.status（既存8値）と status_reason（FR-F09 の専用理由コード）を
@@ -205,18 +260,18 @@ class Store:
         self.con.execute(
             "UPDATE page SET status=?, status_reason=?, updated_at=? WHERE page_id=?",
             (status, reason, time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def bump_attempt(self, page_id: str) -> None:
         self.con.execute("UPDATE page SET attempt=attempt+1, updated_at=? WHERE page_id=?",
                          (time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def set_unassigned(self, page_id: str, below: int, other: int) -> None:
         self.con.execute(
             "UPDATE page SET unassigned_below_table=?, unassigned_other=?, updated_at=? WHERE page_id=?",
             (below, other, time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def set_format_result(self, page_id: str, pv) -> None:
         """様式判定結果を page 行へ記録する（FR-F12・AC-F13・08 §2.5）。
@@ -239,7 +294,7 @@ class Store:
             """UPDATE page SET format_verdict=?, format_reason=?, format_score=?,
                               format_detail=?, updated_at=? WHERE page_id=?""",
             (pv.verdict, pv.reason, pv.score, detail, time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def format_result(self, page_id: str) -> tuple[str, str, float, str] | None:
         """記録済みの (format_verdict, format_reason, format_score,
@@ -313,7 +368,7 @@ class Store:
             [(page_id, *r) for r in rows])
         # 旧実行の余剰 seq を残さない
         self.con.execute("DELETE FROM token WHERE page_id=? AND seq>=?", (page_id, len(rows)))
-        self.con.commit()
+        self._commit()
 
     def tokens(self, page_id: str) -> list[tuple]:
         return self.con.execute(
@@ -336,11 +391,19 @@ class Store:
                  kind=excluded.kind, is_empty_row=excluded.is_empty_row""",
             [(page_id, *r) for r in rows])
         keep = [r[0] for r in rows]
-        ph = ",".join("?" * len(keep))
-        self.con.execute(
-            f"DELETE FROM cell WHERE page_id=? AND field_id NOT IN ({ph})",
-            (page_id, *keep))
-        self.con.commit()
+        if keep:
+            ph = ",".join("?" * len(keep))
+            self.con.execute(
+                f"DELETE FROM cell WHERE page_id=? AND field_id NOT IN ({ph})",
+                (page_id, *keep))
+        else:
+            # rows が空なら「残す欄が無い」＝全削除。空文字の IN 句を組み立てると
+            # `NOT IN ()` になり sqlite3 の構文エラーで落ちる（#53 L-10）。
+            # 呼び出し元（pipeline._map_and_score・remap）では例外が
+            # `except Exception` に捕まって「様式不一致」へ化けるため、
+            # 原因不明の様式不一致として現れていた
+            self.con.execute("DELETE FROM cell WHERE page_id=?", (page_id,))
+        self._commit()
 
     def cells(self, page_id: str) -> dict[str, tuple]:
         return {fid: (raw, conf, kind, bool(emp)) for fid, raw, conf, kind, emp in
@@ -355,11 +418,24 @@ class Store:
         こと）。char_confs/origin は付随情報のみを持つ拡張列で、cell の主キーは
         増減させない——store.cells() の戻り値（4要素タプル）を変えないための
         意図的な分離（設計 §10.2。呼び出し側の後方互換）。
+
+        更新できた行数を検証する（issue #65-9）。UPDATE は対象行が無くても
+        成功するため、upsert_cells より先に呼ぶ・別ページ ID を渡すといった
+        呼び順の誤りが**無言で通り**、char_confs / origin だけが既定値 '' の
+        まま残る——文字単位〓も由来印も出ないが、出力自体は作られるので
+        気づけない。呼び順で担保していた前提を実行時の検証に変える。
         """
-        self.con.executemany(
+        if not rows:
+            return
+        cur = self.con.executemany(
             "UPDATE cell SET char_confs=?, origin=? WHERE page_id=? AND field_id=?",
             [(cc, o, page_id, fid) for fid, cc, o in rows])
-        self.con.commit()
+        if cur.rowcount != len(rows):
+            raise StoreError(
+                f"cell の拡張列を更新できなかった（page_id={page_id} "
+                f"更新 {cur.rowcount} 行 / 対象 {len(rows)} 行）。"
+                "upsert_cells より後に呼ぶ")
+        self._commit()
 
     def cell_extras(self, page_id: str) -> dict[str, tuple[str, str]]:
         """field_id → (char_confs, origin)。cells() と同じキー集合を持つ（不変条件）。"""
@@ -392,7 +468,7 @@ class Store:
                  align_residual_detail=excluded.align_residual_detail""",
             (page_id, face_id, json.dumps(transform), int(ok), geometry_hash,
              algo_version, template_hash, align_residual_px, align_residual_detail))
-        self.con.commit()
+        self._commit()
 
     def alignments(self, page_id: str) -> dict[str, tuple[dict, bool, str, str, str]]:
         """保存済みの位置合わせ結果（#45 の再利用判定用）。
@@ -441,7 +517,7 @@ class Store:
         self.con.execute(
             "UPDATE page SET template_hash=?, updated_at=? WHERE page_id=?",
             (template_hash, time.time(), page_id))
-        self.con.commit()
+        self._commit()
 
     def stale_done_pages(self, geometry_hash: str, template_hash: str,
                          algo_version: str) -> list[str]:
@@ -466,7 +542,7 @@ class Store:
         self.con.executemany(
             "INSERT INTO era_score(page_id, field_id, scores) VALUES(?,?,?)",
             [(page_id, fid, json.dumps(s)) for fid, s in scores_by_field.items()])
-        self.con.commit()
+        self._commit()
 
     def era_scores(self, page_id: str) -> dict[str, dict]:
         return {fid: json.loads(s) for fid, s in self.con.execute(
@@ -494,17 +570,22 @@ class Store:
     def forget_source(self, name: str) -> None:
         """内容が変わったファイルの旧ハッシュを捨てる（H-B）。"""
         self.con.execute("DELETE FROM source_file WHERE name=?", (name,))
-        self.con.commit()
+        self._commit()
+
+    def page_ids_of(self, name: str) -> list[str]:
+        """入力ファイルに紐づくページ ID（#53 L-5: drop_pages_of の前に採番集合
+        から除くために使う）。"""
+        return [r[0] for r in self.con.execute(
+            "SELECT page_id FROM page WHERE source_file=?", (name,))]
 
     def drop_pages_of(self, name: str) -> int:
         """入力ファイルに紐づくページと派生データを消す（H-B の差し替え時）。"""
-        ids = [r[0] for r in self.con.execute(
-            "SELECT page_id FROM page WHERE source_file=?", (name,))]
+        ids = self.page_ids_of(name)
         for pid in ids:
             for table in ("token", "cell", "alignment", "era_score"):
                 self.con.execute(f"DELETE FROM {table} WHERE page_id=?", (pid,))
         self.con.execute("DELETE FROM page WHERE source_file=?", (name,))
-        self.con.commit()
+        self._commit()
         return len(ids)
 
     def rename_source(self, old_name: str, new_name: str) -> int:
@@ -528,17 +609,17 @@ class Store:
             (new_name, time.time(), old_name))
         self.con.execute("UPDATE source_file SET name=? WHERE name=?",
                          (new_name, old_name))
-        self.con.commit()
+        self._commit()
         return cur.rowcount
 
     def record_source(self, file_hash: str, name: str) -> None:
         self.con.execute(
             "INSERT OR REPLACE INTO source_file(hash, name) VALUES(?,?)",
             (file_hash, name))
-        self.con.commit()
+        self._commit()
 
     def record_run(self, run_id: str, config_json: str) -> None:
         self.con.execute(
             "INSERT OR REPLACE INTO run(run_id, started_at, config) VALUES(?,?,?)",
             (run_id, time.time(), config_json))
-        self.con.commit()
+        self._commit()

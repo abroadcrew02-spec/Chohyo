@@ -4,6 +4,7 @@
 「中断でどんな状態が残っても、次の run が正しく拾う」ことを検証する。
 """
 import shutil
+import pathlib
 import sqlite3
 
 import pytest
@@ -81,9 +82,16 @@ def test_done_page_is_not_resent(env):
 
 
 def test_interrupted_sending_page_is_resent_once(env):
-    """state='sending' で中断された1枚は再送を許容する（D-05）。"""
+    """state='sending' で応答が残っていない1枚は再送を許容する（D-05）。
+
+    issue #92 で「応答は保存済みなのに state=sending」のページは復旧するように
+    なったため、D-05 の再送が残るのは**応答が無い（または壊れている）**場合。
+    ここでは応答ファイルごと消して、その経路を固定する。
+    """
     tmp, cfg = env
     run(tmp / "input", TPL, cfg, CountingReplay(tmp / "resp"))
+    for saved in (pathlib.Path(cfg.workdir) / "responses").iterdir():
+        saved.unlink()                               # 応答が残っていない中断
     con = sqlite3.connect(f"{cfg.workdir}/intermediate.sqlite")
     con.execute("UPDATE page SET state='sending'")   # 送信中の中断を再現
     con.commit(); con.close()
@@ -96,3 +104,25 @@ def test_interrupted_sending_page_is_resent_once(env):
     assert state == "done"
     (attempt,) = con.execute("SELECT attempt FROM page").fetchone()
     assert attempt == 2                           # attempt が積み上がる
+
+
+def test_interrupted_sending_page_with_saved_response_is_not_resent(env):
+    """応答が保存済みなら state=sending でも再送しない（issue #92）。
+
+    送信成功後は「応答を保存 → state を received」の2ステップで、間で落ちると
+    課金済みの応答を持ったまま送信中の状態で残る。旧実装はこれを D-05 の
+    「送信済みか判別できない」ケースとして一律に再送＝再課金していた。
+    """
+    tmp, cfg = env
+    run(tmp / "input", TPL, cfg, CountingReplay(tmp / "resp"))
+    con = sqlite3.connect(f"{cfg.workdir}/intermediate.sqlite")
+    con.execute("UPDATE page SET state='sending'")
+    con.commit(); con.close()
+
+    client = CountingReplay(tmp / "resp")
+    summary = run(tmp / "input", TPL, cfg, client)
+    assert client.calls == 0, "課金済みの応答があるのに再送信した"
+    assert summary.recovered_responses == 1
+    con = sqlite3.connect(f"{cfg.workdir}/intermediate.sqlite")
+    (state,) = con.execute("SELECT state FROM page").fetchone()
+    assert state == "done"

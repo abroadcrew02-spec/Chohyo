@@ -105,7 +105,7 @@ def isolated_counter(tmp_path, monkeypatch):
     の isolated_counter fixture を流用する方針・conftest.py が無いため同内容
     をここに複製する。実カウンタを汚さない）。
     """
-    monkeypatch.setenv("CHOUHYO_USAGE_DIR", str(tmp_path / "usage"))
+    monkeypatch.setenv("CHOUHYO_USAGE_DIR_FOR_TESTS", str(tmp_path / "usage"))
     return tmp_path
 
 

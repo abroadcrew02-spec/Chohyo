@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -108,7 +109,22 @@ def load_config(path: str | Path | None = None) -> Config:
     p = Path(path) if path else config_path()
     if not p.exists():
         return Config()
-    data = json.loads(p.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        # issue #97: 素の JSONDecodeError は cli.main の包括ハンドラへ落ちて
+        # `ERROR JSONDecodeError: 処理を中止しました。詳細は error.log を参照。`
+        # になるが、**この失敗は log.init より前に起きる**ので error.log には
+        # 何も書かれない（案内先が存在しない）。ConfigError に包んで
+        # `except ConfigError` 分岐（理由をそのまま出す）へ載せる。
+        # 位置と構文の説明だけを出す——config.json の中身は載せない
+        raise ConfigError(
+            f"config.json が JSON として読めない（{e.lineno} 行 {e.colno} 文字目: "
+            f"{e.msg}）。書きかけ・文字化けの可能性がある。"
+            "内容を直すか、config.json を削除すると既定値で起動する") from None
+    if not isinstance(data, dict):
+        raise ConfigError("config.json のトップレベルは JSON オブジェクト "
+                          "（{ ... }）にする")
     unknown = sorted(set(data) - set(Config.__dataclass_fields__))
     if unknown:
         raise ConfigError(f"config.json に未知のキーがある: {', '.join(unknown)}")
@@ -121,4 +137,18 @@ def save_config(cfg: Config, path: str | Path | None = None) -> None:
     # last_template_fallback_reason は1回限りの診断情報であって設定では
     # ない（M-1）。config.json に書くと利用者設定と混ざって見えるため除く
     data.pop("last_template_fallback_reason", None)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 一時ファイル + os.replace（issue #97・api_budget._save と同型）。本番の
+    # 呼び出し元は現状 GUI 側（Rust の write_config）だが、書き込み経路ごとに
+    # 保護の有無が違う状態を残さないため Python 側も揃える。tmp 名をプロセス
+    # 固有にするのは #91 と同じ理由
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                       encoding="utf-8")
+        os.replace(tmp, p)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise

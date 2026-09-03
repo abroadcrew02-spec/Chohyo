@@ -246,17 +246,17 @@ def test_write_debug_images_accepts_config_and_reflects_char_level(worked, tmp_p
         "xlsxでクリーンな欄なのにdebug側が〓ありと誤判定した（ずれ）"
 
 
-def test_field_origins_matches_assign_on_real_sample(worked, tmp_path):
-    """#60 M-1③: debug_images._field_origins が mapping.assign() と同じ結論に
-    達すること（実データ経路）。person_郵便番号1 は主が空・参照先採用（実測・
-    test_mapping.py::test_person_fields と同じ前提）なので 'fallback' になる。
+def test_field_origins_come_from_the_stored_cell_origin(worked, tmp_path):
+    """#65-6: 由来は中間データの cell.origin をそのまま読む（再計算しない）。
+
+    person_郵便番号1/2 は主が空・参照先採用（実測・test_mapping.py::
+    test_person_fields と同じ前提）なので 'fallback' が保存されている。
+    可視化がそれと同じ値を返すことを、DB の内容と突き合わせて固定する。
     """
     from pathlib import Path
 
     from chouhyo_ocr.debug_images import _field_origins
-    from chouhyo_ocr.mapping import build_symbol_locator
     from chouhyo_ocr.store import Store
-    from chouhyo_ocr.template import CellSpec
 
     cfg, _ = worked
     wd = Path(cfg.workdir)
@@ -265,14 +265,45 @@ def test_field_origins_matches_assign_on_real_sample(worked, tmp_path):
         pages = store.pages()
         assert len(pages) == 1
         pid = pages[0]["page_id"]
-        tokens = store.tokens(pid)
-        template = load_template(TPL)
-        cells_by_face: dict[str, list[CellSpec]] = {}
-        for c in template.cells:
-            cells_by_face.setdefault(c.face_id, []).append(c)
-        locators = {fid: build_symbol_locator(cs) for fid, cs in cells_by_face.items()}
-        origins = _field_origins(locators, tokens)
+        origins = _field_origins(store, pid)
+        stored = {fid: o for fid, (_cc, o) in store.cell_extras(pid).items()}
     finally:
         store.close()
+    assert origins == stored, "cell.origin 以外の情報源が混ざっている"
     assert origins.get("person_郵便番号1") == "fallback"
     assert origins.get("person_郵便番号2") == "fallback"
+
+
+def test_conflict_origin_is_drawn_as_forced_unclear(worked, tmp_path):
+    """#65-6: origin=='conflict' の欄は専用色の枠で描かれる（凡例にも出る）。
+
+    実サンプルに conflict は出ないため、中間データへ直接 conflict を書いてから
+    描画する（render_rows.build_row が同じ origin を見て欄全体〓にする経路と
+    対になる表示分岐）。描画結果そのものは PNG なので、ここでは
+    「例外なく生成される」ことと、色定数が枠色のどれとも重ならないことを固定する。
+    """
+    from pathlib import Path
+
+    from chouhyo_ocr import debug_images
+    from chouhyo_ocr.debug_images import (COL_CHOICE, COL_CONFLICT, COL_EXCLUDED,
+                                          COL_FALLBACK, COL_TEXT, _field_origins,
+                                          write_debug_images)
+    from chouhyo_ocr.store import Store
+
+    assert COL_CONFLICT not in (COL_TEXT, COL_CHOICE, COL_FALLBACK, COL_EXCLUDED)
+
+    cfg, _ = worked
+    wd = Path(cfg.workdir)
+    store = Store(wd / "intermediate.sqlite")
+    try:
+        pid = store.pages()[0]["page_id"]
+        target = "family_01_氏名"
+        char_confs, _origin = store.cell_extras(pid)[target]
+        store.upsert_cell_extras(pid, [(target, char_confs, "conflict")])
+        assert _field_origins(store, pid)[target] == "conflict"
+        made = write_debug_images(store, load_template(TPL), wd / "aligned",
+                                  tmp_path / "dbg_conflict", cfg)
+    finally:
+        store.close()
+    assert len(made) == 1 and made[0].stat().st_size > 100_000
+    assert debug_images.COL_CONFLICT == (205, 40, 110)

@@ -48,6 +48,12 @@ class CellContent:
     char_confs は raw_text と同じ順序・同じ長さの文字単位信頼度（U-10・#62）。
     len(char_confs) != len(text) の場合や空タプルの場合、render 側は文字単位〓を
     適用せず欄全体〓へ倒す（設計 §14 不変条件2）。
+
+    conf_min は**丸めない**（issue #65-10）。char_confs は store へ3桁で
+    直列化されるが、conf_min は REAL 列にそのまま入り、〓判定
+    （render_rows.unclear_reason）はこの丸める前の値で行う——3桁へ丸めると
+    閾値ちょうど付近の値が判定をまたいで反転し、H-2 で決めた安全側の向きが
+    逆になる。表示用に桁を揃えるのは render_rows.round_conf の仕事。
     origin は値の由来（''=主／'fallback'=参照先採用／'conflict'=矛盾で〓・
     値は主のまま保存、U-04）。
     """
@@ -321,6 +327,52 @@ def _bucket_cells(cells: Sequence[CellSpec], bucket: int = _BUCKET) -> dict:
     return buckets
 
 
+# assign() が使う面ごとの索引のキャッシュ（issue #53 L-18）。
+# キーは (cells の同一性, バケツ幅)、値は (cells 本体, 面→バケツ辞書)。
+# **cells 本体を一緒に持つ**のが要点で、これがあるかぎり id() が別オブジェクトへ
+# 再利用されることがない（キャッシュが生きている間は元のタプルも生きている）。
+# 上限を置くのは、テストのように多数のテンプレートを次々に読む使い方で
+# 索引が際限なく積み上がらないようにするため。溢れたら全部捨てる——
+# 実運用の呼び出しは1テンプレート固定で、複雑な追い出し規則に見合わない。
+_INDEX_CACHE: dict[tuple[int, int], tuple[object, dict]] = {}
+_INDEX_CACHE_MAX = 4
+
+
+def _face_index(cells: Sequence[CellSpec], bucket: int) -> dict:
+    """面→バケツ辞書 を返す。同じ cells・bucket なら作り直さない。
+
+    テンプレートは run の実行中ずっと不変なのに、旧実装は assign() が呼ばれる
+    たび＝**ページごと**に全セルを走査してバケツ索引を組み直していた
+    （issue #53 L-18）。中身は毎回同じで、ページ数ぶんそのまま無駄になる。
+
+    キャッシュした辞書は読み取り専用として扱う（_candidates・_locate_hit・
+    _hole_hit はいずれも参照しかしない）。書き換えるとページをまたいで
+    影響が残るので、ここから受け取った辞書へ追記しないこと。
+    """
+    key = (id(cells), bucket)
+    hit = _INDEX_CACHE.get(key)
+    if hit is not None and hit[0] is cells:
+        return hit[1]
+    cells_by_face: dict[str, list[CellSpec]] = {}
+    for c in cells:
+        cells_by_face.setdefault(c.face_id, []).append(c)
+    buckets_by_face = {face_id: _bucket_cells(cs, bucket)
+                       for face_id, cs in cells_by_face.items()}
+    if len(_INDEX_CACHE) >= _INDEX_CACHE_MAX:
+        _INDEX_CACHE.clear()
+    _INDEX_CACHE[key] = (cells, buckets_by_face)
+    return buckets_by_face
+
+
+def reset_index_cache() -> None:
+    """索引キャッシュを空にする（テスト用）。
+
+    本番では呼ばない——キャッシュは同一性でしか当たらないため、テンプレートを
+    読み直せば自動的に別のキーになる。
+    """
+    _INDEX_CACHE.clear()
+
+
 def _candidates(buckets: dict, x: float, y: float, bucket: int = _BUCKET):
     """座標を含むバケツの受け皿（key, rect）を定義順で返す。"""
     got = buckets.get((int(x) // bucket, int(y) // bucket))
@@ -409,9 +461,10 @@ def assign(
     line_gap = _LINE_GAP * scale
     bucket = _bucket_for(dpi)
 
-    cells_by_face: dict[str, list[CellSpec]] = {}
-    for c in cells:
-        cells_by_face.setdefault(c.face_id, []).append(c)
+    # 面ごとのセル列と空間インデックス（issue #17）。テンプレートは実行中
+    # 不変なので、ページごとに組み直さずキャッシュから受け取る（issue #53 L-18）。
+    # **定義順の first-hit は保つ**（キャッシュしても組み立て手順は同じ）
+    buckets_by_face = _face_index(cells, bucket)
     face_by_id = {f.face_id: f for f in faces}
 
     # field_id → 領域インデックス → symbol 列（U-06 の連結に使う）
@@ -422,12 +475,11 @@ def assign(
     locators: dict[str, dict] = {}
 
     for face_id, syms in symbols_by_face.items():
-        face_cells = cells_by_face.get(face_id, [])
         zones = face_by_id[face_id].table_zones if face_id in face_by_id else ()
-        # 空間インデックス（issue #17）。全 symbol × 全セルの線形照合は
-        # 記入密度 × 列数の掛け算で悪化する。セルをグリッドのバケツへ入れ、
-        # symbol の座標から候補だけを見る。**定義順の first-hit は保つ**
-        buckets = _bucket_cells(face_cells, bucket)
+        # 全 symbol × 全セルの線形照合は記入密度 × 列数の掛け算で悪化する。
+        # セルをグリッドのバケツへ入れ、symbol の座標から候補だけを見る。
+        # セルが1つも無い面は空の索引（_bucket_cells([]) と同じ）
+        buckets = buckets_by_face.get(face_id, {})
         locators[face_id] = buckets
         for s in syms:
             hit = _locate_hit(buckets, s.x, s.y, bucket)

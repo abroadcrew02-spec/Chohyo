@@ -120,3 +120,59 @@ def test_spatial_index_handles_cells_spanning_buckets():
     result = assign([wide], {"f": syms}, [face])
     assert result.unassigned_other == 0, "バケツ境界で取りこぼした"
     assert len(result.cells["wide"].text) == len(syms)
+
+
+# ---------- 索引のキャッシュ（issue #53 L-18） ----------
+
+def test_face_index_is_built_once_per_template(monkeypatch):
+    """同じテンプレートで assign を繰り返しても索引を組み直さない。
+
+    テンプレートは run の実行中ずっと不変なのに、旧実装はページごとに全セルを
+    走査してバケツ索引を作り直していた（実測: 出荷テンプレ 194 セルで
+    約 4.2ms/ページ・2026-09-03）。
+    """
+    from chouhyo_ocr import mapping
+    from chouhyo_ocr.mapping import Symbol, assign
+    from chouhyo_ocr.template import CellSpec, Face, Rect
+
+    face = Face(face_id="f", page_offset=0, source_rect=Rect(0, 0, 1000, 1000))
+    cells = (CellSpec("a", "f", Rect(10, 10, 100, 100), "text"),
+             CellSpec("b", "f", Rect(200, 10, 100, 100), "text"))
+    pages = [{"f": [Symbol("1", 50, 50, 0.9)]},
+             {"f": [Symbol("2", 250, 50, 0.9)]},
+             {"f": [Symbol("3", 50, 50, 0.9)]}]
+
+    mapping.reset_index_cache()
+    built = []
+    real = mapping._bucket_cells
+
+    def spy(cs, bucket=mapping._BUCKET):
+        built.append(len(cs))
+        return real(cs, bucket)
+
+    monkeypatch.setattr(mapping, "_bucket_cells", spy)
+    results = [assign(cells, p, [face]) for p in pages]
+
+    assert built == [2], f"ページごとに索引を作り直している: {built}"
+    # 結果は毎ページ独立（キャッシュがページ間で内容を持ち越さない）
+    assert results[0].cells["a"].text == "1" and "b" not in results[0].cells
+    assert results[1].cells["b"].text == "2" and "a" not in results[1].cells
+    assert results[2].cells["a"].text == "3"
+
+
+def test_face_index_is_rebuilt_for_a_different_template(monkeypatch):
+    """別のテンプレート（別オブジェクト）なら作り直す（取り違えない）。"""
+    from chouhyo_ocr import mapping
+    from chouhyo_ocr.mapping import Symbol, assign
+    from chouhyo_ocr.template import CellSpec, Face, Rect
+
+    face = Face(face_id="f", page_offset=0, source_rect=Rect(0, 0, 1000, 1000))
+    left = (CellSpec("left", "f", Rect(10, 10, 100, 100), "text"),)
+    right = (CellSpec("right", "f", Rect(200, 10, 100, 100), "text"),)
+    syms = {"f": [Symbol("X", 250, 50, 0.9)]}
+
+    mapping.reset_index_cache()
+    assert "left" not in assign(left, syms, [face]).cells
+    assert assign(right, syms, [face]).cells["right"].text == "X"
+    # 元のテンプレートへ戻しても、前の結果が混ざらない
+    assert "right" not in assign(left, syms, [face]).cells

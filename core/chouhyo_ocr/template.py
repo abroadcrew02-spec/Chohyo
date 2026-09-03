@@ -10,7 +10,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import jsonschema
+from jsonschema import exceptions as jsonschema_exceptions
+from jsonschema import validators as jsonschema_validators
 
 from . import logging_safe as log
 from .paths import template_schema_path
@@ -20,6 +21,26 @@ V1_FACE_IDS = {"front", "back"}
 # 選択肢マークが欄の矩形からはみ出せる上限（px）。値の根拠は load_template の
 # 検証箇所（issue #48）のコメントに実測つきで書いてある
 CHOICE_MARK_MARGIN_PX = 4
+
+# 表を持たない面（単発欄だけの紙）で、欄の枠線を平行移動推定のアンカーに
+# 使うための定数（issue #86・D-25 の別経路）。表のある面には一切効かない。
+#
+# ANCHOR_MIN_SPAN_PX: アンカーとして採る辺の最小の長さ（px）。射影の被覆率
+#   条件（projection.H_COVERAGE=0.50 / V_COVERAGE=0.35）は分母が小さいほど
+#   ノイズに弱く、短い辺だと文字の一画が「線」として拾われる。横線は幅、
+#   縦線は高さでそれぞれ足切りする。
+# ANCHOR_SEARCH_PX: 欄だけの面の平行移動探索の上限（px・両軸同値）。表の
+#   ような周期構造が無いので _shift_limits の式（最小ピッチの半分）は使わず
+#   固定値にする——欄1個の高さがそのまま「ピッチ」になり、小さい欄が1つ
+#   あるだけで面全体の探索範囲が潰れるため。
+# ANCHOR_WARN_MIN: これ未満のアンカー欄しかない面に W-5 警告を出す（拒否はしない）。
+#
+# ※要較正: いずれも 300dpi（BASE_DPI）想定の設計判断で、実際の「欄だけの紙」
+# の検体での較正はしていない（本 issue の時点で検体 0 枚）。実検体が入った
+# 時点で測り直す。dpi が違うテンプレートでは BASE_DPI 比でスケールして使う。
+ANCHOR_MIN_SPAN_PX = 40
+ANCHOR_SEARCH_PX = 24
+ANCHOR_WARN_MIN = 3
 
 # px 単位の内部定数（mapping._LINE_GAP/_BUCKET・align.COARSE_DILATE/
 # SHIFT_RUNNER_DIST・grid.ROW_INSET・projection.LINE_GAP・本モジュールの
@@ -129,6 +150,11 @@ class Face:
     # 列間隔の半分を超えると1行（列）ズレた解が正解と同点になり、行ズレを
     # 「補正」してしまう（D-25: N は許容範囲でなくエイリアシング境界）
     shift_limits: tuple[int, int] = (0, 0)
+    # 表を持たない面でだけ使う、欄の枠線由来のアンカー（issue #86）。
+    # **不変条件 A: table_geoms が非空なら field_geoms は必ず空。** 表のある
+    # 面の位置合わせ経路を1バイトも変えないための構造上の保証で、
+    # align.estimate_shift はこの2つを排他の分岐で使い分ける
+    field_geoms: tuple[TableGeom, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -271,6 +297,69 @@ def _shift_limits(geoms: list[TableGeom]) -> tuple[int, int]:
     if not pitches or not gaps:
         return (0, 0)
     return (max(0, min(gaps) // 2 - 2), max(0, min(pitches) // 2 - 2))
+
+
+def _field_geoms(face_cells: list[CellSpec], dpi: int) -> list[TableGeom]:
+    """単発欄の枠線を平行移動推定のアンカーにする（issue #86・表の無い面専用）。
+
+    1 欄 = 1 geom。欄の矩形の 4 辺すべてを期待線として使うが、軸ごとに辺の
+    長さで足切りする——横線は横方向に広がりが無いと射影で線として立たない
+    ので幅で、縦線は高さで測る（ANCHOR_MIN_SPAN_PX）。両軸とも足りない欄は
+    geom を作らない。
+
+    縦線も要るのは estimate_shift の構造上の必然で、期待縦線が 0 本だと
+    need_x = max(2, ...) に対して一致本数 0 となり、その面は必ず few_lines で
+    失敗する。
+
+    母集団は呼び出し元が渡すセル（面の fields 由来・table_id is None）だけで、
+    追加の領域（extra_rects）・参照先（fallback_rect）は含めない。これらは
+    「複数矩形の合併で1つの欄」を作る受け皿であって、個々の矩形の辺が紙に
+    印刷されている保証が無い。存在しない期待線を足すと一致率の分母だけが
+    増えて few_lines を誘発する。
+    """
+    span = max(1, round(ANCHOR_MIN_SPAN_PX * dpi / BASE_DPI))
+    geoms = []
+    for c in face_cells:
+        r = c.rect
+        h_lines = (r.y, r.y + r.h) if r.w >= span else ()
+        v_lines = (r.x, r.x + r.w) if r.h >= span else ()
+        if not h_lines and not v_lines:
+            continue
+        geoms.append(TableGeom(
+            x_min=r.x, x_max=r.x + r.w,
+            y_min=r.y, y_max=r.y + r.h,
+            h_lines=h_lines, v_lines=v_lines,
+        ))
+    return geoms
+
+
+def _anchor_search_limits(dpi: int) -> tuple[int, int]:
+    """欄だけの面の探索上限 (n_x, n_y)。両軸とも固定値（issue #86・決定 5）。"""
+    n = max(0, round(ANCHOR_SEARCH_PX * dpi / BASE_DPI))
+    return (n, n)
+
+
+def _anchor_shortage_warnings(faces: list[Face]) -> list[str]:
+    """W-5: 表を持たず、アンカーに使える欄が少ない面の警告（issue #86）。
+
+    拒否はしない——アンカーが 1 本でも作れるなら原理的に位置合わせは成立する
+    （need = max(2, ...) は 1 欄の 2 辺で満たせる）。W-1〜W-4 と同じく
+    「見える化のみ」に揃える。
+    """
+    warnings: list[str] = []
+    for f in faces:
+        if f.table_geoms:
+            continue
+        n = len(f.field_geoms)
+        if n < ANCHOR_WARN_MIN:
+            warnings.append(
+                f"[W-5] 面 '{f.face_id}' は表を持たず、位置合わせのアンカーに"
+                f"使える欄が {n} 個しかない。罫線のかすれや記入のはみ出しで"
+                "位置合わせに失敗しやすい（表を1つ置くか、枠のある欄を増やすと安定する）。"
+                "面のいちばん上・下・左・右にある欄は、外側の辺の枠線が紙に"
+                "印刷されている欄にすること（この4本を位置合わせの照合に使うため、"
+                "紙に無いと毎回「外形不一致」で位置合わせに失敗する）")
+    return warnings
 
 
 def _table_zones(t: dict) -> list[TableZone]:
@@ -516,29 +605,45 @@ def _hole_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str
 # NFR-F09（合計3.0秒）を圧迫する。キーはファイルパス＋mtime——スキーマ
 # ファイル自体が更新されたら（開発中の編集等）取り直す。プロセス内で
 # スキーマファイルは実質1つなので、キー不一致時は総入れ替えでよい
-_schema_cache: dict[tuple[str, float], dict] = {}
+# 2026-09-03 追記: キャッシュするのはファイルの中身ではなく**バリデータ実体**
+# にした。jsonschema.validate() は呼び出しのたびに check_schema()（メタスキーマ
+# 検証）をやり直しており、これが支配項になっていた（実測: 出荷テンプレートを
+# 7 回読む所要が 1377ms → 620ms・3 試行の最小値・2026-09-03）。バリデータを
+# 作るときに 1 回だけ check_schema を通し、以降は iter_errors だけを呼ぶ。
+# エラーの選び方（best_match）も送出する例外も jsonschema.validate と同じ手順を
+# 踏むので、メッセージの形は変わらない。1 つのバリデータを複数のインスタンスへ
+# 使い回すのは jsonschema が公式に案内している使い方（iter_errors は
+# バリデータを変更しない）。
+_validator_cache: dict[tuple[str, float], object] = {}
 
 
-def _load_schema() -> dict:
+def _schema_validator():
+    """テンプレート JSON Schema のバリデータ（プロセス内キャッシュ）。
+
+    キーはファイルパス＋mtime——スキーマファイル自体が更新されたら
+    （開発中の編集等）作り直す。プロセス内でスキーマファイルは実質1つなので、
+    キー不一致時は総入れ替えでよい。
+    """
     p = template_schema_path()
     mtime = p.stat().st_mtime
     key = (str(p), mtime)
-    cached = _schema_cache.get(key)
+    cached = _validator_cache.get(key)
     if cached is not None:
         return cached
     schema = json.loads(p.read_text(encoding="utf-8"))
-    _schema_cache.clear()
-    _schema_cache[key] = schema
-    return schema
+    cls = jsonschema_validators.validator_for(schema)
+    cls.check_schema(schema)   # スキーマ自体の妥当性は作るときに 1 回だけ見る
+    validator = cls(schema)
+    _validator_cache.clear()
+    _validator_cache[key] = validator
+    return validator
 
 
 def load_template(path: str | Path) -> Template:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
 
-    schema = _load_schema()
-    try:
-        jsonschema.validate(raw, schema)
-    except jsonschema.ValidationError as e:
+    e = jsonschema_exceptions.best_match(_schema_validator().iter_errors(raw))
+    if e is not None:
         raise TemplateError(f"スキーマ検証エラー: {e.message}（場所: {'/'.join(map(str, e.absolute_path))}）") from e
 
     # --- v1 受け入れ範囲（設計 §4.2・D-20）。範囲外は拒否し黙って続行しない ---
@@ -603,12 +708,24 @@ def load_template(path: str | Path) -> Template:
             cells.extend(_expand_table(fid, t))
             zones.extend(_table_zones(t))
             geoms.extend(_table_geoms(t))
+        # 平行移動推定は罫線をアンカーにする。表を持たない面は、単発欄の枠線を
+        # 代わりのアンカーにする（issue #86）——表のある面はここに入らず従来
+        # どおり table_geoms だけを使う（不変条件 A）。どちらのアンカーも作れ
+        # ない面は毎ページ静かに失敗するため、読み込み時に1回だけ大声で落とす
+        fgeoms: list[TableGeom] = []
         if not geoms:
-            # 平行移動推定は罫線をアンカーにする。table の無い面はアンカー不能で
-            # 毎ページ静かに失敗するため、読み込み時に1回だけ大声で落とす（D-25）
-            raise TemplateError(
-                f"face '{fid}' に tables が無い。位置合わせのアンカーとして"
-                "各面に1つ以上のテーブル定義が必要（v1 の受け入れ範囲）")
+            fgeoms = _field_geoms(
+                [c for c in cells if c.face_id == fid and c.table_id is None],
+                raw["render_dpi"])
+            # 期待線が片軸でも 0 本だと estimate_shift の need_x / need_y を
+            # 構造上満たせず、その面は必ず few_lines で失敗する。読める見込みが
+            # 無い設定なので受理しない（設計 §4.2「読めないなら止まる方が安い」）
+            if not any(g.h_lines for g in fgeoms) or not any(g.v_lines for g in fgeoms):
+                span = max(1, round(ANCHOR_MIN_SPAN_PX * raw["render_dpi"] / BASE_DPI))
+                raise TemplateError(
+                    f"face '{fid}' に位置合わせのアンカーが無い。表（tables）を"
+                    f"1つ以上定義するか、幅・高さが {span}px 以上の欄を1つ以上置く"
+                    "（欄の枠線を位置合わせの基準に使う）")
         faces.append(
             Face(
                 face_id=fid,
@@ -617,7 +734,9 @@ def load_template(path: str | Path) -> Template:
                 exclusions=tuple(_rect(e["rect"]) for e in f.get("exclusions", [])),
                 table_zones=tuple(zones),
                 table_geoms=tuple(geoms),
-                shift_limits=_shift_limits(geoms),
+                shift_limits=(_shift_limits(geoms) if geoms
+                              else _anchor_search_limits(raw["render_dpi"])),
+                field_geoms=tuple(fgeoms),
             )
         )
 
@@ -809,5 +928,6 @@ def load_template(path: str | Path) -> Template:
         cells=tuple(cells),
         warnings=tuple(_exclusion_overlap_warnings(faces, cells)
                        + _adjacent_gap_warnings(faces, cells)
-                       + _hole_overlap_warnings(faces, cells)),
+                       + _hole_overlap_warnings(faces, cells)
+                       + _anchor_shortage_warnings(faces)),
     )

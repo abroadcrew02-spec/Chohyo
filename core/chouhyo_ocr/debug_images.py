@@ -19,6 +19,12 @@ mapping.locate_symbol（assign() と同じ索引）で調べ直すことで、�
 「採用された文字」と「破棄された文字」を区別して塗り分ける（従来は破棄分も
 緑=採用扱いになっていた）。M-1 の①（check_reusable）④（count:0固定）は
 第3〜4段で cli.cmd_debug_images 側に実装済み（このモジュール自体の変更ではない）。
+
+2026-09-03（issue #65-6）: 欄の由来（fallback／conflict）をトークン座標から
+再計算するのをやめ、中間データの `cell.origin` を正として描く。あわせて
+`origin=='conflict'`（主と参照先の食い違いによる強制〓）を枠の色で区別する。
+このモジュールが独自に判断するのは symbol 1文字の**位置**だけで、欄の由来と
+〓の理由は run/remap が確定させた事実を読むだけになった。
 """
 from __future__ import annotations
 
@@ -50,6 +56,11 @@ FILL_UNCLEAR = (255, 60, 60, 40)   # 〓欄のうっすら塗り
 # 無いのかを画像から追えるようにする。既存の色（青=文字欄・紫=選択式・
 # 水色=参照先）のどれとも被らない灰色を新設する
 COL_EXCLUDED = (140, 140, 140)
+# 主と参照先が食い違った欄（origin=='conflict'・U-03 判定表 #8・issue #65-6）。
+# 値は主のまま保存されるが出力は信頼度に関わらず欄全体〓になる。〓の赤い塗りは
+# 他の〓と同じなので、**なぜ〓なのか**を枠の色で区別する。既存の枠色（青=文字欄・
+# 紫=選択式・水色=参照先・灰=出力対象外）と混ざらない赤紫
+COL_CONFLICT = (205, 40, 110)
 
 
 def _font(size: int):
@@ -68,25 +79,20 @@ def _cell_targets(cell: CellSpec, ox: int, oy: int):
         yield (r.x + ox, r.y + oy, r.x + r.w + ox, r.y + r.h + oy)
 
 
-def _field_origins(locators: dict, tokens) -> dict[str, str]:
-    """このページのトークンから、フィールドごとの由来（''/'fallback'/'conflict'）を
-    再現する（mapping.assign() と同じ fallback_decision を使う・#60 M-1③）。
+def _field_origins(store: Store, page_id: str) -> dict[str, str]:
+    """欄ごとの由来（''／'fallback'／'conflict'）を中間データから読む（#65-6）。
+
+    旧実装はトークン座標から `mapping.fallback_decision` を呼び直して由来を
+    **再計算**していた。同じ結論に達するよう作ってあったが、由来を決める規則が
+    mapping と debug_images の2箇所に並ぶ二重真実で、片方だけ直せば可視化が
+    実際の出力と食い違う——しかも食い違ったことに気づく仕組みが無い。
+
+    由来は run/remap の時点で `cell.origin` として確定・保存されている
+    （store.cell_extras・設計 §10.2）ので、それをそのまま正とする。可視化は
+    「保存された事実を描く」だけで、判断はしない。
     """
-    counts: dict[str, list[int]] = {}
-    for _seq, face, _text, _conf, x, y in tokens:
-        loc = locators.get(face)
-        if loc is None:
-            continue
-        fid, tag = mapping.locate_symbol(loc, x, y)
-        if fid is None:
-            continue
-        c = counts.setdefault(fid, [0, 0])
-        if tag == "region":
-            c[0] += 1
-        elif tag == "fallback":
-            c[1] += 1
-    return {fid: mapping.fallback_decision(n_main, n_fb)
-            for fid, (n_main, n_fb) in counts.items()}
+    return {fid: origin for fid, (_char_confs, origin) in
+            store.cell_extras(page_id).items()}
 
 
 def write_debug_images(store: Store, template: Template, aligned_dir: Path,
@@ -147,7 +153,8 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
         overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         dr = ImageDraw.Draw(overlay)
         cells = store.cells(pid)
-        field_origins = _field_origins(locators, tokens)
+        field_origins = _field_origins(store, pid)
+        n_conflict = 0
 
         # --- 欄の枠と〓の塗り ---
         for c in template.cells:
@@ -156,18 +163,29 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
             # raw=""・conf=None・is_empty=False）。conf が None のケースを
             # 取りこぼさない（#60 M-1②）
             _text, conf, kind, _emp = cells.get(c.field_id, ("", None, c.kind, False))
+            # 判定表 #8（U-03）: 主と参照先の食い違いは信頼度に関わらず欄全体〓
+            # （render_rows.build_row と同じ順序で、閾値判定より先に見る・#65-6）
+            conflict = field_origins.get(c.field_id) == "conflict" and kind != "choice"
             if _emp:
                 unclear = False
             elif kind == "choice":
                 unclear = not _text
+            elif conflict:
+                unclear = True
             else:
                 unclear = unclear_reason(_text, conf, cfg) is not None
+            if conflict and not _emp:
+                n_conflict += 1
             # issue #66 段4: output: false の欄は枠・ラベルを専用色で塗り分ける
-            # （読み取り自体は継続するので symbol の色分け・〓塗りは変えない）
-            if c.output:
-                color = COL_CHOICE if c.kind == "choice" else COL_TEXT
-            else:
+            # （読み取り自体は継続するので symbol の色分け・〓塗りは変えない）。
+            # 食い違いの赤紫は出力される欄にだけ出す——対象外欄では「列に出ない」
+            # ほうが先に効く情報で、2つの意味を1本の枠線に重ねない
+            if not c.output:
                 color = COL_EXCLUDED
+            elif conflict and not _emp:
+                color = COL_CONFLICT
+            else:
+                color = COL_CHOICE if c.kind == "choice" else COL_TEXT
             for box in _cell_targets(c, ox, oy):
                 if unclear:
                     dr.rectangle(box, fill=FILL_UNCLEAR)
@@ -231,6 +249,7 @@ def write_debug_images(store: Store, template: Template, aligned_dir: Path,
             (COL_HOLE, f"茶 = 欄の穴に落ちた（その欄が〓になる・{n_hole}字）"),
             (COL_STRAY, f"赤 = どの欄にも入らなかった（{n_stray}字）"),
             (COL_TEXT, "青枠 = 文字欄 ／ 紫枠 = 選択式 ／ 水色枠 = 参照先"),
+            (COL_CONFLICT, f"赤紫枠 = 主と参照先が食い違い → 欄全体が〓（{n_conflict}欄）"),
             (COL_EXCLUDED, "灰枠 = 出力対象外（output: false・読み取りは継続するが列には出ない）"),
             ((90, 90, 90), "うっすら赤い欄 = 〓判定"),
         ]

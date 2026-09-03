@@ -14,6 +14,12 @@ AC-F18（候補ゼロの明示）・NFR-F02（性能）。formC（同寸別様�
 - M-5: `no_rect`／`all_filtered`／`too_many_lines` を合成画像で固定
   （AC-F18 は「線分はあるが閉じない」入力を素材にする）
 
+2026-09-03 issue #85（(b) レビュー持ち越し）の追加:
+- N-1: 表候補の `residual_px` が rows==2 でも判別力を持つ（レールの
+  散らばりを反映する）／ピッチ当てはめ側の残差も従来どおり効く
+- N-2: 4辺の閉じ判定で落ちた連結成分を `not_closed` として計上し、
+  成分の台帳（components = rects + non_rectangular + not_closed）が閉じる
+
 既存 `test_grid.py`（`detect_ruled`／`make_uniform`）は本ファイルの追加で
 1行も変更していない——`grid.detect_frames` は独立した新関数として追加した
 （08 §4.9 不変条件2）。
@@ -358,6 +364,126 @@ def test_m2_pitch_tol_scales_with_dpi():
     r600 = detect_frames(binary, dpi=600)
     assert len(r600.tables) == 1
     assert r600.tables[0].rows == 4
+
+
+# ---------------------------------------------------------------------------
+# N-1（#85）: 表候補の residual_px は「等ピッチ当てはめの残差」と「構成セルの
+# レール散らばり」の大きい方。2 行の run では前者が定義上つねに 0 になるため、
+# 後者を入れないと rows==2 の候補が全て 0.0 に潰れる
+# ---------------------------------------------------------------------------
+
+def test_n1_two_row_table_residual_reflects_rail_scatter():
+    """2 行の表の中段レールに、離れた場所の 2px ずれた線が混ざる配置。
+
+    `_cluster_rails` は区間の重なりを問わずに pos が近い線分を1本のレールへ
+    束ねるので、遠方の線もレール代表位置（平均）を引っ張る。ピッチ当てはめ
+    残差は 2 点なので 0 のままだが、原子セルが測るレールの散らばりは 0 で
+    なくなる——この値が表候補の residual_px に出ることを固定する。
+    """
+    img = Image.new("L", (1300, 400), 255)
+    draw = ImageDraw.Draw(img)
+    xs, ys = [100, 300, 500], [100, 200, 300]
+    for y in ys:
+        draw.line((xs[0], y, xs[-1], y), fill=0, width=2)
+    for x in xs:
+        draw.line((x, ys[0], x, ys[-1]), fill=0, width=2)
+
+    clean = detect_frames(np.asarray(img) < 128, dpi=300)
+    assert len(clean.tables) == 1
+    assert clean.tables[0].rows == 2
+    assert clean.tables[0].residual_px == 0.0   # 揃った配置では残差 0
+
+    # 中段レール（y=200）から 2px ずれた線を、表の右外（x=700..1100）に足す
+    draw.line((700, 202, 1100, 202), fill=0, width=2)
+    scattered = detect_frames(np.asarray(img) < 128, dpi=300)
+    assert len(scattered.tables) == 1
+    t = scattered.tables[0]
+    assert t.rows == 2
+    assert t.residual_px > 0.0        # 変更前はここが 0.0 のままだった
+    assert t.residual_px == pytest.approx(1.0, abs=0.3)
+
+
+def test_n1_pitch_residual_still_reported_when_larger():
+    """レールが揃っていてもピッチが揺らぐ配置では、従来どおり当てはめ残差が
+    そのまま出る（max のもう一方を潰していないことの確認）。
+
+    y1 の間隔 100／102（PITCH_TOL=2px 以内なので同じ run）→ 平均ピッチ 101・
+    当てはめ残差 1.0。レールの散らばりは 0。
+    """
+    ys = [100, 200, 302, 402]
+    xs = [100, 300, 500]
+    binary = _draw_table((xs[-1] + 100, ys[-1] + 50), ys, xs)
+    result = detect_frames(binary, dpi=300)
+    assert len(result.tables) == 1
+    t = result.tables[0]
+    assert t.rows == 3
+    assert t.residual_px == pytest.approx(1.0, abs=0.3)
+
+
+# ---------------------------------------------------------------------------
+# N-2（#85）: 4 辺の閉じ判定（被覆率 EDGE_COVER=0.90）で落ちた連結成分を
+# excluded の not_closed に計上する（08 §4.2.3「黙って消さない」）
+# ---------------------------------------------------------------------------
+
+def test_n2_unclosed_rectangle_is_counted_as_not_closed():
+    """上辺だけ半分（被覆率 0.5）の矩形——形は矩形だが閉じていないので
+    候補にならない。以前は理由ゼロで消えていた。
+    """
+    img = Image.new("L", (600, 400), 255)
+    draw = ImageDraw.Draw(img)
+    draw.line((100, 300, 500, 300), fill=0, width=2)   # 下辺は全長
+    draw.line((100, 100, 300, 100), fill=0, width=2)   # 上辺は半分だけ
+    draw.line((100, 100, 100, 300), fill=0, width=2)
+    draw.line((500, 100, 500, 300), fill=0, width=2)
+    result = detect_frames(np.asarray(img) < 128, dpi=300)
+
+    assert result.zero_reason == "no_rect"
+    assert result.stats["components"] == 1
+    assert result.stats["rects"] == 0
+    assert [dict(e) for e in result.excluded] == [{"reason": "not_closed", "count": 1}]
+
+
+def _component_ledger_gap(result) -> int:
+    """成分の台帳の残り: components - rects - non_rectangular - not_closed。
+
+    `excluded` には2つの台帳が混ざる（08 §4.2.3）。`page_outline`・
+    `too_small`・`straddles_face` は原子セル（rects）から引かれるセルの台帳
+    なので、この式には入れない——全 reason を足して components から引くと
+    セル側の除外を二重に数える（sample-1 実測でそのぶん -8 になる）。
+    """
+    counts = {e["reason"]: e["count"] for e in result.excluded}
+    return (result.stats["components"] - result.stats["rects"]
+            - counts.get("non_rectangular", 0) - counts.get("not_closed", 0))
+
+
+def test_n2_component_ledger_closes_on_formb():
+    assert _component_ledger_gap(detect_frames(_binary(FORMB_PNG), dpi=300)) == 0
+
+
+@pytest.mark.skipif(not FORMC_PNG.exists(), reason="formC 画像が無い環境（make_formC.py で生成）")
+def test_n2_component_ledger_closes_on_formc():
+    assert _component_ledger_gap(detect_frames(_binary(FORMC_PNG), dpi=300)) == 0
+
+
+@needs_sample
+def test_n2_component_ledger_closes_on_sample1():
+    """sample-1（align_page 経路）は 157 成分中 11 個が 4 辺の閉じ判定で
+    落ちる（2026-09-03 実測）。この 11 件が not_closed として出て、成分の
+    台帳が閉じることを固定する。
+    """
+    from chouhyo_ocr.align import align_page
+
+    tpl = load_template(SHIPPED_TPL)
+    with Image.open(SAMPLE_PNG) as img:
+        _faces, composite = align_page(img, tpl)
+    result = detect_frames(np.asarray(composite.convert("L")) < 128,
+                           dpi=tpl.render_dpi, existing=tpl)
+    counts = {e["reason"]: e["count"] for e in result.excluded}
+    assert counts.get("not_closed", 0) >= 1
+    assert _component_ledger_gap(result) == 0
+    # N-1: rows==2 の表候補が全部 0.0 に潰れていない（変更前は 8 件すべて 0.0）
+    two_row = [t for t in result.tables if t.rows == 2]
+    assert two_row and all(t.residual_px > 0.0 for t in two_row)
 
 
 # ---------------------------------------------------------------------------

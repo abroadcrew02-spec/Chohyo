@@ -269,8 +269,10 @@ def write_outputs(
     ここでの分岐は不要。
     """
     # 行の値数＝抽出列数は出力の中核不変条件。assert（-O で消える）でなく
-    # 明示例外で、xlsx/csv 両形式が必ず通るこの一箇所で検査する（issue #27）
-    n_extract = len(columns) - 6
+    # 明示例外で、xlsx/csv 両形式が必ず通るこの一箇所で検査する（issue #27）。
+    # 管理列の数は META_COLUMNS が唯一の正——直書きの 6 だと、管理列を1つ
+    # 足したときにここだけ古い数のまま残る（issue #53 L-8）
+    n_extract = len(columns) - len(META_COLUMNS)
     for r in rows:
         if len(r.values) != n_extract:
             raise ValueError(
