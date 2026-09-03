@@ -1074,12 +1074,30 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 | `MIN_RECT_SIZE` | 20 px | 約 1.7 mm | 候補矩形の最小辺（§4.2） |
 | `MAX_RAILS` | 200 /軸 | — | 打ち切りガード（§4.6） |
 
-⚠️ **これらは実測で較正していない暫定値**（`MIN_SEG_LEN` のみ formB の欄寸法から下限を確認した）。AC-F16／AC-F17 が通ることを実測で確かめ、通らなければ値ではなく**根拠**から見直す。Q-F6 と同じ扱いで較正対象に積む。
+矩形化の側にはもう2つ定数がある。線分抽出（`segments.py`）ではなく `grid.py` に置いた——線分の性質ではなく「矩形と認めるかどうか」の基準だから。
+
+| 定数 | 値 | 置き場所 | 根拠 |
+|---|---|---|---|
+| `EDGE_COVER` | 0.90 | `grid.py` | 閉じた矩形と認める4辺それぞれの線分被覆率の下限（§4.2.1 手順3）。同じ基準を「内壁が閉じているか」の判定にも使う |
+| `PITCH_TOL` | 2 px@300dpi | `grid.py` | 表ブロックへ束ねるときの行ピッチの許容差（§4.2.1 手順5）。**他の px 定数と同じく dpi でスケールする**（実効値 `round(2 × dpi / 300)`）。`COLLINEAR_TOL` と同値だが意味が違う（あちらは線分の同一視、こちらは行ピッチの揺らぎ）ため別に持つ |
+
+⚠️ **これらは実測で較正していない暫定値**（`MIN_SEG_LEN` のみ formB の欄寸法から下限を確認した）。実装後の実走では表の値のまま AC-F16／AC-F17／AC-F18 が通った（`core` で `..\.venv\Scripts\python.exe -m pytest tests\test_detect_frames.py tests\test_segments.py -q` → 30 passed・2026-09-03）が、通ったのは formB／formC／sample-1 の3枚に対してであり、値の根拠が実測に置き換わったわけではない。Q-F6 と同じ扱いで較正対象に残す。
+
+**較正時の注意: `MIN_RECT_SIZE`(20px) と `MIN_SEG_LEN`(60px) の関係（2026-09-03）**
+
+「線分として拾えるのは 60px 以上なのだから、そこから組んだ矩形の辺は必ず 60px を超え、`MIN_RECT_SIZE`(20px) による `too_small` 除外には到達しないのでは」という筋は、**半分しか当たらない**。線分長が下限を課すのは**線が走っている向きの辺**だけで、もう一方の辺は**レール間隔**——隣り合うレールが 10px しか離れていなければ、10×113px の細長い原子セルができる。
+
+実測（2026-09-03・`workdir/pages/sample-1.png` に `detect_segments` → `_cluster_rails` → `_grid_atomic_cells` を直接通した結果）: 原子セル 146 個のうち **6 個が幅 10px**（高さは 61〜116px）で `too_small` に落ちた。formB では 0 件。**`too_small` は死んだ分岐ではない。**
+
+較正で効いてくるのは次の2点:
+
+- `MIN_RECT_SIZE` を下げると、罫線が二重線・太線で2本のレールに割れた紙で、線そのものを「細い欄」として拾い始める。上げすぎると細い記入欄（印影欄・チェック欄）が消える
+- `zero_reason:"all_filtered"` の発火源として実際に確認できているのは `page_outline`（`test_zero_reason_all_filtered_when_only_page_outline_detected`）。`too_small` だけで全滅する紙は今のところ観測していない——**「観測していない」であって「起きない」ではない**ので、案内文（§4.2.4）は理由コードごとに用意したまま残す
 
 #### 4.1.5 二値化と除外領域
 
 - 二値化は **`align.binarize_face` を使わない**。あれは面ローカルの除外マスク前提（`align.py:205-217`）で、(b) はページ全体・テンプレート未確定の入力も扱う。`segments` 側は `gray < th`（`align._otsu` をページ全体に適用）だけを行う
-- `--template` が与えられた場合のみ、面の `exclusions` を**検出前に白で潰す**（綴じ穴帯・黒ベタが線分として拾われるのを防ぐ）。テンプレート未指定なら潰さない
+- `--template` が与えられ、**かつ入力画像の寸法がテンプレートの `image_size` と一致する**場合のみ、面の `exclusions` を**検出前に白で潰す**（綴じ穴帯・黒ベタが線分として拾われるのを防ぐ）。テンプレート未指定、または寸法が違う場合は潰さない——座標系が一致しないまま潰すと関係ない場所を消すため（§4.4 `template_skip_reason`）
 - 傾き補正は**しない**。編集画面が (a') で位置合わせ済みの下地（`-aligned.png`）を持っているときはそれを渡す前提（`Editor.tsx` は既に `expand-page` 経由の画像を開く）。生画像を直接渡した場合に傾いていれば候補が歪むが、それは利用者が見て分かる（残差 px を出す・FR-F25）
 
 ### 4.2 矩形化と候補の粒度（FR-F16・FR-F17）
@@ -1109,6 +1127,36 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 
 **4 の「原子セル」と 3 の「辺被覆」がこの設計の要。** 隅の交点だけで矩形と認めると、離れた2つの箱が同じレール上に並んでいるだけで「1つの大きな箱」を誤検出する。formB がまさにその形をしている（§4.3）。
 
+**実装時判断（2026-09-03）: 手順3〜4 の原子セル算出を「レール対の総当たり」から「基本グリッドセルの Union-Find」へ変えた。**
+
+原案は「レール対 (y1<y2, x1<x2) の全組み合わせについて4辺の被覆を測り、内部を貫くレールが無いものを残す」だった。これは O(nh² × nv²) で、レールが密な帳票で破綻する——`testdata/formC/formC-1.png`（2490×3510・水平レール37本・垂直レール9本）を通したところ実装中の性能検証で**50 秒超**を実測し、NFR-F02（3.0 秒）を1桁超えた（実測値の記録は `core/tests/test_detect_frames.py::test_formc_completes_within_budget` の docstring）。
+
+実装は次の形にした（`grid._grid_atomic_cells`）:
+
+1. 隣接するレールが囲む**基本グリッドセル**（(nh-1)×(nv-1) 個）を単位にする
+2. 各セルの右壁・下壁について、その区間の線分被覆が `EDGE_COVER` に満たなければ**隣のセルと結合**する（Union-Find）
+3. 結合後の連結成分のうち、成分のセル数が外接矩形のセル数と一致する（＝L字・凹み・穴が無い）ものを矩形とし、外周4辺がすべて閉じていることを確認して原子セルとする
+
+計算量は O(nh × nv)。辺被覆の閾値（`EDGE_COVER` 0.90）は原案と共有する。
+
+⚠️ **これは原案の近似であり、同値ではない。** 原案は「4辺が閉じていて内部を貫くレールが無いレール対」を列挙するが、実装は**グリッドセル単位の連結成分**を単位にするため、**L 字・凹み・穴のある連結成分は矩形と認めず候補から落とす**（成分のセル数が外接矩形のセル数と一致することを条件にしている）。落ちた成分は `excluded` の `reason:"non_rectangular"` に計上し、総数は `stats.components` と `stats.rects` の差として読める——黙って消さない。原案なら L 字の内側に取れたはずの小さな矩形が候補に出ない場合があり、その面では利用者が手描きか「くり返し行」からの生成に回ることになる。**この差を許容したのは性能の理由**（下記）であって、L 字を落とすことが望ましいからではない。
+
+切り替え後の formC は **1.01 秒**、formB（1800×1200）は **0.23 秒**切り替え後の formC は **1.01 秒**、formB（1800×1200）は **0.23 秒**（2026-09-03 実測・`.venv/Scripts/python.exe` で `detect_frames(binary, dpi=300)` を`time.perf_counter` で挟んだ単体計測・画像読み込みは含まない）。
+
+「4隅が交点であること」の明示チェックは実装していない。辺の被覆率が 0.90 以上あれば両端付近もほぼ確実に線を持つため、手順2の交点判定を独立の段として持つ必要が無かった。
+
+**手順5 の確定（2026-09-03・core レビュー）: `columns` は行に実在する原子セルから作り、セルの無い帯で表を分割する。**
+
+行の列構成をレールの全境界から作ると、その行に原子セルが存在しない帯（＝閉じた内壁が無く矩形になっていない区間）まで列として並んでしまう。**水平罫線を左右で共有している2つのブロックが1つの表に潰れる**のがこれで、出荷テンプレの `family`（front・5行×2ブロック）と `detail`（back・14行×2ブロック）がまさにこの形をしている（§4.7.1 の実測）。
+
+したがって `columns` は次のように作る:
+
+- 各行について、**実在する原子セル**の `x` 範囲を左から並べたものを列とする（`x_offset` は行の先頭セル基準）
+- 隣接する原子セルの間に**隙間**（前のセルの右辺と次のセルの左辺が一致しない）があれば、そこで**表を分割**し、左右を別々の表候補として返す
+- 分割後の各ブロックについて、行 ≥ 2・署名一致・等ピッチの条件（手順5）を改めて判定する
+
+**`PITCH_TOL` も他の px 定数と同じく dpi でスケールする**（2px@300dpi・`round(2 × dpi / 300)`）。150dpi の入力で 2px 固定のままだと、300dpi 換算で 4px ぶんの揺らぎを許すことになり、別ピッチの行が同じブロックに束ねられる。
+
 #### 4.2.2 除外規則
 
 | 規則 | 内容 | 理由 |
@@ -1118,12 +1166,13 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 | 入れ子 | 手順4で自動的に落ちる（原子セルのみ残す） | 表の外枠と中のセルを二重に出さない |
 | 重複 | 同一矩形（±COLLINEAR_TOL）は1つに畳む | レールのゆらぎ由来 |
 | 表に吸収済み | 表ブロックを構成した原子セルは欄候補に出さない | 二重提示の防止 |
+| 非矩形の連結成分 | L 字・凹み・穴のある連結成分は候補にしない（`excluded` の `non_rectangular`） | 実装がグリッドセル単位の連結成分で近似しているため（§4.2.1 の⚠️）。原案の定義には無い除外で、近似の代償 |
 
 #### 4.2.3 面の割り当てと座標系
 
 - **返す座標は「ページ座標」で統一する。** 編集画面は `fields`／`tables` をページ座標で保持し、保存時に `splitY` で面ローカルへ変換している（`Editor.tsx:660-672`）。core が面ローカルで返すと GUI 側に逆変換が要り、座標系の取り違えという最も高くつくバグの余地を作る
-- `--template` が**ある**場合: 各候補の中心が入る面の `face_id` を付ける。面の境界をまたぐ候補は候補から外し、`excluded` に `reason:"straddles_face"` として出す（黙って消さない）
-- `--template` が**ない**場合: `face_id` は `null`。面の割り当ては GUI が自分の `splitY` と `faceRangeContains`（`Editor.tsx:598-609`）で行う。**core に GUI の編集中状態（splitY）を渡さない**
+- `--template` が**あり寸法が一致する**場合: 各候補の中心が入る面の `face_id` を付ける。面の境界をまたぐ候補は候補から外し、`excluded` に `reason:"straddles_face"` として出す（黙って消さない）
+- `--template` が**ない**場合、または**寸法が違って適用をやめた**場合: `face_id` は `null`（CLI 出力では `"page"`）。面の割り当ては GUI が自分の `splitY` と `faceRangeContains`（`Editor.tsx:598-609`）で行う。**core に GUI の編集中状態（splitY）を渡さない**
 
 #### 4.2.4 成立条件と不成立の明示（FR-F17）
 
@@ -1161,7 +1210,7 @@ size (1800, 1200) / ink 27957 px
 - 表の5行はすべて垂直レール署名 {100,300,450,850} が一致し、ピッチが厳密に 80 なので1ブロックに束ねられる。`residual_px` は 0.0〜0.8 の見込み（06 §3.4 の `--region` 指定時の実測が 0.8）
 - 3つの欄はそれぞれ署名が {100,499}／{600,899}／{100,949} で互いに異なり、行数も1なので表にならず欄候補へ落ちる
 
-⚠️ この検算は**射影のレール位置まで**を確認したもので、`segments.detect_segments` の実装を通した結果ではない（実装前のため）。AC-F16 の合否は実装後の実走で確定する。
+⚠️ この検算は**射影のレール位置まで**を確認したもので、`segments.detect_segments` の実装を通した結果ではなかった（当時は実装前）。**実装後の実走で AC-F16 は成立**——表候補1（`row_pitch` 80.0・列幅 200/150/400・`residual_px` 0.0）＋欄候補3（2026-09-03 実測・値は §4.4 の例に載せた）。欄の矩形が定義より 1px 小さい（400×80 の定義に対し 399×79）のは、レール位置を境界としてそのまま返すため（罫線の太さぶんを内側にも外側にも足さない）。採用後の1px は人が詰める前提で、テストは欄候補の寸法を条件にしていない——見ているのは個数3件と `face_id`・`overlaps_existing` だけ。
 
 ### 4.4 JSON 契約（新サブコマンド `detect-frames`）
 
@@ -1171,33 +1220,52 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 
 - `--input` は画像または PDF（`ingest.expand` が PDF なら該当ページを展開・画像はそのまま。`expand-page` と同じ経路）
 - `--dpi` は**展開 dpi**（既定 300）。`--template` があるときはテンプレートの `render_dpi` を優先する（FR-F23。06 §7 の未配線を繰り返さない）
-- `--template` は任意。あると ①除外領域の白潰し ②`face_id` の割り当て ③`overlaps_existing` の算出 が有効になる
+- `--template` は任意。あると ①除外領域の白潰し ②`face_id` の割り当て ③`overlaps_existing` の算出 が有効になる。**ただし入力画像の寸法がテンプレートの `image_size` と一致するときだけ**——違えば3つとも行わず `template_applied:false` / `template_skip_reason:"size_mismatch"` を返す（下記）
 
 ```json
-{"event":"detect_frames","ok":true,"elapsed_ms":1120,
- "stats":{"lines_h":10,"lines_v":8,"rects":18,"rails_h":10,"rails_v":8},
- "candidates":[
-   {"id":"c1","kind":"table","face_id":"front","source":"ruled",
-    "rect":{"x":100,"y":300,"w":750,"h":400},
-    "blocks":[{"origin":{"x":100,"y":300},"rows":5}],
-    "row_pitch":80.0,"row_height":70,
-    "columns":[{"x_offset":0,"width":200},{"x_offset":200,"width":150},
-               {"x_offset":350,"width":400}],
-    "residual_px":0.0,"overlaps_existing":false},
-   {"id":"c2","kind":"field","face_id":"front","source":"ruled",
-    "rect":{"x":100,"y":100,"w":400,"h":80},
-    "residual_px":0.0,"overlaps_existing":true}],
- "excluded":[{"reason":"page_outline","count":1},
-             {"reason":"straddles_face","count":0}],
- "zero_reason":null}
+{"event": "detect_frames", "ok": true, "input_size": [1800, 1200],
+ "candidates": [
+   {"kind": "table", "face_id": "page",
+    "rect": {"x": 100, "y": 300, "w": 750, "h": 400},
+    "blocks": [{"x": 100, "y": 300, "rows": 5}],
+    "row_pitch": 80.0, "row_height": 80,
+    "columns": [{"x_offset": 0, "width": 200}, {"x_offset": 200, "width": 150},
+                {"x_offset": 350, "width": 400}],
+    "residual_px": 0.0, "overlaps_existing": false},
+   {"kind": "field", "face_id": "page",
+    "rect": {"x": 100, "y": 100, "w": 399, "h": 79},
+    "residual_px": 0.3, "overlaps_existing": false}],
+ "stats": {"lines_h": 12, "lines_v": 10, "rects": 18, "rails_h": 10, "rails_v": 8,
+           "components": 19},
+ "excluded": [{"reason": "non_rectangular", "count": 1}],
+ "zero_reason": null,
+ "template_applied": null, "template_skip_reason": null,
+ "elapsed_ms": 231}
 ```
 
+**上は実装の実出力**（2026-09-03・`cd core` して `..\.venv\Scripts\python.exe -m chouhyo_ocr.cli detect-frames --input ..\testdata\formB\formB-1.png`。欄候補は3件返るうち先頭1件のみ抜粋、他も同じ形）。契約と実装が一致していることを確認済み。同じ画像に `--template ..\testdata\formB\formB-v1.json` を付けると `face_id` が `"front"`・`overlaps_existing` が `true`・`template_applied` が `true` に変わる。
+
+設計案（v1 の記述）から変わった点:
+
+| 案 | 確定 | 理由 |
+|---|---|---|
+| `id`（`"c1"`…） | **無し** | GUI が受け取り順で仮 ID を振る。core が振ると「同一応答内で一意」を両側が管理することになり、採用・除去の対象取り違えの余地が増える |
+| `source`（`"ruled"` 固定） | **無し** | 1値しか取らないフィールドは分岐の保険にならない。増えたときに足す |
+| `blocks:[{"origin":{"x","y"},"rows"}]` | `blocks:[{"x","y","rows"}]` | `template.py` の `tables[].blocks[]` が平坦な `{x, y, rows}`。GUI の `detect-grid` 受け取りコードと同形にする |
+| `excluded` の `reason` 3種・count 0 も列挙 | `page_outline` / `too_small` / `straddles_face` / **`non_rectangular`** の4種。**0 件の reason は出さない** | `non_rectangular` は §4.2.1 手順4 の近似で落ちた連結成分（L 字など）。0 件を並べても読み手の判断は変わらない |
+| `face_id` は `--template` 無しで `null` | `--template` 無しは **`"page"`** | GUI 側で `null` と面 ID の2系統に分岐させない。`grid.detect_frames` の返り値は設計どおり `None` で、畳むのは CLI 出力の段 |
+| （記載なし） | `input_size`: `[width, height]` | 開いた画像と core が見た画像の寸法が同じかを GUI が確かめられる |
+| （記載なし） | `template_applied`（`true` / `false` / `null`）と `template_skip_reason` | 下記 |
+| `stats` は線分・矩形・レール数 | `components` を追加 | 手順4の連結成分の総数。`rects`（＝原子セルの数）との差が `non_rectangular` の発生量になり、検出が崩れた面の切り分けに使う |
+
+**`template_applied` / `template_skip_reason`（2026-09-03 追加）**: `--template` を渡しても、入力画像の寸法がテンプレートの `image_size` と違えば座標系が一致しない。この状態で除外領域を白潰しすると**関係ない場所を消し**、面割り当てと重なり判定も別の紙の座標で行うことになる。そこで寸法が違う場合は3つの処理をいずれも行わず、`template_applied:false`・`template_skip_reason:"size_mismatch"` を返して `face_id:"page"`・`overlaps_existing:false` に落とす（`--template` 無しと同じ扱い）。**黙って「テンプレートを適用したつもりの結果」を返さない。** テンプレートを渡していない場合は **`template_applied:null`**・`template_skip_reason:null`——「適用しなかった」（false）と「適用する対象が無かった」（null）を区別する。
+
 - **座標はページ座標**（§4.2.3）。`rect` は表候補にも付ける（GUI が候補を1つの矩形として描くため）
-- `kind:"table"` の `blocks`／`row_pitch`／`row_height`／`columns` は **`template.py` の `tables[]` スキーマにそのまま写る形**にする（`grid.GridFit` と同じ語彙）。GUI は現行 `detect-grid` の受け取りコード（`Editor.tsx:2743-2753`）をほぼ流用できる
-- `residual_px` は FR-F25。欄候補は 0.0 固定ではなく、**矩形の辺と実測線分のずれの最大値**を入れる（歪んだ紙で人が判断できるように）
-- `overlaps_existing` は `--template` があるときのみ意味を持つ（無いときは常に `false`）。判定は既存の `template.cells` の全 rect と各テーブルの占有域に対する重なりの有無
-- `source` は当面 `"ruled"` の1値。将来 `"uniform"`／`"ocr"` が増えたときに GUI の分岐を壊さないためのフィールド
-- `id` は候補の一時識別子（同一応答内で一意）。GUI の個別採用・除去がこれを使う
+- `kind:"table"` の `blocks`／`row_pitch`／`row_height`／`columns` は `template.py` の `tables[]` スキーマにそのまま写る形。`row_height` は**セル高の中央値そのまま**で、`grid.ROW_INSET`（罫線ぶんの控え）は引かない——あれは領域指定の等分割側の経験則で、本節の閾値表（§4.1.4）に無い量だから。formB では `row_pitch` 80 に対し `row_height` 80 が返る（罫線1本ぶんの差は採用後に人が詰める前提）
+- `residual_px` は**表候補**では行境界の実測 y と等ピッチ当てはめの最大差、**欄候補**では矩形の4辺と実測線分のずれの最大値（formB の欄候補3件で 0.3／0.0／0.3・2026-09-03 実測）。歪んだ紙・かすれた罫線で候補の信頼度を人が判断するための値（FR-F25）
+- `overlaps_existing` は `template_applied:true` のときのみ意味を持つ。判定は既存 `template.cells` の全 rect と候補矩形の重なり。GUI 側は編集中の枠が core の知らない状態にあるため、受け取った値と**現在の枠での再判定を OR して**使う（`Editor.tsx` 実装済み）
+- `zero_reason` は候補が0件のときだけ値が入る（§4.2.4）
+- **PDF の展開先は `workdir/detect_frames_pages/`**。編集画面の下地（`workdir/editor_pages/`）と分ける——同じ場所に混ぜると、候補生成のために展開した画像が編集画面の掃除で消えたり、その逆が起きたりする。どちらも `workdir` 配下なので `purge --yes` の対象（README の中間データの説明と同じ扱い）
 
 **Rust 側の白リスト追加が要る**: `ALLOWED_SUBCOMMANDS`（`lib.rs:23`）へ `detect-frames`、`allowed_flags`（`lib.rs:35`）へ `("--input", true)`・`("--page", true)`・`("--dpi", true)`・`("--template", true)`、`TEMPLATE_ACCEPTING_SUBCOMMANDS`（`lib.rs:125`）へも追加（`inject_default_template` の対象にする）。`--input` は既存の `check_scope_dir` で `editor_pages` ＋ picked に限定される。
 
@@ -1280,6 +1348,32 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 
 **追加で回す素材**: `testdata/formC/formC-1.png`（同寸別様式・`make_formC.py` で生成）と `workdir/pages/sample-1.png`（`.gitignore` 配下＝**L2**）。前者は「別様式でも表候補が取れる」、後者は「出荷テンプレの紙で表候補2ブロック（family・detail）が取れる」ことの確認に使う。**sample-1 の期待個数は未実測**——実装後に実走して記録する（先に期待値を決め打ちしない）。
 
+#### 4.7.1 sample-1 の実測（H-2 適用後・2026-09-03 再実測）
+
+出荷テンプレート `templates/chouhyo-v1.json` と `workdir/pages/sample-1.png`（2490×3510・テンプレートの `image_size` と一致）で再実走した。**H-2（行を x で分割する対応）の前後で結果が変わるため、以下は適用後の値。**
+
+前処理の違いで結果が変わるので2経路とも測った（どちらも `.venv/Scripts/python.exe`・`detect_frames` 単体を `time.perf_counter` で挟む・画像読み込みは含まない）:
+
+| 経路 | 表候補 | 欄候補 | 所要 | back（detail）側 |
+|---|---|---|---|---|
+| **生画像＋テンプレート**（CLI と同じ前処理: ページ全体 Otsu ＋ 除外白潰し） | 13 | 10 | 0.830 秒 | **1件**（14行・pitch 104.16・7列・`residual_px` 1.65） |
+| **`align_page` の合成画像**（`test_sample1_produces_multiple_table_candidates` と同じ） | 10（front 8・back 2） | 15 | 0.757 秒 | **2件**（10行 pitch 104.18・3行 pitch 104.25・各8列） |
+
+```
+生画像経路  stats: lines_h 47, lines_v 27, rects 145, rails_h 41, rails_v 26, components 160
+            excluded: non_rectangular 2, too_small 6, straddles_face 3
+align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, components 157
+            excluded: non_rectangular 3, too_small 5, straddles_face 3
+```
+
+**detail 側（back 面）は pitch が定義どおり出る。** テンプレート定義は pitch 104・14行×2ブロック。`align_page` 経路では pitch 104.18／104.25 の2件に割れ、生画像経路では 14行1件にまとまる——**どちらも pitch は定義と一致し、割れ方だけが前処理で変わる。** テストが条件にしている「`face_id=="back"` かつ pitch 104±2 の表候補が2件以上」は `align_page` 経路で成立する。⚠️ **生画像経路では back の候補が1件なので、この条件は満たさない。** テストと CLI で前処理が違う点は §4.10 R-7 に残す。
+
+**family 側（front 面）は「5行×4列×2ブロック」にはならない。** 定義は pitch 113・5行×2ブロック・4列。`align_page` 経路で返った front 8件の pitch は 60.5／536.9／181.0／134.6／512.4／115.3／110.1／113.8 で、**pitch 113 付近の候補（110.1・113.8・115.3）は含まれる**ものの、行がブロックとして揃わず断片化する。原因は隣接する単発欄（`fields`）との近接で、欄の罫線が family の行罫線と同じレールに載り、行の署名が揃わなくなること。H-2 は幽霊列の除去にあたる対応で、この行分離の問題は別（§4.10 R-4）。
+
+**この面では、候補をそのまま採用しても family 表にはならない。** 利用者は front 側の表候補を捨てて、既存の「くり返し行」からの生成（範囲指定）か手描きに回ることになる。テストが front 側の個数・pitch を条件に含めないのはこのため（実測に基づく判断で、期待値の後付けではない）。
+
+**性能**: 0.757〜0.830 秒。NFR-F02 の 3.0 秒に収まる。formB（0.23 秒）・formC（1.01 秒）との差はレール数（41×26 / 37×20）で説明がつく。
+
 ### 4.8 変更ファイルと分担
 
 **インターフェース**: `detect-frames` の JSON 契約（§4.4）だけ。これが決まれば core と GUI は独立に進められる。
@@ -1312,7 +1406,8 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 | R-1 | 閾値8個が未較正 | 実帳票で過検出／未検出 | AC-F16（formB・コミット済み素材）を L1 で回し、formC・sample-1 を L2 で回す。値ではなく根拠から見直す方針を §4.1.4 に明記 |
 | R-2 | 150dpi 縮小（AC-F17）で線が細り検出漏れ | AC-F17 が落ちる | `MIN_SEG_LEN` は dpi スケールで 30px になる。線幅は 1px まで細るので `THICK_MAX` は問題にならないが、`HOLE_MAX`（2px へ縮む）がかすれに厳しくなる。**実装時に AC-F17 を先に回して確認する**（※未検証） |
 | R-3 | 辺被覆 0.90 が厳しすぎ／緩すぎ | 欄が潰れる／誤結合 | formB の氏名・受付日ペアが分離することを AC-F16 で確認する（§4.3 で構造的に分離することは検算済み） |
-| R-4 | 表の束ね条件（署名一致＋等ピッチ）が実帳票で成立しない | 表が欄候補にばらける | ばらけても**害は無い**（人が採用時に判断できる）。ゼロにはならない。出荷テンプレの紙（sample-1・2ブロック）で実走して確認する |
+| R-4 | 表の束ね条件（署名一致＋等ピッチ）が実帳票で成立しない | 表が欄候補にばらける | **顕在化した**（2026-09-03・§4.7.1）。sample-1 の front 面で family が8件に断片化する（back の detail は pitch 104 で安定）。ばらけても害は無い——人が採用時に判断でき、候補ゼロにもならない。受け皿は「くり返し行」からの生成と手描き |
+| R-7 | テスト（`align_page` の合成画像）と CLI（生画像＋ページ全体 Otsu）で前処理が違い、同じ紙でも候補の割れ方が変わる | テストが緑でも利用者の画面では別の個数になる | 実測差は sample-1 の back 側で「2件 vs 1件」（§4.7.1）。編集画面は `expand-page` 経由の位置合わせ済み下地を開くため実運用は前者に近いが、CLI を直接使う開発者は後者を見る。**どちらの経路でも pitch は定義と一致する**ので採用後の実害は小さい。経路を揃えるかは(b) の完了後に判断する |
 | R-5 | ページ外形の 90% 判定が、A4 いっぱいの表を誤って捨てる | 本命の表が出ない | 外形判定は**幅と高さの両方**が 90% 以上のときだけ適用する。表は縦方向に余白があるので通常は当たらない。当たった場合に備え `excluded` に理由を出す |
 | R-6 | NFR-F02 の測定単位（面1枚 vs ページ1枚）が要件と食い違う | 性能 AC の合否が曖昧 | §7-13 で要件側の明確化を求める |
 
