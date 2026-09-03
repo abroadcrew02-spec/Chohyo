@@ -9,6 +9,10 @@
   --warn-bg: #fff8ef; --warn-line: #f0c98d; --warn-ink: #8a5a13;
   --err-bg: #fdeeee; --err-line: #efb3b3; --err-ink: #8f1d1d;
   --unclear: #fff3c4;
+  /* キーボード操作の焦点リング（WCAG 2.4.7）。既定のリングはブラウザごとに
+     色も太さも違い、Chromium の細い黒枠はこの薄い罫線の画面では追いにくい。
+     色は既存のアクセント濃色（--accent-h）を使い、太さ込みで1か所に持つ */
+  --focus-ring: 2px solid var(--accent-h);
   font-family: "Noto Sans JP", "Yu Gothic UI", Meiryo, sans-serif;
 }
 * { box-sizing: border-box; }
@@ -51,6 +55,15 @@ input, select { background: var(--surface); color: var(--ink);
   border: 1px solid var(--line2); border-radius: 7px; padding: 8px 11px; font-size: 13px; }
 label { display: flex; flex-direction: column; gap: 5px; font-size: 12px;
   color: var(--sub); margin-bottom: 8px; }
+/* :focus-visible に限るので、マウスで押したときには出ない（キーボードと
+   支援技術の操作だけに出る）。outline: none は書かない——消すなら同等の
+   代替を必ず用意する必要があり、消さないほうが安全 */
+button:focus-visible, [role="button"]:focus-visible, input:focus-visible,
+select:focus-visible, summary:focus-visible, a:focus-visible {
+  outline: var(--focus-ring); outline-offset: 2px; }
+/* 選択中のツール（.btn.active）は outline を装飾として使っているため、
+   詳細度がこちらより高い。フォーカス時はリング側を優先する */
+.btn.active:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
   padding: 18px 22px; }
@@ -122,6 +135,14 @@ label { display: flex; flex-direction: column; gap: 5px; font-size: 12px;
 .warnbox { background: #fff8e6; border: 1px solid #f0d68a; border-radius: 12px;
   padding: 13px 17px; font-size: 12px; line-height: 1.8; color: #6b5411; }
 .warnbox b { display: block; margin-bottom: 4px; }
+/* 保存できたことを伝える帯（issue #65-7 続き）。warnbox と対にして、成功の
+   合図が注意より弱くならないようにする。色は完了バナーと同じ --ok-* */
+.okbox { background: var(--ok-bg); border: 1px solid var(--ok-line); border-radius: 12px;
+  padding: 13px 17px; font-size: 12px; line-height: 1.8; color: var(--ok-ink); }
+.okbox b { display: block; margin-bottom: 4px; }
+/* 読み込み時からの差分・列の内訳。見出しより一段小さく、折り返して全部見せる
+   （灰色1行だったときは末尾から見切れていた） */
+.okbox .okdetail { display: block; font-size: 11.5px; }
 
 .nextsteps { display: flex; flex-direction: column; gap: 11px; }
 .nextsteps .row { display: flex; gap: 9px; font-size: 12.5px; line-height: 1.7; }
@@ -207,6 +228,42 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   align-items: center; justify-content: center; text-align: center; padding: 40px;
   background: rgba(37, 99, 235, 0.08); border: 3px dashed #2563eb;
   color: #1d4ed8; font-size: 16px; font-weight: 600; pointer-events: none; }
+/* 枠候補の一覧（issue #87 項目3）。パネル内スクロールは以前から効いていたが、
+   1行を横1列（チェック・種別と id・寸法と残差・採用・除去）に詰め込んでいた
+   ため、320px 幅のパネルでは文字が折り返して行の高さが読めず、可視領域
+   313px に入る候補が数件しかなかった。
+   ・情報は2段に分ける（1段目=種別と id・2段目=寸法と残差）。ボタンは2段に
+     またがるので、行の高さはボタンの高さで決まり一定になる
+   ・汎用の .btn（min-height 44px）はそのままに、この一覧の中だけ 36px へ
+     詰める。同じ考え方の局所指定は .panel button=36px・.colrow button=30px
+     として既にあり、WCAG 2.5.8（24×24）も上回る
+   実測（2026-09-03・Chromium 1280×860・パネル 320px・デモ応答の候補一覧）:
+   1行ピッチ 51.7px・一覧の可視高 291px で 5件。行の高さを決めているのは
+   ボタン（36px）ではなく2段のテキスト側なので、42px にはならない。
+   ルートに .panel が付く前は2段目が 14px・--ink で出ており、1行 53px・
+   寸法と残差の 25.5% が省略されていた（.panel 適用後は 11px・--sub で 5.3%） */
+.cand-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 18px 14px; }
+.cand-list .panel-outrow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-areas: "chk name accept remove"
+                       "chk meta accept remove";
+  align-items: center; column-gap: 6px; padding: 3px 4px; }
+.cand-list .cand-check { grid-area: chk; }
+/* 各段は1行に収める。折り返すと行の高さが崩れ、2段にした意味が無くなる
+   （入りきらない分は…で省く。全文は候補の id と寸法なので追える） */
+.cand-list .cand-name { grid-area: name; font-size: 12.5px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cand-list .cand-meta { grid-area: meta; min-width: 0;
+  display: flex; align-items: center; gap: 4px; }
+/* 「既存と重なり」は縮めない。省略で削れてよいのは寸法・残差の側 */
+.cand-list .cand-meta > .format-hidden-badge { flex-shrink: 0; }
+.cand-list .cand-dims {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cand-list .cand-accept { grid-area: accept; }
+.cand-list .cand-remove { grid-area: remove; }
+.cand-list .btn { min-height: 36px; padding: 6px 9px; }
+
 .colrow { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; align-items: center;
           padding-bottom: 8px; border-bottom: 1px dashed var(--line); }
 .colrow .lbl { font-size: 11px; color: var(--sub); }
@@ -225,3 +282,23 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .modal label { margin-bottom: 11px; }
 .modal input { width: 100%; }
 .tabs button[title="設定"] { color: var(--sub); }
+
+/* 実行画面: チェックボックスの行（同期フォルダ警告の明示チェック・削除の
+   確認ダイアログ）。既定の label は入力欄向けの縦並びなので、チェックと
+   文言を横に並べる専用形を持つ。`.modal input { width: 100% }` に負けない
+   よう、同じ詳細度のこの規則を後ろに置く */
+.checkrow { flex-direction: row; align-items: flex-start; gap: 9px;
+  font-size: 12.5px; color: var(--ink); line-height: 1.7; }
+.checkrow input { width: auto; flex-shrink: 0; margin-top: 3px;
+  min-width: 16px; min-height: 16px; }
+
+/* 完了バナーの注意色（issue #69 残置1）。1件も送信せず全ページが様式不一致
+   だった実行は、最上部の緑で「成功」に見せない */
+.banner.warn { background: var(--warn-bg); border: 1px solid var(--warn-line); }
+.banner.warn b { color: var(--warn-ink); font-size: 17px; }
+.banner.warn span { color: #7a5a26; font-size: 12.5px; }
+
+/* 取り消せない操作のボタン（中間データの削除）。押す前に二段確認を通す */
+.btn.danger { background: var(--err-ink); border-color: var(--err-ink);
+  color: #fff; font-weight: 600; }
+.btn.danger:hover { background: #7a1717; }

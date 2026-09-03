@@ -22,8 +22,11 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } from "./RunScreen.tsx";\n',
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } from "./RunScreen.tsx";\n' +
+      // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
+      // 衝突しやすいので独立した1行にする
+      'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -44,7 +47,8 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } = mod;
+const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -899,10 +903,14 @@ test("expandAlignNotice: verdict=mismatch はテンプレ破損(template)・寸�
   assert.equal(s.level, "error", "size が mismatch より優先のはず: " + s.text);
 });
 
-test("expandAlignNotice: verdict=undecidable は現行の align 文言を維持する（枠を消さない）", () => {
+// AC-F11（2026-09-03）: 期待値を level="info" から "warn" に変えた。判定不能の
+// 案内が一致と同じ灰色 12px の主メッセージに出ており、画面上で区別が付いて
+// いなかった（QA 実測）。「枠は動かさない」という行動の指示は残す
+test("expandAlignNotice: verdict=undecidable は黄帯で強調し、枠を動かすなの指示は残す（AC-F11）", () => {
   const r = expandAlignNotice(false, "align", "", "undecidable");
-  assert.equal(r.level, "info");
+  assert.equal(r.level, "warn");
   assert.equal(r.isError, false);
+  assert.ok(r.text.startsWith("※判定できませんでした:"), r.text);
   assert.ok(r.text.includes("自動補正されるため枠は動かさないでください"), r.text);
 });
 
@@ -1650,8 +1658,8 @@ test("Q-H2 buildTemplateJson: clamp 済み入力なら droppedCount=0 で全要�
 });
 
 // buildTemplateJson: 空面は書き出さない（Orchestrator決定・2回目のころね
-// 実機検証で発覚した保存拒否の根本対応）。実コアは面ごとに tables 1件以上を
-// 要求する（D-25）ため、fields/tables/exclusions が全て空の面をそのまま
+// 実機検証で発覚した保存拒否の根本対応）。実コアは面ごとに位置合わせの
+// アンカー（tables、無ければ fields の枠線・#86）を要求する（D-25）ため、fields/tables/exclusions が全て空の面をそのまま
 // 書き出すと「そのアンカーが無い」という理由だけで保存が拒否されていた。
 // front/back どちらでも同じ規則——ただし両方空なら front だけを残す
 // （schema の faces minItems:1 を満たすため）。droppedCount は面を間引く
@@ -1838,9 +1846,10 @@ test("accumulationNotice: 1,000頁以上・render_seconds ありは件数と秒�
   const t = accumulationNotice({ total_done_pages: 1500, render_seconds: 12.3 });
   assert.ok(t.includes("1500"));
   assert.ok(t.includes("12.3"));
-  // issue N-6: purge は GUI から呼べない（ALLOWED_SUBCOMMANDS 外）ので、
-  // 画面のどこかにボタンがあると読める書き方をしない
-  assert.ok(t.includes("コマンド（purge --yes）"), t);
+  // issue #52 M-11 で実行画面に削除ボタンができた。旧文言（issue N-6 の
+  // 「コマンド（purge --yes）」）ではなく、画面にある実際のボタン名で案内する
+  assert.ok(t.includes("「読み取ったデータを削除」"), t);
+  assert.ok(!t.includes("purge --yes"), "画面にある操作をコマンドで案内しない");
 });
 
 test("accumulationNotice: 999頁は null（閾値未満）", () => {
@@ -1940,9 +1949,28 @@ test("reasonCodeNotice: frame_size/frame_lines/frame_ambiguous（様式不一致
   }
 });
 test("reasonCodeNotice: map_failed 系（様式不一致・送信後の判定）は別の言葉になる", () => {
-  for (const code of ["map_failed", "outside_ratio", "row_build_failed"]) {
+  // issue #80 で row_build_failed はこのグループから外れた（status が
+  // 「様式不一致」→「出力失敗」へ移ったため）。下の #80 のテストで拾う
+  for (const code of ["map_failed", "outside_ratio"]) {
     assert.equal(reasonCodeNotice(code), "送信後に様式不一致と判定しました", code);
   }
+});
+test("#80 reasonCodeNotice: row_build_failed / row_build_bug は出力失敗の言葉で、データ起因とコード欠陥を分ける", () => {
+  const data = reasonCodeNotice("row_build_failed");
+  const bug = reasonCodeNotice("row_build_bug");
+  assert.ok(data, "row_build_failed の文言が無い");
+  assert.ok(bug, "row_build_bug の文言が無い");
+  assert.notEqual(data, bug, "データ起因とコード欠陥が同じ文言になっている");
+  // 様式の問題として案内しない（06 §7・利用者がテンプレートを疑う原因）
+  assert.ok(!data.includes("様式"), data);
+  assert.ok(!bug.includes("様式"), bug);
+  // コード欠陥側はログを見る導線を残す（frame_check_failed と同じ調子）
+  assert.ok(bug.includes("不具合"), bug);
+});
+test("#80 STATUS_JA に「出力失敗」がある（render 段の新ステータス・9値化）", () => {
+  const ja = STATUS_JA["出力失敗"];
+  assert.ok(ja, "STATUS_JA に「出力失敗」が無い");
+  assert.ok(!ja.includes("様式"), ja);
 });
 test("reasonCodeNotice: frame_few_lines / frame_edge / frame_boundary は位置合わせ失敗の言葉になる（frame_edge は判定不能側）", () => {
   // frame_edge（edge_mismatch）は07 v1.2/08 ★1 で「不一致」から「判定不能」へ
@@ -1961,14 +1989,16 @@ test("reasonCodeNotice: 未知コード・未提供は null（存在しない説
   assert.equal(reasonCodeNotice(undefined), null);
   assert.equal(reasonCodeNotice("unknown_code"), null);
 });
-// REASON_CODE_JA のキー集合が 08 §2.4.3 の10コードと完全一致することを機械的
-// に固定する（スバル差し戻し1「表のキー集合と一致を assert」）
+// REASON_CODE_JA のキー集合が 08 §2.4.3 の理由コード表と完全一致することを
+// 機械的に固定する（スバル差し戻し1「表のキー集合と一致を assert」）。
+// issue #80 で row_build_bug を足して 10 → 11 コード
 const FRAME_REASON_CODES_08 = [
   "frame_size", "frame_lines", "frame_ambiguous",
-  "map_failed", "outside_ratio", "row_build_failed",
+  "map_failed", "outside_ratio",
+  "row_build_failed", "row_build_bug",
   "frame_few_lines", "frame_edge", "frame_boundary", "frame_check_failed",
 ];
-test("REASON_CODE_JA: 08 §2.4.3 の10コードとキー集合が完全一致する", () => {
+test("REASON_CODE_JA: 08 §2.4.3 の11コードとキー集合が完全一致する", () => {
   assert.deepEqual(Object.keys(REASON_CODE_JA).sort(), [...FRAME_REASON_CODES_08].sort());
 });
 
@@ -2587,8 +2617,9 @@ test("startDisabledReason: 認証キー未設定・送信上限到達・保存�
     "認証キーが未設定です（下の「認証キーを選択」から設定してください）");
   assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, budgetUsed: 900, budgetCap: 900 }),
     "今月の送信上限に達しています");
+  // issue #52 M-12／Q-MJ: 逃げ道（明示チェック）ができたので、出口も案内する
   assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, storage: false }),
-    "保存先がクラウド同期フォルダ等の下にあります（設定で変更してください）");
+    "保存先がクラウド同期フォルダ等の下にあります（設定で変更するか、下の確認チェックを入れてください）");
 });
 test("startDisabledReason: すべて問題なければ null", () => {
   assert.equal(startDisabledReason("C:\\demo", VERIFY_BASE), null);
@@ -2639,6 +2670,602 @@ test("resolveSelectedTemplate: 空文字（未設定・旧値）も出荷へ倒�
   const r = resolveSelectedTemplate("", ["帳票B"]);
   assert.equal(r.value, "shipped");
   assert.equal(r.notice, null);
+});
+
+// --- 実行イベントの取り違え防止（issue #96）---
+// Rust 側が core-line / core-err に run_id を添えるようになった（lib.rs の
+// CoreLine）。フロントは「今回の実行」以外の行を捨てる。読取スレッドの
+// join（Rust 側）と合わせた二重の防御のうち、フロント側の判定を固定する。
+
+test("readCoreLine: 構造化 payload から行と run_id を取り出す", () => {
+  assert.deepEqual(readCoreLine({ run_id: "4321-0", line: "hello" }),
+    { line: "hello", runId: "4321-0" });
+});
+test("readCoreLine: run_id の無い旧形式（文字列）はフィルタ対象外にする", () => {
+  // 形が想定と1つズレただけでログも進捗も出ない画面にはしない
+  const r = readCoreLine("plain line");
+  assert.equal(r.line, "plain line");
+  assert.equal(r.runId, undefined);
+  assert.equal(acceptsRunEvent(emptyRunFilter(), r.runId), true);
+});
+test("readCoreLine: line が欠けた payload は空行として扱う（例外にしない）", () => {
+  assert.deepEqual(readCoreLine({ run_id: "1-0" }), { line: "", runId: "1-0" });
+});
+
+test("acceptsRunEvent: core-start 未着（current=null）なら通す", () => {
+  // core-start と core-line はイベント名が別で到着順の保証が無い。
+  // 先に行が来ても落とさない
+  assert.equal(acceptsRunEvent(emptyRunFilter(), "1-0"), true);
+});
+test("acceptsRunEvent: core-start で確定した ID と一致すれば通す", () => {
+  const f = adoptRun(emptyRunFilter(), "1-0");
+  assert.equal(acceptsRunEvent(f, "1-0"), true);
+});
+test("acceptsRunEvent: 確定した ID と違う行は捨てる", () => {
+  const f = adoptRun(emptyRunFilter(), "1-1");
+  assert.equal(acceptsRunEvent(f, "1-0"), false);
+});
+
+test("実行A完了→実行B開始後に届いたAのサマリを捨てる（issue #96 本題）", () => {
+  // 前回プロセスの終了直後、パイプに残っていた行が次の実行の開始後に
+  // 届く経路。ここを通すと古いサマリが新しい実行の完了表示を上書きする
+  let f = emptyRunFilter();
+  f = beginRun(f);                 // 実行A開始
+  f = adoptRun(f, "4321-0");       // core-start（A）
+  assert.equal(acceptsRunEvent(f, "4321-0"), true, "A の行は A の実行中に通る");
+  f = finishRun(f, "4321-0");      // run_core 解決（A）
+
+  // A の最後の行が invoke の応答より遅れて届いても、まだ A の画面なので通す
+  assert.equal(acceptsRunEvent(f, "4321-0"), true,
+    "A 自身のサマリを invoke 解決後に捨ててはいけない");
+
+  f = beginRun(f);                 // 実行B開始（画面を片付けた時点で A は「古い」）
+  assert.equal(acceptsRunEvent(f, "4321-0"), false, "A の残り行は捨てる");
+  assert.equal(acceptsRunEvent(f, "4321-1"), true, "B の行は core-start 前でも通る");
+  f = adoptRun(f, "4321-1");       // core-start（B）
+  assert.equal(acceptsRunEvent(f, "4321-0"), false);
+  assert.equal(acceptsRunEvent(f, "4321-1"), true);
+});
+
+test("finishRun: core-start を取り逃しても run_core の戻り値で ID を確定できる", () => {
+  // 確定していないと、次の beginRun がその実行を retired へ移せず
+  // 遅れて届く行を捨てられない
+  let f = finishRun(beginRun(emptyRunFilter()), "4321-0");
+  assert.equal(f.current, "4321-0");
+  f = beginRun(f);
+  assert.equal(acceptsRunEvent(f, "4321-0"), false);
+});
+test("finishRun: core-start で確定済みなら戻り値では上書きしない", () => {
+  const f = finishRun(adoptRun(emptyRunFilter(), "4321-1"), "4321-0");
+  assert.equal(f.current, "4321-1");
+});
+
+test("adoptRun: 一度 retired にした ID を core-start が復帰させる", () => {
+  // 起こらない想定だが、復帰させないと「今回の実行の行を全部捨てる」に
+  // 倒れる（無反応の画面）ため、core-start を最終判断にする
+  let f = beginRun(finishRun(beginRun(emptyRunFilter()), "4321-0"));
+  assert.equal(acceptsRunEvent(f, "4321-0"), false);
+  f = adoptRun(f, "4321-0");
+  assert.equal(acceptsRunEvent(f, "4321-0"), true);
+});
+
+test("beginRun: retired は上限8件で打ち切る（無制限に伸ばさない）", () => {
+  let f = emptyRunFilter();
+  for (let i = 0; i < 20; i++) {
+    f = beginRun(f);
+    f = adoptRun(f, `4321-${i}`);
+    f = finishRun(f, `4321-${i}`);
+  }
+  f = beginRun(f);
+  assert.equal(f.retired.length, 8, `retired=${JSON.stringify(f.retired)}`);
+  assert.equal(f.retired[0], "4321-19", "新しい順に並ぶ");
+  assert.equal(acceptsRunEvent(f, "4321-19"), false, "直前の実行は必ず捨てる");
+});
+test("beginRun: 実行前（current=null・retired 空）でも壊れない", () => {
+  const f = beginRun(emptyRunFilter());
+  assert.deepEqual(f, { current: null, retired: [] });
+});
+
+
+
+// ================================================================ issue #67
+// ラミィ（accessibility）再判定 5件。canvas 描画そのものは検査できないため、
+// 描画が参照する定数・文言・判定を純関数として固定する
+
+// 1. ハッチ不透明度（Should）
+test("#67-1 HATCH_STROKE_STYLE: 出力しない欄のハッチは 45% まで濃くする", () => {
+  assert.equal(HATCH_STROKE_STYLE, "rgba(28,31,38,0.45)");
+});
+
+// 5. 選択枠の色（Must・WCAG 1.4.11）
+test("#67-5 relativeLuminance: WCAG の相対輝度（白=1・黒=0・既知の値と一致）", () => {
+  assert.equal(relativeLuminance("#ffffff"), 1);
+  assert.equal(relativeLuminance("#000000"), 0);
+  // #ffd54a（旧・選択枠色）の輝度は判定書の計算値 0.6933 とおおむね一致する
+  assert.ok(Math.abs(relativeLuminance("#ffd54a") - 0.6933) < 0.001,
+    String(relativeLuminance("#ffd54a")));
+  // 3桁表記・# なしも同じ色として扱う
+  assert.equal(relativeLuminance("#fff"), relativeLuminance("ffffff"));
+});
+test("#67-5 relativeLuminance: 16進でない指定は投げる（黙って0扱いにしない）", () => {
+  assert.throws(() => relativeLuminance("red"));
+  assert.throws(() => relativeLuminance("#12345"));
+});
+test("#67-5 contrastRatio: 白と黒は 21:1・順序を入れ替えても同じ", () => {
+  assert.ok(Math.abs(contrastRatio("#ffffff", "#000000") - 21) < 0.001);
+  assert.equal(contrastRatio("#ffffff", "#a06800"), contrastRatio("#a06800", "#ffffff"));
+});
+test("#67-5 旧 #ffd54a は白い紙面で 3:1 未達だった（回帰の基準）", () => {
+  // 枠は走査画像＝ほぼ白い紙面の上に描かれるので、拘束条件はこちら。
+  // 暗い下地（#1c1f26）に対しては旧色でも 3:1 を満たしていた——当初
+  // 「下地でも未達」としていたのは、実際には画面に出ない CSS の .canvas
+  // 背景（#e7ebf1）で検算していたため（2026-09-03 の実測で判明）
+  assert.ok(contrastRatio("#ffd54a", PAPER_BG_COLOR) < 3.0);
+  assert.ok(contrastRatio("#ffd54a", CANVAS_BG_COLOR) >= 3.0);
+});
+test("#67-5 SELECTION_COLOR: 白紙面・キャンバス既定背景のどちらでも 3:1 以上", () => {
+  assert.ok(contrastRatio(SELECTION_COLOR, PAPER_BG_COLOR) >= 3.0,
+    `白: ${contrastRatio(SELECTION_COLOR, PAPER_BG_COLOR)}`);
+  assert.ok(contrastRatio(SELECTION_COLOR, CANVAS_BG_COLOR) >= 3.0,
+    `canvas: ${contrastRatio(SELECTION_COLOR, CANVAS_BG_COLOR)}`);
+});
+test("#67-5 SELECTION_FILL_STYLE: 塗り（薄いハイライト）は線とは別扱いで据え置く", () => {
+  // 1.4.11 の対象は状態を伝える線側。塗りを濃くすると下の走査画像が読めなく
+  // なるため、色を変えたのは線だけであることをここで固定する
+  assert.equal(SELECTION_FILL_STYLE, "rgba(255,213,74,0.28)");
+});
+
+// 2. 並べ替えの読み上げ（Must・WCAG 4.1.3）
+test("#67-2 reorderAnnouncement: 移動後の位置と全体数を含む", () => {
+  assert.equal(reorderAnnouncement("氏名", 2, 5), "氏名 を 2 番目に移動しました（全 5 件中）");
+});
+test("#67-2 reorderAnnouncement: 名前が空でも呼び出し側の代替名がそのまま入る", () => {
+  assert.equal(reorderAnnouncement("（名前未設定）", 1, 1),
+    "（名前未設定） を 1 番目に移動しました（全 1 件中）");
+});
+
+// 3. 並べ替え後の再フォーカス（Must (a)(b)）
+test("#67-3 nextReorderFocusDir: 両側とも有効なら押した向きを保つ", () => {
+  assert.equal(nextReorderFocusDir(true, true, "up"), "up");
+  assert.equal(nextReorderFocusDir(true, true, "down"), "down");
+});
+test("#67-3 nextReorderFocusDir: 移動先が先頭なら↓へ・末尾なら↑へ寄せる", () => {
+  assert.equal(nextReorderFocusDir(false, true, "up"), "down");
+  assert.equal(nextReorderFocusDir(true, false, "down"), "up");
+});
+test("#67-3 nextReorderFocusDir: 両方無効（動かせる相手がいない）は null", () => {
+  assert.equal(nextReorderFocusDir(false, false, "up"), null);
+  assert.equal(nextReorderFocusDir(false, false, "down"), null);
+});
+test("#67-3 moveFieldOutputOrder と組み合わせて境界のフォーカス先が決まる", () => {
+  const mk = (uid, y) => ({ uid, field_id: uid, kind: "text", rect: { x: 0, y, w: 10, h: 10 },
+                            marks: [] });
+  const splitY = 1000;
+  const fields = [mk("a", 100), mk("b", 200)];
+  // b を上へ動かすと b は面の先頭。上ボタンは無効になるのでフォーカスは下へ
+  const moved = moveFieldOutputOrder(fields, "b", "up", splitY);
+  assert.ok(moved);
+  assert.equal(moved[0].uid, "b");
+  const canUp = moveFieldOutputOrder(moved, "b", "up", splitY) !== null;
+  const canDown = moveFieldOutputOrder(moved, "b", "down", splitY) !== null;
+  assert.equal(canUp, false);
+  assert.equal(canDown, true);
+  assert.equal(nextReorderFocusDir(canUp, canDown, "up"), "down");
+});
+
+// 4. disabled ボタンの理由提示（Must）
+test("#67-4 saveConfirmButtonLabel: busy 中は実行側のラベルが処理中を示す", () => {
+  assert.equal(saveConfirmButtonLabel("proceed", false), "このまま保存");
+  assert.equal(saveConfirmButtonLabel("proceed", true), "保存しています…");
+  assert.equal(saveConfirmButtonLabel("cancel", false), "保存しない");
+  assert.equal(saveConfirmButtonLabel("cancel", true), "保存しない");
+});
+test("#67-4 saveConfirmButtonTitle: busy 中だけ理由を出す（普段は属性なし）", () => {
+  assert.equal(saveConfirmButtonTitle(false), undefined);
+  assert.ok(saveConfirmButtonTitle(true).includes("実行中"));
+});
+
+// ================================================================ issue #85
+test("#85 excludedSummaryJa: not_closed を日本語（四方が線でつながっていない）で出す", () => {
+  const t = excludedSummaryJa([{ reason: "not_closed", count: 3 }]);
+  assert.equal(t, "候補にしなかった枠: 四方が線でつながっていない 3");
+});
+
+// ================================================================ issue #87
+// 項目1: window.confirm を画面内モーダルへ移す。意味論（承諾＝先へ進む／
+// 中止＝何も変えない）とボタン文言を純関数で固定する
+test("#87-1 uiConfirmSpec: 重なり候補の採用は「採用する／中止」", () => {
+  const s = uiConfirmSpec("adopt-overlapping-candidate");
+  assert.equal(s.confirmLabel, "採用する");
+  assert.equal(s.cancelLabel, "中止");
+  // 本文は既存の候補重なり文言をそのまま使う（実態の説明を二重管理しない）
+  assert.equal(s.body, candidateOverlapWarning());
+  assert.ok(s.title.length > 0);
+});
+test("#87-1 uiConfirmSpec: 未保存の破棄は「破棄して続ける／戻る」", () => {
+  const s = uiConfirmSpec("discard-changes");
+  assert.equal(s.confirmLabel, "破棄して続ける");
+  assert.equal(s.cancelLabel, "戻る");
+  assert.ok(s.body.includes("破棄"), s.body);
+});
+test("#87-1 uiConfirmSpec: どちらも「戻せない」側が承諾ボタンになっている", () => {
+  // 既定フォーカスは中止側（Enter で走るのは何も変えない方）。ここでは
+  // 「承諾と中止が入れ替わっていない」ことだけを機械的に確かめる
+  for (const kind of ["adopt-overlapping-candidate", "discard-changes"]) {
+    const s = uiConfirmSpec(kind);
+    assert.notEqual(s.confirmLabel, s.cancelLabel);
+    assert.ok(["中止", "戻る"].includes(s.cancelLabel), s.cancelLabel);
+  }
+});
+
+// AC-F20: 「すべて除去」で候補が空になり、確定枠は変わらない
+test("#87 AC-F20 clearCandidates: 候補だけ空になり fields/tables はそのまま", () => {
+  const cands = [{ id: "c1", kind: "field", rect: { x: 0, y: 0, w: 1, h: 1 },
+                   faceHint: null, residual: 0, overlaps: false }];
+  const fields = [{ uid: "u1", field_id: "f1", kind: "text",
+                    rect: { x: 0, y: 0, w: 1, h: 1 }, marks: [] }];
+  const tables = [{ uid: "t1", table_id: "table1", row_pitch: 10, row_height: 8,
+                    blocks: [{ x: 0, y: 0, rows: 1 }], columns: [] }];
+  const r = clearCandidates(cands, fields, tables);
+  assert.deepEqual(r.cands, []);
+  assert.equal(r.fields, fields, "確定枠は同じ配列のまま（差し替えない）");
+  assert.equal(r.tables, tables);
+  assert.ok(r.notice.includes("確定済みの枠は変更していません"));
+});
+test("#87 AC-F20 clearCandidates: 候補0件は null（押しても何も起きない）", () => {
+  assert.equal(clearCandidates([], [], []), null);
+});
+
+// AC-F21: 候補生成1回＝Undo 1コマ
+test("#87 AC-F21 pushHistory: 1回の呼び出しでコマはちょうど1つ増える", () => {
+  const g1 = { fields: [], tables: [], excls: [], splitY: 100, cands: [] };
+  const g2 = { ...g1, cands: [{ id: "c1" }] };
+  let past = [];
+  past = pushHistory(past, g1);
+  assert.equal(past.length, 1);
+  past = pushHistory(past, g2);
+  assert.equal(past.length, 2);
+  // 積むのは「その操作の前の状態」——1コマ戻すと候補が空だった時点に戻る
+  assert.deepEqual(past[0].cands, []);
+  assert.deepEqual(past[1].cands, [{ id: "c1" }]);
+});
+test("#87 AC-F21 pushHistory: 元の配列は書き換えない（新しい配列を返す）", () => {
+  const past = [{ n: 1 }];
+  const next = pushHistory(past, { n: 2 });
+  assert.equal(past.length, 1);
+  assert.equal(next.length, 2);
+});
+test("#87 AC-F21 pushHistory: 上限を超えると最古から落ちる（長さは上限で頭打ち）", () => {
+  let past = [];
+  for (let i = 0; i < 105; i++) past = pushHistory(past, { n: i });
+  assert.equal(past.length, 100);
+  assert.deepEqual(past[0], { n: 5 }, "最古の5コマが落ちている");
+  assert.deepEqual(past[99], { n: 104 });
+});
+
+// ================================================================ issue #53 L-6
+test("#53 L-6 layoutColumnMarks: 列の幅を等分し、ブロック原点からの相対で置く", () => {
+  const marks = layoutColumnMarks({ x_offset: 420, width: 90 }, ["昭", "平", "令"]);
+  assert.equal(marks.length, 3);
+  assert.deepEqual(marks.map((m) => m.value), ["昭", "平", "令"]);
+  // 30px ずつの枠に左右1pxの余白 → x_offset は 421/451/481・width は 28
+  assert.deepEqual(marks.map((m) => m.x_offset), [421, 451, 481]);
+  assert.deepEqual(marks.map((m) => m.width), [28, 28, 28]);
+  // 縦位置は指定しない（省略＝行全体・スキーマの既定）
+  for (const m of marks) {
+    assert.equal(m.y_offset, undefined);
+    assert.equal(m.height, undefined);
+  }
+});
+test("#53 L-6 layoutColumnMarks: 幅が狭くても width>=1・x_offset>=0 を保つ（スキーマの下限）", () => {
+  const marks = layoutColumnMarks({ x_offset: 0, width: 3 }, ["A", "B", "C"]);
+  assert.equal(marks.length, 3);
+  for (const m of marks) {
+    assert.ok(m.width >= 1, JSON.stringify(m));
+    assert.ok(Number.isInteger(m.x_offset) && m.x_offset >= 0, JSON.stringify(m));
+    assert.ok(Number.isInteger(m.width));
+  }
+});
+test("#53 L-6 layoutColumnMarks: 選択肢0件は空配列（呼び出し側が保存前に止める）", () => {
+  assert.deepEqual(layoutColumnMarks({ x_offset: 0, width: 90 }, []), []);
+});
+
+const l6Table = (columns) => ({ uid: "t1", table_id: "family", row_pitch: 62,
+  row_height: 56, blocks: [{ x: 120, y: 820, rows: 5 }], columns });
+const l6Col = (over) => ({ name: "元号", x_offset: 420, width: 90, kind: "choice",
+  subfields: "", marks: [], ...over });
+
+test("#53 L-6 choiceColumnsNeedingMarks: 選択肢が0件の選択式列を挙げる", () => {
+  assert.deepEqual(choiceColumnsNeedingMarks([l6Table([l6Col({})])]),
+    ["family の 元号"]);
+});
+test("#53 L-6 choiceColumnsNeedingMarks: 1件だけでも足りない（schema の minItems:2）", () => {
+  const t = l6Table([l6Col({ marks: [{ value: "昭", x_offset: 421, width: 28 }] })]);
+  assert.deepEqual(choiceColumnsNeedingMarks([t]), ["family の 元号"]);
+});
+test("#53 L-6 choiceColumnsNeedingMarks: 同じ値が2つでも足りない（core が〓に倒す・#31）", () => {
+  const t = l6Table([l6Col({ marks: [{ value: "昭", x_offset: 421, width: 28 },
+                                      { value: "昭", x_offset: 451, width: 28 }] })]);
+  assert.deepEqual(choiceColumnsNeedingMarks([t]), ["family の 元号"]);
+});
+test("#53 L-6 choiceColumnsNeedingMarks: 違う値が2つ以上あれば挙げない", () => {
+  const t = l6Table([l6Col({ marks: layoutColumnMarks({ x_offset: 420, width: 90 },
+                                                      ["昭", "平"]) })]);
+  assert.deepEqual(choiceColumnsNeedingMarks([t]), []);
+});
+test("#53 L-6 choiceColumnsNeedingMarks: 文字の列は選択肢が無くても対象外", () => {
+  const t = l6Table([l6Col({ kind: "text" })]);
+  assert.deepEqual(choiceColumnsNeedingMarks([t]), []);
+});
+test("#53 L-6 choiceColumnsNeedingMarks: 名前が空の列は「列N」で示す（1始まり）", () => {
+  const t = l6Table([l6Col({ name: "", kind: "text" }), l6Col({ name: "" })]);
+  assert.deepEqual(choiceColumnsNeedingMarks([t]), ["family の 列2"]);
+});
+test("#53 L-6 choiceFieldsNeedingMarks: 単発欄も同じ判定（選択式で選択肢が2つ未満）", () => {
+  const mk = (field_id, kind, values) => ({ uid: field_id, field_id, kind,
+    rect: { x: 0, y: 0, w: 10, h: 10 },
+    marks: values.map((v) => ({ value: v, rect: { x: 0, y: 0, w: 1, h: 1 } })) });
+  assert.deepEqual(choiceFieldsNeedingMarks([mk("era", "choice", [])]), ["era"]);
+  assert.deepEqual(choiceFieldsNeedingMarks([mk("era", "choice", ["昭"])]), ["era"]);
+  assert.deepEqual(choiceFieldsNeedingMarks([mk("era", "choice", ["昭", "昭"])]), ["era"]);
+  assert.deepEqual(choiceFieldsNeedingMarks([mk("era", "choice", ["昭", "平"])]), []);
+  assert.deepEqual(choiceFieldsNeedingMarks([mk("name", "text", [])]), []);
+  assert.deepEqual(choiceFieldsNeedingMarks([mk("", "choice", [])]), ["（名前未設定の欄）"]);
+});
+test("#53 L-6 choiceColumnMarksNotice: 保存を止めた理由と直し方を出す・該当なしは null", () => {
+  assert.equal(choiceColumnMarksNotice([]), null);
+  const t = choiceColumnMarksNotice(["family の 元号"]);
+  assert.ok(t.startsWith("保存していません:"), t);
+  assert.ok(t.includes("family の 元号"), t);
+  assert.ok(t.includes("選択肢"), t);
+});
+
+// ================================================================ issue #65-7
+test("#65-7 saveSuccessNotices: 注意が無ければ空文字（黄帯を出さない）", () => {
+  assert.equal(saveSuccessNotices({ decreasedLabels: [], skipped: [],
+    carveWarning: null, coreWarningCount: 0 }), "");
+});
+test("#65-7 saveSuccessNotices: 切り抜けなかった欄は赤帯ではなく注意1段へ入る", () => {
+  const t = saveSuccessNotices({ decreasedLabels: [], skipped: ["person_氏名"],
+    carveWarning: null, coreWarningCount: 0 });
+  assert.ok(t.includes("person_氏名"), t);
+  assert.ok(!t.includes("保存していません"), "成功時の文面に失敗の言い回しを混ぜない");
+});
+test("#65-7 saveSuccessNotices: 後退の疑い→切り抜けなかった欄→大きな切り抜き→コア警告の順", () => {
+  const t = saveSuccessNotices({ decreasedLabels: ["欄"], skipped: ["a"],
+    carveWarning: "大きく切り抜かれた欄があります", coreWarningCount: 2 });
+  const iDec = t.indexOf("減った項目");
+  const iSkip = t.indexOf("切り抜けなかった");
+  const iCarve = t.indexOf("大きく切り抜かれた");
+  const iCore = t.indexOf("コアからの警告");
+  assert.ok(iDec >= 0 && iSkip > iDec && iCarve > iSkip && iCore > iCarve,
+    `順序が違う: ${t}`);
+  assert.ok(t.includes("2 件"), t);
+});
+test("#65-7 saveSuccessNotices: コア警告0件は数えない（毎回同じ定型文を出さない）", () => {
+  const t = saveSuccessNotices({ decreasedLabels: [], skipped: [],
+    carveWarning: null, coreWarningCount: 0 });
+  assert.ok(!t.includes("コアからの警告"), t);
+});
+
+// ================================================================ issue #52 M-11
+// purgeNotice: 中間データ削除（purge）の結果を「実行時のお知らせ」1行にする。
+// キー名は core/chouhyo_ocr/cli.py の cmd_purge が出す event:"purged" の実測
+// （removed / failed / cred_kept / output_removed / output_kept / output_failed）
+test("#52 M-11 purgeNotice: 削除件数と「認証キーは残した」を出す", () => {
+  const t = purgeNotice({ event: "purged", path: "C:\\wd", cred_kept: true,
+    removed: 12, failed: 0 });
+  assert.ok(t.includes("中間データを 12 件削除しました"), t);
+  assert.ok(t.includes("認証キーは残しています"), t);
+  assert.ok(!t.includes("削除できませんでした"), "失敗0件のときは失敗の話をしない");
+});
+test("#52 M-11 purgeNotice: 絶対パスは画面へ出さない（07 §7.3）", () => {
+  const t = purgeNotice({ event: "purged", path: "C:\\wd", output_dir: "C:\\out",
+    cred_kept: true, removed: 1, failed: 0, output_removed: 1, output_kept: 0,
+    output_failed: 0 });
+  assert.ok(!t.includes("C:\\"), t);
+});
+test("#52 M-11 purgeNotice: 削除できなかった件数を必ず出す（消し損ねを黙らせない）", () => {
+  const t = purgeNotice({ event: "purged", cred_kept: false, removed: 5, failed: 2 });
+  assert.ok(t.includes("2 件は削除できませんでした"), t);
+  assert.ok(!t.includes("認証キーは残しています"), "cred_kept が false なら言わない");
+});
+test("#52 M-11 purgeNotice: --include-output のときだけ出力ファイルの内訳を足す", () => {
+  const withOut = purgeNotice({ event: "purged", cred_kept: true, removed: 1, failed: 0,
+    output_removed: 3, output_kept: 2, output_failed: 1 });
+  assert.ok(withOut.includes("出力ファイルを 3 件削除しました"), withOut);
+  assert.ok(withOut.includes("対象外として残したファイル 2 件"), withOut);
+  assert.ok(withOut.includes("出力ファイル 1 件は削除できませんでした"), withOut);
+  const without = purgeNotice({ event: "purged", cred_kept: true, removed: 1, failed: 0 });
+  assert.ok(!without.includes("出力ファイル"), without);
+});
+test("#52 M-11 noticeFor: purged を実行時のお知らせへ配線している", () => {
+  const t = noticeFor({ event: "purged", cred_kept: true, removed: 4, failed: 0 });
+  assert.ok(t !== null && t.includes("中間データを 4 件削除しました"), t);
+});
+
+// ================================================================ issue #52 M-10
+// importCredentialsNotice: --delete-source の結果でトーストの文言を変える。
+// イベント名は cli.py の cmd_import_credentials の実測
+const credLines = (...events) =>
+  events.map((e) => JSON.stringify({ event: e })).join("\n");
+test("#52 M-10 importCredentialsNotice: 削除できたら「削除しました」", () => {
+  const t = importCredentialsNotice(
+    credLines("credentials_imported", "credentials_source_deleted"));
+  assert.ok(t.includes("元のファイルを削除しました"), t);
+  assert.ok(!t.includes("平文"), "消えているのに残存の注意を出さない");
+});
+test("#52 M-10 importCredentialsNotice: 削除できなければ手作業の削除を促す", () => {
+  const t = importCredentialsNotice(
+    credLines("credentials_imported", "credentials_source_kept"));
+  assert.ok(t.includes("削除できませんでした"), t);
+  assert.ok(t.includes("鍵が平文のまま残っています"), t);
+});
+test("#52 M-10 importCredentialsNotice: どちらのイベントも無ければ「消していない」側へ倒す", () => {
+  // --delete-source を解さない旧コア。実際には消えていないのに
+  // 「削除しました」と言わない（捏造しない側の既定）
+  const t = importCredentialsNotice(credLines("credentials_imported"));
+  assert.ok(t.includes("元のファイルは削除してください"), t);
+  assert.equal(importCredentialsNotice(""), t, "空の stdout も同じ扱い");
+  assert.equal(importCredentialsNotice("not json\n"), t, "JSON 以外の行は無視する");
+});
+
+// ================================================================ issue #69 残置1
+// completionBannerTone: 1件も送信せず全ページ様式不一致なら緑にしない
+test("#69 残置1 completionBannerTone: 送信0かつ様式不一致ありは注意色", () => {
+  assert.equal(completionBannerTone({ pages: 3, rows: 3, align_failed: 0, api_calls: 0,
+    unclear_cells: 0, overflow: 0, format_mismatch: 3 }), "warn");
+});
+test("#69 残置1 completionBannerTone: 送信があれば従来どおり緑", () => {
+  assert.equal(completionBannerTone({ pages: 3, rows: 3, align_failed: 0, api_calls: 3,
+    unclear_cells: 0, overflow: 0, format_mismatch: 3 }), "ok");
+});
+test("#69 残置1 completionBannerTone: 送信0でも不一致0なら緑（再利用だけの実行）", () => {
+  assert.equal(completionBannerTone({ pages: 3, rows: 3, align_failed: 0, api_calls: 0,
+    unclear_cells: 0, overflow: 0, format_mismatch: 0 }), "ok");
+});
+test("#69 残置1 completionBannerTone: format_mismatch が無い旧コア・サマリ無しは緑", () => {
+  assert.equal(completionBannerTone({ pages: 1, rows: 1, align_failed: 0, api_calls: 0,
+    unclear_cells: 0, overflow: 0 }), "ok");
+  assert.equal(completionBannerTone(null), "ok");
+});
+
+// ================================================================ issue #53 L-17
+// appendFailure / truncatedFailureNotice: 失敗一覧の上限と「他 N 件」
+test("#53 L-17 appendFailure: 上限までは足し、超えたら足さない（先頭を残す）", () => {
+  let list = [];
+  for (let i = 0; i < FAILURE_KEEP + 25; i++) list = appendFailure(list, { page_id: `p${i}` });
+  assert.equal(list.length, FAILURE_KEEP);
+  assert.equal(list[0].page_id, "p0", "先頭（最初の失敗）が残る");
+  assert.equal(list[FAILURE_KEEP - 1].page_id, `p${FAILURE_KEEP - 1}`);
+});
+test("#53 L-17 appendFailure: 上限に達したら同じ配列をそのまま返す（再確保しない）", () => {
+  const full = Array.from({ length: FAILURE_KEEP }, (_, i) => ({ page_id: `p${i}` }));
+  assert.equal(appendFailure(full, { page_id: "x" }), full);
+});
+test("#53 L-17 truncatedFailureNotice: 溢れた件数だけを注記する", () => {
+  assert.equal(truncatedFailureNotice(400, 400), null, "全件出ていれば注記しない");
+  assert.equal(truncatedFailureNotice(0, 0), null);
+  const t = truncatedFailureNotice(1200, 400);
+  assert.ok(t.includes("他 800 件"), t);
+  assert.ok(t.includes("400 件まで"), t);
+});
+
+// ================================================================ issue #52 M-12 / Q-MJ
+// startDisabledReason: 同期フォルダ判定の誤検知に逃げ道（明示チェック）を作る
+test("#52 M-12 startDisabledReason: 同期フォルダは既定で開始不可・理由に確認チェックを案内", () => {
+  const t = startDisabledReason("C:\\demo", { ...VERIFY_BASE, storage: false });
+  assert.ok(t.includes("確認チェック"), t);
+});
+test("#52 M-12 startDisabledReason: 明示チェックを入れると開始できる（他の理由は残る）", () => {
+  assert.equal(startDisabledReason("C:\\demo", { ...VERIFY_BASE, storage: false }, true), null);
+  // 逃げ道は保存先の話だけ。認証キー未設定はチェックしても解除されない
+  assert.equal(
+    startDisabledReason("C:\\demo", { ...VERIFY_BASE, storage: false, cred: "missing" }, true),
+    "認証キーが未設定です（下の「認証キーを選択」から設定してください）");
+});
+
+// ================================================================ issue #67 追補
+// 選択枠の色を決めるときの「背景」を、実際に draw() が塗る色に合わせる
+test("#67-5 CANVAS_BG_COLOR: 定数は draw() が塗る色そのもの（CSS の .canvas 背景ではない）", () => {
+  assert.equal(CANVAS_BG_COLOR, "#1c1f26");
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  // 下地の塗りは定数を参照する（同じ色を2か所に書かない）
+  assert.ok(src.includes("ctx.fillStyle = CANVAS_BG_COLOR; ctx.fillRect(0, 0, width, height);"),
+    "draw() の下地が CANVAS_BG_COLOR を参照していない");
+  // 画面に出ない CSS 背景（#e7ebf1）を色値として持たない（説明の文中に
+  // 出てくるのは可。判定に使う値として書かれていないことを見る）
+  assert.ok(!src.includes('"#e7ebf1"'), "#e7ebf1 が色値として Editor.tsx に残っている");
+});
+test("#67-5 SELECTION_COLOR: 白い紙面で 4.69:1・実際の下地 #1c1f26 で 3.51:1", () => {
+  const paper = contrastRatio(SELECTION_COLOR, PAPER_BG_COLOR);
+  const canvas = contrastRatio(SELECTION_COLOR, CANVAS_BG_COLOR);
+  assert.ok(Math.abs(paper - 4.69) < 0.01, `白: ${paper}`);
+  assert.ok(Math.abs(canvas - 3.51) < 0.01, `下地: ${canvas}`);
+});
+
+// ================================================================ issue #87 追補
+// 確認モーダル: 「進むと何かを失う」側は主ボタンにしない
+test("#87-1 uiConfirmSpec: 破棄は主ボタンにしない・採用は主ボタンのまま", () => {
+  assert.equal(uiConfirmSpec("discard-changes").confirmVariant, "plain");
+  assert.equal(uiConfirmSpec("adopt-overlapping-candidate").confirmVariant, "primary");
+});
+test("#87-1 uiConfirmSpec: 破棄の本文は結果（元に戻せない）を問いより先に置く", () => {
+  const b = uiConfirmSpec("discard-changes").body;
+  assert.ok(b.indexOf("元に戻せません") < b.indexOf("破棄して続けますか"), b);
+});
+
+// ================================================================ issue #65-7 追補
+// 保存成功は灰色1行ではなく、注意帯と対の成功帯に出す
+test("#65-7 saveOkBanner: 保存成功の msg は見出し（保存先まで）と詳細に分かれる", () => {
+  const msg = "保存＋コア検証 OK（欄 14 → 20列＝欄14＋管理6・除外 2）: C:\t\a.json"
+    + " ／ 読み込み時から: 欄 14→14 ／ 並べ替えを反映しました";
+  const b = saveOkBanner(msg);
+  assert.ok(b);
+  assert.equal(b.head, "保存＋コア検証 OK（欄 14 → 20列＝欄14＋管理6・除外 2）: C:\t\a.json");
+  assert.equal(b.detail, "読み込み時から: 欄 14→14 ／ 並べ替えを反映しました");
+});
+test("#65-7 saveOkBanner: 利用者テンプレート保存・切り抜き注記つきも成功帯へ", () => {
+  assert.ok(saveOkBanner("利用者テンプレートとして保存しました: 見本"));
+  const carve = saveOkBanner("重なった欄を自動で切り抜きました: A。保存＋コア検証 OK: C:\t\a.json");
+  assert.ok(carve);
+  assert.ok(carve.head.startsWith("重なった欄を"), carve.head);
+  assert.equal(carve.detail, "");
+});
+test("#65-7 saveOkBanner: 進行中・失敗・空は帯を出さない（灰色1行のまま）", () => {
+  assert.equal(saveOkBanner(""), null);
+  assert.equal(saveOkBanner("画像を確認しています…"), null);
+  assert.equal(saveOkBanner("保存していません: コアの検証で問題が見つかりました: x"), null);
+  assert.equal(saveOkBanner("結合を中止しました（欄をクリックしてください）"), null);
+});
+
+// ================================================================ AC-F11
+// 判定不能（undecidable）の面は枠を消さずに弱めて描く。色だけに頼らない
+// ため破線を併用し、参照先（fallback）の破線とは別パターンにする
+test("AC-F11 undecidableFaces: verdict=undecidable の面だけを集める（mismatch は対象外）", () => {
+  const faces = [
+    { face_id: "front", verdict: "undecidable" },
+    { face_id: "back", verdict: "mismatch" },
+  ];
+  const u = undecidableFaces(faces);
+  assert.equal(u.size, 1);
+  assert.ok(u.has("front"));
+  assert.ok(!u.has("back"));
+});
+test("AC-F11 undecidableFaces: faces 未提供（旧コア）は空集合", () => {
+  assert.equal(undecidableFaces(undefined).size, 0);
+});
+
+test("AC-F11 frameStyleFor: 一致・判定なしは従来どおり（不透明・実線）", () => {
+  for (const verdict of [undefined, "match", "mismatch", "skipped"]) {
+    const s = frameStyleFor({ verdict });
+    assert.equal(s.alpha, 1, String(verdict));
+    assert.deepEqual(s.dash, [], String(verdict));
+  }
+});
+test("AC-F11 frameStyleFor: 判定不能は薄く（alpha<1）・破線（色以外の手掛かり）", () => {
+  const s = frameStyleFor({ verdict: "undecidable" });
+  assert.equal(s.alpha, UNDECIDABLE_ALPHA);
+  assert.ok(s.alpha < 1 && s.alpha > 0, String(s.alpha));
+  assert.deepEqual(s.dash, UNDECIDABLE_DASH);
+  assert.ok(s.dash.length > 0);
+});
+test("AC-F11 frameStyleFor: 判定不能の破線は参照先の破線と別パターン（意味の衝突を避ける）", () => {
+  assert.notDeepEqual(UNDECIDABLE_DASH, FALLBACK_DASH);
+});
+test("AC-F11 frameStyleFor: 選択中は判定不能でも選択の見た目を優先（薄くも破線にもしない）", () => {
+  const s = frameStyleFor({ verdict: "undecidable", selected: true });
+  assert.equal(s.alpha, 1);
+  assert.deepEqual(s.dash, []);
+});
+test("AC-F11 frameStyleFor: 参照先の枠は判定不能でも参照先の破線を保ち、弱さは alpha で表す", () => {
+  const s = frameStyleFor({ verdict: "undecidable", fallback: true });
+  assert.equal(s.alpha, UNDECIDABLE_ALPHA);
+  assert.deepEqual(s.dash, FALLBACK_DASH);
+  // 一致の紙でも参照先の破線は従来どおり
+  const ok = frameStyleFor({ verdict: "match", fallback: true });
+  assert.equal(ok.alpha, 1);
+  assert.deepEqual(ok.dash, FALLBACK_DASH);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

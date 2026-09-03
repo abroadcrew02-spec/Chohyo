@@ -360,6 +360,62 @@ export function remapColumnMarks(
   }));
 }
 
+/// 表の列を選択式へ切り替えたときの choice_marks の既定配置（issue #53 L-6）。
+/// 列の幅を選択肢の数で等分し、隣どうしがくっつかないよう左右に 1px の
+/// 余白を取る（幅が狭いときは余白を諦める——1px でも幅を確保する方を優先）。
+/// 座標系は列と同じ「ブロック原点からの相対」で、縦位置（y_offset/height）は
+/// 指定しない＝行全体（スキーマの既定）。家族欄のように行内へ縦積みする様式は
+/// 保存後の JSON で詰める（既存のパネル注記どおり v1 の範囲）。
+export function layoutColumnMarks(
+  col: { x_offset: number; width: number }, values: string[]): ColMark[] {
+  const n = Math.max(values.length, 1);
+  const slot = Math.max(1, Math.floor(col.width / n));
+  const pad = slot >= 6 ? 1 : 0;
+  return values.map((v, i) => ({
+    value: v,
+    x_offset: col.x_offset + i * slot + pad,
+    width: Math.max(1, slot - pad * 2),
+  }));
+}
+
+/// 選択式なのに選択肢が2つ未満の列を「表名 の 列名」の形で挙げる
+/// （issue #53 L-6）。スキーマ（schema/template.schema.json の tableColumn）は
+/// kind=choice のとき choice_marks を必須・minItems:2 とするため、この状態で
+/// 保存すると必ず検証で拒否される——一時ファイルを書いてコアに渡す前に、
+/// 画面側で理由を出して止める（outOfFaceElements と同じ「保存前に画面で
+/// 止める」流儀）。1件も無ければ空配列。
+export function choiceColumnsNeedingMarks(tables: Table[]): string[] {
+  const out: string[] = [];
+  for (const t of tables) {
+    t.columns.forEach((c, i) => {
+      if (c.kind !== "choice") return;
+      const values = c.marks.map((m) => m.value).filter((v) => v.trim());
+      if (new Set(values).size < 2)
+        out.push(`${t.table_id} の ${c.name || `列${i + 1}`}`);
+    });
+  }
+  return out;
+}
+
+/// 単発欄の側の同じ穴（issue #53 L-6 の隣）。欄には「選択肢」の入力欄が
+/// 以前からあるが、入れ忘れたまま保存すると列と同じくスキーマ違反になり、
+/// 画面には決まりに合わない旨しか出なかった。同じ判定・同じ文言で止める。
+export function choiceFieldsNeedingMarks(fields: Field[]): string[] {
+  return fields
+    .filter((f) => f.kind === "choice"
+      && new Set(f.marks.map((m) => m.value).filter((v) => v.trim())).size < 2)
+    .map((f) => f.field_id || "（名前未設定の欄）");
+}
+
+/// choiceFieldsNeedingMarks／choiceColumnsNeedingMarks の結果を保存前の赤帯の
+/// 文言にする。該当なしは null（呼び出し側は保存を続ける）。
+export function choiceColumnMarksNotice(labels: string[]): string | null {
+  if (labels.length === 0) return null;
+  return `保存していません: 選択式にした欄・列に選択肢が足りません: ${labels.join("、")}。`
+    + "「選択肢」欄に「昭,平,令」のように違う値を2つ以上入力してください"
+    + "（選択式をやめる場合は種類を「文字」に戻してください）。";
+}
+
 /// 添字が現在の extras 配列の範囲内かを確認する（issue #60 M-4）。
 /// carve（evaluateCarve/carveField）は欄の extras を丸ごと再構築するため、
 /// 選択中の part（"extra:<n>"）が古いままだと存在しない/別の領域を指しうる。
@@ -372,6 +428,67 @@ export function extraIndexValid(
   f: { extras?: Rect[] } | undefined, i: number): boolean {
   return !!f && Number.isInteger(i) && i >= 0 && i < (f.extras?.length ?? 0);
 }
+
+// ============================================================
+// キャンバスの状態色（issue #67・WCAG 1.4.11 非テキストコントラスト）
+// ============================================================
+
+/// 16進カラー（#rgb / #rrggbb）の WCAG 相対輝度。
+/// L = 0.2126R + 0.7152G + 0.0722B（各チャンネルを sRGB→線形へ変換したあと）。
+/// 形式が違う入力は握り潰さず投げる——色の指定ミスを黙って 0 扱いにすると、
+/// コントラストの検査が「通ったことにする」方向へ倒れる
+export function relativeLuminance(hex: string): number {
+  const body = hex.trim().replace(/^#/, "");
+  const full = body.length === 3 ? body.split("").map((c) => c + c).join("") : body;
+  if (!/^[0-9a-fA-F]{6}$/.test(full))
+    throw new Error(`色が 16 進形式（#rgb / #rrggbb）ではありません: ${hex}`);
+  const lin = [0, 2, 4].map((i) => {
+    const c = parseInt(full.slice(i, i + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+}
+
+/// 2色のコントラスト比（(L1+0.05)/(L2+0.05)・明るい方が L1）。順序は問わない。
+export function contrastRatio(hexA: string, hexB: string): number {
+  const a = relativeLuminance(hexA), b = relativeLuminance(hexB);
+  const [hi, lo] = a >= b ? [a, b] : [b, a];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/// 選択枠の色を判定するときの背景2種。走査画像の紙面はふつう白に近く、
+/// 画像の外側・未読込の余白は draw() が全面に敷く暗色になる。
+/// どちらでも 3:1 を満たす色でなければ「特定の帳票でだけ見えない」が起きる。
+///
+/// CANVAS_BG_COLOR が持つのは App.css の .canvas 背景（#e7ebf1）ではなく、
+/// draw() が毎コマ塗る色そのもの。CSS の背景は 1 行目の fillRect に隠れて
+/// 画面には出ないため、CSS 値でコントラストを検算しても実物と合わない
+/// （設計レビューでの実測指摘・2026-09-03）。draw() 側もこの定数を参照し、
+/// 同じ色を2か所に書かない
+export const PAPER_BG_COLOR = "#ffffff";
+export const CANVAS_BG_COLOR = "#1c1f26";
+
+/// 選択中であることを示す枠・リサイズハンドルの色（issue #67・Must）。
+/// 旧 #ffd54a は白い紙面で 1.41:1 と、WCAG 1.4.11 の 3:1 に遠く届かなかった
+/// ——枠は走査画像（＝ほぼ白い紙面）の上に描かれるので、この背景がいちばん
+/// 効く。黄系の色相は残したまま明度を下げ、紙面・下地のどちらでも 3:1 を
+/// 上回る値にする（白 4.69:1・下地 #1c1f26 で 3.51:1）。警告色トークン
+/// （App.css の --warn-ink=#8a5a13）は流用しない——「選択中」と「警告」で
+/// 意味が混ざり、色から状態を読み違える
+export const SELECTION_COLOR = "#a06800";
+
+/// 一覧をなぞっている欄・列を画面上で示す薄い塗り（枠線とは別の視覚要素）。
+/// 1.4.11 は「理解に必要な図形」に係る基準で、この塗りは枠線が伝えている
+/// 状態の補強にすぎないため対象にしない——線だけを濃くし、塗りは走査画像を
+/// 読み取れる薄さのまま据え置く（濃くすると下の文字が読めなくなる）
+export const SELECTION_FILL_STYLE = "rgba(255,213,74,0.28)";
+
+/// 出力しない欄・列に重ねる斜線ハッチの色（issue #67・Should）。
+/// 30% では走査画像の上でほとんど見えなかった。状態そのものは⊘バッジ
+/// （AC-1.22）とチェックボックスの aria-label（AC-1.21）が伝えるため
+/// ハッチは唯一の情報経路ではないが、欄の全域が対象外だと一目で分かる
+/// 手掛かりとして 45% まで濃くする
+export const HATCH_STROKE_STYLE = "rgba(28,31,38,0.45)";
 
 // ============================================================
 // 出力列制御 MVP・第1弾（issue #66 段3）: 欄単位の「出力しない」
@@ -660,6 +777,48 @@ export function hiddenFaces(
   return new Set(faces.filter((f) => f.verdict === "mismatch").map((f) => f.face_id));
 }
 
+/// 判定不能（undecidable）と判定された面を集める（issue #71 (a')・FR-F08・
+/// AC-F11）。hiddenFaces（不一致＝枠を消す）と対になるが、こちらの面の枠は
+/// 消さずに描き続ける——線が取れていないだけの紙で枠を消すと作業そのものが
+/// できなくなる（07 §9.1）。弱めて描くのは「一致と同じ見た目だと合っている
+/// と読めてしまう」ため。
+/// 「判定を無視して枠を表示する」（formatOverride）は不一致の面を出す操作で
+/// あって判定結果を変えるものではないので、ここには効かせない。
+export function undecidableFaces(
+  faces: { face_id: string; verdict: string }[] | undefined,
+): Set<string> {
+  if (!faces) return new Set();
+  return new Set(
+    faces.filter((f) => f.verdict === "undecidable").map((f) => f.face_id));
+}
+
+/// 枠の破線パターン（px 係数・実描画では表示倍率 px を掛ける）。
+/// 参照先（fallback）は既存の [8,5]。判定不能は間隔の違う [10,6] にして
+/// 「参照先の枠」と「判定不能の面の枠」が同じ意味に見えないようにする。
+export const FALLBACK_DASH = [8, 5];
+export const UNDECIDABLE_DASH = [10, 6];
+/// 判定不能の面の枠の不透明度。0.55 は 2px の細線が「見えるが弱い」に収まる
+/// 値（下げすぎると走査画像の濃い部分の上で消える）
+export const UNDECIDABLE_ALPHA = 0.55;
+
+/// 枠1つ分の描画スタイル（AC-F11・FR-F08）。判定不能の面では色を薄くし、
+/// 破線にして色以外の手掛かりを併せる。
+/// - 線幅は据え置き（太さは選択の合図に予約されている）
+/// - 選択中は選択の見た目を優先し、薄くも破線にもしない——いまどれを掴んで
+///   いるかの表示が最優先（C-4: 選択で状態を見失わせない）
+/// - 参照先（fallback）の枠は判定不能でも参照先の破線を保ち、弱さは alpha
+///   だけで表す（線種は「参照先」の意味に使い切っている）
+/// 返す dash は共有の定数配列なので呼び出し側で書き換えないこと。
+export function frameStyleFor(a: {
+  verdict?: string; selected?: boolean; fallback?: boolean;
+}): { alpha: number; dash: number[] } {
+  const weak = a.verdict === "undecidable" && !a.selected;
+  return {
+    alpha: weak ? UNDECIDABLE_ALPHA : 1,
+    dash: a.fallback ? FALLBACK_DASH : weak ? UNDECIDABLE_DASH : [],
+  };
+}
+
 function faceIdOf(y: number, splitY: number, imgH: number): "front" | "back" {
   return faceRangeContains(y, "front", splitY, imgH) ? "front" : "back";
 }
@@ -775,8 +934,8 @@ export function buildTemplateJson(input: {
     (fields.length - (front.fields.length + back.fields.length))
     + (excls.length - (front.exclusions.length + back.exclusions.length))
     + (tables.length - (front.tables.length + back.tables.length));
-  // 実コアは面ごとに tables 1件以上を要求する（位置合わせのアンカー・
-  // D-25・template.py の load_template）。片面にしか内容が無い紙（例:
+  // 実コアは面ごとに位置合わせのアンカー（tables、無ければ fields の枠線）
+  // を1件以上要求する（D-25・template.py の load_template・#86 で欄アンカーへ拡張）。片面にしか内容が無い紙（例:
   // 横長1面の画像から新規作成したテンプレート）では、もう一方の面が
   // fields/tables/exclusions すべて空のまま残り、その空面にテーブルが
   // 無いという理由だけで保存が拒否されていた（ころね UX Must の実機検証で
@@ -839,6 +998,42 @@ export function tableColumnReorderImpactNote(
   return totalColumns == null
     ? `この変更は ${totalRows} 行分の並びに影響します`
     : `この変更は ${totalRows} 行分・${totalColumns} 列の並びに影響します`;
+}
+
+/// 並べ替えが成功したことを読み上げる文（issue #67・Must・WCAG 4.1.3）。
+/// 行の 600ms フラッシュ（flashRow）は視覚だけの合図で、フォーカスを動かさない
+/// この操作の結果は音声利用者に何も伝わっていなかった。移動できなかったとき
+/// （境界で null が返る）は呼ばない——動いていないのに「移動しました」と言わない
+export function reorderAnnouncement(name: string, newPos: number, total: number): string {
+  return `${name} を ${newPos} 番目に移動しました（全 ${total} 件中）`;
+}
+
+/// 並べ替えたあとフォーカスを置くボタンの向き（issue #67・Must (a)）。
+/// 移動先が面の先頭/末尾になると押したボタンが disabled になり、ブラウザは
+/// フォーカスのある要素を無効化された瞬間にフォーカスを外す——キーボード
+/// 利用者は次の Tab がどこから始まるか分からなくなる。移動後の可否
+/// （canUp/canDown）を見て、押した向きがまだ有効ならそのまま、無効なら
+/// 反対側へ寄せる。両方無効なら null（移動できる相手がいない＝呼ばれない）。
+/// 欄と表の列で同じ規則を使うため、配列そのものではなく判定済みの真偽値を取る
+export function nextReorderFocusDir(
+  canUp: boolean, canDown: boolean, dir: "up" | "down"): "up" | "down" | null {
+  if (dir === "up") return canUp ? "up" : canDown ? "down" : null;
+  return canDown ? "down" : canUp ? "up" : null;
+}
+
+/// 保存前確認モーダルのボタン文言（issue #67・Must）。保存処理中（busy）は
+/// 2つとも disabled になるが、ラベルも title も変わらないため「押し漏れたのか
+/// 処理中なのか」が分からなかった。実行側のラベルで進行中であることを示す。
+/// 中止側は busy 中でも文言を変えない——押せない理由は title と aria-busy が
+/// 伝えるので、ラベルまで動かすと「今どちらの状態か」の手掛かりが増えて混乱する
+export function saveConfirmButtonLabel(action: "cancel" | "proceed", busy: boolean): string {
+  if (action === "proceed") return busy ? "保存しています…" : "このまま保存";
+  return "保存しない";
+}
+
+/// busy 中だけ出す title（2ボタン共通）。busy でなければ undefined＝属性なし
+export function saveConfirmButtonTitle(busy: boolean): string | undefined {
+  return busy ? "保存処理を実行中です。しばらくお待ちください" : undefined;
 }
 
 /// 保存前確認の列数比較（issue #65-1・M2）。loadedCounts.columns はコンポーネント
@@ -909,6 +1104,81 @@ export function saveConfirmWarnings(input: {
   return warnings;
 }
 
+/// 保存に成功したときの注意を1段にまとめる（issue #65-7）。
+///
+/// これまでは保存成功の直後に、灰色の主メッセージ（msg）・赤帯（errbox・
+/// 切り抜けなかった欄）・黄帯（warnbox・後退検知/切り抜き/コア警告）の
+/// 3段が同時に出うる形になっていた。保存は成功しているのに赤帯が残ると
+/// 「失敗した」と読める——赤帯は「保存していません」の意味に予約する。
+///
+/// 成功時の注意はすべて黄帯1段へ寄せ、順序は気づいてほしい順に固定する:
+/// ①後退の疑い（読み込み時より減った）②切り抜けなかった欄 ③大きく切り
+/// 抜かれた欄 ④コアの警告件数。該当なしは ""（呼び出し側は帯を出さない）。
+export function saveSuccessNotices(input: {
+  decreasedLabels: string[];
+  skipped: string[];
+  carveWarning: string | null;
+  coreWarningCount: number;
+}): string {
+  const parts: string[] = [];
+  if (input.decreasedLabels.length) {
+    parts.push(`読み込み時点より減った項目があります: ${input.decreasedLabels.join("、")}。`
+      + "意図した変更か確認してください。");
+  }
+  if (input.skipped.length) {
+    parts.push(`重なりを切り抜けなかった欄があります: ${input.skipped.join("／")}。`
+      + "これらの欄は重なったまま保存しました。位置を直してから保存し直してください。");
+  }
+  if (input.carveWarning) parts.push(input.carveWarning);
+  if (input.coreWarningCount > 0) {
+    parts.push(`コアからの警告 ${input.coreWarningCount} 件（詳細は verify で確認できます）`);
+  }
+  return parts.join(" ／ ");
+}
+
+/// 保存成功の主メッセージ（msg）を、注意帯（warnbox）と対になる成功帯へ
+/// 振り分ける（issue #65-7 の続き）。
+///
+/// 保存できた事実は、これまでツールバー右端の灰色1行にだけ出していた。
+/// 同じ画面に黄色い注意帯が出るので成功の合図のほうが弱く、しかも
+/// 「読み込み時から: 欄 14→194」のような差分が1行に伸びて末尾から
+/// 見切れていた。成功は帯で受け、見出し（保存できた事実と保存先）と
+/// 詳細（差分・内訳）を分けて2段に出す。
+///
+/// 成功かどうかは msg の文言だけで決める——帯用の状態をもう1つ持つと、
+/// msg を空にする経路（読み込み・中止・エラー）を1つ拾い落とすたびに
+/// 「メッセージは消えたのに成功帯だけ残る」が起きる。成功以外は null で、
+/// これまでどおり灰色1行に出る。
+export function saveOkBanner(msg: string): { head: string; detail: string } | null {
+  if (!msg) return null;
+  if (!(msg.includes("保存＋コア検証 OK")
+        || msg.startsWith("利用者テンプレートとして保存しました")
+        || msg.includes("。利用者テンプレートとして保存しました"))) return null;
+  const parts = msg.split(" ／ ");
+  return { head: parts[0], detail: parts.slice(1).join(" ／ ") };
+}
+
+/// 元に戻す（Undo）の履歴へ1コマ積む（issue #87 コメント・AC-F21）。
+/// 上限を超えたら最も古いコマから落とす。呼び出し側（pushHistoryNow）が
+/// 配列を直接 push/shift していたため、「1操作＝1コマ」が守られているかを
+/// 検査する手掛かりがコンポーネントの中にしか無かった——コマの積み方だけを
+/// 純関数に出し、新しい配列を返す形にする（元の配列は変更しない）。
+export function pushHistory<T>(past: T[], prev: T, limit = 100): T[] {
+  const next = [...past, prev];
+  return next.length > limit ? next.slice(next.length - limit) : next;
+}
+
+/// 「すべて除去」（issue #87 コメント・AC-F20）。枠候補だけを空にし、
+/// 確定枠（fields/tables）はそのまま返す——候補配列と確定枠が別物である
+/// ことをこの関数の戻り値で固定する。候補が0件なら null（何もしない）。
+export function clearCandidates(
+  cands: Cand[], fields: Field[], tables: Table[],
+): { cands: Cand[]; fields: Field[]; tables: Table[]; notice: string } | null {
+  if (cands.length === 0) return null;
+  return { cands: [], fields, tables,
+           notice: "候補をすべて除去しました（確定済みの枠は変更していません）" };
+}
+
 /// 保存サマリの要確認セル数・母集団縮小の注記（AC-1.16・T-S8）。
 /// 「要確認セル数の母集団: 214列 → 211列（出力しない 3 欄を除く）」の形式。
 /// 抽出列数（列数から管理6列を除いた数）が減っていない、または対象外が
@@ -973,10 +1243,17 @@ export function expandAlignNotice(
     };
   }
   if (verdict === "undecidable") {
+    // AC-F11: 灰色 12px の主メッセージ（.msg）ではなく黄帯（warnbox）へ出す。
+    // 一致と同じ見た目・同じ場所に案内が出ると「合っている」と読めてしまう
+    // （まつり実測・2026-09-03）。先頭の「※判定できませんでした:」は色に
+    // 頼らない手掛かり——帯の色が見えない環境でも先頭語で区別が付く。
+    // 枠は消さないので、続く行動の指示（枠を動かさない）はそのまま残す
     return {
-      text: `（${pageNote}位置合わせできませんでした。枠が少しズレて見えても、` +
-        "読み取り時に自動補正されるため枠は動かさないでください）",
-      isError: false, level: "info",
+      text: `※判定できませんでした: ${pageNote}この画像がテンプレートと同じ様式か`
+        + "判定できませんでした（罫線が読み取れていない可能性）。枠は薄い破線で"
+        + "表示しています。枠が少しズレて見えても、"
+        + "読み取り時に自動補正されるため枠は動かさないでください",
+      isError: false, level: "warn",
     };
   }
   if (verdict === "match" || aligned) {
@@ -1216,8 +1493,8 @@ export function matchErrorJa(code: string | undefined | null): string {
 ///
 /// **splitY >= height（無関係な紙・片面の画像）は面を1つ（表面・全面）だけ
 /// 返す**（Orchestrator決定・ころね UX Must の実機検証で発覚した保存拒否の
-/// 根本対応）。実コアは面ごとに tables 1件以上を要求する（位置合わせの
-/// アンカー・D-25・template.py の load_template）ため、中身の入りようが
+/// 根本対応）。実コアは面ごとに位置合わせのアンカー（tables、無ければ
+/// fields の枠線・#86）を1件以上要求する（D-25・template.py の load_template）ため、中身の入りようが
 /// 無い裏面を機械的に作ると「裏面にテーブルが無い」という理由だけで保存が
 /// 拒否される——寸法不一致の修正導線を用意した意味が保存の一歩手前で
 /// 失われていた。表裏のある紙は「表裏の境界」ツールで splitY を動かせば
@@ -1317,6 +1594,41 @@ export function overlapAcceptedNotice(): string {
     + "表が絡む場合は保存が拒否されます。";
 }
 
+/// 画面内の確認ダイアログの中身（issue #87 項目1）。
+///
+/// ネイティブの window.confirm は ①長文が折り返されず読みにくい ②ボタンが
+/// OS 既定の「OK / キャンセル」固定で、押した先で何が起きるか読めない、の
+/// 2点で使いにくかった。保存前確認モーダルと同じ作り（alertdialog・Tab を
+/// モーダル内で循環・Esc で中止・既定フォーカスは安全側）の UI 内モーダルへ
+/// 移し、ボタンには操作の結果そのものを書く。
+///
+/// 意味論は window.confirm 時代と同じに保つ: 承諾＝先へ進む（採用する／
+/// 破棄して続ける）、中止＝何も変えない（中止／戻る）。
+export type UiConfirmKind = "adopt-overlapping-candidate" | "discard-changes";
+export type UiConfirmSpec = {
+  title: string; body: string; confirmLabel: string; cancelLabel: string;
+  /// 確定ボタンの見た目。"primary" は「進むのが目的」の操作（重なりを承知で
+  /// 採用する——枠が増えるだけで Ctrl+Z で戻せる）。"plain" は進むと何かを
+  /// 失う操作（未保存の破棄）で、青い主ボタンにはしない——主ボタンは
+  /// 「これを押すのが既定」と読めるため、破棄を既定に見せてしまう
+  confirmVariant: "primary" | "plain" };
+export function uiConfirmSpec(kind: UiConfirmKind): UiConfirmSpec {
+  if (kind === "adopt-overlapping-candidate") {
+    return { title: "重なっている候補の採用",
+             body: candidateOverlapWarning(),
+             confirmLabel: "採用する", cancelLabel: "中止",
+             confirmVariant: "primary" };
+  }
+  // 文は「いま何が起きているか」→「進むとどうなるか」→「進むか」の順。
+  // 先に問いを置くと、読み飛ばした人が結果（元に戻せない）を読まずに
+  // 答えてしまう
+  return { title: "未保存の変更があります",
+           body: "保存していない変更があります。"
+             + "いま画面にある編集内容は元に戻せません。破棄して続けますか？",
+           confirmLabel: "破棄して続ける", cancelLabel: "戻る",
+           confirmVariant: "plain" };
+}
+
 /// GUI 側での重なり再判定（issue #73 (b)・スバル差し戻し Must-1）。
 ///
 /// 起動時復元（read_default_template）・(t) の openMatchedTemplate／
@@ -1374,6 +1686,8 @@ const EXCLUDED_SUMMARY_REASON_JA: Record<string, string> = {
   too_small: "小さすぎる",
   straddles_face: "面の境界をまたぐ",
   non_rectangular: "長方形でない",
+  // issue #85 の申し送り。README も同じ日本語で説明している
+  not_closed: "四方が線でつながっていない",
 };
 export function excludedSummaryJa(
   excluded: { reason: string; count: number }[] | undefined | null,
@@ -1868,11 +2182,26 @@ export default function Editor(
   const modalRef = useRef<HTMLDivElement>(null);
   // 保存モーダルの直近の開閉状態（開いた瞬間だけ初期フォーカスするための番兵）
   const prevModalOpen = useRef(false);
+  // 画面内の確認ダイアログ（issue #87 項目1）。window.confirm を置き換える
+  // ための Promise ブリッジ。restoreTo は開く直前にフォーカスがあった要素
+  // ——閉じたらそこへ戻す（保存モーダルが保存ボタンへ戻すのと同じ考え方だが、
+  // こちらは呼び出し元が複数あるため固定の戻り先を持てない）
+  const [uiConfirm, setUiConfirm] = useState<
+    { kind: UiConfirmKind; resolve: (ok: boolean) => void;
+      restoreTo: HTMLElement | null } | null>(null);
+  const uiConfirmRef = useRef<HTMLDivElement>(null);
+  const uiConfirmCancelRef = useRef<HTMLButtonElement>(null);
+  const prevUiConfirmOpen = useRef(false);
   // saveTemplate の多重起動防止（C-5「二重押下防止」の根っこのガード。
   // モーダルのボタン disabled はこれの補助で、保存フロー全体を1本化する）
   const savingRef = useRef(false);
   // 選択肢入力の編集中の値（M-13）。選択が変わったら捨てる
   const [choiceDraft, setChoiceDraft] = useState<string | null>(null);
+  // 表の列の選択肢入力の編集中の値（issue #53 L-6）。単発欄の choiceDraft と
+  // 同じ制御コンポーネント方式だが、列は同時に複数並ぶのでどの列の下書きかを
+  // 一緒に持つ（`表uid:列index`）
+  const [colChoiceDraft, setColChoiceDraft] =
+    useState<{ key: string; value: string } | null>(null);
   // パネルで触っている列（canvas ハイライト用・レビュー D-3）
   const [hlCol, setHlCol] = useState<number | null>(null);
   // 出力列タブの行 hover/focus で canvas の該当欄をハイライトする
@@ -1889,6 +2218,26 @@ export default function Editor(
     if (flashTimer.current) clearTimeout(flashTimer.current);
     setFlashUid(uid);
     flashTimer.current = setTimeout(() => setFlashUid(null), 600);
+  };
+  // 並べ替えの結果を読み上げる専用のライブ領域（issue #67・Must・WCAG 4.1.3）。
+  // 汎用の msg には同居させない——msg は他の操作でも上書きされるため、
+  // 並べ替えの通知が読み上げ前に消えることがある
+  const [reorderMsg, setReorderMsg] = useState("");
+  // 並べ替えボタンの実体（issue #67・Must (a)(b)）。移動後にフォーカスを
+  // 置き直すため、行の識別子＋向きで引けるようにしておく。行の識別子は
+  // 単発欄が uid、表の列が `表uid:列index`——列は uid を持たないため位置で
+  // 引く（moveTableColumn の flash と同じ規則）
+  const reorderBtns = useRef(new Map<string, HTMLButtonElement>());
+  const setReorderBtn = (key: string, el: HTMLButtonElement | null) => {
+    if (el) reorderBtns.current.set(key, el);
+    else reorderBtns.current.delete(key);
+  };
+  // 並べ替え後に、まだ有効な側のボタンへフォーカスを戻す。DOM の disabled が
+  // 反映されるのは再レンダー後なので次フレームまで待つ（保存モーダルの
+  // フォーカス復帰と同じやり方）
+  const focusReorderBtn = (rowKey: string, dir: "up" | "down" | null) => {
+    if (!dir) return;
+    requestAnimationFrame(() => reorderBtns.current.get(`${rowKey}:${dir}`)?.focus());
   };
   const drag = useRef<{ mode: string; start: { x: number; y: number };
                         orig?: Rect; extra?: { x: number; y: number } } | null>(null);
@@ -1914,8 +2263,28 @@ export default function Editor(
     while (used.has(`table${n}`)) n++;
     return `table${n}`;
   };
-  const confirmDiscard = () =>
-    !dirtyState || window.confirm("未保存の変更があります。破棄してよろしいですか？");
+  // 画面内の確認ダイアログを1枚だけ開き、押されたボタンで解決する
+  // （issue #87 項目1）。既に開いているものがあれば「中止」として先に
+  // 解決する——待ち続ける Promise を宙に浮かせない
+  const askUiConfirm = (kind: UiConfirmKind): Promise<boolean> =>
+    new Promise<boolean>((resolve) => {
+      const restoreTo = document.activeElement as HTMLElement | null;
+      setUiConfirm((prev) => {
+        prev?.resolve(false);
+        return { kind, resolve, restoreTo };
+      });
+    });
+  const closeUiConfirm = (ok: boolean) => {
+    setUiConfirm((m) => {
+      m?.resolve(ok);
+      // モーダルの unmount 後に戻り先が存在する必要があるため次フレームへ
+      const back = m?.restoreTo ?? null;
+      if (back) requestAnimationFrame(() => back.focus());
+      return null;
+    });
+  };
+  const confirmDiscard = async (): Promise<boolean> =>
+    !dirtyState || await askUiConfirm("discard-changes");
 
   // ---------- 描画 ----------
   const draw = useCallback(() => {
@@ -1929,7 +2298,10 @@ export default function Editor(
     const dpr = window.devicePixelRatio || 1;
     cv.width = Math.round(width * dpr); cv.height = Math.round(height * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#1c1f26"; ctx.fillRect(0, 0, width, height);
+    // 下地は CANVAS_BG_COLOR から取る（色の直書きをやめる）。選択枠の
+    // コントラスト計算がこの値を背景として使うため、実描画と定数がずれると
+    // 「計算上は 3:1 でも画面では見えない」が起きる
+    ctx.fillStyle = CANVAS_BG_COLOR; ctx.fillRect(0, 0, width, height);
     ctx.save();
     ctx.translate(pan.x, pan.y); ctx.scale(zoom, zoom);
     const px = 1 / zoom;
@@ -2031,9 +2403,39 @@ export default function Editor(
     const visTables = visibleTables(tables, hidden, splitY, H);
     const visExcls = visibleExcls(excls, hidden, splitY, H);
 
-    const rect = (r: Rect, stroke: string, fill?: string) => {
+    // 判定不能（undecidable）の面は枠を消さずに弱めて描く（FR-F08・AC-F11）。
+    // 面の判定を y 座標から引くのは可視集合（visibleFields 等）と同じ faceIdOf
+    // ——ここでも述語を2つ持たない
+    const undec = undecidableFaces(formatFaces);
+    const styleAt = (y: number, selected: boolean, fallback = false) =>
+      frameStyleFor({
+        verdict: undec.size > 0 && undec.has(faceIdOf(y, splitY, H))
+          ? "undecidable" : undefined,
+        selected, fallback,
+      });
+
+    const rect = (r: Rect, stroke: string, fill?: string,
+                  weak?: { alpha: number; dash: number[] }) => {
       if (fill) { ctx.fillStyle = fill; ctx.fillRect(r.x, r.y, r.w, r.h); }
+      // 選択枠は色を変えずに線だけ 1px 太くする（2 * px → 3 * px）。色の差
+      // だけだと、走査画像の濃い部分の上や色覚特性のある目で「いまどれを
+      // 選んでいるか」が読み取りにくい。強調列（下の hlCol）で既に使って
+      // いるのと同じ手を枠にも通す。暗色ハローの重ね描きはしない——枠が
+      // 二重に見えて 1px 単位の位置合わせの邪魔になる
+      const lw = ctx.lineWidth;
+      if (stroke === SELECTION_COLOR) ctx.lineWidth = 3 * px;
+      // 判定不能の面（frameStyleFor）は薄く・破線で描く。線幅は据え置き——
+      // 太さを変えると選択（3px）の合図と紛れる。呼び出し側が既に破線を
+      // 設定している経路（参照先）があるので、元の設定へ必ず戻す
+      const prevAlpha = ctx.globalAlpha;
+      const prevDash = weak ? ctx.getLineDash() : null;
+      if (weak) {
+        ctx.globalAlpha = weak.alpha;
+        ctx.setLineDash(weak.dash.map((d) => d * px));
+      }
       ctx.strokeStyle = stroke; ctx.strokeRect(r.x, r.y, r.w, r.h);
+      if (prevDash) { ctx.globalAlpha = prevAlpha; ctx.setLineDash(prevDash); }
+      ctx.lineWidth = lw;
     };
     // ラベルは画面上で読める固定サイズ（約26px）で描くため、縮小すると
     // 枠のほうが文字より小さくなる。あふれた文字が隣の枠に重なって
@@ -2064,7 +2466,7 @@ export default function Editor(
     const hatchArea = (r: Rect) => {
       ctx.save();
       ctx.beginPath(); ctx.rect(r.x, r.y, r.w, r.h); ctx.clip();
-      ctx.strokeStyle = "rgba(28,31,38,0.30)"; ctx.lineWidth = 2 * px;
+      ctx.strokeStyle = HATCH_STROKE_STYLE; ctx.lineWidth = 2 * px;
       const step = 10 * px;
       for (let d = -r.h; d < r.w + r.h; d += step) {
         ctx.beginPath();
@@ -2091,24 +2493,31 @@ export default function Editor(
     };
     ctx.lineWidth = 2 * px;
     for (const e of visExcls)
-      rect(e.rect, sel?.uid === e.uid ? "#ffd54a" : "#888",
-           "rgba(120,120,120,0.35)");
+      rect(e.rect, sel?.uid === e.uid ? SELECTION_COLOR : "#888",
+           "rgba(120,120,120,0.35)", styleAt(e.rect.y, sel?.uid === e.uid));
     for (const f of visFields) {
-      rect(f.rect, sel?.uid === f.uid && sel?.part !== "fallback"
-        ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+      const selMain = sel?.uid === f.uid && sel?.part !== "fallback";
+      // 同じ欄の部品（丸印・追加領域）は欄の面の判定に従う（選択の強調は
+      // 部品ごとに別途判定する）
+      const wkPlain = styleAt(f.rect.y, false);
+      rect(f.rect, selMain
+        ? SELECTION_COLOR : f.kind === "choice" ? "#c586ff" : "#4fc3f7",
+        undefined, styleAt(f.rect.y, selMain));
       if (hlFieldUid === f.uid) {
-        ctx.fillStyle = "rgba(255,213,74,0.28)";
+        ctx.fillStyle = SELECTION_FILL_STYLE;
         ctx.fillRect(f.rect.x, f.rect.y, f.rect.w, f.rect.h);
       }
       if (!isOutput(f)) { hatchArea(f.rect); outputBadge(f.rect); }
-      for (const m of f.marks) rect(m.rect, "#c586ff");
+      for (const m of f.marks) rect(m.rect, "#c586ff", undefined, wkPlain);
       ctx.fillStyle = "#9fd8ff";
       label(f.field_id, f.rect.x + 4 * px, f.rect.y + 26 * px,
             f.rect.w - 8 * px, f.rect.h);
       for (let i = 0; i < (f.extras?.length ?? 0); i++) {
         const ex = f.extras![i];
-        rect(ex, sel?.uid === f.uid && sel?.part === `extra:${i}`
-          ? "#ffd54a" : f.kind === "choice" ? "#c586ff" : "#4fc3f7");
+        const selEx = sel?.uid === f.uid && sel?.part === `extra:${i}`;
+        rect(ex, selEx
+          ? SELECTION_COLOR : f.kind === "choice" ? "#c586ff" : "#4fc3f7",
+          undefined, styleAt(f.rect.y, selEx));
         if (!isOutput(f)) hatchArea(ex);   // 追加領域も同じ欄の一部（出力しない欄は全域）
         // 同じ欄の一部であることを細線で示す（参照先の破線と区別して実線）
         ctx.strokeStyle = "rgba(79,195,247,0.45)"; ctx.lineWidth = px;
@@ -2122,8 +2531,10 @@ export default function Editor(
         // 参照先は破線＋主の枠との接続線。実線の欄と見分けが付き、
         // どの欄の参照先かが線で追える
         const fb = f.fallback;
-        ctx.setLineDash([8 * px, 5 * px]);
-        rect(fb, sel?.uid === f.uid && sel?.part === "fallback" ? "#ffd54a" : "#4fc3f7");
+        const selFb = sel?.uid === f.uid && sel?.part === "fallback";
+        ctx.setLineDash(FALLBACK_DASH.map((d) => d * px));
+        rect(fb, selFb ? SELECTION_COLOR : "#4fc3f7", undefined,
+             styleAt(fb.y, selFb, true));
         ctx.strokeStyle = "rgba(79,195,247,0.5)"; ctx.lineWidth = px;
         ctx.beginPath();
         ctx.moveTo(f.rect.x + f.rect.w / 2, f.rect.y + f.rect.h / 2);
@@ -2142,24 +2553,32 @@ export default function Editor(
       for (const b of t.blocks) {
         const bh = t.row_pitch * (b.rows - 1) + t.row_height;
         rect({ x: b.x, y: b.y, w: totalW, h: bh },
-             sel?.uid === t.uid ? "#ffd54a" : "#7ce38b");
+             sel?.uid === t.uid ? SELECTION_COLOR : "#7ce38b",
+             undefined, styleAt(b.y, sel?.uid === t.uid));
         if (hlFieldUid === t.uid) {
-          ctx.fillStyle = "rgba(255,213,74,0.28)";
+          ctx.fillStyle = SELECTION_FILL_STYLE;
           ctx.fillRect(b.x, b.y, totalW, bh);
         }
+        // 行・列の細線は薄さだけで弱める（破線にはしない——数十行あるので
+        // 破線化すると画面全体が点線になり、どの線が枠かを読み取れなくなる。
+        // 線種の手掛かりはブロックの外枠と欄の枠が担う）
+        const gridAlpha = styleAt(b.y, false).alpha;
+        const prevGridAlpha = ctx.globalAlpha;
+        ctx.globalAlpha = gridAlpha;
         ctx.strokeStyle = "rgba(124,227,139,0.55)"; ctx.lineWidth = px;
         for (let i = 0; i < b.rows; i++) {
           const top = b.y + t.row_pitch * i;
           for (const c of t.columns)
             ctx.strokeRect(b.x + c.x_offset, top, c.width, t.row_height);
         }
+        ctx.globalAlpha = prevGridAlpha;
         // パネルで触っている列を画面上で示す（レビュー D-3: どれが金額列か
         // 数値を読んで突き合わせるしかなかった）
         if (sel?.uid === t.uid && hlCol !== null && t.columns[hlCol]) {
           const c = t.columns[hlCol];
-          ctx.fillStyle = "rgba(255,213,74,0.28)";
+          ctx.fillStyle = SELECTION_FILL_STYLE;
           ctx.fillRect(b.x + c.x_offset, b.y, c.width, bh);
-          ctx.strokeStyle = "#ffd54a"; ctx.lineWidth = 3 * px;
+          ctx.strokeStyle = SELECTION_COLOR; ctx.lineWidth = 3 * px;
           ctx.strokeRect(b.x + c.x_offset, b.y, c.width, bh);
           ctx.lineWidth = 2 * px;
         }
@@ -2255,7 +2674,7 @@ export default function Editor(
       })();
       if (selR) {
         const hs = 8 * px;
-        ctx.fillStyle = "#ffd54a";
+        ctx.fillStyle = SELECTION_COLOR;
         ctx.strokeStyle = "#1c1f26"; ctx.lineWidth = px;
         for (const q of Object.values(handlePoints(selR))) {
           ctx.fillRect(q.x - hs / 2, q.y - hs / 2, hs, hs);
@@ -2339,7 +2758,7 @@ export default function Editor(
   };
 
   const loadImage = async () => {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     const p = await invoke<string | null>("pick_image");
     if (!p) return;
     const isPdf = p.toLowerCase().endsWith(".pdf");
@@ -2573,7 +2992,7 @@ export default function Editor(
   }, []);
 
   const loadTemplate = async () => {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     const p = await invoke<string | null>("pick_json", { save: false });
     if (!p) return;
     // JSON でないファイル・テンプレート以外の JSON を選ぶと、旧実装は
@@ -2630,7 +3049,7 @@ export default function Editor(
   // 2既存コマンドの組み合わせで賄う。「利用者テンプレート一覧から開く」
   // 「照合パネルの『開く』」の両方から呼ぶ。
   const openMatchedTemplate = async (kind: "shipped" | "user", name: string) => {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     let text: string;
     try {
       if (kind === "user") {
@@ -2677,7 +3096,7 @@ export default function Editor(
   // list_user_templates は { templates: [...], excluded: [...] } を返す
   // （gui/src-tauri/src/user_templates.rs の UserTemplateInfo/ExcludedInfo）
   const openUserTemplateList = async () => {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     try {
       const list = await invoke<{ templates: UserTemplateListEntry[]; excluded: ExcludedEntry[] }>(
         "list_user_templates");
@@ -2775,8 +3194,8 @@ export default function Editor(
   // 編集していたときの splitY を引き継ぐ理由が無い）ため、常に表面1面から
   // 始める（emptyTemplateFor の splitY>=height 分岐）。表裏のある紙は
   // 「表裏の境界」ツールで利用者自身が分ける（newTemplateNotice 参照）
-  const createTemplateForThisImage = () => {
-    if (!confirmDiscard()) return;
+  const createTemplateForThisImage = async () => {
+    if (!(await confirmDiscard())) return;
     const { W, H } = curSize();
     const empty = emptyTemplateFor(W, H, H);
     toEditorState(empty);
@@ -2826,20 +3245,33 @@ export default function Editor(
     if (isOpen && !prevModalOpen.current) modalCancelRef.current?.focus();
     prevModalOpen.current = isOpen;
   }, [confirmModal]);
-  // Esc=キャンセル・Tab はモーダル内で循環（AC-1.23）
-  const onModalKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") { e.preventDefault(); closeConfirmModal(false); return; }
-    if (e.key !== "Tab") return;
-    const root = modalRef.current;
-    if (!root) return;
-    const focusables = Array.from(root.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
-      .filter((el) => !el.hasAttribute("disabled"));
-    if (focusables.length === 0) return;
-    const first = focusables[0], last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-  };
+  // Esc=キャンセル・Tab はモーダル内で循環（AC-1.23）。
+  // issue #87 項目1 で確認モーダルが2種類になったため、挙動を1つの関数に
+  // まとめて両方から使う（キーボード操作が片方だけ弱くなるのを防ぐ）
+  const modalKeyHandler = (
+    rootRef: React.RefObject<HTMLDivElement | null>, onCancel: () => void) =>
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); onCancel(); return; }
+      if (e.key !== "Tab") return;
+      const root = rootRef.current;
+      if (!root) return;
+      const focusables = Array.from(root.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+        .filter((el) => !el.hasAttribute("disabled"));
+      if (focusables.length === 0) return;
+      const first = focusables[0], last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+  const onModalKeyDown = modalKeyHandler(modalRef, () => closeConfirmModal(false));
+  const onUiConfirmKeyDown = modalKeyHandler(uiConfirmRef, () => closeUiConfirm(false));
+  // 開いた瞬間だけ中止側へ初期フォーカスする。Enter を押したときに走るのは
+  // 「何も変えない側」——window.confirm 時代の既定（Enter=OK）より安全側に倒す
+  useEffect(() => {
+    const isOpen = !!uiConfirm;
+    if (isOpen && !prevUiConfirmOpen.current) uiConfirmCancelRef.current?.focus();
+    prevUiConfirmOpen.current = isOpen;
+  }, [uiConfirm]);
 
   const saveTemplate = async () => {
     if (savingRef.current) return;   // 二重押下防止（C-5）。モーダルの外側の起点
@@ -2898,9 +3330,28 @@ export default function Editor(
       return;
     }
 
+    // 選択式にしたのに選択肢が足りない列を、一時ファイルを書く前に止める
+    // （issue #53 L-6）。スキーマが choice_marks を必須・2件以上と定めており、
+    // このまま進めても必ず検証で拒否される——「保存していません」の赤帯は
+    // 同じでも、理由が「スキーマ違反」ではなく直し方の分かる文言になる
+    const choiceGap = choiceColumnMarksNotice([
+      ...choiceFieldsNeedingMarks(resolved.fields),
+      ...choiceColumnsNeedingMarks(tables)]);
+    if (choiceGap) {
+      setMsg("");
+      setErrMsg(choiceGap);
+      return;
+    }
+
     if (resolved.carved.length) {
+      // issue #65-8: 保存直前の自動切り抜きは編集そのもの。以前は state を
+      // 差し替えるだけで履歴も dirty も動かしていなかったため、この後の検証で
+      // 保存が止まると「切り抜きだけがメモリに残り、元に戻す手段が無い」
+      // 状態になっていた。1コマ積んで Undo で戻せるようにする
+      pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands });
       setFields(resolved.fields);
       setSel(null);
+      markDirty(true);
     }
     const carveNote = resolved.carved.length
       ? `重なった欄を自動で切り抜きました: ${resolved.carved.join("、")}。`
@@ -3029,7 +3480,16 @@ export default function Editor(
     // スバル差し戻し Must-2: 保存が完了したので「保存時に既存の枠が
     // 調整されます」の注意はもう不要
     setOverlapAcceptNotice("");
-    if (!resolved.skipped.length) setErrMsg("");
+    // issue #65-7: 保存に成功したら赤帯は必ず消す。赤帯は「保存していません」
+    // の意味に予約し、成功時の注意は黄帯1段へ寄せる——成功の主メッセージ
+    // （灰）・赤帯・黄帯が3段同居すると、成功したのか失敗したのか読めない。
+    // 切り抜けなかった欄はここで黄帯へ移す。この時点では verify 応答由来の
+    // 情報（減った項目・コア警告）をまだ組み立てていないため、まず取りこぼし
+    // のない最小の1段を置き、下の try で完全版へ差し替える（表示の組み立てで
+    // 例外が出ても、切り抜けなかった欄の注意だけは画面に残る）
+    setErrMsg("");
+    setWarnMsg(saveSuccessNotices({ decreasedLabels: [], skipped: resolved.skipped,
+      carveWarning: carveWarnNote, coreWarningCount: 0 }));
     try {
       // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
       // 一目で分かるように・ユーザー指摘 2026-08-31）。除外数は verify が
@@ -3092,18 +3552,15 @@ export default function Editor(
       // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）。
       // 件数のみ出す（レビュー M-2）——毎回同じ十数件の定型文がそのまま
       // 出ると、本当に注意すべき変化が埋もれて信号にならない。詳細は
-      // verify で確認できる旨を添える
+      // verify で確認できる旨を添える。
+      // issue #65-7: 並べ方（後退検知→切り抜けなかった欄→大きな切り抜き→
+      // コア警告）は saveSuccessNotices が持つ
       const coreWarnings: string[] = tpl.warnings ?? [];
-      const coreWarnNote = coreWarnings.length
-        ? `コアからの警告 ${coreWarnings.length} 件（詳細は verify で確認できます）`
-        : null;
-      const decreaseWarnNote = diff.decreasedLabels.length
-        ? `読み込み時点より減った項目があります: ${diff.decreasedLabels.join("、")}。`
-          + "意図した変更か確認してください。"
-        : null;
-      // 後退検知（decrease）を先頭に（レビュー M-2）——異常時にしか出ない
-      // 分だけ気づいてほしい優先度が高い
-      setWarnMsg([decreaseWarnNote, carveWarnNote, coreWarnNote].filter(Boolean).join(" ／ "));
+      setWarnMsg(saveSuccessNotices({
+        decreasedLabels: diff.decreasedLabels,
+        skipped: resolved.skipped,
+        carveWarning: carveWarnNote,
+        coreWarningCount: coreWarnings.length }));
     } catch (e) {
       // 表示の組み立てに失敗しても保存自体は成功している。嘘をつかない
       setMsg(`保存＋コア検証 OK: ${p}（表示の組み立てに失敗しました: ${e}）`);
@@ -3140,6 +3597,16 @@ export default function Editor(
         + "画像を開き直すと座標が範囲外になることがあります。位置を修正してから保存してください。");
       return;
     }
+    // issue #53 L-6: ファイル保存と同じ理由でここでも先に止める
+    // （Rust の save_user_template も内部で verify を通すため、進めても拒否される）
+    const choiceGap = choiceColumnMarksNotice([
+      ...choiceFieldsNeedingMarks(resolved.fields),
+      ...choiceColumnsNeedingMarks(tables)]);
+    if (choiceGap) {
+      setMsg("");
+      setErrMsg(choiceGap);
+      return;
+    }
     const built = buildTemplateJson(
       { fields: resolved.fields, tables, excls, splitY, W, H, meta: meta.current });
     if (built.droppedCount > 0) {
@@ -3148,7 +3615,13 @@ export default function Editor(
         + "面の範囲外として除外されました（内部不整合のため保存を中止しました）。");
       return;
     }
-    if (resolved.carved.length) { setFields(resolved.fields); setSel(null); }
+    if (resolved.carved.length) {
+      // issue #65-8: ファイル保存側と同じく、自動切り抜きは履歴へ積む
+      pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands });
+      setFields(resolved.fields);
+      setSel(null);
+      markDirty(true);
+    }
     const carveNote = resolved.carved.length
       ? `重なった欄を自動で切り抜きました: ${resolved.carved.join("、")}。` : "";
     const carveWarnNote = carveWarningNotice(resolved.warned);
@@ -3324,16 +3797,19 @@ export default function Editor(
     setFramesMsg(`${result.acceptedCount} 件を採用しました`);
   };
 
+  // AC-F20: 候補だけを空にし、確定枠（fields/tables）は触らない。
+  // 「何をどうする操作か」は clearCandidates（純関数）側で固定する
   const clearAllCandidates = () => {
-    if (cands.length === 0) return;
-    setCands([]);
-    setFramesMsg("候補をすべて除去しました（確定済みの枠は変更していません）");
+    const next = clearCandidates(cands, fields, tables);
+    if (!next) return;
+    setCands(next.cands);
+    setFramesMsg(next.notice);
   };
 
   // 個別採用（FR-F20）。重なりがある候補は確認を挟む（§4.5.2-3・carve へ
-  // 逃げず人に決めさせる）
-  const acceptOneCandidate = (cand: Cand) => {
-    if (cand.overlaps && !window.confirm(candidateOverlapWarning())) return;
+  // 逃げず人に決めさせる）。確認は画面内モーダル（issue #87 項目1）
+  const acceptOneCandidate = async (cand: Cand) => {
+    if (cand.overlaps && !(await askUiConfirm("adopt-overlapping-candidate"))) return;
     if (cand.kind === "field") {
       const spec = fieldSpecFromCandidate(cand, fields.map((f) => f.field_id));
       setFields((fs) => [...fs, { uid: uid(), ...spec }]);
@@ -3790,8 +4266,9 @@ export default function Editor(
   // 候補生成も同じ理由で使う（設計08 §4.5.3「400ms静止の経路に頼らない」）
   const pushHistoryNow = (next: Snap) => {
     const prev = snapRef.current ?? { fields, tables, excls, splitY, cands };
-    history.current.past.push(prev);
-    if (history.current.past.length > 100) history.current.past.shift();
+    // コマの積み方（1回につき1コマ・上限100で最古から落とす）は pushHistory
+    // に出してある（AC-F21 をテストで固定するため）
+    history.current.past = pushHistory(history.current.past, prev);
     history.current.future = [];
     snapRef.current = next;
   };
@@ -3932,6 +4409,23 @@ export default function Editor(
     setFields(next);
     markDirty(true);
     flashRow(uid);
+    // issue #67・Must: 視覚のフラッシュだけでなく、結果を読み上げる。
+    // 位置・総数は「移動先の面の中で何番目か」——出力列タブの見え方（面で
+    // 区切った一覧）と同じ数え方にする
+    const moved = next.find((f) => f.uid === uid)!;
+    // 面の判定は moveFieldOutputOrder・出力列タブの見出しと同じ述語
+    // （y < splitY が表面）を使う。fieldsForFace は画像高 H も見るため、
+    // 画像を開き直して H が縮んだ直後の欄が「どちらの面にも属さない」ことが
+    // あり、順番が 0 になってしまう
+    const front = moved.rect.y < splitY;
+    const sameFace = next.filter((f) => (f.rect.y < splitY) === front);
+    const pos = sameFace.findIndex((f) => f.uid === uid) + 1;
+    setReorderMsg(reorderAnnouncement(moved.field_id || "（名前未設定）", pos, sameFace.length));
+    // issue #67・Must (a): 面の先頭/末尾に着くと押したボタンが disabled に
+    // なり、ブラウザがフォーカスを外す。まだ有効な側へ移し替える
+    focusReorderBtn(uid, nextReorderFocusDir(
+      moveFieldOutputOrder(next, uid, "up", splitY) !== null,
+      moveFieldOutputOrder(next, uid, "down", splitY) !== null, dir));
   };
   // .colrow の [↑][↓]（issue #66 段7・FR-2.1・AC-2.3）。表の内部列の並べ替え。
   // 移動後の行（新しい位置）を光らせるため、flash の識別子は `表uid:新index`
@@ -3945,7 +4439,17 @@ export default function Editor(
     pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands });
     setTables(nextTables);
     markDirty(true);
-    flashRow(`${tableUid}:${dir === "up" ? index - 1 : index + 1}`);
+    const newIndex = dir === "up" ? index - 1 : index + 1;
+    flashRow(`${tableUid}:${newIndex}`);
+    setReorderMsg(reorderAnnouncement(
+      next[newIndex].name || `列${newIndex + 1}`, newIndex + 1, next.length));
+    // issue #67・Must (b): .colrow の key は配列の添字なので、React は行の
+    // DOM ノードを動かさず中身だけ差し替える——押したボタンにフォーカスが
+    // 残ると、そのボタンは入れ替わった相手の列のものになっている（連打すると
+    // 動かしているつもりの列がずれていく）。移動先の行（新しい添字）の
+    // ボタンへ明示的に移し、境界で無効化される側は反対へ寄せる
+    focusReorderBtn(`${tableUid}:${newIndex}`, nextReorderFocusDir(
+      newIndex > 0, newIndex < next.length - 1, dir));
   };
   const removeSel = () => {
     if (!sel) return;
@@ -3975,6 +4479,13 @@ export default function Editor(
   const genFieldMarks = (f: Field, values: string) => {
     const vs = values.split(",").map((s) => s.trim()).filter(Boolean);
     updateField(f.uid, { marks: layoutMarks(f.rect, vs) });
+  };
+  // 表の列の選択肢を入力から作る（issue #53 L-6）。単発欄の genFieldMarks と
+  // 同じ形——カンマ区切りの値を列の幅で等分して丸印の判定範囲に割り当てる
+  const genColumnMarks = (t: Table, i: number, values: string) => {
+    const vs = values.split(",").map((s) => s.trim()).filter(Boolean);
+    updateTable(t.uid, { columns: t.columns.map((v, j) =>
+      j === i ? { ...v, marks: layoutColumnMarks(v, vs) } : v) });
   };
 
   // ---------- サイドパネル ----------
@@ -4184,10 +4695,12 @@ export default function Editor(
             {/* issue #66 段7・FR-2.1・AC-2.3: 220列中200列を動かす本体。同じ表の
                 中で隣接する列と入れ替える（面またぎ・表またぎの概念がそもそも無い） */}
             <button type="button" className="btn" disabled={i === 0}
+              ref={(el) => setReorderBtn(`${t.uid}:${i}:up`, el)}
               title={i === 0 ? "この表の先頭列です" : undefined}
               aria-label={`${c.name || `列${i + 1}`} を1つ上へ`}
               onClick={() => moveTableColumn(t.uid, i, "up")}>↑</button>
             <button type="button" className="btn" disabled={i === t.columns.length - 1}
+              ref={(el) => setReorderBtn(`${t.uid}:${i}:down`, el)}
               title={i === t.columns.length - 1 ? "この表の末尾列です" : undefined}
               aria-label={`${c.name || `列${i + 1}`} を1つ下へ`}
               onClick={() => moveTableColumn(t.uid, i, "down")}>↓</button>
@@ -4219,6 +4732,26 @@ export default function Editor(
                         : v) })}>
               <option value="text">文字</option><option value="choice">選択式</option>
             </select>
+            {/* issue #53 L-6: 選択式へ切り替えても選択肢を作る手段が画面に
+                無く、保存すると必ずスキーマ違反（choice_marks は必須・2件
+                以上）で拒否されていた。単発欄と同じカンマ区切りの入力を出し、
+                足りない間は行内で理由を示す（保存まで気づかせない形にしない） */}
+            {c.kind === "choice" && (<>
+              <span className="lbl">選択肢</span>
+              <input className="w6" placeholder="昭,平,令"
+                aria-label={`${c.name || `列${i + 1}`} の選択肢（カンマ区切り）`}
+                title="カンマ区切りで2つ以上。列の幅を等分して丸印を探す範囲にします"
+                value={colChoiceDraft?.key === `${t.uid}:${i}`
+                  ? colChoiceDraft.value : c.marks.map((m) => m.value).join(",")}
+                onChange={(e) => setColChoiceDraft(
+                  { key: `${t.uid}:${i}`, value: e.target.value })}
+                onBlur={(e) => { genColumnMarks(t, i, e.target.value);
+                                 setColChoiceDraft(null); }} />
+              {new Set(c.marks.map((m) => m.value).filter((v) => v.trim())).size < 2 && (
+                <span className="note" style={{ color: "var(--err-ink)" }}>
+                  違う選択肢を2つ以上入力してください（このままでは保存できません）
+                </span>)}
+            </>)}
             <span className="lbl">分割</span>
             <input className="w6" placeholder="年,月,日" value={c.subfields}
               disabled={c.kind === "choice"}
@@ -4259,7 +4792,8 @@ export default function Editor(
         {/* 操作を左右する一次情報なので通常 note（--faint）より濃い色で出す（レビュー N-1） */}
         <p className="note" style={{ color: "var(--sub)" }}>金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。
           種類が「選択式」の列、分割を指定した列では正規化は使いません（入力が無効になります）。</p>
-        <p className="note">選択式列のマーク位置の微調整は、保存した JSON の直接編集で行えます（v1 の範囲）</p>
+        <p className="note">選択式の列は「選択肢」欄に入力すると、列の幅を等分した判定範囲が作られます。
+          行の中で上下に積む様式など、位置の微調整は保存した JSON の直接編集で行えます（v1 の範囲）</p>
       </div>);
   };
 
@@ -4296,10 +4830,12 @@ export default function Editor(
           onFocus={() => setHlFieldUid(f.uid)} onBlur={() => setHlFieldUid(null)}>
           <span className="reorder-btns">
             <button type="button" className="btn" disabled={!canUp}
+              ref={(el) => setReorderBtn(`${f.uid}:up`, el)}
               title={canUp ? undefined : "面の先頭です"}
               aria-label={`${name} を1つ上へ`}
               onClick={() => moveField(f.uid, "up")}>↑</button>
             <button type="button" className="btn" disabled={!canDown}
+              ref={(el) => setReorderBtn(`${f.uid}:down`, el)}
               title={canDown ? undefined : "面の末尾です"}
               aria-label={`${name} を1つ下へ`}
               onClick={() => moveField(f.uid, "down")}>↓</button>
@@ -4366,7 +4902,14 @@ export default function Editor(
   // #edittabpanel 自体が既に flex column（App.css）なので、この関数が
   // 返す1枚の div がそのままその子要素として伸縮する
   const candidatesPanel = () => (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    // 他タブと同じ .panel を着せる（設計レビューの実測指摘・2026-09-03）。
+    // これが無いと .panel .note（11px・--sub）が効かず、2段目のメタが
+    // 1段目の名前より大きい 14px・--ink で出て、狭い幅では寸法と残差の側から
+    // 先に省略されていた。padding だけは 0 に戻す——上部ブロックと
+    // .cand-list が各自 18px を持っており、.panel の 14px 18px が重なると
+    // 320px 幅のパネルで左右の余白が二重になる
+    <div className="panel" style={{ display: "flex", flexDirection: "column",
+      height: "100%", minHeight: 0, padding: 0 }}>
       {/* 上部は固定（flexShrink:0）。狭い側パネル（320px幅）だと framesMsg の
           診断文（excludedSummaryJa／templateSkipReasonNotice 込み）や
           長いボタン文言がそのまま何行にも折り返し、一覧の可視領域を
@@ -4436,33 +4979,48 @@ export default function Editor(
       </div>
       {/* 一覧本体だけがスクロールする（おかゆ実機検証で発覚した canvas 0px
           化の根治——このタブに移したことで固定の max-height clamp は
-          不要になった。パネルの高さいっぱいを使う） */}
-      <div className="cand-list" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 18px 14px" }}>
+          不要になった。パネルの高さいっぱいを使う）。
+          issue #87 項目3: 見た目の指定は App.css の .cand-list へ移した
+          （行の高さを詰めて、可視領域に入る候補の数を増やすため） */}
+      <div className="cand-list">
         {cands.length === 0 && <p className="note">候補がありません。</p>}
         {cands.map((c) => (
           <div key={c.id} className="panel-outrow">
-            <input type="checkbox"
+            <input type="checkbox" className="cand-check"
               checked={!!candSelected[c.id]} disabled={c.overlaps}
               title={c.overlaps ? "既存の枠と重なるため一括採用の対象外です（個別採用は可能）" : undefined}
               aria-label={candidateAriaLabel(c)}
               onChange={(e) => setCandSelected((s) => ({ ...s, [c.id]: e.target.checked }))} />
-            <span>
+            <span className="cand-name">
               {c.kind === "table" ? "表" : "欄"}候補 {c.id}
               {c.faceHint ? `（${c.faceHint}）` : ""}
+            </span>
+            {/* 「既存と重なり」は2段目の先頭に置く（issue #87 項目3）。1段目の
+                末尾に付けると、狭いパネルで名前が伸びたときに真っ先に省略され
+                ——一括採用の対象外だと分かる唯一の可視情報が消えてしまう。
+                省略で削れてよいのは寸法・残差の側 */}
+            <span className="note cand-meta">
               {c.overlaps && <span className="format-hidden-badge">既存と重なり</span>}
+              <span className="cand-dims">
+                {Math.round(c.rect.w)}×{Math.round(c.rect.h)}px・残差 {c.residual.toFixed(1)}px
+                {c.table ? `・${c.table.rows}行` : ""}
+              </span>
             </span>
-            <span className="note">
-              {Math.round(c.rect.w)}×{Math.round(c.rect.h)}px・残差 {c.residual.toFixed(1)}px
-              {c.table ? `・${c.table.rows}行` : ""}
-            </span>
-            <button className="btn" type="button" onClick={() => acceptOneCandidate(c)}>採用</button>
-            <button className="btn" type="button" onClick={() => removeOneCandidate(c.id)}>除去</button>
+            {/* 「採用」は輪郭を強めた .btn.outline、「除去」は既定の .btn。
+                同じ見た目のボタンが隣り合うと押し間違いが起きる——採用は
+                枠が増える（Ctrl+Z で戻せる）、除去は候補が消える操作 */}
+            <button className="btn outline cand-accept" type="button"
+              onClick={() => { void acceptOneCandidate(c); }}>採用</button>
+            <button className="btn cand-remove" type="button"
+              onClick={() => removeOneCandidate(c.id)}>除去</button>
           </div>
         ))}
       </div>
     </div>
   );
 
+  // 保存成功の帯（issue #65-7 続き）。msg から導くだけで状態は増やさない
+  const okBanner = saveOkBanner(msg);
   const templateLoaded = fields.length > 0 || tables.length > 0;
   const outputDisabledTotal = countOutputDisabled(fields, tables);
   // 並べ替え（段7）で読み込み時の並びから変わっているか（段6 のガードと同じ
@@ -4523,8 +5081,20 @@ export default function Editor(
         <span className="sr-only" role="status" aria-live="polite">
           {framesMsg}
         </span>
+        {/* issue #67・ラミィ（accessibility）再判定 Must・WCAG 4.1.3:
+            出力列タブの [↑][↓] は行の 600ms フラッシュ（視覚のみ）でしか
+            結果を返していなかった。フォーカスを動かさない操作なので、
+            結果は状態メッセージとして読み上げる必要がある。framesMsg とは
+            別の領域にする——同じ領域を共有すると、片方の更新でもう片方の
+            読み上げが打ち切られる */}
+        <span className="sr-only" role="status" aria-live="polite">
+          {reorderMsg}
+        </span>
+        {/* 成功時の本文は下の成功帯（.okbox）が持つ。同じ文をここにも
+            残すと、画面に2回出るうえライブ領域が2つ同時に更新されて
+            読み上げが重なる（issue #73 の二重読み上げと同じ失敗） */}
         <span className="msg" role="status" aria-live="polite">
-          {msg}{dirtyState ? "（未保存）" : ""}</span>
+          {okBanner ? "" : msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
       {/* ころね（user_advocate）UX レビュー Must: 寸法／向き不一致
           （expandAlignNotice の reason==="size"）の赤帯にも、様式不一致の
@@ -4598,7 +5168,28 @@ export default function Editor(
           )}
         </div>
       )}
-      {warnMsg && <div className="warnbox" style={{ margin: "8px 18px" }}>{warnMsg}</div>}
+      {/* 保存成功の緑帯（--ok-* トークン・.warnbox と対）。帯そのものは
+          常にマウントしたままにして中身だけ入れ替える——role="status" の
+          器を後から差し込むと、環境によって最初の1回が読まれない。
+          見出し（保存できた事実と保存先）と詳細（読み込み時からの差分・
+          列の内訳）を2段に分け、灰色1行のときに末尾が切れていた情報を
+          折り返して見せる */}
+      <div className={okBanner ? "okbox" : undefined} role="status" aria-live="polite"
+        style={okBanner ? { margin: "8px 18px" } : undefined}>
+        {okBanner && (
+          <>
+            <b>{okBanner.head}</b>
+            {okBanner.detail && <span className="okdetail">{okBanner.detail}</span>}
+          </>
+        )}
+      </div>
+      {/* 保存成功に添える注意（saveSuccessNotices）。同じ warnbox でも
+          overlapAcceptNotice・formatBannerText にだけライブ領域が付いていて、
+          ここは無かった——保存の直後にフォーカスは動かないので、読み上げが
+          無いと注意が出たことに気づけない。この文言は sr-only 側には
+          流していない（二重読み上げにならない） */}
+      {warnMsg && <div className="warnbox" role="status" aria-live="polite"
+        style={{ margin: "8px 18px" }}>{warnMsg}</div>}
       {/* issue #72 (t)・FR-F28/F46: 照合提示（「この画像に合うテンプレート」）。
           画像を開くたびに match_templates を呼び直す（loadImage 参照）。
           現在開いているテンプレートが一致判定なら畳んでおく（matchCollapsed） */}
@@ -4695,18 +5286,53 @@ export default function Editor(
               {confirmModal.warnings.map((w) => <li key={w.key}>{w.text}</li>)}
             </ul>
             <div style={{ display: "flex", gap: 10 }}>
+              {/* issue #67・ラミィ再判定 Must: busy 中は両方 disabled になる
+                  のに、ラベルも title も変わらず「押し漏れたのか処理中なのか」
+                  が分からなかった。実行側のラベルで進行中を示し、押せない理由は
+                  title、機械可読な状態は aria-busy で伝える */}
               <button ref={modalCancelRef} type="button" className="btn"
                 disabled={confirmModal.busy}
-                onClick={() => closeConfirmModal(false)}>保存しない</button>
+                title={saveConfirmButtonTitle(confirmModal.busy)}
+                onClick={() => closeConfirmModal(false)}>
+                {saveConfirmButtonLabel("cancel", confirmModal.busy)}</button>
               <button type="button" className="btn primary" disabled={confirmModal.busy}
+                title={saveConfirmButtonTitle(confirmModal.busy)}
+                aria-busy={confirmModal.busy}
                 onClick={() => {
                   setConfirmModal((m) => m && { ...m, busy: true });
                   closeConfirmModal(true);
-                }}>このまま保存</button>
+                }}>{saveConfirmButtonLabel("proceed", confirmModal.busy)}</button>
             </div>
           </div>
         </div>
       )}
+      {/* issue #87 項目1: window.confirm（長文が折り返されない・ボタンが
+          OS 既定の「OK / キャンセル」固定）を、保存前確認モーダルと同じ作りの
+          画面内モーダルへ置き換える。role="alertdialog"・aria-modal・Tab は
+          モーダル内で循環・Esc は中止・初期フォーカスは中止側 */}
+      {uiConfirm && (() => {
+        const spec = uiConfirmSpec(uiConfirm.kind);
+        return (
+          <div className="modal-back" onClick={() => closeUiConfirm(false)}>
+            <div className="modal" ref={uiConfirmRef} role="alertdialog" aria-modal="true"
+              aria-labelledby="ui-confirm-title" aria-describedby="ui-confirm-body"
+              onClick={(e) => e.stopPropagation()} onKeyDown={onUiConfirmKeyDown}>
+              <h3 id="ui-confirm-title">{spec.title}</h3>
+              <p id="ui-confirm-body" style={{ margin: "0 0 16px", fontSize: 13, lineHeight: 1.8 }}>
+                {spec.body}</p>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button ref={uiConfirmCancelRef} type="button" className="btn"
+                  onClick={() => closeUiConfirm(false)}>{spec.cancelLabel}</button>
+                {/* 確定ボタンの強さは kind ごと（uiConfirmSpec.confirmVariant）。
+                    未保存の破棄は主ボタンにしない——既定の操作に見せない */}
+                <button type="button"
+                  className={spec.confirmVariant === "primary" ? "btn primary" : "btn"}
+                  onClick={() => closeUiConfirm(true)}>{spec.confirmLabel}</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {/* issue #72 (t)・FR-F27/F29: 「利用者テンプレートから開く」パネル。
           list_user_templates の一覧を表示名だけで並べる（絶対パスは持たない） */}
       {userTplPanel && (

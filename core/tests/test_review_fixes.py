@@ -698,9 +698,23 @@ def test_shipped_template_has_no_overlaps():
     assert len(template.cells) == 194  # 郵便番号1/2 の分離で 192→194（2026-08-31）
 
 
-def test_cloud_marker_does_not_false_positive():
-    """無関係なフォルダ名を同期フォルダと誤検知しない（レビュー M-10）。"""
+def test_cloud_marker_does_not_false_positive(monkeypatch):
+    """無関係なフォルダ名を同期フォルダと誤検知しない（レビュー M-10）。
+
+    `resolve()` を素通しに差し替える（issue #79）。`is_cloud_synced_path` は
+    先頭で `Path(p).resolve()` を呼ぶが、UNC パスの解決は実際にネットワーク
+    へ名前解決に行くため、共有が存在しない・DNS が遅い環境では待たされたり
+    失敗したりして、この試験だけが散発的に落ちていた（単独再実行では通る）。
+
+    ここで確かめたいのはパス文字列の判定規則（成分の完全一致・UNC の接頭辞）
+    であって、実在するパスの解決結果ではない。差し替えても入力は全て絶対パス
+    なので、resolve が返すべき値と一致する。
+    """
+    from pathlib import Path
+
     from chouhyo_ocr.paths import is_cloud_synced_path
+
+    monkeypatch.setattr(Path, "resolve", lambda self, strict=False: self)
     sep = chr(92)  # バックスラッシュ（ソース中のエスケープ事故を避ける）
     join = lambda *p: sep.join(p)  # noqa: E731
     assert not is_cloud_synced_path(join("C:", "work", "dropbox_backup"))

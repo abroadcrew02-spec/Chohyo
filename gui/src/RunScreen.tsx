@@ -7,6 +7,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow, currentMonitor } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 type Summary = {
   pages: number; rows: number; align_failed: number;
@@ -104,6 +105,10 @@ export const STATUS_JA: Record<string, string> = {
   // core/chouhyo_ocr/render_rows.py の STATUS_DUPLICATE に対応（issue #52 M-3）。
   // 未対応だと生の「スキップ（重複）」がそのまま出て、行が〓な理由が伝わらない
   "スキップ（重複）": "同じ内容のファイルが既にあるため送信しませんでした（行全体が〓です）",
+  // core/chouhyo_ocr/render_rows.py の STATUS_RENDER_FAILED に対応（issue #80）。
+  // 送信済みのデータから Excel の行を組み立てる所で失敗した状態で、様式の問題
+  // ではない。理由コード（row_build_failed / row_build_bug）で原因が分かれる
+  "出力失敗": "この行を組み立てられませんでした（行全体が〓です）",
   "超過あり": "記入が定義済みの行数を超えています",
 };
 
@@ -125,7 +130,15 @@ export const REASON_CODE_JA: Record<string, string> = {
   // 様式不一致（送信後）
   map_failed: "送信後に様式不一致と判定しました",
   outside_ratio: "送信後に様式不一致と判定しました",
-  row_build_failed: "送信後に様式不一致と判定しました",
+  // 出力失敗（issue #80・render 段）。送信済みのデータから行を組み立てる所で
+  // 落ちている＝様式の問題ではないので、上の「様式不一致」グループから外した。
+  // データ起因（row_build_failed）とコード欠陥の疑い（row_build_bug）を分ける
+  // ——後者を前者に混ぜると、利用者が直せない不具合をテンプレートの問題として
+  // 探し続けることになる（frame_check_failed と同じ調子で書く）
+  row_build_failed: "出力する行を組み立てられませんでした"
+    + "（中間データが壊れている可能性があります）",
+  row_build_bug: "行の組み立てでエラーが発生しました"
+    + "（プログラムの不具合の可能性。ログを確認してください）",
   // 位置合わせ失敗（罫線が読み取れず判定不能・08 ★1〜★3）
   frame_few_lines: "罫線が読み取れず位置合わせできませんでした",
   frame_edge: "罫線が読み取れず位置合わせできませんでした",
@@ -207,11 +220,88 @@ export function accumulationNotice(ev: Record<string, any>): string | null {
   if (typeof pages !== "number" || pages < 1000) return null;
   const seconds = ev.render_seconds;
   const suffix = typeof seconds === "number" ? `（出力の書き出しに ${seconds}秒）` : "";
-  // 削除の導線は GUI に無い（purge は ALLOWED_SUBCOMMANDS 外・要件 §6.3
-  // 「削除は明示操作のみ」）。「purge で削除してください」だけだと画面上の
-  // どこかにボタンがあるように読めるため、コマンドである旨を書く（issue N-6）
+  // 削除の導線がこの画面にできた（issue #52 M-11）。以前は CLI しか手段が
+  // なく「コマンド（purge --yes）で」と書いていた（issue N-6）——画面に
+  // ボタンがある以上、そのボタン名で案内するのが最短の出口になる
   return `中間データに ${pages} ページ蓄積しています${suffix}。`
-    + `提出済みのバッチはコマンド（purge --yes）で削除してください。`;
+    + `提出済みのバッチは下の「読み取ったデータを削除」から削除してください。`;
+}
+
+/** 中間データ削除（`purge`）の完了イベントを「実行時のお知らせ」1行にする
+ *  （issue #52 M-11・S-MC）。
+ *
+ *  コア（`core/chouhyo_ocr/cli.py` の `cmd_purge`）が出す `event:"purged"` の
+ *  実測キー: `removed`（削除できた件数）・`failed`（削除できなかった件数）・
+ *  `cred_kept`（認証キーを残したか）と、`--include-output` を付けたときだけ
+ *  増える `output_removed`／`output_kept`（この命名に一致せず残したファイル）
+ *  ／`output_failed`。**パス（`path`・`output_dir`）は画面に出さない**——
+ *  件数だけで消し損ねの判断はできるうえ、絶対パスを webview 側の表示へ
+ *  持ち出さない既存方針（07 §7.3）に揃える。
+ *
+ *  「削除できなかった件数」を必ず出すのは、Excel で開いたままのファイルが
+ *  あると黙って残るため——「削除しました」だけだと片付いたと誤解する。 */
+export function purgeNotice(ev: Record<string, any>): string {
+  const n = (v: unknown) => (typeof v === "number" && v > 0 ? v : 0);
+  const parts: string[] = [];
+  parts.push(`中間データを ${n(ev.removed)} 件削除しました`
+    + (ev.cred_kept === true ? "（認証キーは残しています）" : "") + "。");
+  if (n(ev.failed) > 0) {
+    parts.push(`${n(ev.failed)} 件は削除できませんでした`
+      + `（他のプログラムが使用中の可能性があります。閉じてからもう一度お試しください）。`);
+  }
+  if (ev.output_removed !== undefined || ev.output_failed !== undefined) {
+    parts.push(`出力ファイルを ${n(ev.output_removed)} 件削除しました`
+      + `（対象外として残したファイル ${n(ev.output_kept)} 件）。`);
+    if (n(ev.output_failed) > 0) {
+      parts.push(`出力ファイル ${n(ev.output_failed)} 件は削除できませんでした`
+        + `（Excel などで開いている可能性があります）。`);
+    }
+  }
+  return parts.join("");
+}
+
+/** 認証キー取り込み（`import-credentials --delete-source`）の stdout から
+ *  トーストの文言を決める（issue #52 M-10）。
+ *
+ *  コアの実測イベント（`core/chouhyo_ocr/cli.py` の `cmd_import_credentials`）:
+ *  削除成功で `credentials_source_deleted`、削除失敗で
+ *  `credentials_source_kept`（`warn:true`）。どちらも出ない場合
+ *  （`--delete-source` を解さない旧コア）は従来の言い回しへ落とす——
+ *  実際には消えていないのに「削除しました」と言わないため、判定は
+ *  「イベントを見たか」で行い、既定は消していない側に倒す。 */
+export function importCredentialsNotice(stdout: string): string {
+  let deleted = false;
+  let kept = false;
+  for (const line of stdout.split("\n")) {
+    try {
+      const e = JSON.parse(line);
+      if (e.event === "credentials_source_deleted") deleted = true;
+      if (e.event === "credentials_source_kept") kept = true;
+    } catch { /* JSON 以外の行は無視 */ }
+  }
+  if (kept) {
+    return "認証キーを暗号化して保存しました。元のファイルを削除できませんでした。"
+      + "手で削除してください（鍵が平文のまま残っています）。";
+  }
+  if (deleted) {
+    return "認証キーを暗号化して保存し、元のファイルを削除しました。";
+  }
+  return "認証キーを暗号化して保存しました。元のファイルは削除してください"
+    + "（鍵が平文のまま残ります）。";
+}
+
+/** 完了バナーの色（issue #69 残置1）。
+ *
+ *  1件も送信せず（`api_calls === 0`）全ページが様式不一致で終わった実行でも、
+ *  緑の「読み取りが完了しました」が最上部に出るため第一印象が成功に振れる。
+ *  何が起きたかの説明は completionNotice が既に出しているので、ここで変える
+ *  のは色（注意）だけ——文言を二重に持たない。
+ *
+ *  判定は「送信0 かつ 様式不一致>0」。`format_mismatch` が無い旧コアでは
+ *  0 として扱い、従来どおり緑のままにする（欠落キーで色が動かない）。 */
+export function completionBannerTone(summary: Summary | null): "ok" | "warn" {
+  if (!summary) return "ok";
+  return summary.api_calls === 0 && (summary.format_mismatch ?? 0) > 0 ? "warn" : "ok";
 }
 
 /** 実行終了時に赤帯へ出す文言（issue N-1）。exit 0 なら null。
@@ -298,6 +388,10 @@ export function noticeFor(ev: Record<string, any>): string | null {
     // issue #65-3 S2: run の完了サマリ・remap の完了サマリの両方に配線する
     // （#60 M-2 の source_renamed／#66 段2 の片配線と同じ「片方だけ配線」を
     // 繰り返さない）
+    // 中間データの削除（issue #52 M-11）。run と同じ core-line 経路で届くので、
+    // 結果は他の警告と同じ「実行時のお知らせ」へ積む
+    case "purged":
+      return purgeNotice(ev);
     case "summary":
     case "remap_summary": {
       // P-H1: counterNotice（欠落〓の出所）の隣に accumulationNotice（中間
@@ -437,13 +531,166 @@ export function resolveSelectedTemplate(
  *  理由も分かる）。inputDir 未選択は既存の「読み取る帳票を選択すると
  *  実行できます」に任せるため null。verify 未取得（検証中）も一時的な
  *  状態なので理由を出さない。 */
-export function startDisabledReason(inputDir: string, verify: Verify | null): string | null {
+export function startDisabledReason(inputDir: string, verify: Verify | null,
+                                    storageAck = false): string | null {
   if (!inputDir || !verify) return null;
   if (!verify.parsed) return "検証が実行できていません（再試行してください）";
   if (verify.cred === "missing") return "認証キーが未設定です（下の「認証キーを選択」から設定してください）";
   if (verify.budgetUsed >= verify.budgetCap) return "今月の送信上限に達しています";
-  if (!verify.storage) return "保存先がクラウド同期フォルダ等の下にあります（設定で変更してください）";
+  // issue #52 M-12／Q-MJ: 同期フォルダ判定は「広めに倒す」設計のため誤検知が
+  // ありうる。ハードブロックのままだと、誤検知に当たった利用者はツールを
+  // 一切使えない（逃げ道なし）。理解した旨の明示チェック1回で開始できる
+  if (!verify.storage && !storageAck) {
+    return "保存先がクラウド同期フォルダ等の下にあります"
+      + "（設定で変更するか、下の確認チェックを入れてください）";
+  }
   return null;
+}
+
+/** 失敗一覧（`failures`）に積む上限（issue #53 L-17）。`setLog` の 400 と
+ *  そろえる。 */
+export const FAILURE_KEEP = 400;
+
+/** 失敗一覧へ1件足す。上限を超えたら**足さない**（先頭 400 件を残す）。
+ *
+ *  `setLog` の `slice(-400)`（末尾を残す）と向きが逆なのは意図的——ログは
+ *  「最後に何が起きたか」を見るもので、失敗一覧は「どのページがどう失敗
+ *  したか」の診断材料だから。全ページが同じ理由で失敗するような形は先頭
+ *  400 件に必ず現れるし、末尾を残す方式だと「1ページ目から連続して失敗
+ *  している」という重要な形が画面から消える。配列を作り直さないぶん、
+ *  数千件規模の失敗でも描画コストが伸びない（L-17 の狙い）。 */
+export function appendFailure<T>(list: T[], item: T): T[] {
+  return list.length >= FAILURE_KEEP ? list : [...list, item];
+}
+
+/** 一覧に載せきれなかった件数の注記（issue #53 L-17）。全件出しているなら
+ *  null——「他 0 件」は出さない。 */
+export function truncatedFailureNotice(total: number, shown: number): string | null {
+  const rest = total - shown;
+  return rest > 0 ? `他 ${rest} 件（一覧の表示は ${shown} 件までです）` : null;
+}
+
+/* ------------------------------------------------------------------ *
+ * 実行イベントの取り違え防止（issue #96）
+ * ------------------------------------------------------------------ */
+
+/** `run_core` の戻り値（Rust 側 `RunResult`）。 */
+export type RunResult = { code: number; run_id: string };
+
+/** `core-line` / `core-err` の payload（Rust 側 `CoreLine`）。
+ *  run_id を持たない旧形式（行の文字列だけ）も受ける。 */
+export type CoreLinePayload = string | { run_id?: string; line?: string };
+
+/** payload を「行」と「run_id」に開く。
+ *
+ *  旧形式（文字列）では run_id が undefined になり、フィルタは素通りする
+ *  ——ここを fail-closed にすると、payload の形が想定と1つズレただけで
+ *  ログも進捗もサマリも一切出ない画面になる。取り違えより無反応の方が
+ *  利用者にとって深刻なので、判別できないときは通す。 */
+export function readCoreLine(payload: CoreLinePayload): { line: string; runId?: string } {
+  if (typeof payload === "string") return { line: payload };
+  return { line: payload?.line ?? "", runId: payload?.run_id };
+}
+
+/** イベントの取り違えを防ぐフィルタの状態。
+ *
+ *  `current` は `core-start` で確定した「今回の実行」の ID。まだ届いていない
+ *  間は null で、そのときは「終了済みでない ID」を通す——`core-start` と
+ *  `core-line` は別のイベント名で、到着順は保証されないため。
+ *  `retired` は既に画面から降りた実行の ID（新しい順）。 */
+export type RunFilter = { current: string | null; retired: string[] };
+
+/** `retired` の保持数。1実行あたり1件しか増えず、遅れて届く行はプロセス
+ *  終了直後の数ミリ秒ぶんなので、直近数件を覚えていれば足りる。 */
+const RETIRED_KEEP = 8;
+
+export function emptyRunFilter(): RunFilter {
+  return { current: null, retired: [] };
+}
+
+/** 実行開始（`invoke("run_core")` の直前）。
+ *
+ *  直前の実行 ID をここで初めて「古い」側へ移す。`run_core` が解決した時点で
+ *  移すと、その実行自身の最後の行（サマリ）がまだ webview へ届いていない
+ *  場合に捨ててしまい、完了表示が出なくなる。画面を次の実行用に片付ける
+ *  この瞬間なら、前の実行の行はもう表示する先が無い。 */
+export function beginRun(f: RunFilter): RunFilter {
+  const retired = f.current
+    ? [f.current, ...f.retired.filter((id) => id !== f.current)].slice(0, RETIRED_KEEP)
+    : f.retired;
+  return { current: null, retired };
+}
+
+/** `core-start` 受信。以後はこの ID の行だけを受ける。 */
+export function adoptRun(f: RunFilter, runId: string): RunFilter {
+  return { current: runId, retired: f.retired.filter((id) => id !== runId) };
+}
+
+/** `run_core` の解決（正常終了・中断を問わず）。
+ *
+ *  `core-start` を取り逃していた場合の保険で、ここでも今回の ID を確定させる
+ *  ——確定していないと次の `beginRun` がこの実行を `retired` へ移せず、
+ *  遅れて届く行を捨てられない。 */
+export function finishRun(f: RunFilter, runId: string): RunFilter {
+  return f.current === null ? { current: runId, retired: f.retired } : f;
+}
+
+/** この行イベントを今回の実行のものとして受けてよいか。 */
+export function acceptsRunEvent(f: RunFilter, runId?: string): boolean {
+  if (runId === undefined) return true;
+  if (f.retired.includes(runId)) return false;
+  return f.current === null || f.current === runId;
+}
+
+/** 破壊的な操作の前に出す確認ダイアログ（issue #52 M-10／M-11）。
+ *
+ *  作りは Editor.tsx の保存前確認モーダル（issue #87 項目1）に揃える:
+ *  `role="alertdialog"`・`aria-modal`・Tab はダイアログ内で循環・Esc は中止・
+ *  初期フォーカスは中止側（Enter を押したときに走るのは「何も変えない側」）。
+ *  背景クリックも中止。`window.confirm` を使わないのは、長文が折り返されず
+ *  ボタンのラベルも OS 既定に固定されるため（同 issue）。 */
+function ConfirmDialog(
+  { title, confirmLabel, cancelLabel = "中止", busy = false, danger = false,
+    onConfirm, onCancel, children }: {
+    title: string; confirmLabel: string; cancelLabel?: string; busy?: boolean;
+    danger?: boolean; onConfirm: () => void; onCancel: () => void; children: ReactNode;
+  },
+) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { cancelRef.current?.focus(); }, []);
+  return (
+    <div className="modal-back" onClick={() => { if (!busy) onCancel(); }}>
+      <div className="modal" ref={boxRef} role="alertdialog" aria-modal="true"
+        aria-labelledby="run-confirm-title" aria-describedby="run-confirm-body"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") { e.preventDefault(); if (!busy) onCancel(); return; }
+          if (e.key !== "Tab") return;
+          const root = boxRef.current;
+          if (!root) return;
+          const focusables = Array.from(root.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+            .filter((el) => !el.hasAttribute("disabled"));
+          if (focusables.length === 0) return;
+          const first = focusables[0], last = focusables[focusables.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }}>
+        <h3 id="run-confirm-title">{title}</h3>
+        <div id="run-confirm-body" style={{ fontSize: 13, lineHeight: 1.8, margin: "0 0 16px" }}>
+          {children}
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button ref={cancelRef} type="button" className="btn" disabled={busy}
+            onClick={onCancel}>{cancelLabel}</button>
+          <button type="button" className={danger ? "btn danger" : "btn primary"}
+            disabled={busy} aria-busy={busy}
+            onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const FolderIcon = ({ c }: { c: string }) => (
@@ -467,12 +714,29 @@ export default function RunScreen(
   const [verify, setVerify] = useState<Verify | null>(null);
   const [importing, setImporting] = useState(false);
   const [failures, setFailures] = useState<Failure[]>([]);
+  // 一覧は先頭 FAILURE_KEEP 件で打ち切るため、件数は別に数える（issue #53 L-17）
+  const [failureTotal, setFailureTotal] = useState(0);
+  // 認証キー取り込みの確認（issue #52 M-10）。選んだファイルのパスを保持し、
+  // 確認を通ったときだけ取り込みを実行する
+  const [credConfirm, setCredConfirm] = useState<string | null>(null);
+  // 中間データ削除の二段確認（issue #52 M-11）。"explain"=何が消えて何が残るか、
+  // "confirm"=最終確認。null は閉じている状態
+  const [purgeStep, setPurgeStep] = useState<"explain" | "confirm" | null>(null);
+  const [purgeIncludeOutput, setPurgeIncludeOutput] = useState(false);
+  const [purging, setPurging] = useState(false);
+  // 同期フォルダ警告の明示チェック（issue #52 M-12／Q-MJ）。**保存しない**
+  // ——毎回チェックし直す（設定に残すと「一度通したら以後ずっと素通り」に
+  // なり、警告の意味が消える）
+  const [storageAck, setStorageAck] = useState(false);
   const interruptedRef = useRef(false);
   const refusedRef = useRef(false);
   // 終了時の文言判定（completionNotice）で使う最新のサマリ。state の方は
   // start() のクロージャが古い値を掴むため、interruptedRef と同じ流儀で
   // ref にも持つ（issue N-1）
   const summaryRef = useRef<Summary | null>(null);
+  // 実行イベントの取り違え防止（issue #96）。listen の登録はマウント時の
+  // 1回きり（deps=[]）なので、state ではなく ref で持つ
+  const runFilterRef = useRef<RunFilter>(emptyRunFilter());
   const [notice, setNotice] = useState("");
   const [notices, setNotices] = useState<string[]>([]);  // 実行時の警告（M-2・#28）
   const [refused, setRefused] = useState("");  // 業務的な拒否（H-C）
@@ -495,21 +759,65 @@ export default function RunScreen(
   };
   useEffect(() => { runVerify(); }, []);
 
-  const importCredentials = async () => {
+  // 認証キーを選ぶ → 確認ダイアログ（issue #52 M-10: 元ファイルを消す操作を
+  // 黙って行わない）→ 取り込み、の3段。選択と実行の間に確認を挟むため、
+  // 選んだパスを credConfirm に持たせる
+  const pickCredentials = async () => {
     // 認証キーは白リストへ登録しない（登録すると鍵の平文 JSON が
     // セッション中ずっと read_text で読める・レビュー4巡目）
     const p = await invoke<string | null>("pick_json",
-      { save: false, rememberPick: false });
-    if (!p) return;
+      { save: false, rememberPick: false, kind: "credentials" });
+    if (p) setCredConfirm(p);
+  };
+
+  const importCredentials = async (p: string) => {
+    setCredConfirm(null);
     setImporting(true);
     try {
-      await invoke<string>("run_core_capture", { args: ["import-credentials", p] });
-      setNotice("認証キーを暗号化して保存しました。元のファイルは削除して構いません。");
+      // --delete-source（issue #52 M-10）: DPAPI へ書けたら元の平文 JSON を
+      // ランダム上書きのうえ削除する。GUI からは常に付ける——取り込みの
+      // たびに有効な秘密鍵が平文でディスクに残る状態を作らない
+      const out = await invoke<string>("run_core_capture",
+        { args: ["import-credentials", p, "--delete-source"] });
+      setNotice(importCredentialsNotice(out));
       await runVerify();
     } catch (e) {
       setError(`認証キーの取り込みに失敗しました: ${e}`);
     } finally {
       setImporting(false);
+    }
+  };
+
+  /** 中間データの削除（issue #52 M-11・要件 §6.3「削除は明示操作のみ」）。
+   *
+   *  §6.3 を満たしているのは「利用者がボタンを押し、何が消えて何が残るかの
+   *  説明を読み、二段目で削除を確定した」という明示操作の連なりであって、
+   *  この関数が呼ばれる経路は他に無い（自動実行・起動時の掃除は一切しない）。
+   *  run と同じ `run_core` を通すので、実行中は PID スロットが埋まっていて
+   *  受け付けられない＝読み取りと削除が同時に走らない。 */
+  const runPurge = async () => {
+    setPurgeStep(null);
+    setPurging(true);
+    setError("");
+    // 前の実行の遅れて届く行を、この結果の表示へ混ぜない（issue #96）
+    runFilterRef.current = beginRun(runFilterRef.current);
+    try {
+      const args = ["purge", "--yes"];
+      if (purgeIncludeOutput) args.push("--include-output");
+      const res = await invoke<RunResult>("run_core", { args });
+      runFilterRef.current = finishRun(runFilterRef.current, res.run_id);
+      if (res.code !== 0) {
+        // 件数の内訳は purged イベント（お知らせ）側に出ている。ここでは
+        // 「全部は消えていない」ことだけを赤帯で伝える
+        setError("削除しきれなかったものがあります。上の「実行時のお知らせ」を確認してください。");
+      }
+    } catch (e) {
+      setError(`削除に失敗しました: ${e}`);
+    } finally {
+      setPurging(false);
+      // 削除後は中間データの再利用ができなくなる（次回は送信からやり直し）。
+      // 残量・保存先の状態も取り直す
+      await runVerify();
     }
   };
 
@@ -617,16 +925,28 @@ export default function RunScreen(
 
   useEffect(() => {
     const subs: Promise<UnlistenFn>[] = [
-      listen<string>("core-line", (e) => {
-        setLog((l) => [...l.slice(-400), e.payload]);
+      // 今回の実行 ID（issue #96）。読取スレッドが起きる前に 1 回だけ届く
+      listen<{ run_id?: string }>("core-start", (e) => {
+        const id = e.payload?.run_id;
+        if (id) runFilterRef.current = adoptRun(runFilterRef.current, id);
+      }),
+      listen<CoreLinePayload>("core-line", (e) => {
+        // 前の実行の残り行を新しい実行の画面へ混ぜない（issue #96）。
+        // Rust 側は読取スレッドを join してから戻るが、emit された行が
+        // webview へ届くのと invoke の応答が返るのとで順序の保証が無い
+        const { line, runId } = readCoreLine(e.payload);
+        if (!acceptsRunEvent(runFilterRef.current, runId)) return;
+        setLog((l) => [...l.slice(-400), line]);
         try {
-          const ev = JSON.parse(e.payload);
+          const ev = JSON.parse(line);
           if (ev.event === "start") { setTotal(ev.todo ?? ev.total ?? 0); setDone(0); }
           if (ev.event === "page") {
             setDone((d) => d + 1);
             if (ev.status && ev.status !== "done") {
-              setFailures((f) => [...f,
-                { page_id: ev.page_id, status: ev.status, reason_code: ev.reason_code }]);
+              // 一覧は上限まで、件数は全部数える（issue #53 L-17）
+              setFailures((f) => appendFailure(f,
+                { page_id: ev.page_id, status: ev.status, reason_code: ev.reason_code }));
+              setFailureTotal((n) => n + 1);
             }
           }
           const n = noticeFor(ev);
@@ -645,8 +965,11 @@ ${ev.hint}` : ""));
           }
         } catch { /* JSON 以外の行は無視 */ }
       }),
-      listen<string>("core-err", (e) =>
-        setLog((l) => [...l.slice(-400), `[err] ${e.payload}`])),
+      listen<CoreLinePayload>("core-err", (e) => {
+        const { line, runId } = readCoreLine(e.payload);
+        if (!acceptsRunEvent(runFilterRef.current, runId)) return;
+        setLog((l) => [...l.slice(-400), `[err] ${line}`]);
+      }),
     ];
     return () => { subs.forEach((p) => p.then((un) => un())); };
   }, []);
@@ -662,7 +985,13 @@ ${ev.hint}` : ""));
   // コアの run --input はフォルダ・ファイルの両方を受ける
   const [dropping, setDropping] = useState(false);
   const activeRef = useRef(active);
-  useEffect(() => { activeRef.current = active; }, [active]);
+  useEffect(() => {
+    activeRef.current = active;
+    // Rust 側の白リスト登録も、この画面が見えている間だけに絞る
+    // （issue #69 セキュリティ LOW (b)）。編集タブを見ている最中のドロップは
+    // 画面に何も出ないのに読み書きを許すパスだけが増えていた
+    invoke("set_drop_active", { active }).catch(() => { /* デモモードでは何もしない */ });
+  }, [active]);
   useEffect(() => {
     if (!isTauri) return;
     let unlisten: (() => void) | undefined;
@@ -701,12 +1030,17 @@ ${ev.hint}` : ""));
   };
   const start = async () => {
     setRunning(true); setSummary(null); setError(""); setNotice("");
-    setLog([]); setDone(0); setTotal(0); setFailures([]); setNotices([]);
-    setRefused("");
+    setLog([]); setDone(0); setTotal(0); setFailures([]); setFailureTotal(0);
+    setNotices([]); setRefused("");
     interruptedRef.current = false; refusedRef.current = false;
     summaryRef.current = null;
+    // 画面を片付けたこの時点で、前回の実行 ID を「古い」側へ移す（issue #96）。
+    // これより後に届く前回の行は、サマリであっても捨てる
+    runFilterRef.current = beginRun(runFilterRef.current);
     try {
-      const code = await invoke<number>("run_core", { args: ["run", "--input", inputDir] });
+      const res = await invoke<RunResult>("run_core", { args: ["run", "--input", inputDir] });
+      runFilterRef.current = finishRun(runFilterRef.current, res.run_id);
+      const code = res.code;
       if (refusedRef.current) {
         // 拒否済み: 固定文言（再実行を促す）を出さない
       } else if (interruptedRef.current) {
@@ -737,6 +1071,16 @@ ${ev.hint}` : ""));
     invoke("open_folder", { path: outputDir }).catch((e) => setError(String(e)));
 
   const xlsxName = summary?.xlsx?.split(/[\\/]/).pop();
+  const bannerTone = completionBannerTone(summary);
+  // 「実行時のお知らせ」。完了サマリの付随情報として出すのが基本だが、
+  // 中間データの削除（issue #52 M-11）は summary を伴わないため、サマリの
+  // 有無に関わらず出せるよう1箇所で組み立てて2箇所から使う
+  const noticesCard = notices.length > 0 ? (
+    <div className="card warnbox">
+      <b>実行時のお知らせ</b>
+      {notices.map((t, i) => <div key={i}>{t}</div>)}
+    </div>
+  ) : null;
 
   return (
     <div className="run-screen" ref={screenRef}>
@@ -747,13 +1091,24 @@ ${ev.hint}` : ""));
       )}
       <div className="run-main">
 
-        {/* 完了バナー */}
+        {/* 完了バナー。1件も送信せず全ページ様式不一致で終わった実行は
+            緑ではなく注意色にする（issue #69 残置1・completionBannerTone）。
+            文言は変えない——何が起きたかは completionNotice の赤帯が既に
+            説明しており、同じ内容を2箇所に持たない */}
         {summary && (
-          <div className="banner ok">
-            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
-              strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" /><path d="M8 12.5l3 3 5-6" />
-            </svg>
+          <div className={`banner ${bannerTone}`}>
+            {bannerTone === "ok" ? (
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
+                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" /><path d="M8 12.5l3 3 5-6" />
+              </svg>
+            ) : (
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#a16207"
+                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" role="img"
+                aria-label="注意">
+                <path d="M12 3.5L21.5 20H2.5z" /><path d="M12 10v4" /><path d="M12 17.2v.1" />
+              </svg>
+            )}
             <div className="txt">
               <b>読み取りが完了しました</b>
               <span>Excel と CSV を保存しました{xlsxName ? `（${xlsxName}）` : ""}</span>
@@ -814,12 +1169,7 @@ ${ev.hint}` : ""));
               <div className="row"><b>3.</b>
                 <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
             </div>
-            {notices.length > 0 && (
-              <div className="card warnbox">
-                <b>実行時のお知らせ</b>
-                {notices.map((t, i) => <div key={i}>{t}</div>)}
-              </div>
-            )}
+            {noticesCard}
             {(summary.risky_cells ?? 0) > 0 && (
               // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
               // 出ており、修正の必要はない——CSV の開き方だけの注意
@@ -854,6 +1204,10 @@ ${ev.hint}` : ""));
             )}
           </>
         )}
+
+        {/* サマリが無いとき（削除だけを行った直後など）のお知らせ。
+            summary があるときは上の付随情報の並びの中で出している */}
+        {!summary && noticesCard}
 
         {/* 処理中 */}
         {running && (
@@ -935,8 +1289,19 @@ ${ev.hint}` : ""));
             {!verify.storage && (
               <div>保存先がクラウド同期フォルダ（OneDrive・Dropbox・Box など）や
                 ネットワーク共有の下にあります。中間データには個人情報が含まれるため、
-                <b>この状態では読み取りを開始できません</b>。設定でローカルの
-                フォルダへ変更してください。</div>)}
+                <b>そのままでは読み取りを開始できません</b>。設定でローカルの
+                フォルダへ変更してください。
+                {/* issue #52 M-12／Q-MJ: 同期判定は名前で広めに拾うため誤検知が
+                    ありうる。ハードブロックだけだと、誤検知に当たった利用者は
+                    設定を変える以外に手が無くなる（逃げ道なし）。理解した旨の
+                    明示チェック1回を逃げ道にする。状態は保存しない（毎回必要） */}
+                <label className="checkrow" style={{ marginTop: 10, marginBottom: 0 }}>
+                  <input type="checkbox" checked={storageAck}
+                    onChange={(e) => setStorageAck(e.target.checked)} />
+                  <span>同期される場所であることを理解したうえで読み取りを開始する
+                    （判定が誤っているときの確認です。次回また確認します）</span>
+                </label>
+              </div>)}
           </div>
         )}
 
@@ -957,7 +1322,7 @@ ${ev.hint}` : ""));
           <div className="card warnbox" style={{ fontSize: 12.5 }}>
             <div>{credNotice(verify.cred, verify.envPresent)}</div>
             <button className="btn primary" style={{ width: "fit-content", marginTop: 8 }}
-              onClick={importCredentials} disabled={importing}>
+              onClick={pickCredentials} disabled={importing}>
               {importing ? "取り込み中…" : "認証キーを選択"}
             </button>
           </div>
@@ -975,10 +1340,11 @@ ${ev.hint}` : ""));
                 <b style={{ color: "var(--warn-ink)", fontSize: 15 }}>初回設定: 読み取り用の認証キーを設定します</b>
                 <div style={{ fontSize: 12.5, color: "#7a5a26", lineHeight: 1.7 }}>
                   管理者から受け取った<b>認証キーファイル（JSON）</b>を選択してください。
-                  暗号化して保存され、元のファイルは以後不要です。
+                  暗号化して保存し、元のファイルは取り込み後に削除します
+                  （鍵が平文のまま残らないようにするためです）。
                 </div>
                 <button className="btn primary" style={{ width: "fit-content" }}
-                  onClick={importCredentials} disabled={importing}>
+                  onClick={pickCredentials} disabled={importing}>
                   {importing ? "取り込み中…" : "認証キーを選択"}
                 </button>
               </div>
@@ -1061,17 +1427,18 @@ ${ev.hint}` : ""));
               <div className="body">
                 <button className="btn primary big" style={{ width: "fit-content" }}
                   onClick={start}
-                  disabled={!inputDir || (!!verify && !verify.parsed)
+                  disabled={!inputDir || purging || (!!verify && !verify.parsed)
                     || verify?.cred === "missing"
                     || (!!verify && verify.budgetUsed >= verify.budgetCap)
-                    || (!!verify && !verify.storage)}>
+                    || (!!verify && !verify.storage && !storageAck)}>
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="#ffffff">
                     <polygon points="6,4 20,12 6,20" /></svg>
                   読み取りを開始
                 </button>
                 {!inputDir && <span className="muted">読み取る帳票を選択すると実行できます</span>}
-                {inputDir && startDisabledReason(inputDir, verify) && (
-                  <span className="muted">{startDisabledReason(inputDir, verify)}</span>
+                {purging && <span className="muted">削除の完了までお待ちください</span>}
+                {inputDir && !purging && startDisabledReason(inputDir, verify, storageAck) && (
+                  <span className="muted">{startDisabledReason(inputDir, verify, storageAck)}</span>
                 )}
               </div>
             </div>
@@ -1087,8 +1454,10 @@ ${ev.hint}` : ""));
 
         {summary && failures.length > 0 && (
           <div className="card">
+            {/* 件数は全件、一覧は先頭 FAILURE_KEEP 件まで（issue #53 L-17）。
+                数千件の失敗でも DOM が伸び続けないようにする */}
             <div style={{ fontSize: 13.5, fontWeight: 700, marginBottom: 10 }}>
-              処理できなかったページ（{failures.length} 件）
+              処理できなかったページ（{failureTotal} 件）
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {failures.map((f, i) => (
@@ -1103,6 +1472,12 @@ ${ev.hint}` : ""));
                 </div>
               ))}
             </div>
+            {truncatedFailureNotice(failureTotal, failures.length) && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+                {truncatedFailureNotice(failureTotal, failures.length)}
+                （すべての内訳は詳細ログにあります）
+              </div>
+            )}
           </div>
         )}
 
@@ -1113,6 +1488,78 @@ ${ev.hint}` : ""));
             <summary>詳細ログ</summary>
             <pre ref={logRef}>{log.join("\n")}</pre>
           </details>
+        )}
+
+        {/* 読み取ったデータの削除（issue #52 M-11・S-MC の GUI 化）。
+            要件 §6.3「削除は明示操作のみ」を満たすのは、①このボタン以外に
+            削除が走る経路が無い（起動時・実行後の自動削除はしない）②押しても
+            二段確認（何が消えて何が残るかの説明 → 最終確認）を通るまで何も
+            消えない、の2点。読み取り中は押せない（コア側も PID スロットで
+            二重起動を断るが、押せてしまうと理由が画面から分からない） */}
+        <div className="card" style={{ background: "var(--bg)" }}>
+          <div className="body">
+            <div className="t">読み取ったデータの削除</div>
+            <div className="d">読み取りの途中経過（個人情報を含みます）を削除します。
+              提出が終わったバッチは削除してください。</div>
+            <button className="btn" style={{ width: "fit-content" }}
+              disabled={running || purging}
+              onClick={() => { setPurgeIncludeOutput(false); setPurgeStep("explain"); }}>
+              {purging ? "削除中…" : "読み取ったデータを削除"}
+            </button>
+          </div>
+        </div>
+
+        {/* 認証キーの取り込み前確認（issue #52 M-10）。元のファイルを消す
+            操作を、押した本人に伝えないまま行わない */}
+        {credConfirm && (
+          <ConfirmDialog title="認証キーを取り込みます" confirmLabel="取り込む"
+            onCancel={() => setCredConfirm(null)}
+            onConfirm={() => { void importCredentials(credConfirm); }}>
+            <p style={{ margin: "0 0 10px" }}>
+              選んだ認証キーを暗号化して、この PC に保存します。</p>
+            <p style={{ margin: 0 }}>
+              <b>元のファイルは取り込み後に削除します</b>（鍵が平文のまま残らない
+              ようにするためです）。削除できなかったときは、その旨を画面に出します。</p>
+          </ConfirmDialog>
+        )}
+
+        {/* 削除の1段目: 何が消えて何が残るか（issue #52 M-11） */}
+        {purgeStep === "explain" && (
+          <ConfirmDialog title="読み取ったデータを削除します" confirmLabel="次へ"
+            onCancel={() => setPurgeStep(null)}
+            onConfirm={() => setPurgeStep("confirm")}>
+            <p style={{ margin: "0 0 10px" }}>
+              <b>消えるもの</b>: 読み取りの途中経過（取り込んだページの画像・
+              読み取った値・位置合わせの結果）。個人情報はここに残っています。</p>
+            <p style={{ margin: "0 0 10px" }}>
+              <b>残るもの</b>: 認証キー・テンプレート・設定。認証キーを取り込み
+              直す必要はありません。</p>
+            <p style={{ margin: "0 0 10px" }}>
+              削除すると、同じ帳票をもう一度読み取るときは最初から送信し直しに
+              なります（API 送信＝課金が発生します）。</p>
+            <label className="checkrow" style={{ marginBottom: 0 }}>
+              <input type="checkbox" checked={purgeIncludeOutput}
+                onChange={(e) => setPurgeIncludeOutput(e.target.checked)} />
+              <span>出力した Excel・CSV も削除する（このツールが作った
+                output_日時 のファイルだけが対象です。フォルダと、それ以外の
+                ファイルは残します）</span>
+            </label>
+          </ConfirmDialog>
+        )}
+
+        {/* 削除の2段目: 最終確認（issue #52 M-11） */}
+        {purgeStep === "confirm" && (
+          <ConfirmDialog title="削除してよろしいですか" confirmLabel="削除する"
+            danger busy={purging} onCancel={() => setPurgeStep(null)} onConfirm={runPurge}>
+            <p style={{ margin: "0 0 10px" }}>
+              読み取りの途中経過
+              {purgeIncludeOutput ? "と、出力した Excel・CSV" : ""}
+              を削除します。<b>元に戻せません。</b></p>
+            <p style={{ margin: 0 }}>
+              {purgeIncludeOutput
+                ? "提出済みであること（出力ファイルが手元に不要なこと）を確認してください。"
+                : "出力した Excel・CSV は残ります。"}</p>
+          </ConfirmDialog>
         )}
       </div>
     </div>

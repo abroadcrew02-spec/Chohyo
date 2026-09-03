@@ -7,25 +7,38 @@ import { listen as tauriListen, UnlistenFn } from "@tauri-apps/api/event";
 
 export const isTauri = "__TAURI_INTERNALS__" in window;
 
-type Handler = (e: { payload: string }) => void;
+type Handler = (e: { payload: unknown }) => void;
 const mockListeners = new Map<string, Set<Handler>>();
 
-function emit(event: string, payload: string) {
+function emit(event: string, payload: unknown) {
   mockListeners.get(event)?.forEach((h) => h({ payload }));
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function mockRun(): Promise<number> {
+// 実行ごとの ID（issue #96）。実物は Rust が `<pid>-<連番>` で振る
+// （lib.rs の next_run_id）。デモに pid は無いので接頭辞を "demo" にする
+// ——RunScreen は ID の中身を解釈せず、前回と違うことだけを見る
+let demoRunSeq = 0;
+const nextDemoRunId = () => `demo-${demoRunSeq++}`;
+
+/** core-line を実物と同じ構造化 payload で送る（issue #96）。 */
+function emitLine(runId: string, line: string) {
+  emit("core-line", { run_id: runId, line });
+}
+
+async function mockRun(): Promise<{ code: number; run_id: string }> {
   const total = 8;
-  emit("core-line", JSON.stringify({ event: "start", total, todo: total }));
+  const runId = nextDemoRunId();
+  emit("core-start", { run_id: runId });
+  emitLine(runId, JSON.stringify({ event: "start", total, todo: total }));
   for (let i = 1; i <= total; i++) {
     await sleep(280);
-    emit("core-line", JSON.stringify({
+    emitLine(runId, JSON.stringify({
       event: "page", page_id: `demo_p${String(i).padStart(4, "0")}`,
       status: i === 3 ? "位置合わせ失敗" : "done" }));
   }
-  emit("core-line", JSON.stringify({
+  emitLine(runId, JSON.stringify({
     event: "summary", pages: total, rows: total, align_failed: 1,
     api_calls: total - 1, unclear_cells: 247, overflow: 0, risky_cells: 2,
     // issue #65-3 S2: 実行時のお知らせに乗る新カウンタをデモモードでも確認
@@ -37,7 +50,30 @@ async function mockRun(): Promise<number> {
     fallback_discarded_excluded_field: 1, carve_hole_excluded_field: 0,
     conflict_excluded_field: 1,
     xlsx: "output\\output_demo.xlsx", csv: "output\\output_demo.csv" }));
-  return 0;
+  return { code: 0, run_id: runId };
+}
+
+/** 中間データ削除（issue #52 M-11）の疑似応答。
+ *
+ *  実測（core/chouhyo_ocr/cli.py の cmd_purge・2026-09-03）に合わせて
+ *  `event:"purged"` を1行だけ流す。`--include-output` を付けたときだけ
+ *  output_* のキーが増える点も実物と同じにして、二段確認のチェックの
+ *  有無で表示が変わることをブラウザだけで確認できるようにする。
+ *  削除できなかった件数（failed）は 0 のままにして「非0のときだけ出す」
+ *  分岐も残す——デモで常に警告文が出ると、実物の異常時と見分けが付かない。 */
+async function mockPurge(includeOutput: boolean): Promise<{ code: number; run_id: string }> {
+  const runId = nextDemoRunId();
+  emit("core-start", { run_id: runId });
+  await sleep(300);
+  emitLine(runId, JSON.stringify({
+    event: "purged", path: "C:\\デモ\\workdir", cred_kept: true,
+    removed: 12, failed: 0,
+    ...(includeOutput
+      ? { output_dir: "C:\\デモ\\output", output_removed: 3, output_kept: 1,
+          output_failed: 0 }
+      : {}),
+  }));
+  return { code: 0, run_id: runId };
 }
 
 // 管理6列＋代表形の抽出列（実列名ではない・issue #66 段3 QA申し送り）。
@@ -310,7 +346,10 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
     case "run_core": {
       const a = (args?.args ?? []) as string[];
       if (a[0] === "run") return mockRun();
-      return 0;
+      if (a[0] === "purge") return mockPurge(a.includes("--include-output"));
+      // run 以外は行を1つも流さない。それでも実物と同じ形（RunResult）で
+      // 返す——フロントは戻り値から run_id を取り出す（issue #96）
+      return { code: 0, run_id: nextDemoRunId() };
     }
     case "run_core_capture": {
       const a = (args?.args ?? []) as string[];
@@ -399,9 +438,24 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
           zero_reason: null,
         });
       }
+      // issue #52 M-10: 認証キーの取り込み。実測（cli.py の
+      // cmd_import_credentials・2026-09-03）は credentials_imported に続けて、
+      // 元ファイルを消せたら credentials_source_deleted、消せなければ
+      // credentials_source_kept を出す。デモは成功側を返す
+      if (a[0] === "import-credentials") {
+        const lines: Record<string, unknown>[] = [
+          { event: "credentials_imported", path: "C:\\デモ\\workdir\\cred.dpapi" },
+        ];
+        if (a.includes("--delete-source")) lines.push({ event: "credentials_source_deleted" });
+        return lines.map((e) => JSON.stringify(e)).join("\n");
+      }
       return "{}";
     }
     case "kill_core": return null;
+    // ドロップ受付の有効／無効（issue #69 セキュリティ LOW (b)）。デモには
+    // Rust 側の白リストが無いので、受け取って捨てるだけ（例外を投げると
+    // 実行画面の useEffect が毎回 catch に落ちる）
+    case "set_drop_active": return null;
     case "write_text": return null;
     // トランザクショナルな保存（issue #56 T1）のデモ再現。実ファイルには
     // 触れず、メモリ上の mockStaged だけで staged→promote/discard を模擬する

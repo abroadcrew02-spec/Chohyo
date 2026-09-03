@@ -25,8 +25,30 @@ const CFG_DEFAULT: Cfg = {
 // 扱う情報量が多く、その縮小サイズのままだと見切れるため専用の広いサイズを持つ
 const EDITOR_WINDOW_SIZE = { width: 1280, height: 860 };
 
+/** 保存で送るキーを「実際に変わったものだけ」に絞る（issue #69 Q-MF 差分送信）。
+ *
+ *  以前は6項目を毎回まとめて送っていた。read_config が返さなかった項目は
+ *  CFG_DEFAULT で埋めて表示しているため、触っていない項目まで既定値として
+ *  config.json へ書き込まれる——例えば core 側で既定が変わっても、GUI で
+ *  1項目保存した瞬間に旧既定値が固定化される。差分だけ送れば、触っていない
+ *  キーは config.json に現れないまま（＝core の既定に従うまま）になる。
+ *
+ *  ※ このモジュール（App.tsx）は CSS を import しているため gui-logic の
+ *  esbuild ハーネス（Editor.tsx / RunScreen.tsx だけを束ねる）から取り込めず、
+ *  単体テストは付けていない。ロジックを RunScreen 側へ移すと責務が壊れるので
+ *  ここに置く。 */
+function changedKeys(loaded: Cfg, next: Cfg): Partial<Cfg> {
+  const patch: Partial<Cfg> = {};
+  for (const k of Object.keys(next) as (keyof Cfg)[]) {
+    if (next[k] !== loaded[k]) (patch[k] as Cfg[keyof Cfg]) = next[k];
+  }
+  return patch;
+}
+
 function Settings({ onClose }: { onClose: () => void }) {
   const [cfg, setCfg] = useState<Cfg>(CFG_DEFAULT);
+  // 読み込んだ時点の値。保存時に差分を取る基準（issue #69 Q-MF）
+  const [loaded, setLoaded] = useState<Cfg>(CFG_DEFAULT);
   const [saved, setSaved] = useState(false);
   // 読み込み失敗を握りつぶさない（issue Q-MF）。従来は catch(()=>{}) で
   // 既定値のまま表示していたため、実際の設定内容を知らずに保存すると、
@@ -36,7 +58,10 @@ function Settings({ onClose }: { onClose: () => void }) {
   const [loadError, setLoadError] = useState("");
   useEffect(() => {
     invoke<Partial<Cfg>>("read_config")
-      .then((c) => { setCfg({ ...CFG_DEFAULT, ...c }); setLoadError(""); })
+      .then((c) => {
+        const merged = { ...CFG_DEFAULT, ...c };
+        setCfg(merged); setLoaded(merged); setLoadError("");
+      })
       .catch((e) => setLoadError(String(e)));
   }, []);
   const set = (k: keyof Cfg, v: string | number) => {
@@ -85,8 +110,17 @@ function Settings({ onClose }: { onClose: () => void }) {
     // write_config は未知キー・不正パス（空・ドライブ直下・UNC・.. 等）で
     // reject するようになった（issue Q-MC/S-MA・枠C申し送り）。reject を
     // 握りつぶすと「保存しました」の体で実は保存されていない状態になる
+    // 変えたキーだけを送る（issue #69 Q-MF 差分送信）。何も変わっていない
+    // 保存は書き込み自体を行わない——config.json の更新日時だけが動いたり、
+    // 触っていない項目が既定値として固定化されたりするのを防ぐ
+    const patch = changedKeys(loaded, fixed);
+    if (Object.keys(patch).length === 0) {
+      setSaved(true);
+      return;
+    }
     try {
-      await invoke("write_config", { patch: fixed as unknown as Record<string, unknown> });
+      await invoke("write_config", { patch: patch as unknown as Record<string, unknown> });
+      setLoaded(fixed);
       setSaved(true);
     } catch (e) {
       setErr(`設定の保存に失敗しました: ${e}`);
@@ -109,6 +143,17 @@ function Settings({ onClose }: { onClose: () => void }) {
           <input type="number" min={0.01} max={1} step={0.01} value={numValue("unclear_threshold")}
             onChange={(e) => onNumChange("unclear_threshold", e.target.value)}
             onBlur={() => commitNum("unclear_threshold")} disabled={!!loadError} />
+          {/* issue #69 L-S5: 下限検査は 0.01 まで通す。0 に近い値は「〓を
+              ほとんど出さない」設定で、目視確認の前提（要確認セルを全部見る）
+              が崩れる。止めはしない（正当な調整もありうる）が、既定より
+              低いことは伝える */}
+          {numValue("unclear_threshold").trim() !== ""
+            && +numValue("unclear_threshold") < CFG_DEFAULT.unclear_threshold && (
+            <span style={{ color: "var(--warn-ink)" }}>
+              既定（{CFG_DEFAULT.unclear_threshold}）より低い値です。〓が減るぶん、
+              読み誤りの見落としが増えます。
+            </span>
+          )}
         </label>
         <label>丸印と判定する基準値（0〜1）
           <input type="number" min={0.01} max={1} step={0.01} value={numValue("era_threshold")}

@@ -7,11 +7,28 @@ Chromium で開く。Tauri 外では bridge.ts がデモモックに切り替わ
 検証するのは §8-11 の「GUI から実行を開始でき、進捗が更新され、完了後に
 サマリが表示される」の UI 側配線。dev サーバーが立っていない環境では skip。
 """
+import os
 import urllib.request
 
 import pytest
 
+try:
+    from playwright.sync_api import expect
+except ImportError:  # playwright 未導入でも収集は通す（下の skipif が効く）
+    expect = None
+
 URL = "http://localhost:1420"
+
+# 待ち時間の上限（issue #79）。
+#
+# 素の Playwright は操作 30 秒・expect 5 秒とばらばらで、状態変化を待つ側
+# （expect）だけが先に切れる。並列で cargo／PyInstaller／pytest が走って
+# いる最中はブラウザのメインスレッドが数秒単位で止まるため、ここを 1 か所に
+# 集約し、混雑した環境では環境変数で伸ばせるようにする。
+#
+# 上限を大きく取っても正常時の実行時間は増えない（expect は状態が整った
+# 時点で先へ進む）。代わりに、本当に壊れているときの失敗確認が遅くなる。
+SMOKE_TIMEOUT_MS = int(os.environ.get("CHOUHYO_SMOKE_TIMEOUT_MS", "45000"))
 
 
 def _dev_server_up() -> bool:
@@ -31,10 +48,14 @@ def page():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         pg = browser.new_page(viewport={"width": 1280, "height": 860})
+        pg.set_default_timeout(SMOKE_TIMEOUT_MS)
+        pg.set_default_navigation_timeout(SMOKE_TIMEOUT_MS)
+        expect.set_options(timeout=SMOKE_TIMEOUT_MS)
         errors: list[str] = []
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.goto(URL, wait_until="networkidle")
-        pg.wait_for_timeout(500)
+        # 固定 sleep をやめ、初期画面が描けたことで待つ（issue #79）
+        expect(pg.get_by_text("読み取る帳票の選択")).to_be_visible()
         yield pg
         assert errors == [], f"ページ内 JS エラー: {errors}"
         browser.close()
@@ -42,39 +63,40 @@ def page():
 
 def test_initial_state_guides_user(page):
     # 手順1〜3 と説明が出ている・開始は無効
-    assert page.get_by_text("読み取る帳票の選択").is_visible()
+    expect(page.get_by_text("読み取る帳票の選択")).to_be_visible()
     # issue #19: ファイル単位はドラッグ＆ドロップで受ける（案内文の存在を確認）
-    assert page.get_by_text("ドラッグ＆ドロップでも選べます", exact=False).is_visible()
-    start = page.get_by_role("button", name="読み取りを開始")
-    assert start.is_disabled()
-    assert page.get_by_text("未選択").is_visible()
+    expect(page.get_by_text("ドラッグ＆ドロップでも選べます", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="読み取りを開始")).to_be_disabled()
+    expect(page.get_by_text("未選択")).to_be_visible()
 
 
 def test_run_flow_shows_progress_and_summary(page):
     page.get_by_role("button", name="フォルダを選ぶ").click()
     start = page.get_by_role("button", name="読み取りを開始")
-    assert start.is_enabled()
+    expect(start).to_be_enabled()
     start.click()
 
-    # 処理中: 進捗と中断ボタン
-    page.wait_for_selector("text=読み取り中", timeout=5000)
-    assert page.get_by_role("button", name="中断", exact=True).is_visible()
+    # 処理中: 進捗と中断ボタン。個別の timeout は置かず、状態が変わるまで
+    # 待つ（issue #79）——短い固定 timeout は並列負荷でだけ切れる
+    expect(page.get_by_text("読み取り中", exact=False).first).to_be_visible()
+    expect(page.get_by_role("button", name="中断", exact=True)).to_be_visible()
 
     # 完了: バナー＋サマリ6項目（モックの値）
-    page.wait_for_selector("text=読み取りが完了しました", timeout=15000)
+    expect(page.get_by_text("読み取りが完了しました", exact=False).first).to_be_visible()
     for label in ["処理枚数", "出力行数", "API送信回数",
                   "要確認セル数総計", "位置合わせ失敗", "行数超過件数"]:
-        assert page.get_by_text(label, exact=True).is_visible(), label
-    assert page.locator(".sumcard.warn .v", has_text="247").is_visible()  # 要確認セル数（モック値）
-    assert page.get_by_text("次の作業（目視確認）").is_visible()
+        expect(page.get_by_text(label, exact=True)).to_be_visible()
+    # 要確認セル数（モック値）
+    expect(page.locator(".sumcard.warn .v", has_text="247")).to_be_visible()
+    expect(page.get_by_text("次の作業（目視確認）")).to_be_visible()
     # 完了後は手順が畳まれ、結果が主役になる（スクショレビューでの修正点）
-    assert not page.get_by_text("未選択").is_visible()
+    expect(page.get_by_text("未選択")).not_to_be_visible()
 
 
 def test_failure_list_uses_plain_language(page):
     # モックは3枚目を「位置合わせ失敗」で返す → 平易な言葉の一覧
-    assert page.get_by_text("処理できなかったページ（1 件）").is_visible()
-    assert page.get_by_text("位置合わせに失敗しました（行全体が〓です）").is_visible()
+    expect(page.get_by_text("処理できなかったページ（1 件）")).to_be_visible()
+    expect(page.get_by_text("位置合わせに失敗しました（行全体が〓です）")).to_be_visible()
 
 
 def test_settings_modal_six_items(page):
@@ -82,12 +104,12 @@ def test_settings_modal_six_items(page):
     page.wait_for_selector("text=通常は変更不要です")
     for label in ["〓と判定する基準値", "丸印と判定する基準値", "上限ページ数",
                   "Excel の保存先", "中間データの保存先", "ログの保存先"]:
-        assert page.get_by_text(label, exact=False).first.is_visible(), label
+        expect(page.get_by_text(label, exact=False).first).to_be_visible()
     # 数値入力は全選択→削除で打ち直せる（M-5: 旧実装は空文字を捨てて値が戻り、
     # 既存の数字を避けながら編集する必要があった）
     thr = page.locator("input[type=number]").first
     thr.fill("")
-    assert thr.input_value() == "", "空にできない（打ち直しが阻害される）"
+    expect(thr).to_have_value("")   # 空にできない＝打ち直しが阻害される
     thr.fill("0.9")
     page.get_by_role("button", name="保存", exact=True).click()
     page.wait_for_selector("text=保存しました")
@@ -99,7 +121,7 @@ def test_editor_tab_admin_guardrails(page):
     page.wait_for_selector("text=管理者向け")
     for tool in ["選択", "欄を追加", "除外範囲",
                  "くり返し行（家族・明細）", "表裏の境界"]:
-        assert page.get_by_role("button", name=tool).is_visible(), tool
+        expect(page.get_by_role("button", name=tool)).to_be_visible()
     # 実行タブへ戻れる（未保存なしなので確認は出ない）
     page.locator(".tabs button", has_text="実行").click()
     page.wait_for_selector("text=次の作業（目視確認）")
@@ -112,7 +134,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # msg（DOM）側にも出ていることをまず確認する
     page.locator(".tabs button", has_text="テンプレート編集").click()
     page.wait_for_selector("text=管理者向け")
-    assert page.get_by_text("帳票の画像か PDF を開くと", exact=False).is_visible()
+    expect(page.get_by_text("帳票の画像か PDF を開くと", exact=False)).to_be_visible()
 
     # このテストは「帳票を開く」を一度もクリックしないため、bridge.ts の
     # pick_image が何を返すか（issue #71 (a') 以降は固定の疑似画像パス）に
@@ -127,8 +149,8 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # ツールボタンは select 以外、画像が無い間 disabled になる
     # （マリンレビュー H-1・押しても無反応にしない）
     for tool in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
-        assert page.get_by_role("button", name=tool).is_disabled(), tool
-    assert page.get_by_role("button", name="選択", exact=True).is_enabled()
+        expect(page.get_by_role("button", name=tool)).to_be_disabled()
+    expect(page.get_by_role("button", name="選択", exact=True)).to_be_enabled()
 
     # disabled のツールボタンはクリックしても tool が切り替わらない（React の
     # disabled 属性がそのまま効く前提だが、念のため実際にキャンバスへの
@@ -150,8 +172,9 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # そこが出す案内文言（コーディネータ指摘4で template_id・件数入りの
     # noImageNotice に戻した）が status 領域に出ていることで確認する
     status = page.locator('[role="status"]')
-    assert status.filter(has_text="テンプレート（demo）を読み込み済み・欄 1・表 1").is_visible(), \
-        f"ガードの案内文言に template_id・件数が出ていない: {status.inner_text()}"
+    # ガードの案内文言に template_id・件数が出ている
+    expect(status.filter(
+        has_text="テンプレート（demo）を読み込み済み・欄 1・表 1")).to_be_visible()
 
     # マリンレビュー M-4→コーディネータ指摘3: 特定の帯（想定パン/ズーム前提）
     # だけを見ると帯がずれた場合に偽 PASS するため、キャンバス全体を粗い格子
@@ -183,17 +206,17 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # disabled で押せない。押せてしまうと、後で画像を開いた直後の最初の
     # ドラッグが無言で追加領域／結合になってしまう（マリンレビュー H-1）
     page.get_by_role("button", name="person_氏名", exact=True).click()
-    assert page.get_by_text("選択中の欄").is_visible()
-    assert page.get_by_role("button", name="領域を追加", exact=True).is_disabled(), \
-        "画像が無いのに「領域を追加」が押せてしまう（H-1）"
-    assert page.get_by_role("button", name="別の欄と結合", exact=True).is_disabled(), \
-        "画像が無いのに「別の欄と結合」が押せてしまう（H-1）"
+    expect(page.get_by_text("選択中の欄")).to_be_visible()
+    # 画像が無いのに押せてしまうと、後で画像を開いた直後の最初のドラッグが
+    # 無言で追加領域／結合になる（H-1）
+    expect(page.get_by_role("button", name="領域を追加", exact=True)).to_be_disabled()
+    expect(page.get_by_role("button", name="別の欄と結合", exact=True)).to_be_disabled()
 
     # コーディネータ指摘6: 画像が無い間もキャンバスクリックで選択解除だけは
     # 効く（ヒットテストはしないので、どこをクリックしても解除される）
     page.mouse.click(box["x"] + 300, box["y"] + 300)
-    assert page.get_by_text("要素が選択されていません").is_visible(), \
-        "画像なしのキャンバスクリックで選択解除できない（コーディネータ指摘6）"
+    # 画像なしのキャンバスクリックでも選択解除は効く（コーディネータ指摘6）
+    expect(page.get_by_text("要素が選択されていません")).to_be_visible()
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
@@ -221,8 +244,9 @@ def test_editor_format_mismatch_hides_frames_until_override(page):
     page.wait_for_selector("text=管理者向け")
 
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=様式が合いません")
-    assert page.get_by_role("button", name="判定を無視して枠を表示する", exact=False).is_visible()
+    expect(page.get_by_text("様式が合いません", exact=False).first).to_be_visible()
+    expect(page.get_by_role(
+        "button", name="判定を無視して枠を表示する", exact=False)).to_be_visible()
 
     # DEMO_TEMPLATE の front 面にある「person_氏名」欄（page 座標
     # x:400,y:300,w:600,h:90）の中心を、既定の zoom(0.35)・pan({x:10,y:10})
@@ -234,15 +258,16 @@ def test_editor_format_mismatch_hides_frames_until_override(page):
 
     fx, fy = field_center()
     page.mouse.click(fx, fy)
-    assert page.get_by_text("要素が選択されていません").is_visible(), \
-        "不一致面の欄が上書き前なのに選択できてしまった（見えない枠を掴んでいる）"
+    # 不一致面の欄は上書き前には選択できない（見えない枠を掴ませない）
+    expect(page.get_by_text("要素が選択されていません")).to_be_visible()
 
     # 上書きすると枠が出て掴めるようになる
     page.get_by_role("button", name="判定を無視して枠を表示する", exact=False).click()
-    page.wait_for_selector("text=様式判定を無視して枠を表示しています")
+    expect(page.get_by_text("様式判定を無視して枠を表示しています", exact=False)
+           .first).to_be_visible()
     fx, fy = field_center()
     page.mouse.click(fx, fy)
-    assert page.get_by_text("選択中の欄").is_visible(), "上書き後なのに欄を選択できない"
+    expect(page.get_by_text("選択中の欄")).to_be_visible()
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
@@ -260,29 +285,31 @@ def test_editor_delete_ignored_while_run_tab_active(page):
     # 出力列タブから出荷（デモ）テンプレートの欄「person_氏名」を選択する
     page.locator("#edittab-output").click()
     page.get_by_role("button", name="person_氏名", exact=True).click()
-    # 選択すると「選択中」タブへ自動で戻り、欄の詳細（名前入力）が出る
-    assert page.get_by_text("選択中の欄").is_visible()
-    name_input = page.get_by_label("欄の名前（出力の列名になります）")
-    assert name_input.input_value() == "person_氏名"
+    # 選択すると「選択中」タブへ自動で戻り、欄の詳細（名前入力）が出る。
+    # 判定はすべて expect（状態が整うまで再試行する）で置く（issue #79）
+    # ——is_visible()／input_value() の素の assert は「今この瞬間」を読むため、
+    # タブ切替の再描画が並列負荷で遅れると、実装が正しくても落ちていた
+    expect(page.get_by_text("選択中の欄")).to_be_visible()
+    expect(page.get_by_label("欄の名前（出力の列名になります）")).to_have_value("person_氏名")
 
     # 実行タブへ切り替える（Editor は active=false になり非表示になるが
     # アンマウントはされない）
     page.locator(".tabs button", has_text="実行").click()
-    page.wait_for_selector("text=次の作業（目視確認）")
+    expect(page.get_by_text("次の作業（目視確認）")).to_be_visible()
     page.keyboard.press("Delete")
 
     # テンプレート編集タブへ戻り、欄が消えていない（選択も保持されたまま）
     # ことを確認する。旧実装ならここで「要素が選択されていません」に変わり、
     # 出力列一覧から person_氏名 が消えている
     page.locator(".tabs button", has_text="テンプレート編集").click()
-    assert page.get_by_text("選択中の欄").is_visible()
-    assert page.get_by_label("欄の名前（出力の列名になります）").input_value() == "person_氏名"
+    expect(page.get_by_text("選択中の欄")).to_be_visible()
+    expect(page.get_by_label("欄の名前（出力の列名になります）")).to_have_value("person_氏名")
     page.locator("#edittab-output").click()
-    assert page.get_by_role("button", name="person_氏名", exact=True).is_visible()
+    expect(page.get_by_role("button", name="person_氏名", exact=True)).to_be_visible()
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
-    page.wait_for_selector("text=次の作業（目視確認）")
+    expect(page.get_by_text("次の作業（目視確認）")).to_be_visible()
 
 
 def test_editor_user_template_list_opens_saved_template(page):
@@ -296,9 +323,9 @@ def test_editor_user_template_list_opens_saved_template(page):
 
     page.get_by_role("button", name="利用者テンプレートから開く").click()
     dialog = page.get_by_role("dialog", name="利用者テンプレートから開く")
-    assert dialog.get_by_text("帳票B").is_visible()
-    assert dialog.get_by_text("読み込めません（JSON として読めません）").is_visible(), \
-        "壊れたテンプレートが理由付きで一覧に出ていない（FR-F28）"
+    expect(dialog.get_by_text("帳票B")).to_be_visible()
+    # 壊れたテンプレートも理由付きで一覧に出る（FR-F28）
+    expect(dialog.get_by_text("読み込めません（JSON として読めません）")).to_be_visible()
 
     dialog.get_by_role("button", name="開く", exact=True).click()
     page.wait_for_selector("text=テンプレート読込: 帳票B")
@@ -321,15 +348,18 @@ def test_editor_match_panel_shows_candidates_after_opening_image(page):
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
     page.wait_for_selector("text=この画像に合うテンプレート")
     # 現在開いているテンプレートが一致判定の巡回に当たっていると畳まれる
-    # （設計08 §3.4）ため、その場合だけ展開する
+    # （設計08 §3.4）ため、その場合だけ展開する。分岐の前にパネルの中身が
+    # 描けたことを待つ（issue #79）——描画前に is_visible() を読むと常に
+    # False になり、畳まれたまま先へ進んで後の判定が落ちる
     show_btn = page.get_by_role("button", name="表示する")
+    expect(show_btn.or_(page.get_by_text("★推奨")).first).to_be_visible()
     if show_btn.is_visible():
         show_btn.click()
 
-    assert page.get_by_text("★推奨").is_visible(), "1件だけの一致候補が推奨されていない"
-    assert page.get_by_text("帳票B", exact=False).first.is_visible()
-    assert page.get_by_text("読めないテンプレート 1 件", exact=False).is_visible(), \
-        "照合できなかったテンプレートの件数・理由が出ていない（FR-F28）"
+    expect(page.get_by_text("★推奨")).to_be_visible()   # 1件だけの一致候補が推奨される
+    expect(page.get_by_text("帳票B", exact=False).first).to_be_visible()
+    # 照合できなかったテンプレートの件数・理由が出る（FR-F28）
+    expect(page.get_by_text("読めないテンプレート 1 件", exact=False)).to_be_visible()
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
@@ -386,20 +416,34 @@ def test_editor_restores_last_template_notice_after_reload(page):
     # 続けるため summary state が残る）。テンプレート選択カードはサマリ非
     # 表示時（手順1〜3と同じ条件）にしか出ないため、必要なら手前へ戻す
     change_btn = page.get_by_role("button", name="条件を変更して読み取る")
+    # 分岐の前に実行タブの中身が描けたことを待つ（issue #79）。描画前に
+    # is_visible() を読むと常に False になり、サマリを畳まないまま
+    # 「読み取る帳票の選択」を待って落ちる
+    expect(change_btn.or_(page.get_by_text("読み取る帳票の選択")).first).to_be_visible()
     if change_btn.is_visible():
         change_btn.click()
     page.wait_for_selector("text=読み取る帳票の選択")
 
     select = page.get_by_label("読み取りに使うテンプレート")
     select.select_option(label="帳票B")
-    # write_config の呼び出し（localStorage への永続化）は onChange 内の
-    # 非同期処理のため、reload の前に完了させる猶予を与える
-    page.wait_for_timeout(300)
+    # write_config（デモモードは localStorage へ書く・bridge.ts の
+    # demoConfigWrite）は onChange 内の非同期処理。固定 sleep で「たぶん
+    # 書けた」を仮定せず、保存された中身そのものを待つ（issue #79）
+    page.wait_for_function(
+        """() => {
+            try {
+                const raw = window.localStorage.getItem('chouhyo-demo-config');
+                return !!raw && JSON.parse(raw).last_template === 'user:帳票B';
+            } catch (e) { return false; }
+        }"""
+    )
 
     page.reload(wait_until="networkidle")
-    page.wait_for_timeout(500)
+    # 再読み込み後も固定 sleep をやめ、タブが描けたことで待つ
+    edit_tab = page.locator(".tabs button", has_text="テンプレート編集")
+    expect(edit_tab).to_be_visible()
 
-    page.locator(".tabs button", has_text="テンプレート編集").click()
+    edit_tab.click()
     page.wait_for_selector("text=前回のテンプレート（帳票B）を読み込みました")
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）。reload で
@@ -429,31 +473,37 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
     page.get_by_role("button", name="ページ全体から枠候補を生成").click()
     page.wait_for_selector("text=枠候補（4 件）")
     # 生成すると自動で「枠候補」タブへ切り替わる
-    assert page.locator("#edittab-candidates").get_attribute("aria-selected") == "true",         "候補生成後に「枠候補」タブへ自動で切り替わっていない"
-    # 疑似応答: 表1（overlaps無し）＋欄3（うち1件 overlaps_existing）
-    assert page.get_by_text("既存と重なり").count() == 1,         "overlaps_existing の候補が1件だけ印付きで示されていない"
+    expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
+    # 疑似応答: 表1（overlaps無し）＋欄3（うち1件 overlaps_existing）。
+    # 件数の判定も expect（再試行つき）で置く（issue #79）——count() は
+    # 「今この瞬間」を数えるため、再描画の遅れがそのまま偽の失敗になる
+    expect(page.get_by_text("既存と重なり")).to_have_count(1)
 
     page.get_by_role("button", name="選んだ候補を採用").click()
     page.wait_for_selector("text=3 件を採用しました")
     # overlaps だった候補（c2）が1件残るため自動ではタブが戻らない設計——
     # 出力列一覧は明示的にタブを切り替えて数える
     page.locator("#edittab-output").click()
-    after = page.locator("#edittabpanel .panel-outrow").count()
-    assert after == before + 3, f"採用後の欄/表の増分が期待と違う: before={before} after={after}"
-    assert page.get_by_text("field_01", exact=False).is_visible()
+    outrows = page.locator("#edittabpanel .panel-outrow")
+    expect(outrows).to_have_count(before + 3)   # 採用後の欄/表の増分
+    expect(page.get_by_text("field_01", exact=False)).to_be_visible()
     # overlaps だった候補は個別採用の対象として枠候補タブに残る
     page.locator("#edittab-candidates").click()
-    assert page.get_by_text("既存と重なり").count() == 1
+    expect(page.get_by_text("既存と重なり")).to_have_count(1)
 
-    # Undo（Ctrl+Z）で直前の採用を取り消す。400ms 静止の履歴コマ化を待つ
-    page.wait_for_timeout(500)
+    # Undo（Ctrl+Z）で直前の採用を取り消す。履歴コマは編集後 400ms 静止で
+    # 積まれる（Editor.tsx の履歴 useEffect）。この待ちは**ページ側の**
+    # タイマーで行う（issue #79）——wait_for_timeout はドライバ側の実時間で
+    # 数えるため、並列負荷でページのイベントループが止まると「500ms 経った
+    # のに履歴はまだ積まれていない」が起きる。同じイベントループに後から
+    # 積んだタイマーなら、先に登録された 400ms の方が必ず先に発火する
+    page.evaluate("() => new Promise((r) => setTimeout(r, 600))")
     page.keyboard.press("Control+z")
-    page.wait_for_timeout(200)
     # 候補は1→4件の非ゼロ遷移なので自動タブ切替は起きない。出力列タブへ
-    # 切り替えて確定枠が採用前の件数に戻ったことを確認する
+    # 切り替えて確定枠が採用前の件数に戻ったことを確認する（固定 sleep の
+    # 代わりに、件数が戻るまで再試行する expect で待つ）
     page.locator("#edittab-output").click()
-    reverted = page.locator("#edittabpanel .panel-outrow").count()
-    assert reverted == before, f"Undo で採用前の件数に戻っていない: before={before} reverted={reverted}"
+    expect(outrows).to_have_count(before)   # Undo で採用前の件数へ戻る
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）。候補の採用で
     # markDirty(true) が立ち、Undo は「保存済みに戻す」操作ではないため
@@ -486,8 +536,10 @@ def test_editor_size_mismatch_new_template_generate_accept_save(page):
     # テストの実行順・押下回数に依存して累積するため、reload でリセットして
     # から4回押し、4回目で確実に size-mismatch.png を引く。
     page.reload(wait_until="networkidle")
-    page.wait_for_timeout(500)
-    page.locator(".tabs button", has_text="テンプレート編集").click()
+    # 固定 sleep をやめ、タブが描けたことで待つ（issue #79）
+    edit_tab = page.locator(".tabs button", has_text="テンプレート編集")
+    expect(edit_tab).to_be_visible()
+    edit_tab.click()
     page.wait_for_selector("text=管理者向け")
 
     open_btn = page.get_by_role("button", name="帳票を開く（PDF・画像）")
@@ -499,10 +551,10 @@ def test_editor_size_mismatch_new_template_generate_accept_save(page):
     page.wait_for_selector("text=用紙サイズ／向きがテンプレートと合っていません")
     new_tpl_btn = page.get_by_role(
         "button", name="この紙用に新しいテンプレートを作る", exact=True)
-    assert new_tpl_btn.is_visible(), \
-        "寸法/向き不一致の赤帯に新規テンプレート作成の導線が出ていない"
-    assert page.get_by_text("この紙でテンプレートを新しく作るには下のボタン",
-                             exact=False).is_visible()
+    # 寸法/向き不一致の赤帯にも新規テンプレート作成の導線が出る
+    expect(new_tpl_btn).to_be_visible()
+    expect(page.get_by_text("この紙でテンプレートを新しく作るには下のボタン",
+                            exact=False)).to_be_visible()
 
     new_tpl_btn.click()
     page.wait_for_selector("text=空のテンプレートで開きました")
