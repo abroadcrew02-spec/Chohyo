@@ -18,6 +18,19 @@
 
 set -u
 
+# 検査そのものが失敗したときに「該当なし」で素通りさせない（fail-closed・AZKi H-3）。
+# 旧実装は `git ... | tr` の終了コードを見ており、それはパイプ末尾の tr のもの。
+# git が落ちても（壊れた正規表現・index 破損）常に 0 が返り、検出0件と区別が付かなかった。
+# POSIX sh に pipefail が無いので、git を単独で走らせて終了コードを取る。
+TMP_LIST=$(mktemp) || { echo '検査を中止: 一時ファイルを作れない' >&2; exit 1; }
+trap 'rm -f "$TMP_LIST"' EXIT HUP INT TERM
+
+die() {
+	echo "コミットを中止しました: $1" >&2
+	echo '検査が完走していないため、通すか止めるかを判断できません。' >&2
+	exit 1
+}
+
 NL='
 '
 blocked=""
@@ -42,13 +55,18 @@ block() {
 #
 # NUL を改行に直して読む。Windows のファイル名は改行を含められないため
 # （NTFS/Win32 API が禁止）、この変換で失われるものはない。
+#
+# git の失敗を握り潰さない: 出力を一時ファイルへ落として終了コードを見てから
+# tr へ渡す。呼び出し側は `x=$(list_staged) || die ...` で受ける——`$( )` の中で
+# exit してもサブシェルが終わるだけで、フック本体は止まらない（AZKi H-3）。
 list_staged() {
-	git diff --cached --name-only --diff-filter=ACMR -z "$@" | tr '\0' '\n'
+	git diff --cached --name-only --diff-filter=ACMR -z "$@" >"$TMP_LIST" || return 1
+	tr '\0' '\n' <"$TMP_LIST"
 }
 
 # --- パス基準 -------------------------------------------------------
 # ステージされた追加・変更・リネーム後のパスだけを見る（削除は無害）。
-staged=$(list_staged)
+staged=$(list_staged) || die 'ステージ済みパスの列挙に失敗した（git diff --cached）'
 
 OLD_IFS=$IFS
 IFS=$NL
@@ -66,6 +84,40 @@ for path in $staged; do
 			block "$path … SQLite（読取値がそのまま入る）"; continue ;;
 		*.key|*.pem)
 			block "$path … 秘密鍵"; continue ;;
+		# JSON は鍵の既定の入れ物（GCP のサービスアカウント鍵は
+		# <project-id>-<hash>.json という名前で降ってくる）。.gitignore は全階層の
+		# *.json を落として追跡中のものだけ否定行で戻す流儀なので、フックも同じ
+		# 許可リストで揃える（AZKi M-5）。免除は完全パスか実在ディレクトリ限定に
+		# する——`testdata/*` のような広い glob にすると、そこへ置くだけで検査を
+		# 外せる。新しい JSON を追跡するときは .gitignore の否定行とこの行の両方に
+		# 足す（鍵でないことを中身で確かめてから）。
+		*.json)
+			case "$path" in
+				# schema/ は .gitignore が `!/schema/**/*.json` で再帰的に戻すのに対し、
+				# ここは完全パスに絞る（非対称は意図・AZKi L-2）。case の `*` は `/` も
+				# 跨ぐので `schema/*.json` にすると schema 配下の任意の深さが免除になる。
+				# 追跡中の schema JSON は1件だけで、増やすときにこの行を触らせるのが狙い。
+				templates/*.json|schema/template.schema.json|design/canvas.json) continue ;;
+				gui/package.json|gui/package-lock.json) continue ;;
+				gui/tsconfig.json|gui/tsconfig.node.json) continue ;;
+				gui/src-tauri/tauri.conf.json) continue ;;
+				gui/src-tauri/capabilities/*.json) continue ;;
+				testdata/golden_manifest.json) continue ;;
+				testdata/formB/formB-v1.json) continue ;;
+				testdata/formB/responses/formB-1_p0001.json) continue ;;
+			esac
+			block "$path … JSON（鍵ファイルの可能性・許可リスト外）"; continue ;;
+		# 帳票の成果物。.gitignore と揃えて拡張子で見る（issue #98）。改名前は
+		# どちらの層も output_ で始まる名前しか見ておらず、納品用に customer.xlsx
+		# へ直しただけで2層とも素通りした（実測）。xlsx は zip バイナリなので
+		# 下の内容基準では届かない——パスで止めるのが唯一の関門になる。
+		*.xlsx|*.xls|*.xlsm|*.csv)
+			block "$path … 帳票の成果物（記入値そのもの）"; continue ;;
+		# 出力に併記する列名一覧と、アトミック差し替えの一時ファイル
+		# （render_out.py が output_<日時>_columns.txt・.xlsx.tmp / .csv.tmp /
+		# .txt.tmp を同じ出力先へ書く）。.tmp は中身が本体と同一。
+		*_columns.txt|*.tmp)
+			block "$path … 出力の列名一覧・差し替え用の一時ファイル"; continue ;;
 		*.png|*.jpg|*.jpeg|*.tif|*.tiff|*.bmp)
 			# 正当な同梱アセット（アプリのアイコンと静的ファイル）だけ画像ルールを免除する。
 			# 免除はこの分岐の中に閉じ込める。旧実装はループ先頭で全ルールを飛ばしていたため、
@@ -75,8 +127,12 @@ for path in $staged; do
 			# このファイルが CRLF になり、行末の値が CR を拾って `asset=1` が "1<CR>" に
 			# なる——[ "$asset" -eq 1 ] が整数比較に失敗して gui/public/logo.png まで
 			# ブロックされた（実測）。case なら行末に値を置かないので影響を受けない。
+			# testdata の合成画像は .gitignore が否定行で戻している追跡対象。
+			# ディレクトリごとでなく完全パスで免除する——`testdata/*` にすると
+			# そこへ本物のスキャンを置けば検査を外せる（AZKi 回答7）。
 			case "$path" in
 				gui/src-tauri/icons/*|gui/public/*) continue ;;
+				testdata/formB/formB-1.png) continue ;;
 			esac
 			block "$path … 画像（帳票スキャンの可能性）"; continue ;;
 		*.pdf)
@@ -89,12 +145,17 @@ IFS=$OLD_IFS
 # サービスアカウント鍵の JSON と PEM 秘密鍵。ファイル名を変えられても中身で捕まえる。
 # 検出内容そのものは表示しない（画面・端末ログへ鍵を出さないため、パターン名と
 # ファイル名だけ出す）。
-# .githooks/pre-commit だけを検査対象から外す——このスクリプト自身が検出パターンを文字列として
-# 持っているため、除外しないとフック自体を commit できない（実測）。
+# 除外リストは持たない。除外はそのまま穴になる（そこへ鍵を置けば検査を抜けられる）。
+# 下のパターンは「自分自身に一致しない」綴りにしてあるので、このスクリプト自身を
+# 検査対象から外す必要がない——"private_key" の直後が `[` で、パターンが要求する
+# `:` に外れる（実測 2026-09-03）。将来ここを書き換えて自己一致するようになったら、
+# 除外を足すのではなく綴りを変えて避ける。
 scan_content() {
 	label=$1
 	pattern=$2
-	hits=$(list_staged -G"$pattern" -- . ':(exclude).githooks/pre-commit' 2>/dev/null) || return 0
+	# 2>/dev/null は付けない——壊れた正規表現の診断を消してしまう。git が落ちたら
+	# 1 を返し、呼び出し側が die する（AZKi H-3）
+	hits=$(list_staged -G"$pattern") || return 1
 	[ -n "$hits" ] || return 0
 	OLD_IFS=$IFS
 	IFS=$NL
@@ -105,10 +166,45 @@ scan_content() {
 	IFS=$OLD_IFS
 }
 
-scan_content 'サービスアカウント鍵（"type": "service_account"）' '"type"[ 	]*:[ 	]*"service_account"'
-scan_content '秘密鍵フィールド（"private_key"）'                  '"private_key"'
-scan_content 'PEM 秘密鍵（BEGIN PRIVATE KEY）'                    'BEGIN PRIVATE KEY'
-scan_content 'PEM 秘密鍵（BEGIN RSA PRIVATE KEY）'                'BEGIN RSA PRIVATE KEY'
+# 鍵の「名前」ではなく「中身の量」で見る（2026-09-03・issue #98 の作業中に判明）。
+# 名前だけを見ていた頃は、資格情報を扱うソースとそのテスト（cred_store.py・
+# test_credentials_warn.py・test_cred_config_atomicity.py）が毎回引っかかり、
+# それらを直すたびに --no-verify を促す形になっていた（実測）。フックを外させる
+# 検査は防御にならない。本物の GCP サービスアカウント鍵は private_key に 1,700
+# バイト前後の PEM を持ち、private_key_id は 40 桁の16進。ダミー値のテストとは
+# ここで分かれる。
+#
+# type が service_account の宣言は見ない（AZKi M-3）。鍵本体を伴わない
+# サービスアカウント JSON は秘密材料を含まず、private_key_id があれば S2 が
+# 拾う。加えて .gitignore が全階層の *.json を落としているので、そもそも
+# add に -f が要る（上のパス基準 *.json でも許可リスト外は止まる）。
+#
+# -G の性質（AZKi LOW）: git は拡張正規表現で、差分の1行ごとに照合する。
+# 複数行にまたがるパターンは書いても効かない——だから「ヘッダ行」と「本体行」を
+# 別々のパターンで受ける。CRLF のリポジトリでは行末の CR が行の一部として残る
+# ため、行末アンカーの手前に [[:space:]]* が要る（実測: 付けないと CRLF の PEM が
+# 丸ごと素通りする・AZKi H-2）。
+#
+# 実測（2026-09-03・AZKi の合成鍵 28 形態と使い捨てリポで確認。リポジトリへは
+# 入れていない）:
+#   誤検出: 追跡・未追跡の全ファイルで 0 件
+#   検出:   .env 形式・改行落とし・ソース内の \n 埋め込み・字下げ・CRLF の各 PEM 形態
+#
+# 既知の限界（AZKi L-1・2026-09-03）:
+#   取りこぼす: 行をまたいで断片を連結した鍵（-G は1行ごとの照合なので原理的に届かない）。
+#               AWS のアクセスキーと GitHub の PAT も対象外——ここは GCP と PEM に絞っている。
+#   将来当たる: 裸の64桁16進が並ぶファイルと、折り返した data URI（どちらも現リポには無い）。
+#   回避策:     sha256sum の標準形式（ハッシュ・空白2つ・ファイル名）なら行全体が base64 に
+#               ならず当たらない。data URI は折り返さず1行に収める。
+scan_content '秘密鍵の本体らしい長さの値'         '"private_key"[[:space:]]*:[[:space:]]*"[^"]{200,}' || die '内容検査に失敗した（秘密鍵の本体らしい長さの値）'
+scan_content 'サービスアカウント鍵の指紋'         '"private_key_id"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{20,}"' || die '内容検査に失敗した（サービスアカウント鍵の指紋）'
+# ヘッダの直後に本体らしい長さが続く形（1行に潰した PEM・.env 形式・ソース内の
+# BEGIN 行へ \n を埋め込んだ代入）。ダミー鍵は本体 38 文字なので当たらない（AZKi H-1）
+scan_content 'PEM ヘッダの直後に本体らしい長さが続く' 'BEGIN[ A-Z]{0,12}PRIVATE KEY-----.{100,}' || die '内容検査に失敗した（PEM ヘッダの直後に本体らしい長さが続く）'
+scan_content 'PEM 本体らしい base64 だけの行'     '^[[:space:]]*[A-Za-z0-9+/]{60,}={0,2}[[:space:]]*$' || die '内容検査に失敗した（PEM 本体らしい base64 だけの行）'
+# Google API キー。文書で例示するときは AIza… と省略形で書く（逐語で書くと
+# その文書自身が引っかかる）
+scan_content 'Google API キー'                    'AIza[0-9A-Za-z_-]{35}' || die '内容検査に失敗した（Google API キー）'
 
 # --- 判定 -----------------------------------------------------------
 if [ -n "$blocked" ]; then

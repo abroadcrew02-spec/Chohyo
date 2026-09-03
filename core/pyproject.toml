@@ -1,8 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "chouhyo-ocr"
 version = "0.1.0"
 description = "帳票OCRツール Python コア（CLI）"
 requires-python = ">=3.13"
+# 実行依存。core/chouhyo_ocr/*.py の import を洗い出して確定した（issue #94）。
+# 下限は 2026-09-03 時点の .venv の版（この組み合わせで回帰ゲートが緑）、上限は
+# 次のメジャー未満。上限を開けたままにすると、破壊的変更が入った日に「手元では
+# 通るが新しい環境で落ちる」が起きる。
+dependencies = [
+    "google-cloud-vision>=3.15,<4",  # Vision API クライアント（document_text_detection）
+    "jsonschema>=4.26,<5",           # schema/template.schema.json の検証
+    "numpy>=2.5,<3",                 # 罫線検出・位置合わせの画素走査
+    "openpyxl>=3.1.5,<4",            # xlsx の書き出し
+    "pillow>=12.3,<13",              # PDF 展開後の画像処理（import 名は PIL）
+]
+
+[project.optional-dependencies]
+# 開発・テスト用。実行時には要らないので配布物には含めない。
+# pytest-xdist は run_all_tests.py が渡す `-n auto` の提供元で、これが無いと
+# pytest が unrecognized arguments で即終了しゲートが起動しない（issue #94）。
+dev = [
+    "psutil>=7.2,<8",           # scripts/perf_check.py
+    "pytest>=9.1,<10",
+    "pytest-xdist>=3.8,<4",     # run_all_tests.py の -n auto
+    "pytest-cov>=7.1,<8",       # run_all_tests.py --coverage（既定 OFF・issue #65-5）
+    "playwright>=1.62,<2",      # core/tests/test_gui_smoke.py
+    "pyinstaller>=6.22,<7",     # scripts/build_dist.py
+    "pip-licenses>=5.5,<6",     # scripts/gen_notices.py（配布物のライセンス表記）
+]
+
+[tool.setuptools]
+# 配布に含めるのは chouhyo_ocr だけ。既定の自動探索だと core/tests も
+# パッケージ候補として拾われる。
+packages = ["chouhyo_ocr"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

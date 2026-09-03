@@ -37,8 +37,23 @@ intermediate/
 
 # 出力（帳票の記入値そのもの）
 output/
-output_*.xlsx
-output_*.csv
+# 拡張子で全階層を落とす。output_ で始まる名前だけを見ていた間は、納品用に
+# 改名した customer.xlsx・results/final.csv・docs/顧客一覧.xlsx がどれも
+# 素通りしていた（実測: check-ignore が NOT IGNORED・issue #98）。出力先は
+# GUI から任意のフォルダへ変えられるので、リポジトリ配下に置かれる前提で書く。
+# 追跡中のこの拡張子のファイルは 0 件のため、戻す否定行は要らない
+# （git ls-files で確認・2026-09-03）。表計算を新しく追跡するときは、
+# 帳票の記入値でないことを確かめてから否定行をここへ足す。
+*.xlsx
+*.xls
+*.xlsm
+*.csv
+# 列名一覧の併記ファイルと、アトミック差し替えの一時ファイル。xlsx/csv と
+# 同じ出力先に同じ timestamp で並ぶ（render_out.py の output_<日時>_columns.txt・
+# .xlsx.tmp / .csv.tmp / .txt.tmp）。列名だけとはいえ様式の構成が読めるうえ、
+# .tmp は中身が本体と同一
+*_columns.txt
+*.tmp
 
 # ログ（記入値は書かない設計だが、事故時の保険として除外）
 logs/
@@ -92,6 +107,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# カバレッジ計測の作業ファイル（run_all_tests.py --coverage）。pytest の cwd が
+# core/ なので core/.coverage に出る。.coverage.* は xdist がワーカーごとに書く
+# 分割ファイルで、結合前に落ちると残る。読める形の成果物は
+# workdir_build/coverage/ 側（こちらも除外済み）。
+.coverage
+.coverage.*
 
 # --- Node / Tauri ---------------------------------------------------
 node_modules/
@@ -118,7 +139,14 @@ desktop.ini
 # 戻す拡張子は最小限にし、鍵 JSON の混入は pre-commit の内容検査に委ねる。
 # 配布物には同梱されない（tauri.conf は templates/ のみ同梱）。経緯は
 # docs/design/chouhyo-ocr/06_second_form_findings.md §2
-!/testdata/**/*.json
-!/testdata/**/*.png
+# 戻すのはワイルドカードでなく実在パスの列挙にする。`!/testdata/**/*.json` だと
+# testdata 配下に置いた任意の JSON が追跡対象へ戻り、たとえば
+# testdata/formB/responses/本番読取_p0001.json（実データの Vision 応答）が
+# NOT IGNORED になる（実測・AZKi レビュー M-4）。追跡を増やすときは
+# git ls-files testdata で現物を確かめてから1行足す。
+!/testdata/golden_manifest.json
+!/testdata/formB/formB-v1.json
+!/testdata/formB/responses/formB-1_p0001.json
+!/testdata/formB/formB-1.png
 # 否定行より後ろに置いて打ち消す（:67 の *.saving.json は上の否定に負ける・再検証 LOW）
 /testdata/**/*.saving.json

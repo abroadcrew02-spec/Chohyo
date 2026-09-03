@@ -1,0 +1,170 @@
+# 回帰ゲートを GitHub 側でも回す（issue #95）。
+#
+# 手元の `scripts/run_all_tests.py` は「忘れずに打つ人」に依存している。ここで
+# 強制するが、PR ごとにフルスイートを回すと 1 回 15〜30 分かかり待ち時間が
+# 積み上がるので、役割を分ける。
+#
+#   pull_request → light（ubuntu-latest）: 型検査・GUI 純ロジック・依存宣言の解決
+#   push (main)  → full （windows-latest）: pytest 全体・GUI 純ロジック・cargo test
+#
+# ランナーは標準の ubuntu-latest / windows-latest だけを使う。大型ランナー
+# （ubuntu-latest-4-cores 等）とセルフホストは公開リポジトリでも課金対象になる
+# ため書かない。
+#
+# フルスイートを OS で割る案（pytest だけ ubuntu）は採らない。core は Windows
+# 専用で、core/chouhyo_ocr/cred_store.py が `import ctypes.wintypes` を持ち
+# （Linux では import 自体が失敗する）、cli.py がそれを読み込む。加えて
+# core/tests の 6 ファイルが `.venv/Scripts/python.exe` を直接起動し、
+# test_response_robustness.py は msvcrt のファイルロックを使う。ubuntu へ
+# 割るには core/tests 側の改修が要る（2026-09-03 調査）。
+
+name: ci
+
+on:
+  # 二重に走らせない。push は main に入った後のフル、pull_request はマージ前の軽量。
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # push では前の run を殺さない。main へ連続 push したとき前の run が kill
+  # されると、その差分に対するフルスイートの結果が残らない（AZKi H-4 と同型）。
+  # PR は最新版だけ見れば足りるので殺してよい。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------
+  # PR ごと。数分で終わる範囲だけを見る。
+  # ---------------------------------------------------------------
+  light:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: npm ci
+        working-directory: gui
+        run: npm ci
+
+      # gui-logic テストは esbuild で型注釈を剥がすだけで型を見ない。型検査は
+      # ここが唯一の関門になる（配布物ビルドまで待たない・issue #95）。
+      - name: 型検査（tsc --noEmit）
+        working-directory: gui
+        run: ./node_modules/.bin/tsc --noEmit -p .
+
+      - name: GUI 純ロジック
+        working-directory: gui
+        run: node tests/gui-logic.test.mjs
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # 宣言だけを検査する。import はしない——core は Windows 専用のため
+      # ubuntu では読み込めない（先頭のコメント参照）。依存の解決が壊れたら
+      # ここで落ちる（issue #94）。
+      - name: Python 依存の宣言が解決できるか
+        run: python -m pip install -e "core[dev]"
+
+  # ---------------------------------------------------------------
+  # main へ入った後。フルスイート。
+  # ---------------------------------------------------------------
+  full:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: core/pyproject.toml
+
+      - name: Python 依存の導入
+        run: python -m pip install -e "core[dev]"
+
+      # vendor/poppler/ は .gitignore 済みでリポジトリに無い。無いまま pytest を
+      # 回すと ingest が POPPLER_NOT_FOUND を投げ、PDF 展開まわりのテストが
+      # skip ではなく失敗する。手元と同じ 26.02.0 を入れる。
+      # ダウンロードは sha256 を照合してから展開する（差し替えを検知する）。
+      - name: Poppler（PDF→画像）の導入
+        shell: pwsh
+        run: |
+          $url  = 'https://github.com/oschwartz10612/poppler-windows/releases/download/v26.02.0-0/Release-26.02.0-0.zip'
+          $sha  = '993e4a94376ed712fafc7058d724ea0b943d118bbd2305cd9ed55174eb85cda5'
+          $zip  = Join-Path $env:RUNNER_TEMP 'poppler.zip'
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $got = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($got -ne $sha) { throw "poppler の sha256 が一致しない: $got" }
+          New-Item -ItemType Directory -Force -Path vendor/poppler | Out-Null
+          Expand-Archive -Path $zip -DestinationPath vendor/poppler -Force
+          # 展開後は vendor/poppler/poppler-26.02.0/Library/bin/pdftoppm.exe。
+          # ingest.py が vendor/poppler/**/pdftoppm.exe を glob で探す形に合わせる。
+          if (-not (Get-ChildItem -Recurse -Filter pdftoppm.exe vendor/poppler)) {
+            throw 'pdftoppm.exe が見つからない'
+          }
+
+      # run_all_tests.py ではなく pytest を直接呼ぶ。ランナーは「skip が passed の
+      # 10% を超えたら FAIL」というガードを持つが、テストの約 38% は .gitignore 済みの
+      # workdir/pages/sample-1.png・workdir/s2/resp_*.json を素材にしており、CI には
+      # その素材が無い。ランナーをそのまま呼ぶと必ず FAIL になるため、CI では
+      # 「skip は許すが failed は 0」を判定にする。skip 件数は -rs でログに出す。
+      - name: pytest
+        working-directory: core
+        run: python -X utf8 -m pytest -q --tb=short -rf -rs -n auto
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: npm ci
+        working-directory: gui
+        run: npm ci
+
+      # tsc && vite build。型検査を兼ねるうえ、gui/dist を作る——tauri-build が
+      # tauri.conf.json の frontendDist（../dist）を要求するため、これが無いと
+      # 次の cargo test がビルドで落ちる。
+      - name: フロントエンドのビルド（型検査を含む）
+        working-directory: gui
+        run: npm run build
+
+      - name: GUI 純ロジック
+        working-directory: gui
+        run: node tests/gui-logic.test.mjs
+
+      # cargo は windows-latest に同梱済み。rustup のツールチェーンを足す
+      # サードパーティ action は入れない（供給網を増やさない）。
+      # 取得済みクレートだけをキャッシュする。target/ は載せない——復元した
+      # ビルド成果物は次の cargo 実行でそのまま使われ、build.rs や
+      # プロシージャマクロは実行されるコードなので、汚染された成果物が
+      # 復元されると実行経路になる（AZKi M-6）。registry/git は取得物の
+      # 保管で、Cargo.lock のハッシュ照合を経てから使われる。
+      - name: 取得済みクレートをキャッシュ
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ hashFiles('gui/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo test
+        working-directory: gui/src-tauri
+        run: cargo test --quiet
+
+      # core-dist（同梱 exe）の鮮度検査は CI では行わない。core-dist/ は
+      # .gitignore 済みでリポジトリに無く、CI で作っても比較相手が無い。
+      # 配布前の確認は手元の run_all_tests.py が担う。

@@ -1,0 +1,262 @@
+# 個人情報・資格情報が入った差分を GitHub 側で「検知」する（issue #98）。
+#
+# ⚠️ これは検知であって防止ではない。ワークフローが走る時点で blob は既に GitHub
+# へ到達しており、公開リポジトリなのでその瞬間から誰でも読める。ここが赤くなった
+# 時点で「漏れた」であって「防いだ」ではない——鍵なら失効・再発行、帳票なら
+# 履歴の書き換えまで含めた対応が要る。
+#
+# 実際に止めるのは次の3つ:
+#   1. 手元の .githooks/pre-commit（commit の手前。`git config core.hooksPath .githooks`）
+#   2. GitHub の secret scanning push protection（push そのものを拒否する。
+#      2026-09-03 時点で secret_scanning=enabled / secret_scanning_push_protection=enabled
+#      を `gh api repos/abroadcrew02-spec/Chohyo --jq .security_and_analysis` で確認済み。
+#      ただし non_provider_patterns=disabled のため、GCP のような提供元既知の鍵は
+#      拾うが、帳票の xlsx/csv や汎用の秘密は対象外）
+#   3. branch protection の required check（main へ入る前に本ワークフローを必須にする）
+# 本ワークフローは 3 の材料であり、1 と 2 をすり抜けたものを事後に見つける網。
+#
+# ランナーは標準の ubuntu-latest だけを使う。大型ランナー（ubuntu-latest-4-cores 等）
+# とセルフホストは公開リポジトリでも課金対象になるため書かない。
+
+name: guard
+
+on:
+  # 全ブランチを対象にする。公開リポジトリでは main に入る前の push でも、その
+  # 時点で blob が公開されるため main だけ見ても遅い（AZKi M-1）。branches を
+  # 明示しているのでタグ push では起動しない。
+  push:
+    branches: ['**']
+  pull_request:
+
+concurrency:
+  group: guard-${{ github.ref }}
+  # push では前の run を殺さない。main へ A→B と続けて push したとき、A の run が
+  # kill されると A で入った差分が誰にも検査されないまま残る（B の run は B の
+  # 差分しか見ない）。PR は最新版だけ見れば足りるので殺してよい（AZKi H-4）。
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  paths-and-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 差分の起点（PR の base・push の before・origin/main との merge-base）を
+          # 解決するのに全履歴と全ブランチが要る
+          fetch-depth: 0
+
+      - name: 変更ファイルのパスと内容を検査する
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          # -f はパス名展開を切る（`for path in $(...)` がグロブで化けるのを防ぐ）。
+          # pipefail は `git ... | tr` の終了コードを git 側から取るため——付けないと
+          # 末尾の tr の 0 が返り、git が落ちても「該当なし」で通る（AZKi H-3）。
+          set -euf -o pipefail
+
+          die() {
+            echo "検査を中止しました: $1" >&2
+            echo "検査が完走していないため、通すか止めるかを判断できません。" >&2
+            exit 1
+          }
+
+          EMPTY_TREE=$(git hash-object -t tree /dev/null)
+
+          usable() {
+            [ -n "${1:-}" ] || return 1
+            [ "$1" != "0000000000000000000000000000000000000000" ] || return 1
+            git cat-file -e "${1}^{commit}" 2>/dev/null
+          }
+
+          # --- 検査する範囲 -------------------------------------------
+          # その push / PR で入った差分だけを見る。
+          BASE=""
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            REV="HEAD"          # checkout の既定＝マージ結果。実際に main へ入る形
+            usable "$PR_BASE_SHA" && BASE="$PR_BASE_SHA" || true
+          else
+            REV="$GITHUB_SHA"
+            # main 以外のブランチは origin/main との分岐点を起点にする。新しい
+            # ブランチの初回 push は before が全ゼロで、そこで全量走査へ落ちると
+            # 受け入れ済みの testdata/formB/formB-1.png が毎回赤くなる（AZKi M-1）。
+            # main への push で merge-base を使うと origin/main が自分自身になり
+            # 差分が空になってしまうので、そちらは before を使う。
+            if [ "$GITHUB_REF" != "refs/heads/main" ] \
+               && git rev-parse --verify -q origin/main >/dev/null 2>&1; then
+              MB=$(git merge-base origin/main "$REV" 2>/dev/null || true)
+              usable "$MB" && BASE="$MB" || true
+            fi
+            [ -n "$BASE" ] || { usable "$PUSH_BEFORE" && BASE="$PUSH_BEFORE" || true; }
+          fi
+
+          if [ -z "$BASE" ]; then
+            # 最後の砦。ここへ来るのは main への force push（ローカル設定で禁止）か、
+            # base を解決できない異常時だけ。受け入れ済みの追跡ファイルも並ぶので、
+            # 落ちたら差分ではなく全量が出ていないかを先に確かめる。
+            echo "差分の起点を解決できないので $REV のツリー全体を検査する"
+            BASE="$EMPTY_TREE"
+          fi
+          echo "検査範囲の起点: $BASE"
+
+          # `--name-only` を素で使わない。core.quotepath は git の既定が true で、
+          # その場合 `notes/帳票.png` が引用符つき8進エスケープで返り、日本語名の
+          # ファイルだけが case の照合を素通りする（.githooks/pre-commit の同じ
+          # 注記を参照）。`-z` は quotepath 設定に関係なく無加工の NUL 区切りで出す。
+          list_changed() {
+            local pat=${1:-}
+            if [ -n "$pat" ]; then
+              # 内容基準。除外リストは持たない（下の S1〜S5 の注記を参照）
+              git diff --name-only --diff-filter=ACMR -z -G"$pat" "$BASE" "$REV" | tr '\0' '\n'
+            else
+              git diff --name-only --diff-filter=ACMR -z "$BASE" "$REV" | tr '\0' '\n'
+            fi
+          }
+
+          NL=$'\n'
+          blocked=""
+          block() { blocked="${blocked}  - ${1}${NL}"; }
+
+          # --- パス基準 -----------------------------------------------
+          # 分岐は .githooks/pre-commit と同じ並びに保つ。片方だけ足すと
+          # 「手元では止まるが GitHub では通る」の食い違いが生まれる。
+          if ! changed=$(list_changed); then die "変更パスの列挙に失敗した（git diff）"; fi
+          OLD_IFS=$IFS
+          IFS=$NL
+          for path in $changed; do
+            [ -n "$path" ] || continue
+            # 文字集合は pre-commit と同じ列挙にする（`tr A-Z a-z` は範囲指定が
+            # ロケール依存で、環境によって想定外の対応表になりうる・AZKi LOW）
+            lower=$(printf '%s' "$path" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+            case "$lower" in
+              workdir/*|*/workdir/*)
+                block "$path … 中間データ（読取値・信頼度・展開画像）"; continue ;;
+              *.dpapi)
+                block "$path … DPAPI 暗号化済みの GCP 鍵"; continue ;;
+              *.sqlite|*.sqlite3|*.db)
+                block "$path … SQLite（読取値がそのまま入る）"; continue ;;
+              *.key|*.pem)
+                block "$path … 秘密鍵"; continue ;;
+              # JSON は鍵の既定の入れ物（GCP のサービスアカウント鍵は
+              # <project-id>-<hash>.json という名前で降ってくる）。免除は完全パスか
+              # 実在ディレクトリ限定にし、.gitignore の否定行と同じ顔ぶれに保つ
+              # （AZKi M-5）。広い glob にすると、そこへ置くだけで検査を外せる。
+              *.json)
+                case "$path" in
+                  # schema/ は .gitignore が `!/schema/**/*.json` で再帰的に戻すのに対し、
+                  # ここは完全パスに絞る（非対称は意図・AZKi L-2）。case の `*` は `/` も
+                  # 跨ぐので `schema/*.json` にすると schema 配下の任意の深さが免除になる。
+                  # 追跡中の schema JSON は1件だけで、増やすときにこの行を触らせるのが狙い。
+                  templates/*.json|schema/template.schema.json|design/canvas.json) continue ;;
+                  gui/package.json|gui/package-lock.json) continue ;;
+                  gui/tsconfig.json|gui/tsconfig.node.json) continue ;;
+                  gui/src-tauri/tauri.conf.json) continue ;;
+                  gui/src-tauri/capabilities/*.json) continue ;;
+                  testdata/golden_manifest.json) continue ;;
+                  testdata/formB/formB-v1.json) continue ;;
+                  testdata/formB/responses/formB-1_p0001.json) continue ;;
+                esac
+                block "$path … JSON（鍵ファイルの可能性・許可リスト外）"; continue ;;
+              *.xlsx|*.xls|*.xlsm|*.csv)
+                block "$path … 帳票の成果物（記入値そのもの）"; continue ;;
+              *_columns.txt|*.tmp)
+                block "$path … 出力の列名一覧・差し替え用の一時ファイル"; continue ;;
+              *.png|*.jpg|*.jpeg|*.tif|*.tiff|*.bmp)
+                # 正当な同梱アセット（アイコンと静的ファイル）と testdata の合成画像
+                # だけ免除する。testdata は完全パス指定にする——`testdata/*` にすると
+                # そこへ本物のスキャンを置けば検査を外せる（AZKi 回答7）。
+                case "$path" in
+                  gui/src-tauri/icons/*|gui/public/*) continue ;;
+                  testdata/formB/formB-1.png) continue ;;
+                esac
+                block "$path … 画像（帳票スキャンの可能性）"; continue ;;
+              *.pdf)
+                block "$path … PDF（帳票の可能性）"; continue ;;
+            esac
+          done
+          IFS=$OLD_IFS
+
+          # --- 内容基準 -----------------------------------------------
+          # ファイル名を変えられても中身で捕まえる。見るのは鍵の「名前」ではなく
+          # 「中身の量」（.githooks/pre-commit と同じ5本・同じ並び）。名前だけを見ると
+          # 資格情報を扱うソースとそのテストが毎回引っかかり、検査を外す運用に倒れる。
+          #
+          # type が service_account の宣言は見ない（AZKi M-3）。鍵本体を伴わない
+          # サービスアカウント JSON は秘密材料を含まず、private_key_id があれば S2 が
+          # 拾う。加えて .gitignore が全階層の *.json を落としているので add に -f が
+          # 要り、上のパス基準 *.json でも許可リスト外は止まる。
+          #
+          # -G の性質（AZKi LOW）: git は拡張正規表現で、差分の1行ごとに照合する。
+          # 複数行にまたがるパターンは書いても効かない——だから「ヘッダ行」(S4) と
+          # 「本体行」(S3) を別々に受ける。CRLF のリポジトリでは行末の CR が行の一部
+          # として残るため、行末アンカーの手前に [[:space:]]* が要る（付けないと
+          # CRLF の PEM が丸ごと素通りする・AZKi H-2）。アンカー自体は外さない——
+          # 外すと package-lock.json / Cargo.lock 等が誤検出になる。
+          #
+          # 除外リストは持たない——除外はそのまま穴になる（そこへ鍵を置けば抜けられる）。
+          # パターンは自分自身に一致しない綴りにしてある。
+          #
+          # 既知の限界（AZKi L-1・2026-09-03）:
+          #   取りこぼす: 行をまたいで断片を連結した鍵（-G は1行ごとの照合なので原理的に届かない）。
+          #               AWS のアクセスキーと GitHub の PAT も対象外——ここは GCP と PEM に絞っている。
+          #   将来当たる: 裸の64桁16進が並ぶファイルと、折り返した data URI（どちらも現リポには無い）。
+          #   回避策:     sha256sum の標準形式（ハッシュ・空白2つ・ファイル名）なら行全体が base64 に
+          #               ならず当たらない。data URI は折り返さず1行に収める。
+          S1='"private_key"[[:space:]]*:[[:space:]]*"[^"]{200,}'
+          S2='"private_key_id"[[:space:]]*:[[:space:]]*"[0-9a-fA-F]{20,}"'
+          S3='^[[:space:]]*[A-Za-z0-9+/]{60,}={0,2}[[:space:]]*$'
+          S4='BEGIN[ A-Z]{0,12}PRIVATE KEY-----.{100,}'
+          # Google API キー。文書で例示するときは AIza… と省略形で書く
+          # （逐語で書くとその文書自身が引っかかる）
+          S5='AIza[0-9A-Za-z_-]{35}'
+
+          scan_content() {
+            local label=$1 hits entry IFS_BAK
+            if ! hits=$(list_changed "$2"); then
+              die "内容検査に失敗した（git diff -G / ${label}）"
+            fi
+            [ -n "$hits" ] || return 0
+            IFS_BAK=$IFS
+            IFS=$NL
+            for entry in $hits; do
+              [ -n "$entry" ] || continue
+              block "$entry … ${label} が差分に含まれる"
+            done
+            IFS=$IFS_BAK
+          }
+
+          # 検出した値そのものは出さない。ファイル名とパターン名だけを出す
+          # （実行ログは公開リポジトリでは誰でも読めるため）。
+          scan_content '秘密鍵の本体らしい長さの値'             "$S1"
+          scan_content 'サービスアカウント鍵の指紋'             "$S2"
+          scan_content 'PEM 本体らしい base64 だけの行'         "$S3"
+          scan_content 'PEM ヘッダの直後に本体らしい長さが続く' "$S4"
+          scan_content 'Google API キー'                        "$S5"
+
+          # --- 判定 ---------------------------------------------------
+          if [ -n "$blocked" ]; then
+            cat >&2 <<MSG
+          検査に失敗しました。個人情報または資格情報が差分に含まれています。
+
+          $blocked
+          このリポジトリは手書き帳票（氏名・生年月日・電話・住所）を扱い、公開設定です。
+          この時点で該当の blob は GitHub 上にあり、誰でも取得できます。直せば無かった
+          ことになる、というものではありません。
+
+          対処:
+            1. 鍵なら即座に失効・再発行する（履歴から消しても漏れた事実は消えない）
+            2. 帳票なら影響範囲を確認し、履歴の書き換えの要否をユーザーへ確認する
+            3. 追跡から外す:  git rm --cached <パス>
+               ただし削除コミットでこの検査が緑に戻っても、blob は履歴に残ったまま公開されている。
+               緑に戻ることは解決ではない。
+            4. .gitignore に載っているか確認:  git check-ignore -v <パス>
+            5. 手元でも同じ検査を有効にする:  git config core.hooksPath .githooks
+          MSG
+            exit 1
+          fi
+
+          echo "検査対象の差分に該当なし"
