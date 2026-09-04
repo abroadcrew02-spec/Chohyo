@@ -83,9 +83,15 @@ def main() -> int:
     # ビルドの成否とは無関係だから。見るのは「exe が起動して verify を出したか」
     # （レビュー M-18: 戻り値も出力も捨てていたので、DLL 欠落で起動できなくても
     # OK と表示していた）
+    # --template を明示する（issue #65-4）: 配布版を --template なしで直叩きすると、
+    # config.json の last_template が利用者テンプレート（user:<名前>）のとき
+    # 「画面から起動したときにだけ保存先が分かる」として ConfigError で止まる。
+    # ここで見たいのは exe の起動と verify の出力であって、開発機の直前の
+    # テンプレート選択ではないので、出荷テンプレートを固定で渡す
     print("+ smoke: chouhyo-core.exe verify", flush=True)
     try:
-        r = subprocess.run([str(APP / "chouhyo-core.exe"), "verify"],
+        r = subprocess.run([str(APP / "chouhyo-core.exe"), "verify",
+                            "--template", str(ROOT / "templates" / "chouhyo-v1.json")],
                            cwd=ROOT / "core", capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=120)
     except (OSError, subprocess.TimeoutExpired) as e:
