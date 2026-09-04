@@ -249,6 +249,7 @@ def test_existing_template_cli(tmp_path, capsys):
     assert ev["template_skip_reason"] is None
 
 
+@pytest.mark.skipif(not FORMC_PNG.exists(), reason="formC 画像が無い環境（make_formC.py で生成）")
 def test_template_size_mismatch_skips_application(tmp_path, capsys):
     """M-3: --input の実寸とテンプレートの image_size が違う場合、除外白潰し・
     face_id 割り当て・overlaps_existing を行わず、template_applied=false・

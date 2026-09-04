@@ -220,6 +220,7 @@ def test_m2_status_reason_does_not_leak_across_status_changes(tmp_path):
         assert row["status_reason"] == ""  # 残留していない
 
 
+@needs_replay
 def test_m2_post_send_codes_get_status_reason(tmp_path):
     """M-2: 送信後3コードのうち map_failed・outside_ratio は
     store.set_status(..., reason=...) 経由で status_reason が記録される

@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 import time
 
 import pytest
@@ -21,7 +22,7 @@ from chouhyo_ocr.paths import app_root
 
 RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
-PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
+PYTHON = Path(sys.executable)
 
 pytestmark = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答が無い環境")

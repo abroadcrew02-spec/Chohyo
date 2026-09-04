@@ -6,6 +6,8 @@
 
 #12/#15（エディタ）は TypeScript 側のため tsc ＋実機で確認する。
 """
+import sys
+from pathlib import Path
 import json
 
 import pytest
@@ -215,7 +217,7 @@ def test_expand_page_cli_returns_png(tmp_path):
                                     "log_dir": str(tmp_path / "logs")}),
                         encoding="utf-8")
     from chouhyo_ocr.paths import app_root
-    python = app_root() / ".venv" / "Scripts" / "python.exe"
+    python = Path(sys.executable)
     r = subprocess.run(
         [str(python), "-X", "utf8", "-m", "chouhyo_ocr.cli",
          "--config", str(cfg_file), "expand-page", "--input", str(src)],

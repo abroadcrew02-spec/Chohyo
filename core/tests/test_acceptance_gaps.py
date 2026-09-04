@@ -7,6 +7,8 @@
 - TR-G5: purge は --yes なしで拒否（要件 §6.3）
 - TR-G6: 資格情報なしの verify は失敗コードで終わる
 """
+import sys
+from pathlib import Path
 import json
 import shutil
 import subprocess
@@ -22,7 +24,7 @@ from chouhyo_ocr.vision_client import ReplayClient
 RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
-PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
+PYTHON = Path(sys.executable)
 
 pytestmark = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答が無い環境")

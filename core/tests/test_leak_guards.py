@@ -5,6 +5,7 @@
 列名・table_id）」へ拡張した。対象は app.log・error.log のみ——GUI 表示・
 stdout の JSON Lines・出力ファイルは対象外（AC-F65）。
 """
+import sys
 import ast
 import json
 import shutil
@@ -19,7 +20,7 @@ from chouhyo_ocr.paths import app_root
 from chouhyo_ocr.render_rows import Row
 from chouhyo_ocr.template import load_template
 
-PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
+PYTHON = Path(sys.executable)
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 # AC-F65 の replay 素材（.gitignore 配下・このマシン限定）。無い環境では skip
 # （test_e2e_replay.py と同じ規約）
@@ -213,6 +214,8 @@ def test_ac_f65_template_name_and_field_names_absent_from_logs(tmp_path):
     # log_dir で走らせて検証する（test_invariant_a_holds_per_command_in_isolation）
 
 
+@pytest.mark.skipif(
+    not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答・展開画像が無い環境")
 def test_invariant_a_holds_per_command_in_isolation(tmp_path):
     """不変条件A（08_frame_detection_design.md §1.4）: cell_idx・face_idx は
     template_hash とセットでのみ意味を持つ。run/remap/verify/expand-page の

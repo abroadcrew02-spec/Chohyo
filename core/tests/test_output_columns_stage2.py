@@ -16,6 +16,7 @@ FR-1.2（母集団表）・FR-1.4（対象外欄由来の警告可視化）・§
 段2 の範囲は core のみ（template.py・pipeline.py・mapping.py・
 debug_images.py）。GUI（対象外行の一覧・チェックボックス等）は段3。
 """
+import sys
 import dataclasses
 import json
 import shutil
@@ -37,7 +38,7 @@ from chouhyo_ocr.vision_client import ReplayClient
 TPL = app_root() / "templates" / "chouhyo-v1.json"
 RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
-PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
+PYTHON = Path(sys.executable)
 
 needs_replay = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答が無い環境")

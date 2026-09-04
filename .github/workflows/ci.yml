@@ -120,6 +120,10 @@ jobs:
       # workdir/pages/sample-1.png・workdir/s2/resp_*.json を素材にしており、CI には
       # その素材が無い。ランナーをそのまま呼ぶと必ず FAIL になるため、CI では
       # 「skip は許すが failed は 0」を判定にする。skip 件数は -rs でログに出す。
+      # 合成の検証画像 formC-1.png は生成物で追跡していない（testdata/formC/README.md）。
+      # 無いと detect-frames / 様式判定のテストが skip になるので、pytest の前に作る
+      - name: formC を生成
+        run: python -X utf8 testdata/formC/make_formC.py
       - name: pytest
         working-directory: core
         run: python -X utf8 -m pytest -q --tb=short -rf -rs -n auto

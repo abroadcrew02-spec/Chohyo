@@ -7,6 +7,8 @@ run が割り込む窓が常にあった。さらに store の書き込みはメ
 unassigned）が5回に分断され、途中で落ちると「cell は新テンプレートの割付なのに
 page.template_hash は旧」という自己矛盾が残りえた。
 """
+import sys
+from pathlib import Path
 import json
 import os
 import shutil
@@ -27,7 +29,7 @@ from chouhyo_ocr.vision_client import ReplayClient
 RESP = app_root() / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
 PAGE_PNG = app_root() / "testdata" / "local" / "pages" / "sample-1.png"
 TPL = app_root() / "templates" / "chouhyo-v1.json"
-PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
+PYTHON = Path(sys.executable)
 
 pytestmark = pytest.mark.skipif(
     not (RESP.exists() and PAGE_PNG.exists()), reason="保存済み応答が無い環境")

@@ -1,4 +1,6 @@
 """保存先の同期フォルダ検知（issue #8）の再レビューテスト。"""
+import sys
+from pathlib import Path
 import json
 import subprocess
 
@@ -6,7 +8,7 @@ import pytest
 
 from chouhyo_ocr.paths import app_root, is_cloud_synced_path
 
-PYTHON = app_root() / ".venv" / "Scripts" / "python.exe"
+PYTHON = Path(sys.executable)
 
 
 def test_detects_cloud_sync_markers(tmp_path):
