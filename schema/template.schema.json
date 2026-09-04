@@ -366,6 +366,33 @@
           "items": {
             "$ref": "#/$defs/tableColumn"
           }
+        },
+        "output_disabled_cells": {
+          "description": "升（1行 × 1列）単位で出力列から外す例外リスト。省略・空配列＝この表の全升を出力する（既定）。列全体を外すのは columns[].output:false のままで、こちらは「この列のこの行だけ外す」ための追加指定。columns[].output が false の列はこのリストの有無に関わらず全行が対象外になる（列が優先）。false の升も読み取り・重なり検証・空行判定・field_id の一意性検証は従来どおり行い、読取値は中間データに保存される（再指定で API 再送信なしに復帰できる）。幾何セクションではないため geometry_hash は変わらず、template_hash は変わる（remap が必要）。maxItems は意図的に置かない——要素数の実質的な上限はその表の総升数（blocks の総行数 × columns の数）で、それを超える指定は重複または実在しない升として読み込み時に必ず落ちる。表の大きさから決まる値をスキーマへ定数で二重に持つと、表の上限を変えたときに片方だけが古くなる。",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "row_no",
+              "column"
+            ],
+            "properties": {
+              "row_no": {
+                "description": "行の通し番号（1 起点・ブロックを跨いだ連番）。field_id の連番部分と同じ数え方で、blocks の総行数を超える値は読み込み時に拒否する。上限 1600 は blocks の maxItems 8 × rows の maximum 200。",
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1600
+              },
+              "column": {
+                "description": "対象の列。columns[].name で指す（列の添字ではない——列を並べ替えても指す升が変わらないようにするため）。存在しない列名は読み込み時に拒否する。",
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              }
+            }
+          }
         }
       }
     },

@@ -111,6 +111,10 @@ class CellSpec:
     # 重なり検証・空行判定・field_id の一意性検証は従来どおり行う——この
     # 属性が変えるのは出力の可否だけで、幾何にも母集団にも触れない
     # （FR-1.2）。対象外判定は output_cells() の1関数に集約する（S-3設計）。
+    # 表由来のセルでは「列全体（tableColumn.output）」と「升ごとの例外
+    # （table.output_disabled_cells）」の**論理積**がここに畳まれる（FR-3.1）
+    # ——展開後は両者を区別しない。区別が要るのはテンプレート側（JSON・
+    # 編集画面）だけで、読み手はこの1つの真偽値だけを見ればよい
     output: bool = True
     # 表由来のセルが属するブロックの面内通し序数（issue #75 (f)・FR-F33）。
     # faces[].tables[].blocks[] を定義順に平坦化した 0 始まりで、同じ面の
@@ -223,12 +227,69 @@ def output_cells(template: Template) -> tuple[CellSpec, ...]:
     resolveOverlaps はこの関数を経由しない（FR-1.2）——それらは
     `template.cells`（全セル）をそのまま見る。対象外はあくまで
     「出力列から外れる」だけで、テンプレートの構造からは消えない。
+
+    升単位の対象外（FR-3.1・table.output_disabled_cells）も同じ窓口を通る。
+    CellSpec.output は展開時に「列の可否 AND 升の例外」を畳んだ結果なので、
+    この関数は粒度（欄／列／升）を一切区別しない——粒度を意識するのは
+    テンプレートを書く側だけ。
     """
     return tuple(c for c in template.cells if c.output)
 
 
 def _rect(d: dict) -> Rect:
     return Rect(d["x"], d["y"], d["w"], d["h"])
+
+
+def _disabled_cell_keys(t: dict) -> frozenset[tuple[int, str]]:
+    """table.output_disabled_cells を (row_no, 列名) の集合へ畳む（FR-3.1）。
+
+    キーに列名を使うのは、列の並べ替え（第2弾・FR-2.1）で添字が動いても
+    指す升が変わらないようにするため。妥当性（実在する行・列か・重複が
+    ないか）は _validate_disabled_cells が読み込み時に先に確かめている
+    ので、ここは畳むだけ。
+    """
+    return frozenset((d["row_no"], d["column"])
+                     for d in t.get("output_disabled_cells", ()))
+
+
+def _validate_disabled_cells(t: dict) -> None:
+    """升単位の例外リストが実在する升を指しているか（FR-3.2）。
+
+    存在しない升を黙って無視すると、行を減らした・列名を変えた編集の後で
+    「外したはずの升が出力に戻っている」ことに誰も気づけない（例外リストは
+    出力を減らす指定なので、無視されても出力は増えるだけで、壊れた形の
+    xlsx にはならない＝実行時には何の症状も出ない）。読み込み時に落とす。
+
+    重複を拒否するのは、同じ升への指定が2つあると「片方を消しても外れた
+    まま」になり、編集画面と JSON の往復で不可解な状態になるため（集合へ
+    畳む実装では重複は無害だが、無害＝正しいではない）。
+    """
+    entries = t.get("output_disabled_cells", ())
+    if not entries:
+        return
+    tid = t["table_id"]
+    names = {c["name"] for c in t["columns"]}
+    total_rows = sum(b["rows"] for b in t["blocks"])
+    seen: set[tuple[int, str]] = set()
+    for d in entries:
+        row_no, col = d["row_no"], d["column"]
+        if row_no > total_rows:
+            raise TemplateError(
+                f"出力しない升の指定が実在しない行を指している"
+                f"（table_id={tid} row_no={row_no} column={col}）。"
+                f"この表の行数は {total_rows}（ブロック合計）で、"
+                "row_no はブロックを跨いだ 1 起点の通し番号")
+        if col not in names:
+            raise TemplateError(
+                f"出力しない升の指定が実在しない列を指している"
+                f"（table_id={tid} row_no={row_no} column={col}）。"
+                f"この表の列は {sorted(names)}")
+        if (row_no, col) in seen:
+            raise TemplateError(
+                f"出力しない升の指定が重複している"
+                f"（table_id={tid} row_no={row_no} column={col}）。"
+                "同じ升への指定は1つにする")
+        seen.add((row_no, col))
 
 
 def _expand_table(face_id: str, t: dict, *, block_base: int = 0) -> list[CellSpec]:
@@ -240,6 +301,7 @@ def _expand_table(face_id: str, t: dict, *, block_base: int = 0) -> list[CellSpe
     同じ面に table が複数あると各 table のブロックは 0 から数え直すため、
     面内で一意な序数は呼び出し元（load_template）が渡す。
     """
+    disabled = _disabled_cell_keys(t)
     cells: list[CellSpec] = []
     row_no = 0
     pitch, height = t["row_pitch"], t["row_height"]
@@ -286,10 +348,16 @@ def _expand_table(face_id: str, t: dict, *, block_base: int = 0) -> list[CellSpe
                                    else None),
                         table_id=t["table_id"],
                         row_no=row_no,
-                        # 表の列は列単位の属性（全行一括・FR-1.1）。行ごとに
-                        # 違う値を持たせる経路は無い——1つの tableColumn
-                        # 定義が対象外なら、展開後の全行が対象外になる
-                        output=c.get("output", True),
+                        # 列の可否（tableColumn.output・全行一括）と、升ごとの
+                        # 例外（table.output_disabled_cells）の論理積（FR-3.1）。
+                        # **列が優先**——列が false なら and の左が偽なので、
+                        # 例外リストに何が書いてあっても全行が対象外になる
+                        # （リストの妥当性検査は _validate_disabled_cells が
+                        # 別途行うので、「列 false だから検査も飛ばす」には
+                        # しない。検査を飛ばすと、列を戻した瞬間に壊れた指定が
+                        # 生き返る）
+                        output=(c.get("output", True)
+                                and (row_no, c["name"]) not in disabled),
                         block_idx=block_base + bi,
                     )
                 )
@@ -802,6 +870,10 @@ def load_template(path: str | Path) -> Template:
                 raise TemplateError(
                     f"row_height({t['row_height']}) > row_pitch({t['row_pitch']})：行が重なる（table {t['table_id']}）"
                 )
+            # 升単位の例外リスト（FR-3.2）。_expand_table より前に落とす
+            # ——展開してからでは「実在しない升の指定」が集合に残ったまま
+            # 誰にも当たらず消える
+            _validate_disabled_cells(t)
             # ブロックの面内通し序数は、この時点の geoms の長さがそのまま
             # 先頭になる（issue #75 (f)・08 §6 判断1）。**採番の正本はこの
             # 3行の順序**——cells／zones が参照する序数と geoms の並びが

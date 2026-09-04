@@ -3,7 +3,7 @@
 ## 0. 文書情報
 
 - 文書ID: chouhyo-ocr-08
-- 版数: `v0.3`（§1〜§6 を確定。**§6＝(f) は 2026-09-03 の実装と同一の作業で書き下ろした**。**v0.3 で編集画面の初回読み込みフローを §3.5・§3.6・§4.5 に追記**・07 v1.6 の FR-F51〜F55 に対応・**2026-09-04 レビュー反映**で §3.6・§4.4・§4.5 を実装へ合わせた）
+- 版数: `v0.3`（§1〜§6 を確定。**§6＝(f) は 2026-09-03 の実装と同一の作業で書き下ろした**。**v0.3 で編集画面の初回読み込みフローを §3.5・§3.6・§4.5 に追記**・07 v1.6 の FR-F51〜F55 に対応・**2026-09-04 レビュー反映**で §3.6・§4.4・§4.5 を実装へ合わせた。**同日の差し戻し反映**で §4.2.5 に印の偽陰性の但し書きを足し、§4.10 に R-11 を新設）
 - 最終更新: 2026-09-04
 - 上位文書: [07_frame_detection_requirements.md](07_frame_detection_requirements.md) v1.1（**要件の正本**。本書は実装方針のみを書き、要件を再定義しない）
 - 関連: [02_design.md](02_design.md)（D-15・D-25・D-26・§6.2）／[03_test_requirements.md](03_test_requirements.md) §2・§3（テストレベルと回帰ゲート基準値の正本）／[05_output_columns_requirements.md](05_output_columns_requirements.md)（列契約）
@@ -1380,17 +1380,31 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
          かつ4辺それぞれの線分被覆率 >= EDGE_COVER(0.90) を満たすもの
 4. 原子セル: 3 のうち、内部に他のレールが「辺を貫通して」通っていないもの
          （y1<y<y2 の水平レールが [x1,x2] を被覆する、等が無い）
-5. 表ブロックへの束ね:
-   - 原子セルを y 帯ごとに行へまとめる
+5. 升候補の確定（2026-09-04 改訂・FR-F56）:
+   - 4 の原子セルから page_outline / too_small を落とす
+   - セル単位で面を割り当て、面をまたぐセルを straddles_face として落とす
+   - 残りを**すべて**升候補にする -> CellCandidate{rect, residual_px,
+                                              face_id, overlaps_existing}
+   - 升候補はここで確定し、以降の手順で減らない（run に吸収されても落とさない）
+6. 提案（表にまとめられる束）への束ね:
+   - 升候補を y 帯ごとに行へまとめる（行内で x に隙間があれば別ブロックへ分割）
+   - 見出し行の切り離し（手順 6.5・§4.2.5）を run 構築の**前**に行う
    - 各行の「垂直レール集合（署名）」が一致し、かつ連続する行のピッチが
-     ±PITCH_TOL(2px) で一定な run を1つの表ブロックにする
-   - 行数 >= 2 が表の条件。1行しかない run は表にしない
-   - 表候補 = {origin(x,y), rows, row_pitch(平均), row_height(セル高の中央値),
-              columns: [{x_offset, width}], residual_px}
+     ±PITCH_TOL(2px) で一定な run を1つの提案にする
+   - 行数 >= 2 が提案の条件。1行しかない run は提案にしない
+   - 提案 = {origin(x,y), rows, row_pitch(平均), row_height(セル高の中央値),
+            columns: [{x_offset, width}], residual_px,
+            cell_indexes: 構成する升候補の添字, heading_excluded: bool}
      residual_px は max(行境界の実測 y と等ピッチ当てはめの最大差,
                         構成する原子セルのレール散らばりの最大値)  ※#85 N-1 で後者を追加
-6. 欄候補: 表に吸収されなかった原子セル -> Rect（単発欄候補）
+   - 提案の外接矩形が面をまたぐ場合は提案を作らない。excluded には**足さない**
+     （構成する升はすべて候補に出ており、失われる情報が無いため）
 ```
+
+**手順5・6 は 2026-09-04 に順序が入れ替わった（FR-F56・FR-F57）。** 旧設計は「run を組む → run 単位で面判定 → 残りを欄候補として面判定」で、run に吸収された原子セルを `used_cells` で欄候補から除いていた。新設計は面判定をセル単位で先に済ませて升候補を確定し、run はその升候補を入力に組む。得られるものは 2 つ:
+
+- 表としてまとめたくない利用者が、升を 1 つずつ欄として採れる（旧実装ではその升が候補に存在しなかった）
+- `excluded` のセル台帳が**セル単位に統一**される。旧実装は面またぎを run 全体で 1 件と数えていたため、`straddles_face` が「セルの個数」と「候補の個数」の混在になり、原子セルからの引き算が閉じなかった
 
 **4 の「原子セル」と 3 の「辺被覆」がこの設計の要。** 隅の交点だけで矩形と認めると、離れた2つの箱が同じレール上に並んでいるだけで「1つの大きな箱」を誤検出する。formB がまさにその形をしている（§4.3）。
 
@@ -1432,7 +1446,7 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 | 最小サイズ | 辺のどちらかが `MIN_RECT_SIZE`(20px) 未満を捨てる | 罫線交差のノイズ |
 | 入れ子 | 手順4で自動的に落ちる（原子セルのみ残す） | 表の外枠と中のセルを二重に出さない |
 | 重複 | 同一矩形（±COLLINEAR_TOL）は1つに畳む | レールのゆらぎ由来 |
-| 表に吸収済み | 表ブロックを構成した原子セルは欄候補に出さない | 二重提示の防止 |
+| ~~表に吸収済み~~ | **2026-09-04 に撤去（FR-F56）。** 提案を構成した升も候補に残す | 「二重提示の防止」より「升 1 つを欄として採る道を残す」を優先した。提案と升は別の配列に出るので、同じものが 2 回並ぶ見え方にはならない |
 | 非矩形の連結成分 | L 字・凹み・穴のある連結成分は候補にしない（`excluded` の `non_rectangular`） | 実装がグリッドセル単位の連結成分で近似しているため（§4.2.1 の⚠️）。原案の定義には無い除外で、近似の代償 |
 | 閉じていない連結成分 | 形は矩形でも外周4辺のどれかが `EDGE_COVER`(0.90) に満たない成分は候補にしない（`excluded` の `not_closed`） | 手順3 の辺被覆判定そのもの。以前は理由を出さずに落としており、`components` と `rects` の差の一部が説明できなかった（#85 N-2・sample-1 で 11 件） |
 
@@ -1451,7 +1465,9 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 
 成分の台帳は**必ず閉じる**: `stats.components == stats.rects + non_rectangular + not_closed`（`test_detect_frames.py::test_n2_component_ledger_closes_on_*` で formB・formC・sample-1 に対して固定）。⚠️ **`components - rects - Σ(全 reason の count)` は 0 にならない**——`too_small` などのセル側の除外を二重に数えるため（sample-1 実測で -8）。読むときは台帳を分けること。
 
-`straddles_face` だけは数え方の単位も違う（原子セルの個数ではなく、**候補の個数**——表候補1件は複数セルから成る）。面をまたいで落ちた表候補が何セルぶんだったかは `excluded` からは復元できない。
+**セルの台帳も 2026-09-04 から閉じる**: `stats.rects == stats.cells + page_outline + too_small + straddles_face`（`test_ac_h33_cell_ledger_closes_on_*`）。面判定を run より前へ移し、`straddles_face` の単位を**セルの個数に統一**したことで成立した。旧実装は面をまたぐ表候補を run 全体で 1 件と数えていたため、同じ reason に「セルの個数」と「候補の個数」が混ざり、この式は閉じなかった。
+
+提案の外接矩形が面をまたぐ場合は、提案を作らないだけで `excluded` へは足さない。構成する升はすべて `cells` に出ており、失われる情報が無いため——「黙って消さない」の趣旨は満たしている。
 
 #### 4.2.4 成立条件と不成立の明示（FR-F17）
 
@@ -1463,6 +1479,33 @@ segments.detect_segments(binary, dpi) -> (h_segments, v_segments)
 | `no_rect` | 線分はあるが閉じた矩形が0個 | 「罫線はありますが、閉じた枠になっていません（下線のみの帳票など）。等分割生成か手描きへ」 |
 | `all_filtered` | 矩形はあったが外形・最小サイズで全部落ちた | 「検出できた枠が用紙の外枠だけでした」 |
 | `too_many_lines` | レールが `MAX_RAILS` 超で打ち切り | 「線が多すぎて解析を打ち切りました。領域を指定する既存の生成をお使いください」 |
+
+#### 4.2.5 見出し行の切り離し（FR-F59・2026-09-04 追加）
+
+見出し行（本文と同じ列構成だが高さが違う先頭 1 行）が run に混ざると、提案が 2 つに割れる。run のピッチは最初の 2 行で確定するため、見出し→1行目の間隔が pitch0 になり、1行目→2行目で run が切れる。
+
+合成データでの実測（見出し 120px ＋ 本文 80px × 4 行・2026-09-04）:
+
+```
+切り離しなし: [(rows=2, pitch=120.0), (rows=3, pitch=80.0)]   ← 割れる
+切り離しあり: [(rows=4, pitch=80.0, heading_excluded=true)]   ← 1 つにまとまる
+```
+
+**切り離しは run を組む前に行う。** run を組んだあとに `run[0]` を外す後処理だと `[見出し, 行1]` が `[行1]`（長さ 1 で提案にならない）になり、**1 行目が提案から落ちる**。前処理なら 4 行の提案 1 件になる。
+
+判定（`grid._detach_heading_rows`）:
+
+1. `_same_signature`（垂直レール署名が `COLLINEAR_TOL` 以内で一致）で行を y 昇順のチェーンにまとめる
+2. チェーンの長さが 3 未満なら何もしない（見出し＋本文 2 行に満たない。外しても run が作れない）
+3. 本文＝チェーンの 2 行目以降。本文の連続間隔がすべて先頭間隔の ±`PITCH_TOL` に収まらなければ何もしない
+4. 本文の行高の中央値 `h_body` に対し `abs(h_head - h_body) > HEADING_HEIGHT_RATIO(0.20) * h_body` なら先頭行を run の入力から外す。**高い側・低い側の両方**を対象にする
+5. 外した行は升候補として残る（升候補は手順5で確定済みで、この関数が絞るのは run の入力だけ）
+
+`heading_excluded` の配り先は**そのチェーンの本文先頭行から始まる run** 1 つに限る（実装は行 dict の同一性で判定）。表示は「見出し行は含めていません」の 1 行だけなので粒度はこれで足りる。⚠️ ただし署名一致（`_same_signature`）は推移的ではないため、チェーンの組み方によっては本文先頭行から始まる run が無く、**印が付かない**ことがある（§4.10 R-11）。落ちるのは表示の 1 行だけで、run の中身も外した行の扱いも変わらない。
+
+**`heading_excluded: false` のとき GUI は何も出さない。** false は「見出しを見つけて含めた」ではなく「見出しらしい行が無かった、または判定条件に届かなかった」で、core は前者と後者を区別できない。区別できないことを断言する文は出さない。
+
+⚠️ **閾値 0.20 は実素材で較正していない。** 見出しの高さが本文と違う実素材が手元に無く、合成データで固定しているのは「境界（ちょうど 20% では外さない）の閉じ方」と「誤発火しない条件」だけ（§4.10 R-6）。発火状況の実測は formB 0 件・formC 0 件・sample-1 2 件で、sample-1 の安定領域（back 面 detail・pitch 104 の 10 行／3 行）は切り離しの前後で**同一**。
 
 ### 4.3 formB での検算（AC-F16 の成立確認）
 
@@ -1504,25 +1547,47 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 ```json
 {"event": "detect_frames", "ok": true, "input_size": [1800, 1200],
  "candidates": [
+   {"kind": "field", "face_id": "page",
+    "rect": {"x": 100, "y": 100, "w": 399, "h": 79},
+    "residual_px": 0.3, "overlaps_existing": false}],
+ "suggestions": [
    {"kind": "table", "face_id": "page",
     "rect": {"x": 100, "y": 300, "w": 750, "h": 400},
     "blocks": [{"x": 100, "y": 300, "rows": 5}],
     "row_pitch": 80.0, "row_height": 80,
     "columns": [{"x_offset": 0, "width": 200}, {"x_offset": 200, "width": 150},
                 {"x_offset": 350, "width": 400}],
-    "residual_px": 0.0, "overlaps_existing": false},
-   {"kind": "field", "face_id": "page",
-    "rect": {"x": 100, "y": 100, "w": 399, "h": 79},
-    "residual_px": 0.3, "overlaps_existing": false}],
+    "residual_px": 0.3, "overlaps_existing": false,
+    "cell_indexes": [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+    "heading_excluded": false}],
  "stats": {"lines_h": 12, "lines_v": 10, "rects": 18, "rails_h": 10, "rails_v": 8,
-           "components": 19},
+           "components": 19, "cells": 18, "suggestions": 1},
  "excluded": [{"reason": "non_rectangular", "count": 1}],
  "zero_reason": null,
  "template_applied": null, "template_skip_reason": null,
- "elapsed_ms": 231}
+ "elapsed_ms": 316}
 ```
 
-**上は実装の実出力**（2026-09-03・`cd core` して `..\.venv\Scripts\python.exe -m chouhyo_ocr.cli detect-frames --input ..\testdata\formB\formB-1.png`。欄候補は3件返るうち先頭1件のみ抜粋、他も同じ形）。契約と実装が一致していることを確認済み。同じ画像に `--template ..\testdata\formB\formB-v1.json` を付けると `face_id` が `"front"`・`overlaps_existing` が `true`・`template_applied` が `true` に変わる。
+**上は実装の実出力**（2026-09-04・`cd core` して `..\.venv\Scripts\python.exe -m chouhyo_ocr.cli detect-frames --input ..\testdata\formB\formB-1.png`。升候補は18件返るうち先頭1件のみ抜粋、他も同じ形）。契約と実装が一致していることを確認済み。同じ画像に `--template ..\testdata\formB\formB-v1.json` を付けると `face_id` が `"front"`・`overlaps_existing` が `true`・`template_applied` が `true` に変わる。
+
+**`suggestions[]` はトップレベルの別キー（2026-09-04・FR-F57）。** `candidates[]` に `kind:"table_suggestion"` を足す案は採らない——編集画面の受け取り（`candidatesFromDetectFrames`）は `c.kind === "table" ? "table" : "field"` で**未知の kind をすべて `field` に潰す**ため、提案 1 件が「表の外接矩形そのものを 1 つの欄として採用できる候補」に化ける（sample-1 では 1988×1041px の欄になる）。防御的フォールバックが牙になる形なので、新設キーで分ける。
+
+新旧の組み合わせはどちらも安全に劣化する:
+
+| | 旧 core | 新 core |
+|---|---|---|
+| **旧 GUI** | 従来どおり | `suggestions` を無視して升候補だけ表示（＝新モデルの素の姿） |
+| **新 GUI** | `suggestions` が無いので提案ゼロ・升候補のみ | 意図どおり |
+
+- `candidates[].kind` は **`"field"` 固定**。要素の形（`kind`／`face_id`／`rect`／`residual_px`／`overlaps_existing`）は従来の欄候補と 1 キーも変わらない。`kind:"table"` が `candidates` から出なくなるのは「出る種類が減る」ことで、キーの意味は変えていない
+- `suggestions[].kind` は **`"table"` 固定**。プロパティは従来の表候補と同じ並びに `cell_indexes` と `heading_excluded` を足しただけ。採用時に `tables[]` へ落とす経路は従来と同一で、`origin`／`rows`／`row_pitch`／`row_height`／`columns` は変更前のコードの出力と**完全一致**する（AC-F92 で formB・formC を実測固定）
+- `cell_indexes` は**同一応答内の `candidates[]` の受け取り順**でのみ有効な添字。昇順・重複なし・すべて `0 <= i < len(candidates)`・件数 = `rows × 列数`（AC-F94）。GUI は受信直後（フィルタや並べ替えより前）に添字 → 自前の候補 id へ解決し、以後は id で持つ——採用・除去で配列が縮んでも壊れないようにするため。**幾何一致（提案の矩形に含まれる升を GUI が探し直す）は採らない**。1px の丸めで取りこぼした升が候補に残り「まとめたのに 1 個だけ升が残る」が起きるうえ、core が持っている確定情報を捨てて再計算する理由がない
+- `heading_excluded` が真のときだけ「見出し行は含めていません」を出す。偽のときは**何も出さない**（§4.2.5）
+- `stats` に `cells`（升候補数）と `suggestions`（提案数）を追加。既存キーは不変
+- `zero_reason` の意味も不変。**升候補が 0 件のとき**だけ値が入る（提案は升から作るので升 0 ⇒ 提案 0）
+- 候補ゼロでも `suggestions: []` は必ず出る（受け取り側にキーの有無の分岐を増やさない）
+
+**Rust 側の変更は不要。** `detect-frames` は `run_core_capture`（`lib.rs`）→ `core_output` で stdout を素通しし、キー許可リスト（`sanitize_verify_output`・`user_templates.rs`）は `save_user_template` 経路の verify 専用。フラグの追加も無い（`--input`／`--page`／`--dpi`／`--template` は登録済み）。
 
 設計案（v1 の記述）から変わった点:
 
@@ -1539,9 +1604,9 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 
 **`template_applied` / `template_skip_reason`（2026-09-03 追加）**: `--template` を渡しても、入力画像の寸法がテンプレートの `image_size` と違えば座標系が一致しない。この状態で除外領域を白潰しすると**関係ない場所を消し**、面割り当てと重なり判定も別の紙の座標で行うことになる。そこで寸法が違う場合は3つの処理をいずれも行わず、`template_applied:false`・`template_skip_reason:"size_mismatch"` を返して `face_id:"page"`・`overlaps_existing:false` に落とす（`--template` 無しと同じ扱い）。**黙って「テンプレートを適用したつもりの結果」を返さない。** テンプレートを渡していない場合は **`template_applied:null`**・`template_skip_reason:null`——「適用しなかった」（false）と「適用する対象が無かった」（null）を区別する。
 
-- **座標はページ座標**（§4.2.3）。`rect` は表候補にも付ける（GUI が候補を1つの矩形として描くため）
-- `kind:"table"` の `blocks`／`row_pitch`／`row_height`／`columns` は `template.py` の `tables[]` スキーマにそのまま写る形。`row_height` は**セル高の中央値そのまま**で、`grid.ROW_INSET`（罫線ぶんの控え）は引かない——あれは領域指定の等分割側の経験則で、本節の閾値表（§4.1.4）に無い量だから。formB では `row_pitch` 80 に対し `row_height` 80 が返る（罫線1本ぶんの差は採用後に人が詰める前提）
-- `residual_px` は**表候補**では「行境界の実測 y と等ピッチ当てはめの最大差」と「構成する原子セルのレール散らばりの最大値」の**大きい方**、**欄候補**では矩形の4辺と実測線分のずれの最大値（formB の欄候補3件で 0.3／0.0／0.3・2026-09-03 実測）。歪んだ紙・かすれた罫線で候補の信頼度を人が判断するための値（FR-F25）
+- **座標はページ座標**（§4.2.3）。`rect` は提案にも付ける（GUI が提案を1つの矩形として描くため）
+- `suggestions[].blocks`／`row_pitch`／`row_height`／`columns` は `template.py` の `tables[]` スキーマにそのまま写る形。`row_height` は**セル高の中央値そのまま**で、`grid.ROW_INSET`（罫線ぶんの控え）は引かない——あれは領域指定の等分割側の経験則で、本節の閾値表（§4.1.4）に無い量だから。formB では `row_pitch` 80 に対し `row_height` 80 が返る（罫線1本ぶんの差は採用後に人が詰める前提）
+- `residual_px` は**提案**では「行境界の実測 y と等ピッチ当てはめの最大差」と「構成する原子セルのレール散らばりの最大値」の**大きい方**、**升候補**では矩形の4辺と実測線分のずれの最大値（formB の18升で 0.0〜0.3・2026-09-04 実測）。歪んだ紙・かすれた罫線で候補の信頼度を人が判断するための値（FR-F25）
 
 - `overlaps_existing` は `template_applied:true` のときのみ意味を持つ。判定は既存 `template.cells` の全 rect と候補矩形の重なり。GUI 側は編集中の枠が core の知らない状態にあるため、受け取った値と**現在の枠での再判定を OR して**使う（`Editor.tsx` 実装済み）
 - `zero_reason` は候補が0件のときだけ値が入る（§4.2.4）
@@ -1715,6 +1780,20 @@ const runDetectFrames = () => detectFrames({ manual: true, seq: loadSeqRef.curre
 - **ガード**: レールが `MAX_RAILS`(200) を超えたら矩形化に入らず `zero_reason:"too_many_lines"` で返す。網掛け・写真・スキャンノイズの多い紙で組合せ爆発（200×200=4万対 × 辺被覆判定）に落ちるのを防ぐ
 - 計測は `scripts/perf_check.py` に項目を足す（AC-F47 と同じ枠組み）
 
+**升候補の全件化（2026-09-04）の性能影響（実測）。** 増える計算は 2 つだけ——升ごとの `_overlaps_existing`（sample-1 で 18 回 → 135 回 × テンプレートのセル）と、升候補オブジェクト・添字辞書の構築（formC で 180 件）。
+
+計測は**同一プロセス内で新旧を交互に 8 回ずつ**呼ぶ形にした（`git show HEAD:core/chouhyo_ocr/grid.py` を一時モジュールとして取り込み、`time.perf_counter` で挟む・画像読み込みは含まない・2026-09-04 実測）。別プロセスで前後を測る形は、このマシンでは同時に動いている開発サーバーの負荷で 2 倍以上ぶれ、比較にならなかった:
+
+| 素材 | 変更前 min／中央値 | 変更後 min／中央値 | 升候補 | 提案 |
+|---|---|---|---|---|
+| `formB-1.png`（1800×1200） | 0.132 / 0.200s | 0.139 / 0.203s | 3 → **18** | 表 1 → **1** |
+| `formC-1.png`（2490×3510・レール37本） | 0.565 / 0.691s | 0.601 / 0.799s | 0 → **180** | 表 1 → **1** |
+| sample-1（出荷テンプレ適用・`align_page` 経由） | 0.577 / 0.663s | 0.575 / 0.613s | 15 → **135** | 表 10 → **10** |
+
+増えたのは formC の中央値で +0.11 秒（+16%）。升候補が 0 → 180 件になる素材なので、増分はオブジェクト構築ぶんで説明が付く。formB・sample-1 は差が測定のばらつきに埋もれる。いずれも NFR-F02（3.0 秒）に対して 3 倍以上の余裕がある。
+
+**升候補は原子セルの総数（`stats.rects`）で頭打ち**になり、行数 × 列数で膨らむわけではない（表の升は原子セルの部分集合）。sample-1 の上限は 143。
+
 ### 4.7 テスト計画（AC-F16〜F23・F55）
 
 | AC | レベル | 落とす場所 |
@@ -1731,6 +1810,8 @@ const runDetectFrames = () => detectFrames({ manual: true, seq: loadSeqRef.curre
 | NFR-F02 | 計測 | `scripts/perf_check.py` で formB（1800×1200）と sample-1（2490×3510）の所要を測る |
 
 **追加で回す素材**: `testdata/formC/formC-1.png`（同寸別様式・`make_formC.py` で生成）と `testdata/local/pages/sample-1.png`（`.gitignore` 配下＝**L2**）。前者は「別様式でも表候補が取れる」、後者は「出荷テンプレの紙で表候補2ブロック（family・detail）が取れる」ことの確認に使う。**sample-1 の期待個数は未実測**——実装後に実走して記録する（先に期待値を決め打ちしない）。
+
+**升候補・提案・見出し切り離しの AC（2026-09-04・AC-F90〜F104）**は 07 §8.2.1 の表を正とする。落とす場所は全件 `core/tests/test_detect_frames.py`（unit ＋ CLI 実走）で、20 件を追加した。既存 25 件のうち 8 件は同じ AC の趣旨のまま期待値を読み替えている（`len(result.fields)==3` → `len(result.cells)==18` など）。見出し切り離しの素材は**すべて合成**（実素材が無い・§4.2.5 の⚠️）。
 
 #### 4.7.1 sample-1 の実測（H-2 適用後・2026-09-03 再実測）
 
@@ -1807,6 +1888,10 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 9. **候補の自動生成は空テンプレートの上でのみ行う**（v1.6・FR-F51）。確定枠がある状態で自動生成を走らせない（手動生成は従来どおり可）
 10. **自動生成はエラー帯を書き換えず、未保存フラグを立てず、履歴を積まない**（v1.6・FR-F51）。手動生成の副作用は現状維持
 11. **自動経路は React state を読まない**（v1.6）。画像パス・寸法・確定枠・面の境界・dpi はすべて明示引数（`meta.current` の ref 参照のみ例外）
+12. **升候補は提案に吸収されても落とさない**（2026-09-04・FR-F56）。`candidates[]` は「フィルタを通った原子セル全件」で、そこから引ける除外はセル単位の 3 つだけ
+13. **セルの台帳が閉じる**: `stats.rects == stats.cells + page_outline + too_small + straddles_face`（§4.2.3）。成分の台帳（#85 由来）と両立する
+14. **`cell_indexes` は同一応答内でのみ有効**（§4.4）。GUI は受信直後に自前の id へ解決し、以後は id で扱う。core は候補に ID を振らない現行方針を維持する
+15. **`candidates[]` に新しい `kind` を足さない**（§4.4）。受け取り側が未知の kind を `field` へ潰すため、増やすなら新しいトップレベルキーで分ける
 
 ### 4.10 リスク
 
@@ -1819,6 +1904,10 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 | R-7 | テスト（`align_page` の合成画像）と CLI（生画像＋ページ全体 Otsu）で前処理が違い、同じ紙でも候補の割れ方が変わる | テストが緑でも利用者の画面では別の個数になる | 実測差は sample-1 の back 側で「2件 vs 1件」（§4.7.1）。編集画面は `expand-page` 経由の位置合わせ済み下地を開くため実運用は前者に近いが、CLI を直接使う開発者は後者を見る。**どちらの経路でも pitch は定義と一致する**ので採用後の実害は小さい。経路を揃えるかは(b) の完了後に判断する |
 | R-5 | ページ外形の 90% 判定が、A4 いっぱいの表を誤って捨てる | 本命の表が出ない | 外形判定は**幅と高さの両方**が 90% 以上のときだけ適用する。表は縦方向に余白があるので通常は当たらない。当たった場合に備え `excluded` に理由を出す |
 | R-6 | NFR-F02 の測定単位（面1枚 vs ページ1枚）が要件と食い違う | 性能 AC の合否が曖昧 | **解消済み**（07 v1.4 §0.9 変更4 が「ページ1枚あたり」へ訂正）。§4.6・§7-13 も追従済み |
+| R-8 | **候補の件数が桁で増える**（formB 3→18・formC 0→180・sample-1 15→135） | 候補一覧を1件ずつ捌く導線だと人手が破綻する | 提案を一覧の先頭に置き、1 クリックで束をまとめられるようにする（GUI レーン・07 FR-F60）。候補の総数は原子セル数（`stats.rects`）で頭打ちで、行×列で膨らむわけではない（§4.6） |
+| R-9 | **見出し判定の閾値 0.20 が実素材で未較正** | 見出しらしい行を外し損ねる／本文を見出しと誤認して外す | 合成データで境界（ちょうど 20% では外さない）と誤発火しない条件を固定する（AC-F102・AC-F104）。実素材の発火状況は formB 0・formC 0・sample-1 2 件で、sample-1 の安定領域（back detail）は前後で不変。**実素材が入り次第、再較正する**（07 §10.2 の素材待ち） |
+| R-10 | **sample-1 では 135 升のうち 131 升が `overlaps_existing`** | 候補パネルに「重なりのため対象外 131 件」と出る | 現行仕様どおりの挙動（出荷テンプレートを適用した紙なので当然）。件数の桁が変わるので文言の見え方を実機で確認する（GUI レーン）。テンプレート未適用の紙＝新規作成の主要動線では 0 件 |
+| R-11 | **`heading_excluded` の配り先を「本文先頭行から始まる run」1 つに限る**が、署名一致は推移的でないため、その行から始まる run が存在しない組み方があり得る（§4.2.5） | 見出しを外したのに「見出し行は含めていません」が出ない | **落ちるのは印だけ**——外した行は升候補に残り、提案の行構成も変わらないので、偽陰性しか起こらない（印は「本文先頭行から始まる run」にしか付かないため、関係のない run に付く経路が無い）。実素材の発火は formB 0・formC 0・sample-1 2 件で、いずれも印は正しく付いている（2026-09-04 実測・§4.2.5）。合成データの AC-F99／F100 が現行の組み方を固定する |
 
 ## 5. (c) 位置合わせ残差・吸着量の記録（#74）
 

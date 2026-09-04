@@ -9,15 +9,16 @@
 行方向・列方向の暗画素射影で被覆率の高い帯を線とみなす。
 
 本モジュールにはもう1つの検出系がある。`detect_frames`（issue #73 (b)・
-設計 08 §4）は**領域指定なし**（ページ全体）から表候補・欄候補を一括生成
-する新しい系統で、`segments.detect_segments`（線分・端点付き）を土台に
+設計 08 §4）は**領域指定なし**（ページ全体）から升候補（閉じた矩形すべて）と
+表の提案を一括生成する新しい系統で、`segments.detect_segments`（線分・端点付き）を土台に
 レール化→矩形化を行う。`detect_ruled`／`make_uniform`（既存・`--region`
 必須の系統）とは独立しており、両者は1行も共有しない——**既存2関数は本節の
 追加によって一切変更されない**（設計 08 §4.9 不変条件2）。
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+import statistics
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
@@ -151,10 +152,22 @@ MAX_RAILS = 200
 2026-09-03: 以前は segments.py 側にあった）。"""
 
 
+HEADING_HEIGHT_RATIO = 0.20
+"""無次元。等ピッチ run の直前にある同署名 1 行を「見出し」とみなす高さ差の
+下限（後続本文の行高の中央値に対する相対差）。これを**超えた**ときだけ
+切り離す（20% ちょうどでは切り離さない・08 §4.2.2）。実素材（請求書等）で
+較正した値ではなく、合成データで境界の閉じ方だけを固定してある。"""
+
+
 @dataclass(frozen=True)
-class TableCandidate:
-    """表候補（等ピッチ行 >= 2 の束・08 §4.2.1 手順5）。"""
-    rect: Rect                # 外接矩形（GUI が候補を1つの矩形として描く用）
+class TableSuggestion:
+    """表としてまとめられる升の束の提案（等ピッチ行 >= 2・08 §4.2.1 手順6）。
+
+    採用すると `tables[]` の 1 要素になる（`origin_x`/`origin_y`/`rows`/
+    `row_pitch`/`row_height`/`columns` の意味は従来の表候補と同一）。
+    構成する升は `cell_indexes` で `FrameCandidates.cells` を指す。
+    """
+    rect: Rect                # 外接矩形（GUI が提案を1つの矩形として描く用）
     origin_x: int
     origin_y: int
     rows: int
@@ -164,11 +177,17 @@ class TableCandidate:
     residual_px: float        # max(等ピッチ当てはめの残差, 構成セルのレール散らばり)・#85 N-1
     face_id: str | None = None
     overlaps_existing: bool = False
+    cell_indexes: tuple[int, ...] = ()   # `FrameCandidates.cells` の添字（昇順・重複なし）
+    heading_excluded: bool = False       # 直前の見出し行を run から外したか
 
 
 @dataclass(frozen=True)
-class FieldCandidate:
-    """単発欄候補（表に吸収されなかった原子セル・08 §4.2.1 手順6）。"""
+class CellCandidate:
+    """升候補（フィルタを通った原子セル 1 つ・08 §4.2.1 手順5）。
+
+    提案に吸収されても候補から落ちない——提案を採らずに升 1 つを欄として
+    採用する道を常に残すため（08 §4.2.2・FR-F56）。
+    """
     rect: Rect
     residual_px: float
     face_id: str | None = None
@@ -178,10 +197,11 @@ class FieldCandidate:
 @dataclass(frozen=True)
 class FrameCandidates:
     """`detect_frames` の戻り値（08 §4.4 の JSON 契約に写す元データ）。"""
-    tables: tuple[TableCandidate, ...]
-    fields: tuple[FieldCandidate, ...]
+    cells: tuple[CellCandidate, ...]
+    suggestions: tuple[TableSuggestion, ...]
     excluded: tuple[dict, ...]   # [{"reason": str, "count": int}]
-    stats: dict                 # {"lines_h", "lines_v", "rects", "rails_h", "rails_v"}
+    stats: dict                 # {"lines_h", "lines_v", "rects", "rails_h", "rails_v",
+                                #  "components", "cells", "suggestions"}
     zero_reason: str | None     # None | "no_lines" | "no_rect" | "all_filtered" | "too_many_lines"
 
 
@@ -377,17 +397,74 @@ def _overlaps_existing(rect: Rect, face_id: str, template: "Template") -> bool:
     return False
 
 
+def _same_signature(a: "tuple[float, ...]", b: "tuple[float, ...]", tol: float) -> bool:
+    """垂直レール署名（行を構成する x 境界の並び）が tol 以内で一致するか。"""
+    if len(a) != len(b):
+        return False
+    return all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def _detach_heading_rows(row_infos: list[dict], tol: float, pitch_tol: float
+                         ) -> tuple[list[dict], list[dict], list[dict]]:
+    """署名チェーンの先頭 1 行が後続の等ピッチ本文と高さ違いなら切り離す。
+
+    見出し行（列構成は本文と同じだが高さが違う 1 行）が run に混ざると、
+    見出し→1行目の間隔が pitch0 として確定し、1行目→2行目で run が切れる
+    ——「見出し＋1行目」「2行目以降」の 2 つに割れる。run を組んだ**後**に
+    先頭を外すと 1 行目が孤児になるため、run 構築の**前**に候補集合から抜く
+    （08 §4.2.2・設計 D-4）。
+
+    切り離した行は升候補としては残る（升候補は本関数より前に確定済みで、
+    ここで絞るのは run の入力だけ）。
+
+    戻り値 `(本文だけの row_infos, 切り離した行, 各チェーンの本文先頭行)`。
+    3 つ目は `heading_excluded` を配る先（＝その行から始まる run）の特定に使う。
+    """
+    chains: list[list[dict]] = []
+    for ri in row_infos:                     # row_infos は y 昇順で渡ってくる
+        for ch in chains:
+            if _same_signature(ch[0]["signature"], ri["signature"], tol) and ri["y1"] > ch[-1]["y1"]:
+                ch.append(ri)
+                break
+        else:
+            chains.append([ri])
+
+    detached: list[dict] = []
+    body_heads: list[dict] = []
+    for ch in chains:
+        if len(ch) < 3:                      # 見出し＋本文2行に満たない
+            continue
+        body = ch[1:]
+        gaps = [body[i + 1]["y1"] - body[i]["y1"] for i in range(len(body) - 1)]
+        if not gaps or any(abs(g - gaps[0]) > pitch_tol for g in gaps):
+            continue                         # 本文が等ピッチでない
+        h_body = statistics.median(r["y2"] - r["y1"] for r in body)
+        h_head = ch[0]["y2"] - ch[0]["y1"]
+        # 高い見出しも低い見出しも対象（片側だけにする理由が無い）
+        if h_body > 0 and abs(h_head - h_body) > HEADING_HEIGHT_RATIO * h_body:
+            detached.append(ch[0])
+            body_heads.append(ch[1])
+    detached_ids = {id(d) for d in detached}
+    return [ri for ri in row_infos if id(ri) not in detached_ids], detached, body_heads
+
+
 def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
                   exclusions: "tuple[Rect, ...] | list[Rect]" = (),
                   existing: "Template | None" = None) -> FrameCandidates:
-    """ページ全体（領域指定なし）から表候補・欄候補を一括生成する（issue #73 (b)）。
+    """ページ全体（領域指定なし）から升候補と表の提案を一括生成する（issue #73 (b)）。
 
     手順（設計 08 §4.2.1）: 線分抽出 → レール化 → 交点 → 閉じた矩形
     （4辺被覆 >= EDGE_COVER）→ 原子セル（内部を貫くレールが無いもの・
-    グリッドセル単位の連結成分で近似・M-1）→ 行内で x 方向に隙間がある
-    箇所を別ブロックとして分割（H-2・FR-F16「ブロック単位」）→ 垂直レール
-    署名が一致し等ピッチ（±PITCH_TOL）な行 >= 2 の束を表ブロック、残りを
-    単発欄候補にする。
+    グリッドセル単位の連結成分で近似・M-1）→ `page_outline`／`too_small`
+    ／面またぎ（`straddles_face`）を落として**升候補を確定** → 行内で x
+    方向に隙間がある箇所を別ブロックとして分割（H-2・FR-F16「ブロック
+    単位」）→ 見出し行の切り離し（`_detach_heading_rows`）→ 垂直レール
+    署名が一致し等ピッチ（±PITCH_TOL）な行 >= 2 の束を**提案**にする。
+
+    升候補は提案に吸収されても落ちない（FR-F56）。提案は「この升の束は
+    表にまとめられる」という別枠の情報で、構成する升を `cell_indexes`
+    （`FrameCandidates.cells` の添字）で指す。面をまたぐ提案は作らないが、
+    その場合も構成する升は候補に残っているので `excluded` へは足さない。
 
     `binary`: 二値画像（True=インク）。**テンプレート座標系のページ画像
     （位置合わせ後・テンプレートの `image_size` と一致する寸法）を渡す前提**
@@ -407,7 +484,8 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
 
     h_segs, v_segs = _segments.detect_segments(work, dpi)
     stats = {"lines_h": len(h_segs), "lines_v": len(v_segs), "rects": 0,
-             "rails_h": 0, "rails_v": 0, "components": 0}
+             "rails_h": 0, "rails_v": 0, "components": 0,
+             "cells": 0, "suggestions": 0}
     if not h_segs and not v_segs:
         return FrameCandidates((), (), (), stats, "no_lines")
 
@@ -458,18 +536,49 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
         excluded = tuple({"reason": k, "count": v} for k, v in excluded_counts.items())
         return FrameCandidates((), (), excluded, stats, "all_filtered")
 
-    # --- 表ブロックへの束ね（08 §4.2.1 手順5・H-2 で行の x 分割を追加） ---
+    # --- 升候補の確定（08 §4.2.1 手順5・設計 D-5） ---
+    # 面判定を run より**前**に置く。これでセルの台帳が
+    # `rects == cells + page_outline + too_small + straddles_face` で閉じる
+    # （以前は面またぎを run 単位で 1 件、単発セルで 1 件と混在して数えていた）。
+    # `used_cells` は撤去した——run に吸収された升も候補として返す（FR-F56）
+    cells: list[CellCandidate] = []
+    cell_index_of: dict[tuple[float, float, float, float, float], int] = {}
+    for r in kept:
+        y1, x1, y2, x2, cell_residual = r
+        rect = Rect(round(x1), round(y1), round(x2 - x1), round(y2 - y1))
+        face_id: str | None = None
+        overlaps = False
+        if existing is not None:
+            face_id = _assign_face(rect, existing)
+            if face_id == _STRADDLE_FACE:
+                excluded_counts["straddles_face"] = excluded_counts.get("straddles_face", 0) + 1
+                continue
+            overlaps = _overlaps_existing(rect, face_id, existing) if face_id else False
+        cell_index_of[r] = len(cells)
+        # M-4: 升候補の residual_px は原子セル判定時に測った実測値
+        # （矩形4辺と実測線分位置のずれの最大値）を使う。0.0 固定はしない
+        cells.append(CellCandidate(rect=rect, residual_px=round(cell_residual, 2),
+                                   face_id=face_id, overlaps_existing=overlaps))
+
+    stats["cells"] = len(cells)
+    if not cells:
+        excluded = tuple({"reason": k, "count": v} for k, v in excluded_counts.items())
+        return FrameCandidates((), (), excluded, stats, "all_filtered")
+
+    # --- 提案への束ね（08 §4.2.1 手順6・H-2 で行の x 分割を追加） ---
     # 同じ (y1, y2) を持つ原子セルを集めたあと、x 方向の隙間（> tol）で
     # 分割する——水平罫線を共有する左右2ブロックが同じ行として1つに
     # 融合し、間の隙間が「幽霊列」として columns に混入するのを防ぐ
-    # （H-2・マリン指摘）。左右ブロックはこれで別々の行セグメントになる
+    # （H-2・マリン指摘）。左右ブロックはこれで別々の行セグメントになる。
+    # 入力は「升候補として残ったセル」だけ（面またぎのセルは除いてある）
+    surviving = [r for r in kept if r in cell_index_of]
     rows_by_bounds: dict[tuple[float, float], list[tuple[float, float, float, float, float]]] = {}
-    for r in kept:
+    for r in surviving:
         rows_by_bounds.setdefault((r[0], r[2]), []).append(r)
 
     row_infos = []
-    for (y1, y2), cells in rows_by_bounds.items():
-        cells_sorted = sorted(cells, key=lambda c: c[1])
+    for (y1, y2), row_cells in rows_by_bounds.items():
+        cells_sorted = sorted(row_cells, key=lambda c: c[1])
         groups: list[list[tuple[float, float, float, float, float]]] = [[cells_sorted[0]]]
         for c in cells_sorted[1:]:
             prev_x2 = groups[-1][-1][3]
@@ -485,10 +594,9 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
     # （分割後の row_info）を安定した順序で並べる
     row_infos.sort(key=lambda ri: (ri["y1"], ri["cells"][0][1]))
 
-    def _same_signature(a: tuple[float, ...], b: tuple[float, ...]) -> bool:
-        if len(a) != len(b):
-            return False
-        return all(abs(x - y) <= tol for x, y in zip(a, b))
+    # 見出し行の切り離しは run 構築の**前**（設計 D-4）。外した行は升候補
+    # として残る（cells は上で確定済みで、ここで絞るのは run の入力だけ）
+    row_infos, _detached, body_heads = _detach_heading_rows(row_infos, tol, pitch_tol)
 
     # H-2: run を単一系列（runs[-1] とだけ比較）ではなく、x 範囲ごとに
     # 複数系列を並行して保持する——family/detail のように複数の表が
@@ -502,7 +610,7 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
             last = run[-1]
             if ri["y1"] <= last["y1"]:
                 continue  # 同一・逆行する y は別系列として扱う（安全側）
-            if not _same_signature(last["signature"], ri["signature"]):
+            if not _same_signature(last["signature"], ri["signature"], tol):
                 continue
             if len(run) == 1:
                 run.append(ri)
@@ -517,8 +625,7 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
         if not placed:
             runs.append([ri])
 
-    tables: list[TableCandidate] = []
-    used_cells: set[tuple[float, float, float, float, float]] = set()
+    suggestions: list[TableSuggestion] = []
     for run in runs:
         if len(run) < 2:
             continue
@@ -536,7 +643,7 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
         # 散らばり（cell_residual）と合わせ、大きい方を候補の残差とする
         rail_residual = max((c[4] for ri in run for c in ri["cells"]), default=0.0)
         residual = max(pitch_residual, rail_residual)
-        # セル高の中央値（08 §4.2.1 手順5）。既存 detect_ruled のように
+        # セル高の中央値（08 §4.2.1 手順6）。既存 detect_ruled のように
         # ROW_INSET（罫線ぶんの控え）は引かない——ここでの高さは実測した
         # 罫線間の距離そのもので、`grid.ROW_INSET` は「等分割・領域内検出」
         # 側の経験則であり、本設計の閾値表（08 §4.1.4）には含まれていない。
@@ -549,43 +656,25 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
         last = run[-1]
         rect = Rect(round(origin_x), round(origin_y),
                    round(bounds[-1] - origin_x), round(last["y2"] - origin_y))
-        table = TableCandidate(
-            rect=rect, origin_x=round(origin_x), origin_y=round(origin_y),
-            rows=len(run), row_pitch=round(row_pitch, 2), row_height=round(row_height),
-            columns=columns, residual_px=round(residual, 2))
-        if existing is not None:
-            face_id = _assign_face(rect, existing)
-            if face_id == _STRADDLE_FACE:
-                excluded_counts["straddles_face"] = excluded_counts.get("straddles_face", 0) + 1
-                for ri in run:
-                    used_cells.update(ri["cells"])
-                continue
-            overlaps = _overlaps_existing(rect, face_id, existing) if face_id else False
-            table = replace(table, face_id=face_id, overlaps_existing=overlaps)
-        tables.append(table)
-        for ri in run:
-            used_cells.update(ri["cells"])
-
-    fields: list[FieldCandidate] = []
-    for r in kept:
-        if r in used_cells:
-            continue
-        y1, x1, y2, x2, cell_residual = r
-        rect = Rect(round(x1), round(y1), round(x2 - x1), round(y2 - y1))
-        face_id: str | None = None
+        face_id = None
         overlaps = False
         if existing is not None:
             face_id = _assign_face(rect, existing)
             if face_id == _STRADDLE_FACE:
-                excluded_counts["straddles_face"] = excluded_counts.get("straddles_face", 0) + 1
+                # 提案だけ作らない。構成する升はすべて候補に出ているので
+                # `excluded` へは足さない（失われる情報が無い・設計 D-5）
                 continue
             overlaps = _overlaps_existing(rect, face_id, existing) if face_id else False
-        # M-4: 欄候補の residual_px は原子セル判定時に測った実測値
-        # （矩形4辺と実測線分位置のずれの最大値）を使う。0.0 固定はしない
-        fields.append(FieldCandidate(rect=rect, residual_px=round(cell_residual, 2),
-                                     face_id=face_id, overlaps_existing=overlaps))
+        # 不変条件: 昇順・重複なし・すべて 0 <= i < len(cells)（設計 D-3）
+        idxs = tuple(sorted({cell_index_of[c] for ri in run for c in ri["cells"]}))
+        suggestions.append(TableSuggestion(
+            rect=rect, origin_x=round(origin_x), origin_y=round(origin_y),
+            rows=len(run), row_pitch=round(row_pitch, 2), row_height=round(row_height),
+            columns=columns, residual_px=round(residual, 2),
+            face_id=face_id, overlaps_existing=overlaps,
+            cell_indexes=idxs,
+            heading_excluded=any(first is bh for bh in body_heads)))
 
+    stats["suggestions"] = len(suggestions)
     excluded = tuple({"reason": k, "count": v} for k, v in excluded_counts.items())
-    if not tables and not fields:
-        return FrameCandidates((), (), excluded, stats, "all_filtered")
-    return FrameCandidates(tuple(tables), tuple(fields), excluded, stats, None)
+    return FrameCandidates(tuple(cells), tuple(suggestions), excluded, stats, None)

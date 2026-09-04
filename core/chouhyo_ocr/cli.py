@@ -911,6 +911,12 @@ def cmd_snap_diff(args) -> int:
 def cmd_detect_frames(args) -> int:
     """ページ全体（領域指定なし）からの枠候補一括生成（issue #73 (b)・08 §4）。
 
+    応答は 2 本立て（08 §4.4）。`candidates[]` は閉じた矩形すべて＝升候補
+    （`kind` は `"field"` 固定）、`suggestions[]` は「この升の束は表として
+    まとめられる」という提案で、構成する升を `cell_indexes`（同一応答内の
+    `candidates[]` の添字）で指す。升は提案に吸収されても `candidates[]`
+    から落ちない。
+
     `detect-grid`（`--region` 必須）とは独立の新系統。`--template` を渡すと
     ①面の除外領域を検出前に白潰し ②候補への face_id 割り当て
     ③既存セルとの重なり（overlaps_existing）判定 が有効になる（08 §4.1.5・
@@ -1025,33 +1031,48 @@ def cmd_detect_frames(args) -> int:
 
     result = detect_frames(binary, dpi, exclusions=exclusions, existing=effective_template)
 
+    # `candidates[]` は升候補だけ・`kind` は "field" 固定（08 §4.4）。
+    # 提案（表にまとめられる升の束）は**トップレベルの別キー** `suggestions[]`
+    # に置く——`candidates` に新しい kind を混ぜると、未知の kind を "field"
+    # へ潰す既存の受け取り側が提案の外接矩形を1つの巨大な欄として採用して
+    # しまう（設計 D-2）。旧 core × 新 GUI は提案ゼロ、新 core × 旧 GUI は
+    # 提案を無視して升候補だけ、とどちらの組み合わせも安全に劣化する
     candidates: list[dict] = []
-    for t in result.tables:
-        candidates.append({
-            "kind": "table",
-            "face_id": t.face_id or "page",
-            "rect": {"x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "h": t.rect.h},
-            "blocks": [{"x": t.origin_x, "y": t.origin_y, "rows": t.rows}],
-            "row_pitch": t.row_pitch,
-            "row_height": t.row_height,
-            "columns": t.columns,
-            "residual_px": t.residual_px,
-            "overlaps_existing": t.overlaps_existing,
-        })
-    for fcand in result.fields:
+    for cand in result.cells:
         candidates.append({
             "kind": "field",
-            "face_id": fcand.face_id or "page",
-            "rect": {"x": fcand.rect.x, "y": fcand.rect.y,
-                    "w": fcand.rect.w, "h": fcand.rect.h},
-            "residual_px": fcand.residual_px,
-            "overlaps_existing": fcand.overlaps_existing,
+            "face_id": cand.face_id or "page",
+            "rect": {"x": cand.rect.x, "y": cand.rect.y,
+                    "w": cand.rect.w, "h": cand.rect.h},
+            "residual_px": cand.residual_px,
+            "overlaps_existing": cand.overlaps_existing,
+        })
+
+    # 提案のキーは表候補（旧 `kind:"table"`）と同じ形に揃える。採用時に
+    # `tables[]` へ落とす経路を従来と 1 つに保つため（AC-H32）
+    suggestions: list[dict] = []
+    for s in result.suggestions:
+        suggestions.append({
+            "kind": "table",
+            "face_id": s.face_id or "page",
+            "rect": {"x": s.rect.x, "y": s.rect.y, "w": s.rect.w, "h": s.rect.h},
+            "blocks": [{"x": s.origin_x, "y": s.origin_y, "rows": s.rows}],
+            "row_pitch": s.row_pitch,
+            "row_height": s.row_height,
+            "columns": s.columns,
+            "residual_px": s.residual_px,
+            "overlaps_existing": s.overlaps_existing,
+            # 同一応答内の `candidates[]` の受け取り順でのみ有効な添字。
+            # 受信直後に自前の id へ解決してから使う（設計 D-3）
+            "cell_indexes": list(s.cell_indexes),
+            "heading_excluded": s.heading_excluded,
         })
 
     elapsed_ms = int((_time.perf_counter() - t0) * 1000)
     _progress({"event": "detect_frames", "ok": True,
                "input_size": input_size,
                "candidates": candidates,
+               "suggestions": suggestions,
                "stats": result.stats,
                "excluded": list(result.excluded),  # H-3: 除外理由の内訳を返す
                "zero_reason": result.zero_reason,

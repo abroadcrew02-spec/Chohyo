@@ -111,11 +111,20 @@ const VERIFY_OK = [
 // promote で「保存」成功とみなし、discard で掃除する。実ファイルには触れない
 const mockStaged = new Map<string, string>();
 
+// 実コアの verify は output_disabled_cells を **物理升** で返す
+// （cli.py: len(t.cells) - len(output_cells(t))）。issue #66 段9 で GUI 側も
+// 升単位に揃えたので、疑似応答も同じ単位で数える——列を1つ外したら行数ぶん、
+// 升を1つ外したら1件。列 off の列に対する升の指定は buildTemplateJson が
+// 書かないので二重には数えない
 function countDisabledCells(parsed: any): number {
   let n = 0;
   for (const face of parsed?.faces ?? []) {
     for (const f of face.fields ?? []) if (f.output === false) n++;
-    for (const t of face.tables ?? []) for (const c of t.columns ?? []) if (c.output === false) n++;
+    for (const t of face.tables ?? []) {
+      const rows = (t.blocks ?? []).reduce((s: number, b: any) => s + (b.rows ?? 0), 0);
+      for (const c of t.columns ?? []) if (c.output === false) n += rows;
+      n += (t.output_disabled_cells ?? []).length;
+    }
   }
   return n;
 }
@@ -456,6 +465,21 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
           // マリン core レビュー由来: excluded は {reason,count} の配列
           // （複数理由・count>0 のみ意味を持つ）。template_applied は
           // --template 指定時の適用可否（デモは常に寸法一致想定で true）
+          // issue #66 段9／#73 (b) 第2弾: 等ピッチの並びは candidates に混ぜず
+          // トップレベル suggestions[] で返す（設計 D-2）。cell_indexes は
+          // **同じ応答の candidates[] の受け取り順** の添字（D-3）。ここでは
+          // 末尾3件（c2/c3/c4 相当の 1,2,3）を覆う 3行×1列 の提案を1件返し、
+          // heading_excluded:true で「見出し行は含めていません」の表示経路も
+          // 疑似応答だけで通せるようにする
+          suggestions: [
+            { kind: "table", face_id: "page",
+              rect: { x: 100, y: 1950, w: 850, h: 450 },
+              blocks: [{ x: 100, y: 1950, rows: 3 }],
+              row_pitch: 150, row_height: 150,
+              columns: [{ x_offset: 0, width: 850 }],
+              residual_px: 0.7, overlaps_existing: false,
+              cell_indexes: [1, 2, 3], heading_excluded: true },
+          ],
           excluded: [{ reason: "page_outline", count: 1 }, { reason: "too_small", count: 2 },
                      { reason: "straddles_face", count: 0 }],
           template_applied: true,

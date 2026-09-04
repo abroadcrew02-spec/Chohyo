@@ -507,7 +507,7 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
     before = page.locator("#edittabpanel .panel-outrow").count()
 
     page.get_by_role("button", name="ページ全体から枠候補を生成").click()
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     # 生成すると自動で「枠候補」タブへ切り替わる
     expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
     # 疑似応答: 表1（overlaps無し）＋欄3（うち1件 overlaps_existing）。
@@ -596,7 +596,7 @@ def test_editor_size_mismatch_new_template_generate_accept_save(page):
     page.wait_for_selector("text=空のテンプレートで開きました")
 
     page.get_by_role("button", name="ページ全体から枠候補を生成").click()
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
 
     page.get_by_role("button", name="選んだ候補を採用").click()
     # 4件（旧: 3件）。デモの c2 は「実コアが --template 無しでも
@@ -670,7 +670,7 @@ def test_editor_autodetect_no_memory_shows_candidates(page):
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
 
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
     # 上部は「決定カード」に組み替わり、未適用であることを案内する
     expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_be_visible()
@@ -691,7 +691,7 @@ def test_editor_autodetect_starts_from_empty_template(page):
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
 
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     expect(page.locator("#edittab-output")).to_be_disabled()
     expect(page.get_by_text("既存と重なり")).to_have_count(0)
 
@@ -704,7 +704,7 @@ def test_editor_autodetect_apply_template_discards_candidates(page):
     _apply_demo_config(page, _NO_MEMORY)
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
 
     native_dialogs = []
 
@@ -740,7 +740,7 @@ def test_editor_autodetect_reopen_applies_remembered_template(page):
     _apply_demo_config(page, _NO_MEMORY)
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
     _expect_template_applied(page, "帳票B")
     # 記憶が書けたことを、固定 sleep ではなく保存された中身そのもので待つ
@@ -819,7 +819,7 @@ def test_editor_autodetect_new_template_button_generates_candidates(page):
 
     page.get_by_role("button", name="この紙用に新しいテンプレートを作る", exact=True).click()
     # ツールバーの「ページ全体から枠候補を生成」は押さない
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
     # 空テンプレートの上なので重なりは0件
     expect(page.get_by_text("既存と重なり")).to_have_count(0)
@@ -861,7 +861,7 @@ def test_editor_locks_frame_replacing_actions_while_generating(page):
 
     # AC-F78: 完了後は欄の追加・除外範囲・くり返し行・表裏の境界と「開く」系が
     # すべて操作できる状態に戻る（生成中の締め出しが居残らない）
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     for name in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
         expect(page.get_by_role("button", name=name, exact=True)).to_be_enabled()
     expect(page.get_by_role("button", name="帳票を開く（PDF・画像）")).to_be_enabled()
@@ -878,7 +878,7 @@ def test_editor_open_template_file_clears_applied_bar(page):
     _apply_demo_config(page, _NO_MEMORY)
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
     _expect_template_applied(page, "帳票B")
     expect(page.get_by_text("適用中のテンプレート: 帳票B", exact=False)).to_be_visible()
@@ -902,7 +902,7 @@ def test_editor_stale_memory_still_offers_template_chooser(page):
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
 
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     expect(page.get_by_text("見つかりませんでした", exact=False).first).to_be_visible()
     expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="このテンプレートを使う（帳票B）")).to_be_visible()
@@ -956,5 +956,206 @@ def test_editor_new_template_keeps_drawing_hint_on_screen(page):
     assert hint.get_attribute("aria-live") is None
     assert hint.get_attribute("role") is None
 
-    page.wait_for_selector("text=枠候補（4 件）")
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
     expect(hint).to_contain_text("候補を確認して採用してください")
+
+
+# ---------------------------------------- 升（表の1マス）単位の出力制御・まとめ提案
+# issue #66 段9 ＋ #73 (b) 第2弾。表を「升の集まり」として扱う画面側
+# （AC-H24〜H27・H35/H36/H42）。デモの DEMO_TEMPLATE は family（3行 × 3列 =
+# 9升）を持つので、升グリッド・列一括・タブバッジ・Undo・保存前の母集団文言
+# まで実画面で通せる。
+
+
+# この一群は「枠候補の自動生成 OFF」（従来動作）で回す。直前の
+# test_editor_autodetect_* が localStorage に ON を書き残すため、各テストが
+# 自分で config を置き直してから始める（前のテストの残りに依存させない）
+_CELLS_CONFIG = {"auto_detect_frames_on_open": False}
+
+
+def _open_editor_with_demo_template(page):
+    """テンプレート編集タブでデモテンプレート（family 表つき）を読み、出力列タブを開く。"""
+    _apply_demo_config(page, _CELLS_CONFIG)
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+    page.get_by_role("button", name="テンプレートを開く", exact=True).click()
+    # 画像を開いていないので .msg は noImageNotice のまま。読み込めたことは
+    # 「出力列」タブが有効になる（templateLoaded）ことで待つ
+    output_tab = page.locator("#edittab-output")
+    expect(output_tab).to_be_enabled()
+    output_tab.click()
+
+
+def test_editor_cell_grid_toggles_one_cell_and_undo(page):
+    # AC-H24/H26/H27: 出力列タブの表の行から升グリッドを開き、升を1つ外す。
+    # タブバッジ ⊘ は **升** で数える（第2弾までは列の数だった）。升の
+    # 切り替えは押した時点で1コマ積むので Ctrl+Z 1手で戻る。
+    _open_editor_with_demo_template(page)
+
+    # 閉じたままでも「何升のうち何升が出力されないか」が読める（かなた §3.1）
+    expect(page.get_by_text("family（3行 × 3列 = 9升・すべて出力する）")).to_be_visible()
+    expect(page.locator("#edittab-output .badge")).to_have_count(0)
+
+    page.get_by_role("button", name="▸ 升", exact=True).click()
+    grid = page.locator("table.cellgrid")
+    expect(grid).to_be_visible()
+    # 行ヘッダ「行」＋列3・本文3行（ネイティブ <table> ＋ <th scope> で組む。
+    # role="grid" と矢印キー移動は入れない——矢印はキャンバスで枠を 1px
+    # 動かす操作に既に割り当てられている）
+    expect(grid.locator("thead th")).to_have_count(4)
+    expect(grid.locator("tbody tr")).to_have_count(3)
+
+    # AC-H21/H22: 升チェックの accessible name は表名・行・列と現在値を含み、
+    # 表の中で重複しない（「3行目 備考」だけだと表が複数ある紙で衝突する）
+    cell = page.get_by_role("checkbox", name="family 1行目 続柄を出力する")
+    expect(cell).to_have_count(1)
+    cell.uncheck()
+
+    # AC-H26: タブのバッジは升で数える（1升だけ外したので ⊘1）
+    expect(page.locator("#edittab-output .badge")).to_have_text("⊘1")
+    expect(page.get_by_text("family（3行 × 3列 = 9升・出力しない 1）")).to_be_visible()
+    # 出力しない升は斜線。状態はチェックの形が持ち、斜線は装飾
+    expect(page.locator("table.cellgrid td.offcell")).to_have_count(1)
+
+    # AC-H27: Ctrl+Z 1手で戻る（400ms 静止の経路に頼らず即座に1コマ積んでいる）
+    page.keyboard.press("Control+z")
+    expect(page.locator("#edittab-output .badge")).to_have_count(0)
+    expect(page.locator("table.cellgrid td.offcell")).to_have_count(0)
+
+
+def test_editor_cell_grid_column_bulk_toggle_and_save_population(page):
+    # AC-H21/H25: 列ヘッダの一括トグルで 3 升が一度に外れ、保存サマリの母集団
+    # 注記が「（出力しない 升 3）」になる。列数（verify 実測）と内訳（GUI 集計）
+    # は別々の実測値なので「を除く」という因果表現では結ばない。
+    _open_editor_with_demo_template(page)
+    page.get_by_role("button", name="▸ 升", exact=True).click()
+
+    col = page.get_by_role("checkbox", name="family 続柄 の 3升 をまとめて切り替える",
+                           exact=False)
+    expect(col).to_have_count(1)
+    col.uncheck()
+    expect(page.locator("#edittab-output .badge")).to_have_text("⊘3")
+    expect(page.locator("table.cellgrid td.offcell")).to_have_count(3)
+
+    # 保存すると verify（デモも実コアと同じ物理升で数える）と GUI の集計が揃う。
+    # 出力列が 220→217 に減るので保存前確認が1枚出る（既存の FR-1.6 の警告）
+    page.get_by_role("button", name="保存して検証", exact=True).click()
+    page.get_by_role("button", name="このまま保存").click()
+    page.wait_for_selector("text=保存＋コア検証 OK")
+    expect(page.get_by_text("要確認セル数の母集団: 214列 → 211列（出力しない 升 3）",
+                            exact=False)).to_be_visible()
+    # subfields を持つ列の升は 1 升 = N 列に展開されるため、列差と内訳の合計は
+    # 一致しないことがある。画面が一致を約束しないよう「を除く」は書かない
+    expect(page.get_by_text("升 3 を除く", exact=False)).to_have_count(0)
+
+
+def test_editor_suggestion_card_merge_into_table_and_undo(page):
+    # AC-H35/H36/H42: 候補パネルは「まとめ提案」が上・「升候補」が下。提案は
+    # heading_excluded のときだけ「見出し行は含めていません」を出す（false は
+    # 「見出しが無かった」との区別がつかないので何も言わない）。
+    # 「表にまとめる」で提案が消え、構成する升が候補から消え、Ctrl+Z で戻る。
+    _apply_demo_config(page, _CELLS_CONFIG)
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=この画像に合うテンプレート")
+
+    page.get_by_role("button", name="ページ全体から枠候補を生成").click()
+    # AC-H35: 見出しに升候補と提案の両方の件数が出る
+    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    expect(page.get_by_text("まとめ提案（1 件）")).to_be_visible()
+    expect(page.get_by_text("この 3行 × 1列（3升）は表にまとめられます")).to_be_visible()
+    # AC-H42: 見出し行を外した提案だけが1行を出す
+    expect(page.get_by_text("見出し行は含めていません")).to_be_visible()
+
+    # 提案は升候補より上（決めることが先・作業することが後）。下に置くと
+    # 数十〜数百件のスクロールの底に埋まり、そもそも読まれない
+    suggest_top = page.locator(".cand-suggest").first.bounding_box()["y"]
+    cand_top = page.locator(".cand-list .panel-outrow").first.bounding_box()["y"]
+    assert suggest_top < cand_top, "まとめ提案は升候補より上に置く"
+
+    # ボタンの読み上げ名は行×列入りになった（ラミィ Should: 提案が複数出ても
+    # 「表にまとめる」が並ばず一意に選べる）。見えている文字は変えていない
+    page.get_by_role("button", name="3行×1列の提案を表にまとめる", exact=True).click()
+    # AC-H36: 結果文に「Ctrl+Z で戻せます」を添える
+    page.wait_for_selector("text=Ctrl+Z で戻せます")
+    # AC-H34: 採用した3升だけが候補から消え、提案カードも消える
+    page.wait_for_selector("text=枠候補（升 1 件）")
+    expect(page.locator(".cand-suggest")).to_have_count(0)
+
+    # 履歴コマは採用時に pushHistoryNow で積んである（押した直後でも効く）
+    page.keyboard.press("Control+z")
+    # 升候補は戻る。提案カードは Snap に入れていないので戻らない（設計 R-11）
+    page.wait_for_selector("text=枠候補（升 4 件）")
+
+    page.once("dialog", lambda d: d.accept())
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")
+
+
+def test_editor_block_rows_and_column_rename_commit_on_blur(page):
+    # レビュー H-2/H-3 の回帰。行数入力・列名入力は打鍵ごとに確定していたため、
+    #   ・3 を 10 にする途中の "1" で 2・3 行目の升の指定が消える
+    #   ・列名を全部消して打ち直す間、空名を経由した時点で升の指定が消える
+    # という「触っていない指定が黙って消える」経路になっていた。確定は
+    # onBlur / Enter だけ。確定して本当に行の外へ出た指定は、これまでどおり
+    # 取り消して保存前確認（cells-dropped）へ積む。
+    #
+    # 行数・列名の入力は「選択中」タブ、升グリッドは「出力列」タブにあり、
+    # 編集タブは排他なので同時には見られない。打鍵の途中で指定が生きている
+    # ことは、タブを切り替えなくても読める ⊘ バッジ（升で数える）で見る。
+    _open_editor_with_demo_template(page)
+    page.get_by_role("button", name="▸ 升", exact=True).click()
+    page.get_by_role("checkbox", name="family 3行目 続柄を出力する").uncheck()
+    badge = page.locator("#edittab-output .badge")
+    expect(badge).to_have_text("⊘1")
+
+    # 表を選ぶ（「開く」は選択中タブへ切り替える）
+    page.locator(".panel-outrow.tablerow").get_by_role("button", name="開く").click()
+    page.wait_for_selector("text=選択中のくり返し行")
+    rows_input = page.get_by_label("ブロック1 行数")
+    expect(rows_input).to_have_value("3")
+
+    # H-2: 3 → 10 と打ち直す途中の "1"。確定していないので升の指定は残る
+    # （旧実装はここで remapCellsOffOnBlocksChange が走り ⊘1 が消えていた）
+    rows_input.fill("1")
+    expect(badge).to_have_text("⊘1")
+    rows_input.fill("3")
+    rows_input.press("Enter")
+    expect(badge).to_have_text("⊘1")
+
+    # H-3: 列名を全部消してから打ち直す。空名を経由しても指定は残り、
+    # 確定した新しい名前へ張り替わる（旧実装は空名の時点で捨てていた）
+    name_input = page.locator("input.w8[title='列名']").first
+    expect(name_input).to_have_value("続柄")
+    name_input.fill("")
+    expect(badge).to_have_text("⊘1")
+    name_input.fill("続柄A")
+    name_input.press("Enter")
+    expect(badge).to_have_text("⊘1")
+
+    # 張り替え先の升で外れている（升グリッドは開いたまま残っている）
+    page.locator("#edittab-output").click()
+    expect(page.get_by_role("checkbox", name="family 3行目 続柄Aを出力する")).to_have_count(1)
+    expect(page.locator("table.cellgrid td.offcell")).to_have_count(1)
+
+    # 確定して本当に行が減れば、これまでどおり取り消して件数を知らせる
+    page.locator("#edittab-selected").click()
+    rows_input = page.get_by_label("ブロック1 行数")
+    rows_input.fill("2")
+    rows_input.press("Enter")
+    expect(page.get_by_text("行の外に出た「出力しない升」の指定 1 件を取り消しました",
+                            exact=False)).to_be_visible()
+    expect(badge).to_have_count(0)
+
+    # AC-3.24: 取り消した件数は保存前確認に1行出る（cells-dropped 分岐）
+    page.get_by_role("button", name="保存して検証", exact=True).click()
+    expect(page.get_by_text(
+        "行数の変更で行の外に出た「出力しない升」の指定 1 件を取り消しました",
+        exact=False)).to_be_visible()
+    page.get_by_role("button", name="このまま保存").click()
+    page.wait_for_selector("text=保存＋コア検証 OK")
+
+    page.once("dialog", lambda d: d.accept())
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")

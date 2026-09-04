@@ -26,7 +26,12 @@ type Column = { name: string; x_offset: number; width: number; kind: "text" | "c
                 subfields: string; marks: ColMark[]; normalize?: string; output?: boolean };
 type Block = { x: number; y: number; rows: number };
 type Table = { uid: string; table_id: string; row_pitch: number; row_height: number;
-               blocks: Block[]; columns: Column[] };
+               blocks: Block[]; columns: Column[];
+               // 升（表の1マス）単位の「出力しない」（issue #66 段9・FR-3.1）。
+               // キーは `${row_no}:${列名}`（row_no はブロックを跨いだ 1 起点の
+               // 通し番号＝core の _expand_table と同じ採番）。省略＝全升出力。
+               // 列（columns[].output）が優先で、列 off の升は保存時に書かない
+               cellsOff?: Set<string> };
 type Excl = { uid: string; id: string; rect: Rect };
 // part: "fallback"＝参照先 ／ "extra:<n>"＝追加領域の n 番目
 type Sel = { type: "field" | "table" | "excl"; uid: string;
@@ -506,15 +511,425 @@ export function outputAttrForJson(output: boolean | undefined): { output: false 
   return output === false ? { output: false } : {};
 }
 
-/// 現在「出力しない」に設定されている欄・表の列の総数を数える（FR-1.8 の
-/// タブ見出しバッジ用）。列番号の再導出ではなく単なるフラグの集計なので
-/// FR-0.1 の「GUI側での列名・列順の再導出禁止」には抵触しない。
+// ============================================================
+// 出力列制御・第3弾（issue #66 段9・FR-3.x）: 升（表の1マス）単位の出力制御
+// ============================================================
+// 表は「升の集まり」。列（columns[].output）だけでなく、行×列の1マスを
+// 名指しで出力対象外にできる。保存形は core の
+// tables[].output_disabled_cells: [{row_no, column}]（列は名前参照）。
+// 列が優先（列 off の升は保存時に書かない）で、粒度は core の _expand_table が
+// 畳む——下流（output_cells）は真偽値ひとつしか見ない。
+
+/// 升キーの組み立て。row_no はブロックを跨いだ 1 起点の通し番号。
+export function cellKey(rowNo: number, column: string): string { return `${rowNo}:${column}`; }
+
+/// 升キーの分解。列名に ':' が入りうるので **最初の ':' で切る**
+/// （row_no は必ず数字なので復元できる）。壊れたキーは null。
+export function parseCellKey(key: string): { rowNo: number; column: string } | null {
+  const i = key.indexOf(":");
+  if (i <= 0) return null;
+  const n = Number(key.slice(0, i));
+  if (!Number.isInteger(n) || n < 1) return null;
+  const column = key.slice(i + 1);
+  return column ? { rowNo: n, column } : null;
+}
+
+/// 表の総行数（ブロック合計）。row_no の上限であり、行×列一覧の行数でもある。
+/// 行数入力は途中で 0・負になりうる（<input type=number>）ので下限を 0 に切る。
+export function tableTotalRows(t: { blocks: { rows: number }[] }): number {
+  return (t.blocks ?? []).reduce((s, b) => s + Math.max(0, b.rows | 0), 0);
+}
+
+/// この升を出力するか。**列が優先**（列 off なら升の指定に関係なく false）。
+/// cellsOff から消さないのは、列を戻したときに升の指定が生き返るのが
+/// 自然だから——ただし保存時は列 off の升を書かない（列優先の保存規則）。
+export function isCellOutput(
+  t: { cellsOff?: Set<string> }, rowNo: number,
+  column: { name: string; output?: boolean }): boolean {
+  if (!isOutput(column)) return false;
+  return !(t.cellsOff?.has(cellKey(rowNo, column.name)) ?? false);
+}
+
+/// 升のトグル。新しい Set を返す（Undo の1コマとして丸ごと差し替える）。
+export function toggleCellOutput(t: Table, rowNo: number, columnName: string): Table {
+  const next = new Set(t.cellsOff ?? []);
+  const key = cellKey(rowNo, columnName);
+  if (next.has(key)) next.delete(key); else next.add(key);
+  return { ...t, cellsOff: next };
+}
+
+/// 列の実効状態（FR-3.6）。列チェックボックスの表示（レ点／空／indeterminate）と、
+/// 押したときの向きを **この1関数で決める**——columns[].output を直に読んで
+/// 分岐すると、升だけ外れている中間状態が表示から抜け落ちる。
+export type ColumnCellState = "all" | "none" | "mixed";
+export function columnCellState(
+  t: { blocks: { rows: number }[]; cellsOff?: Set<string> },
+  column: { name: string; output?: boolean }): ColumnCellState {
+  if (!isOutput(column)) return "none";      // 列 off は無条件に「すべて出力しない」
+  const rows = tableTotalRows(t);
+  if (rows <= 0) return "all";
+  const off = countColumnCellsOff(t, column);
+  if (off === 0) return "all";
+  return off >= rows ? "none" : "mixed";
+}
+
+/// その列に付いている升の指定の数（行の範囲内のみ）。**列 off でも数える**
+/// ——列を戻すと生き返る指定が何升あるかを説明文に出すため。isCellOutput は
+/// 列 off なら一律 false を返すので、そこから引き算しても列の全升になる。
+export function countColumnCellsOff(
+  t: { blocks: { rows: number }[]; cellsOff?: Set<string> },
+  column: { name: string }): number {
+  const rows = tableTotalRows(t);
+  let off = 0;
+  for (const key of t.cellsOff ?? []) {
+    const p = parseCellKey(key);
+    if (p && p.column === column.name && p.rowNo >= 1 && p.rowNo <= rows) off++;
+  }
+  return off;
+}
+
+/// 列ヘッダ・列一括ボタンのトグル（FR-3.6）。遷移は
+///   all        → 列 off（cellsOff は触らない）
+///   mixed      → 列 off（同上。中間からは「外す」方向へ倒す＝押すたび向きが変わらない）
+///   列 off     → 列 on（**cellsOff は触らない**＝升の指定が生き返る）
+///   全升 off   → 列 on ＋ その列の升の例外を全消去
+/// 「列を戻すと升の指定が効く」は isCellOutput の doc・升チェックの説明文
+/// （「列を戻すと升の指定が効きます」）・列チェックの説明文（「列を戻すまで
+/// 画面上は保持します」）が画面上で約束していること。列 off から戻すときに
+/// cellsOff を消すと、その約束と真逆に「戻した瞬間に指定が消える」になる。
+/// 戻した直後の表示は mixed（indeterminate）で、外れたままの升があることは
+/// チェックの形が示す。
+/// 一方 **全升 off**（列は on のまま升を1つずつ全部外した状態）から戻すときは
+/// 消す先の「列 off」が無いので、全消去しないと押しても何も変わらない。
+export function toggleColumnOutput(t: Table, columnIndex: number): Table {
+  const c = t.columns[columnIndex];
+  if (!c) return t;
+  const columns = t.columns.slice();
+  if (!isOutput(c)) {
+    columns[columnIndex] = { ...c, output: undefined };
+    return { ...t, columns };
+  }
+  const state = columnCellState(t, c);
+  if (state === "none") {
+    columns[columnIndex] = { ...c, output: undefined };
+    const next = new Set<string>();
+    for (const key of t.cellsOff ?? []) {
+      const p = parseCellKey(key);
+      if (p && p.column === c.name) continue;
+      next.add(key);
+    }
+    return { ...t, columns, cellsOff: next };
+  }
+  columns[columnIndex] = { ...c, output: false };
+  return { ...t, columns };
+}
+
+/// JSON へ書く升の指定（FR-3.6 の保存規則）。
+///  1. 有効なエントリが 0 件なら null（呼び出し側はキー自体を書かない）
+///  2. columns[].output === false の列のエントリは書かない（列が優先）
+///  3. 実在しない row_no（> Σrows）・実在しない列名は書かない
+///     ——GUI 側で刈り込み、load_template の拒否に頼らない
+///  4. row_no 昇順 → 同じ行内は columns[] の定義順。同じ編集内容なら同じ
+///     バイト列になり、編集していないのに template_hash が動くのを防ぐ
+export function disabledCellsForJson(
+  t: { columns: { name: string; output?: boolean }[]; blocks: { rows: number }[];
+       cellsOff?: Set<string> }): { row_no: number; column: string }[] | null {
+  const rows = tableTotalRows(t);
+  const order = new Map<string, number>();
+  t.columns.forEach((c, i) => { if (!order.has(c.name)) order.set(c.name, i); });
+  const out: { row_no: number; column: string }[] = [];
+  const seen = new Set<string>();
+  for (const key of t.cellsOff ?? []) {
+    const p = parseCellKey(key);
+    if (!p || p.rowNo < 1 || p.rowNo > rows) continue;
+    const idx = order.get(p.column);
+    if (idx === undefined || !isOutput(t.columns[idx])) continue;
+    const k = cellKey(p.rowNo, p.column);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ row_no: p.rowNo, column: p.column });
+  }
+  if (out.length === 0) return null;
+  out.sort((a, b) => a.row_no - b.row_no
+    || (order.get(a.column) ?? 0) - (order.get(b.column) ?? 0));
+  return out;
+}
+
+/// buildTemplateJson が書く形。空ならキーごと省略する——空配列を書くと
+/// 升を1つも触っていない保存で template_hash が動き、無関係な remap を
+/// 要求してしまう（outputAttrForJson と同じ思想）。
+export function disabledCellsAttrForJson(
+  t: { columns: { name: string; output?: boolean }[]; blocks: { rows: number }[];
+       cellsOff?: Set<string> }): { output_disabled_cells: { row_no: number; column: string }[] }
+  | object {
+  const list = disabledCellsForJson(t);
+  return list ? { output_disabled_cells: list } : {};
+}
+
+/// 読み込み時の逆変換（toEditorState 内で使う）。実在しない行・列は落とす
+/// ——core の _validate_disabled_cells が拒否する形は state に入れない。
+export function cellsOffFromJson(
+  raw: unknown, columns: { name: string }[], totalRows: number): Set<string> {
+  const out = new Set<string>();
+  if (!Array.isArray(raw)) return out;
+  const names = new Set(columns.map((c) => c.name));
+  for (const e of raw as any[]) {
+    const rowNo = e?.row_no;
+    const column = e?.column;
+    if (!Number.isInteger(rowNo) || rowNo < 1 || rowNo > totalRows) continue;
+    if (typeof column !== "string" || !names.has(column)) continue;
+    out.add(cellKey(rowNo, column));
+  }
+  return out;
+}
+
+/// ⊘バッジを描く単位（FR-3.7）。1 列の中で「出力しない升が縦に連続する
+/// まとまり」を行番号の閉区間で返す。列が off なら各ブロック 1 本（現状の
+/// 列単位表示と同じ絵になる）。**ブロックを跨ぐ連なりは分割する**——通し
+/// 行番号は連続でも、紙の上では別の場所に飛ぶため。
+export function verticalOffRuns(
+  t: { blocks: { rows: number }[]; columns: { name: string; output?: boolean }[];
+       cellsOff?: Set<string> },
+  columnIndex: number): { fromRow: number; toRow: number }[] {
+  const c = t.columns[columnIndex];
+  if (!c) return [];
+  const colOff = !isOutput(c);
+  const runs: { fromRow: number; toRow: number }[] = [];
+  let cursor = 0;
+  for (const b of t.blocks ?? []) {
+    const n = Math.max(0, b.rows | 0);
+    let start: number | null = null;
+    for (let i = 0; i < n; i++) {
+      const rowNo = cursor + i + 1;
+      const off = colOff || (t.cellsOff?.has(cellKey(rowNo, c.name)) ?? false);
+      if (off && start === null) start = rowNo;
+      if (!off && start !== null) { runs.push({ fromRow: start, toRow: rowNo - 1 }); start = null; }
+    }
+    if (start !== null) runs.push({ fromRow: start, toRow: cursor + n });
+    cursor += n;
+  }
+  return runs;
+}
+
+/// キャンバス上の点から（通し行番号, 列添字）を逆算する（FR-3.7 の 2 段クリック
+/// の 2 段目）。行間の隙間（row_pitch - row_height）と列と列の隙間では null
+/// ——そこは「升の外」なので、表の選択だけに落とす。
+export function cellAtPoint(
+  t: { row_pitch: number; row_height: number; blocks: Block[];
+       columns: { x_offset: number; width: number }[] },
+  x: number, y: number): { rowNo: number; colIndex: number } | null {
+  let cursor = 0;
+  for (const b of t.blocks ?? []) {
+    const n = Math.max(0, b.rows | 0);
+    for (let i = 0; i < n; i++) {
+      const top = b.y + t.row_pitch * i;
+      if (y < top || y >= top + t.row_height) continue;
+      for (let ci = 0; ci < t.columns.length; ci++) {
+        const c = t.columns[ci];
+        const left = b.x + c.x_offset;
+        if (x >= left && x < left + c.width) return { rowNo: cursor + i + 1, colIndex: ci };
+      }
+    }
+    cursor += n;
+  }
+  return null;
+}
+
+/// 升 1 つが CSV・Excel の何列目か（FR-3.3）。column_names に **実在する**
+/// エントリを探すだけで列名は組み立てない（FR-0.1）。行番号は
+/// `<table_id>_<行番号>_<列名>` の行番号部分を **数値として** 比較する
+/// ——_expand_table は `{row_no:02d}` で埋めるため 100 行目以降は 3 桁になり、
+/// 文字列比較だと 100 行目が拾えない。
+/// `siblings` には同じ表の他の列名を渡す。`品名` と `品名_税` のように、ある
+/// 列名が別の列名の接頭辞になっていると、`品名_税` の分割列 `品名_税_1` を
+/// `品名` の分割列として拾ってしまう（`startsWith(columnName + "_")` の
+/// 誤拾い）。tail により長く一致する兄弟列があれば、その列のものとして
+/// ここでは数えない。渡さなければ従来どおりの判定。
+export function cellColumnPosition(
+  columnNames: string[] | null, tableId: string, rowNo: number, columnName: string,
+  siblings?: string[],
+): { first: number; last: number } | null {
+  if (!columnNames) return null;
+  const prefix = `${tableId}_`;
+  const longer = (siblings ?? []).filter(
+    (n) => n !== columnName && n.length > columnName.length);
+  const idxs: number[] = [];
+  columnNames.forEach((name, i) => {
+    if (!name.startsWith(prefix)) return;
+    const m = /^(\d+)_(.*)$/.exec(name.slice(prefix.length));
+    if (!m || Number(m[1]) !== rowNo) return;
+    const tail = m[2];
+    if (tail === columnName) { idxs.push(i + 1); return; }
+    if (!tail.startsWith(columnName + "_")) return;
+    if (longer.some((n) => tail === n || tail.startsWith(n + "_"))) return;
+    idxs.push(i + 1);
+  });
+  return idxs.length ? { first: idxs[0], last: idxs[idxs.length - 1] } : null;
+}
+
+/// 列名を変えたときの追従（FR-3.5）。旧名のキーを新名へ張り替える。
+/// 列の **並べ替え**（moveTableColumnOrder）はキーが列名なので追従不要——
+/// 添字参照にしなかった実利がここに出る。
+export function remapCellsOffOnColumnRename(
+  t: { columns: { name: string }[]; cellsOff?: Set<string> },
+  index: number, newName: string, oldName?: string): Set<string> {
+  // 空名（打ち直しの途中・全消しした状態）へは張り替えない。`1:` は
+  // parseCellKey が解けないキーで、作った瞬間にその升の指定が捨てられる
+  // ——列名を打ち直しただけで升の指定が消える経路だった（レビュー H-3）
+  if (newName === "") return new Set(t.cellsOff ?? []);
+  // 旧名は既定では現在の列名。編集を始めた時点の名前が分かる呼び出し側
+  // （commitColumnName）は、そちらを渡して確定 1 回で張り替える
+  const old = oldName ?? t.columns[index]?.name;
+  const next = new Set<string>();
+  for (const key of t.cellsOff ?? []) {
+    const p = parseCellKey(key);
+    if (!p) continue;
+    next.add(old !== undefined && p.column === old ? cellKey(p.rowNo, newName) : key);
+  }
+  return next;
+}
+
+/// 列を消したときの追従（FR-3.5）。その列のキーを落とす。
+export function remapCellsOffOnColumnDelete(
+  t: { columns: { name: string }[]; cellsOff?: Set<string> }, index: number): Set<string> {
+  const gone = t.columns[index]?.name;
+  const next = new Set<string>();
+  for (const key of t.cellsOff ?? []) {
+    const p = parseCellKey(key);
+    if (!p || (gone !== undefined && p.column === gone)) continue;
+    next.add(key);
+  }
+  return next;
+}
+
+/// ブロックの行数変更・ブロックの増減への追従（FR-3.5・R-1 の打ち手）。
+/// row_no は通し番号なので、第1ブロックの行数を減らすと第2ブロック以降の
+/// 指定が **黙って別の升へずれる**（core では範囲内の別の升を指すだけなので
+/// 拒否もされない）。旧 blocks で (ブロック番号, ブロック内行番号) へ分解し、
+/// 新 blocks で組み直すことでずれを構造的に潰す。写し直せない指定
+/// （消えたブロック・減った行）は落とし、件数を dropped で返す。
+export function remapCellsOffOnBlocksChange(
+  t: { blocks: { rows: number }[]; cellsOff?: Set<string> },
+  nextBlocks: { rows: number }[]): { cellsOff: Set<string>; dropped: number } {
+  const rowsOf = (bs: { rows: number }[], i: number) => Math.max(0, bs[i]?.rows | 0);
+  const locate = (rowNo: number): { block: number; row: number } | null => {
+    let cursor = 0;
+    for (let bi = 0; bi < (t.blocks ?? []).length; bi++) {
+      const n = rowsOf(t.blocks, bi);
+      if (rowNo > cursor && rowNo <= cursor + n) return { block: bi, row: rowNo - cursor };
+      cursor += n;
+    }
+    return null;
+  };
+  const out = new Set<string>();
+  let dropped = 0;
+  for (const key of t.cellsOff ?? []) {
+    const p = parseCellKey(key);
+    const loc = p ? locate(p.rowNo) : null;
+    if (!p || !loc || loc.block >= nextBlocks.length || loc.row > rowsOf(nextBlocks, loc.block)) {
+      dropped++;
+      continue;
+    }
+    let base = 0;
+    for (let i = 0; i < loc.block; i++) base += rowsOf(nextBlocks, i);
+    out.add(cellKey(base + loc.row, p.column));
+  }
+  return { cellsOff: out, dropped };
+}
+
+/// 「出力しない」の内訳を **物理升単位** で数える（FR-3.4）。
+///   欄: 出力しない欄の数
+///   升: Σ_tables( 出力しない列の数 × その表の総行数
+///                 ＋ 列が出力する升の例外の件数 )
+/// 列 off と升の例外を二重に数えない（列 off の列の例外は保存でも書かない＝
+/// verify の母集団に現れない）。これで保存前の GUI 表示と保存後の verify の
+/// output_disabled_cells（= len(cells) - len(output_cells)・物理升）が揃う。
+export function outputDisabledBreakdown(
+  fields: { output?: boolean }[],
+  tables: { columns: { name: string; output?: boolean }[]; blocks: { rows: number }[];
+            cellsOff?: Set<string> }[]): { fields: number; cells: number } {
+  const fromFields = fields.filter((f) => !isOutput(f)).length;
+  let cells = 0;
+  for (const t of tables) {
+    const rows = tableTotalRows(t);
+    const onNames = new Set(t.columns.filter((c) => isOutput(c)).map((c) => c.name));
+    cells += t.columns.filter((c) => !isOutput(c)).length * rows;
+    for (const key of t.cellsOff ?? []) {
+      const p = parseCellKey(key);
+      if (p && onNames.has(p.column) && p.rowNo >= 1 && p.rowNo <= rows) cells++;
+    }
+  }
+  return { fields: fromFields, cells };
+}
+
+/// 現在「出力しない」に設定されている物理升の総数（FR-1.8 のタブ見出しバッジ・
+/// FR-3.4）。第2弾までは表について「列数」を数えており、verify の
+/// output_disabled_cells（物理升）と桁が違っていた。数え方の正本は
+/// outputDisabledBreakdown 1つに保ち、ここはその和として定義する。
+/// 列番号の再導出ではなく単なるフラグの集計なので FR-0.1 には抵触しない。
 export function countOutputDisabled(
   fields: { output?: boolean }[],
-  tables: { columns: { output?: boolean }[] }[]): number {
-  const fromFields = fields.filter((f) => !isOutput(f)).length;
-  const fromTables = tables.reduce((s, t) => s + t.columns.filter((c) => !isOutput(c)).length, 0);
-  return fromFields + fromTables;
+  tables: { columns: { name: string; output?: boolean }[]; blocks: { rows: number }[];
+            cellsOff?: Set<string> }[]): number {
+  const b = outputDisabledBreakdown(fields, tables);
+  return b.fields + b.cells;
+}
+
+/// 升チェックの表示名（AC-3.19 の a11y 側・かなた §6.1）。
+/// **表の名前を必ず含める**——PM の AC は「3行目 備考」だが、表が 10 件ある紙
+/// では `3行目 備考` が 10 個できて一意にならない。表名を足せば表内でも表を
+/// またいでも重複しない。この名前を outputCheckboxLabel に渡すと
+/// `明細 3行目 備考を出力する（現在: 47列目）` になる。
+export function cellCheckboxDisplayName(
+  tableId: string, rowNo: number, columnName: string): string {
+  return `${tableId || "表"} ${rowNo}行目 ${columnName || "（名前未設定）"}`;
+}
+
+/// 列一括ボタンのラベル（UI 案 §2.3）。中間（mixed）では「出力しない」に
+/// 固定する——押すたびに向きが変わると押し間違えるため。
+/// `pendingOff` は「列 `output:false` から戻すときに残る升の指定の数」。
+/// state だけでは「列 off」と「列 on で全升 off」を区別できないため、
+/// 呼び出し側が列 off のときだけ非 0 を渡す（列 on なら必ず 0）。
+export function columnBulkToggleLabel(
+  state: ColumnCellState, rows: number, pendingOff = 0): string {
+  if (state !== "none") return `この列 ${rows}升 をまとめて出力しない`;
+  // 列 off から戻すと升の指定が生き返る（H-1）ので、全升が出力されるとは
+  // 限らない。残る指定があるならボタンの文でも「まとめて出力する」と
+  // 約束しない——押した結果と食い違う
+  return pendingOff > 0
+    ? `この列を出力する（外したままの ${pendingOff}升 は残ります）`
+    : `この列 ${rows}升 をまとめて出力する`;
+}
+
+/// 列一括トグル・列ヘッダチェックの accessible name（かなた §6.1）。
+/// 現在値を必ず含める（SC 4.1.3・切り替えで文言が変わる）。
+export function columnBulkToggleAriaLabel(
+  tableId: string, columnName: string, rows: number,
+  state: ColumnCellState, offCount: number): string {
+  const cur = state === "all" ? "すべて出力する"
+    : state === "none" ? "すべて出力対象外"
+    : `${offCount}升が出力対象外`;
+  return `${tableId || "表"} ${columnName || "（名前未設定）"} の ${rows}升 を`
+    + `まとめて切り替える（現在: ${cur}）`;
+}
+
+/// 升グリッドの直下 1 行（FR-3.3・かなた §3.3）。升に触れている間だけ
+/// 列番号を出す。並べ替え直後は番号を出さない（誤った番号を出さない・FR-0.1）。
+export function cellGridNote(input: {
+  hover: { tableId: string; rowNo: number; columnName: string } | null;
+  position: { first: number; last: number } | null;
+  cellOutput: boolean;
+  orderChanged: boolean;
+}): string {
+  if (!input.hover) return "升にふれると列番号が出ます";
+  const name = `${input.hover.tableId}_${input.hover.rowNo}_${input.hover.columnName}`;
+  if (!input.cellOutput) return `${name} = 出力しません`;
+  if (input.orderChanged) return "保存すると列番号が確定します";
+  if (!input.position) return `${name} = 保存すると列番号が確定します`;
+  const pos = input.position.first === input.position.last
+    ? `左から${input.position.first}列目`
+    : `左から${input.position.first}〜${input.position.last}列目`;
+  return `${name} = ${pos}`;
 }
 
 /// 単発欄の field_id が verify の column_names（FR-0.1）の中でどの位置に
@@ -925,7 +1340,11 @@ export function buildTemplateJson(input: {
           ...(c.normalize && c.kind === "text" && !c.subfields.trim()
             ? { normalize: c.normalize } : {}),
           ...(c.kind === "choice" ? { choice_marks: c.marks } : {}),
-          ...outputAttrForJson(c.output) })) })),
+          ...outputAttrForJson(c.output) })),
+        // 升単位の「出力しない」（issue #66 段9・FR-3.1）。空ならキーごと
+        // 省略する——空配列を書くと升を1つも触っていない保存で
+        // template_hash が動く（disabledCellsAttrForJson 側の規則）
+        ...disabledCellsAttrForJson(t) })),
     };
   };
   const front = face("front");
@@ -1073,6 +1492,9 @@ export function saveConfirmWarnings(input: {
   imageSizeMismatch: { from: string; to: string } | null;
   exclusionNotice: string | null;
   columnDecrease: ColumnDecreaseCheck;
+  /// 行数・ブロックの編集で範囲外になり取り消した升の指定の件数（FR-3.5）。
+  /// 省略＝0（第2弾までの呼び出しをそのまま通す）
+  droppedCells?: number;
 }): SaveWarning[] {
   const warnings: SaveWarning[] = [];
   if (input.isShipped) {
@@ -1100,6 +1522,12 @@ export function saveConfirmWarnings(input: {
     warnings.push({ key: "columns",
       text: "列数を比較できません（列数を取得できませんでした）。"
         + "保存後の verify で列構成を確認してください。" });
+  }
+  if ((input.droppedCells ?? 0) > 0) {
+    warnings.push({ key: "cells-dropped",
+      text: `行数の変更で行の外に出た「出力しない升」の指定 ${input.droppedCells} 件を`
+        + "取り消しました。該当の升は保存すると出力されます。"
+        + "「出力列」タブの「升を見る」で付け直してください。" });
   }
   return warnings;
 }
@@ -1179,15 +1607,26 @@ export function clearCandidates(
            notice: "候補をすべて除去しました（確定済みの枠は変更していません）" };
 }
 
-/// 保存サマリの要確認セル数・母集団縮小の注記（AC-1.16・T-S8）。
-/// 「要確認セル数の母集団: 214列 → 211列（出力しない 3 欄を除く）」の形式。
+/// 保存サマリの要確認セル数・母集団縮小の注記（AC-1.16・T-S8・FR-3.8）。
+/// 「要確認セル数の母集団: 214列 → 199列（出力しない 欄 2・升 13）」の形式。
 /// 抽出列数（列数から管理6列を除いた数）が減っていない、または対象外が
 /// 0件のときは null（呼び出し側は何も表示しない）。
+///
+/// **「を除く」という因果表現は使わない。** 列数（214→199）は verify の実測、
+/// 内訳（欄 2・升 13）は GUI の集計で、別々の実測値である。subfields を持つ
+/// 列の升は 1 升 = N 列に展開されるため差と合計は一致しないことがあり、
+/// 一致を画面が約束してはいけない（AC-3.33 で明示的に固定してある）。
+/// 0 のほうの項は落とす。
 export function unclearPopulationNote(
-  loadedExtractColumns: number, currentExtractColumns: number, disabledCount: number): string | null {
-  if (currentExtractColumns >= loadedExtractColumns || disabledCount <= 0) return null;
+  loadedExtractColumns: number, currentExtractColumns: number,
+  disabledFields: number, disabledCells: number): string | null {
+  const total = disabledFields + disabledCells;
+  if (currentExtractColumns >= loadedExtractColumns || total <= 0) return null;
+  const parts: string[] = [];
+  if (disabledFields > 0) parts.push(`欄 ${disabledFields}`);
+  if (disabledCells > 0) parts.push(`升 ${disabledCells}`);
   return `要確認セル数の母集団: ${loadedExtractColumns}列 → ${currentExtractColumns}列`
-    + `（出力しない ${disabledCount} 欄を除く）`;
+    + `（出力しない ${parts.join("・")}）`;
 }
 
 /// expand-page が返す位置合わせ失敗の理由（ぺこら担当・core 側で追加中）。
@@ -1716,6 +2155,30 @@ export function candidateDefaultChecked(cand: Cand): boolean {
   return !cand.overlaps;
 }
 
+/// 一括採用ボタンのラベル（レビュー M-1）。一覧は CAND_PAGE_SIZE 件ずつしか
+/// 描かないのに、チェックの既定は **全件** で、採用も全件を対象にする。
+/// 空のテンプレートから formC を開くと画面には 50 件しか見えないまま 180 件が
+/// 一度に採用されるので、押す前に件数を出す。数えるのは実際に採用される
+/// もの（チェック済み・重なりのない候補）——重なりのある候補はチェックの
+/// 状態に関わらず対象外なので、そこを含めると押した後の結果と食い違う。
+export function acceptSelectedLabel(
+  cands: { id: string; overlaps?: boolean }[],
+  selected: Record<string, boolean>): string {
+  const n = cands.filter((c) => selected[c.id] && !c.overlaps).length;
+  return `選んだ候補を採用（${n} 件）`;
+}
+
+/// 提案カードのボタンの読み上げ名（ラミィ Should）。提案が複数出ると
+/// 「表にまとめる」だけのボタンが同じ数だけ並び、読み上げでは区別できない。
+/// カード本文と同じ 行×列 を名前に入れて一意にする。
+export function suggestionButtonAriaLabel(
+  s: { table: { rows: number; columns: unknown[] } },
+  action: "table" | "cells" | "remove"): string {
+  const size = `${s.table.rows}行×${s.table.columns.length}列の提案`;
+  return size + (action === "table" ? "を表にまとめる"
+    : action === "cells" ? "を升のまま採用" : "を消す");
+}
+
 /// 個別採用で重なりがある候補に出す確認文言（§4.5.2-3: carve で自動的に
 /// 切り抜かず、人に決めさせる）。
 /// スバル（reviewer_architecture）差し戻し Must-2: 「保存時の重なり検証で
@@ -2064,6 +2527,143 @@ export function candidatesFromDetectFrames(ev: {
   });
 }
 
+// ============================================================
+// 「表にまとめられます」提案（issue #73 (b) 第2弾・設計 D-2/D-3）
+// ============================================================
+// 新モデルでは candidates[] は升（kind:"field"）だけになり、等ピッチの並びは
+// **トップレベル suggestions[]** として別に届く。candidates に
+// kind:"table_suggestion" を混ぜない理由は candidatesFromDetectFrames が
+// 未知の kind を field へ潰すから——提案 1 件が「表の外接矩形そのものを 1 つの
+// 欄として採用できる候補」に化ける。新旧の組み合わせはどちらも安全に劣化する
+//（旧コア＋新 GUI＝提案 0 件／新コア＋旧 GUI＝suggestions を無視）。
+
+/// 一覧に一度に出す候補の数（かなた §4.5: ページングにせず「もっと見る」で
+/// 50 件ずつ伸ばす。何ページ目に何があったかを覚えさせない）
+export const CAND_PAGE_SIZE = 50;
+
+/// 「表にまとめられます」提案 1 件。cellIds は **受信直後に解決済みの**
+/// 升候補 id（core が返す cell_indexes は同一応答の candidates[] の受け取り順
+/// でしか意味を持たないため、フィルタや並べ替えより前に id へ直す）。
+export type Suggestion = {
+  id: string; rect: Rect; faceHint: string | null; residual: number; overlaps: boolean;
+  table: CandTableSpec; cellIds: string[]; headingExcluded: boolean;
+};
+
+/// detect-frames の suggestions[] を受け取る（設計 §3.4 の JSON 契約）。
+/// **cands は同一応答の candidatesFromDetectFrames の結果をそのまま渡す**
+/// ——cell_indexes を id へ解決するのはここ 1 箇所だけ。範囲外の添字は落とす
+/// （不変条件 7）。suggestions が無い応答（旧コア）では空配列を返す。
+export function suggestionsFromDetectFrames(
+  ev: { suggestions?: unknown }, cands: Cand[]): Suggestion[] {
+  const raw = Array.isArray(ev?.suggestions) ? ev.suggestions as any[] : [];
+  const out: Suggestion[] = [];
+  raw.forEach((s: any, i: number) => {
+    const block = s?.blocks?.[0];
+    if (!block) return;      // 表の体裁を成さない提案は出さない（防御的）
+    const faceId = typeof s?.face_id === "string" ? s.face_id : null;
+    const idxs = Array.isArray(s?.cell_indexes) ? s.cell_indexes as any[] : [];
+    const cellIds: string[] = [];
+    for (const n of idxs) {
+      if (!Number.isInteger(n) || n < 0 || n >= cands.length) continue;
+      cellIds.push(cands[n].id);
+    }
+    out.push({
+      cellIds,
+      id: typeof s?.id === "string" && s.id ? s.id : `s${i}`,
+      rect: { x: s?.rect?.x ?? 0, y: s?.rect?.y ?? 0, w: s?.rect?.w ?? 0, h: s?.rect?.h ?? 0 },
+      faceHint: faceId && faceId !== "page" ? faceId : null,
+      residual: typeof s?.residual_px === "number" ? s.residual_px : 0,
+      overlaps: !!s?.overlaps_existing,
+      table: {
+        rowPitch: s?.row_pitch ?? 0, rowHeight: s?.row_height ?? 0, rows: block?.rows ?? 0,
+        origin: { x: block?.x ?? 0, y: block?.y ?? 0 },
+        columns: Array.isArray(s?.columns)
+          ? s.columns.map((c: any) => ({ xOffset: c?.x_offset ?? 0, width: c?.width ?? 0 }))
+          : [],
+      },
+      headingExcluded: !!s?.heading_excluded,
+    });
+  });
+  return out;
+}
+
+/// 提案カードの本文（かなた §4.3）。`heading_excluded` が真のときだけ
+/// 「見出し行は含めていません」を出す——偽は「見出しを見つけて含めた」では
+/// なく「見出しらしい行が無かった（または判定条件に届かなかった）」であり、
+/// core は前者と後者を区別できない。区別できないことを断言しない（AC-3.42）。
+export function suggestionCardText(s: Suggestion): { main: string; heading: string | null;
+                                                     naming: string } {
+  const rows = s.table.rows;
+  const cols = s.table.columns.length;
+  return {
+    main: `この ${rows}行 × ${cols}列（${rows * cols}升）は表にまとめられます`,
+    heading: s.headingExcluded ? "見出し行は含めていません" : null,
+    naming: `まとめると列名は 列1 … 列${Math.max(cols, 1)} になります。`
+      + "あとから接頭辞で変えられます",
+  };
+}
+
+/// 候補パネルの見出し（かなた §4.3）。両方の件数を出し、0 のほうは書かない。
+export function candidatePanelHeading(cellCount: number, suggestionCount: number): string {
+  const parts: string[] = [];
+  if (cellCount > 0) parts.push(`升 ${cellCount} 件`);
+  if (suggestionCount > 0) parts.push(`まとめ提案 ${suggestionCount} 件`);
+  return parts.length ? `枠候補（${parts.join("・")}）` : "枠候補";
+}
+
+/// 提案を採る（AC-3.28）。mode="table" は 1 つの表として、mode="cells" は
+/// 構成する升を 1 つずつ欄として採る。どちらも **追加のみ**（既存の
+/// fields/tables は書き換えない・不変条件 8）で、採用した升だけを候補から
+/// 除き、提案そのものは消える。重なりのある升は applyCandidates の既存規則
+/// （overlaps は選択に関わらず対象外）がそのまま効く。
+export function adoptSuggestionResult(
+  input: { fields: Field[]; tables: Table[]; cands: Cand[]; suggestions: Suggestion[] },
+  s: Suggestion, mode: "table" | "cells", makeUid: () => string,
+): { fields: Field[]; tables: Table[]; cands: Cand[]; suggestions: Suggestion[];
+     newTableUid: string | null; acceptedCount: number } | null {
+  const suggestions = input.suggestions.filter((x) => x.id !== s.id);
+  if (mode === "cells") {
+    const selected: Record<string, boolean> = {};
+    for (const id of s.cellIds) selected[id] = true;
+    const r = applyCandidates(input.fields, input.tables, input.cands, selected, makeUid);
+    return { fields: r.fields, tables: r.tables, cands: r.cands, suggestions,
+             newTableUid: null, acceptedCount: r.acceptedCount };
+  }
+  const spec = tableSpecFromCandidate(
+    { id: s.id, kind: "table", rect: s.rect, faceHint: s.faceHint,
+      residual: s.residual, overlaps: s.overlaps, table: s.table },
+    input.tables.map((t) => t.table_id));
+  if (!spec) return null;
+  const newTableUid = makeUid();
+  const ids = new Set(s.cellIds);
+  return {
+    fields: input.fields,
+    tables: [...input.tables, { uid: newTableUid, ...spec }],
+    cands: input.cands.filter((c) => !ids.has(c.id)),
+    suggestions, newTableUid, acceptedCount: 1,
+  };
+}
+
+/// 「この提案を消す」（AC-3.28）。提案だけを消し、**升候補は残す**。
+export function dismissSuggestion(suggestions: Suggestion[], id: string): Suggestion[] {
+  return suggestions.filter((s) => s.id !== id);
+}
+
+/// 提案を操作した結果の 1 行（かなた §4.3）。Undo で戻せることを必ず添える
+/// ——一括で数十件が動く操作なので、取り消せる事実が押す前提になる。
+export function suggestionAdoptMessage(
+  kind: "table" | "cells" | "dismiss", s: Suggestion,
+  remainingCells: number, tableId?: string): string {
+  const rows = s.table.rows, cols = s.table.columns.length;
+  if (kind === "dismiss") {
+    return `提案を消しました。${rows * cols}升 は升の候補に残っています`;
+  }
+  const head = kind === "table"
+    ? `${rows}行 × ${cols}列 を表 ${tableId ?? ""} にまとめました`
+    : `${rows * cols}升 を欄として採用しました`;
+  return `${head}。升の候補は ${remainingCells} 件になりました（Ctrl+Z で戻せます）`;
+}
+
 /// 2つの欄を1つに結合する（B の全領域が A の追加領域になり、B は消える）。
 /// 成功なら結合後の A を、できない場合は理由の文字列を返す。
 export function absorbField(a: Field, b: Field): Field | string {
@@ -2323,6 +2923,14 @@ export default function Editor(
   // issue #73 (b)・設計08 §4.5: ページ全体から一括生成した枠候補。確定枠
   // （fields/tables）とは別配列（保存対象に含めない）
   const [cands, setCands] = useState<Cand[]>([]);
+  // 「表にまとめられます」提案（issue #73 (b) 第2弾・設計 D-2）。Snap には
+  // 入れない——提案は候補（cands）から導ける表示状態で、Undo の対象は確定枠と
+  // 升候補で足りる。「表にまとめる」を Undo すると升候補と確定枠は戻るが提案
+  // カードは戻らない（再生成で戻る）。この非対称は設計 R-11 に記載済み
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  // 升候補一覧に出している件数（かなた §4.5: 50 件ずつ「もっと見る」で伸ばす。
+  // ページングにしない＝何ページ目に何があったかを覚えさせない）
+  const [candShown, setCandShown] = useState(CAND_PAGE_SIZE);
   // 候補パネルのチェック状態（id→選択中）。既定値は candidateDefaultChecked
   // （overlaps_existing は既定オフ）。生成のたびに作り直す
   const [candSelected, setCandSelected] = useState<Record<string, boolean>>({});
@@ -2456,8 +3064,39 @@ export default function Editor(
   // 一緒に持つ（`表uid:列index`）
   const [colChoiceDraft, setColChoiceDraft] =
     useState<{ key: string; value: string } | null>(null);
+  // ブロック行数・列名の編集中の値（レビュー H-2 / H-3）。どちらも打鍵ごとに
+  // 確定していたため、3→10 と打つ途中の "1"、列名を全消しした "" で
+  // remapCellsOffOnBlocksChange / remapCellsOffOnColumnRename が走り、升の
+  // 指定が黙って消えていた。入力中は下書きだけを持ち、確定は onBlur と Enter。
+  // 同時に触れる入力は 1 つなので下書きも 1 つでよい（colChoiceDraft と同じ形）。
+  // 列名は「編集を始めた時点の名前」も持つ——確定時の張り替えの旧名にする
+  const [blockRowsDraft, setBlockRowsDraft] =
+    useState<{ key: string; value: string } | null>(null);
+  const [colNameDraft, setColNameDraft] =
+    useState<{ key: string; from: string; value: string } | null>(null);
   // パネルで触っている列（canvas ハイライト用・レビュー D-3）
   const [hlCol, setHlCol] = useState<number | null>(null);
+  // 選択中の升（issue #66 段9・FR-3.7 の2段クリック）。表を選んでいるときだけ
+  // 立つ。Snap には入れない——選択は履歴の対象外（sel と同じ扱い）
+  const [selCell, setSelCell] =
+    useState<{ uid: string; rowNo: number; colIndex: number } | null>(null);
+  // 表の選択が別のものへ移ったら升の選択は落とす（かなた §1.5）。表を
+  // 選んでいない状態で「選択中の升」だけが残ると、どの表の升か分からない
+  useEffect(() => {
+    if (!sel || sel.type !== "table") { setSelCell(null); return; }
+    setSelCell((c) => (c && c.uid === sel.uid ? c : null));
+  }, [sel]);
+  // 出力列タブで升グリッドを開いている表（アコーディオン・D-7）。全表を
+  // 同時に描かない（最大 1600 升 × N 列の DOM を作らないため）
+  const [expandedTableUid, setExpandedTableUid] = useState<string | null>(null);
+  // 升グリッドの直下 1 行に出す列番号の注記（FR-3.3）。升にふれている間だけ
+  // 差し替える。ライブ領域にはしない（増やさない・かなた §6.3）
+  const [cellHoverNote, setCellHoverNote] = useState<string | null>(null);
+  // 総行数 100 超の表で、いま何行まで描いているか（D-7）。表 uid ごと
+  const [gridRowLimit, setGridRowLimit] = useState<Record<string, number>>({});
+  // 行数の編集で範囲外になり取り消した升の指定の累計（FR-3.5・AC-3.24）。
+  // 保存前確認に 1 行出すためだけの数なので ref で持つ（描画に使わない）
+  const droppedCellsRef = useRef(0);
   // 出力列タブの行 hover/focus で canvas の該当欄をハイライトする
   // （issue #66 段3・FR-1.8・C-1）。sel（選択）とは独立——一覧を眺めている
   // だけで選択状態を変えたくない
@@ -2804,6 +3443,13 @@ export default function Editor(
     for (const t of visTables) {
       const totalW = t.columns.length
         ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
+      // 升の行番号はブロックを跨いだ通し番号（core の _expand_table と同じ採番）。
+      // ブロックを描きながら通し番号の起点を進める
+      let rowBase = 0;
+      // ⊘が1つも描けない縮尺（全体表示 zoom 0.094 では連なりの高さが 24px を
+      // 割る）ではハッチだけが手掛かりになる。そのときだけ表ラベルに
+      // 「⊘12」を添える（かなた §1.4 Should・可読性の上乗せ）
+      let badgeDrawn = false;
       for (const b of t.blocks) {
         const bh = t.row_pitch * (b.rows - 1) + t.row_height;
         rect({ x: b.x, y: b.y, w: totalW, h: bh },
@@ -2836,22 +3482,59 @@ export default function Editor(
           ctx.strokeRect(b.x + c.x_offset, b.y, c.width, bh);
           ctx.lineWidth = 2 * px;
         }
-        // 出力しない列（issue #66 段3・付録A）: ブロック全高に1枚のハッチ＋
-        // バッジ（行ごとには描かない——全行一括で外れる仕様のため・FR-1.1）
-        for (const c of t.columns) {
-          if (isOutput(c)) continue;
-          const colRect = { x: b.x + c.x_offset, y: b.y, w: c.width, h: bh };
-          hatchArea(colRect);
-          outputBadge(colRect);
+        // 出力しない升（issue #66 段9・FR-3.7・かなた §1.3 の実測）。
+        // ハッチは **升ごと**（升の境界で斜線が途切れ、どこで升が切れているか
+        // が読める）。⊘は「縦に連続する出力しない升のまとまり」ごとに1つだけ
+        // ——升ごとに描くと zoom 0.35 で可視領域に⊘が 65 個並び、紙の内容が
+        // 読めなくなる（実測 B_all140_cellbadge_zoom035.png）。さらに連なりの
+        // 矩形が画面上で 24×24px 未満のときは描かない（全体表示 zoom 0.094 で
+        // ⊘が縦に重なって黒い帯になる・実測 F_all140_cellbadge_fit0094.png）。
+        // 列が off の列は verticalOffRuns がブロック全高 1 本を返すので、
+        // 第2弾までと同じ絵（列 1 枚のハッチ＋⊘1 個）になる
+        // 行数は入力の途中で 0・負・小数になりうる。行番号の起点は
+        // tableTotalRows と同じ丸め方に揃える——ここだけ生の b.rows を
+        // 足すと、キャンバスの行番号と升グリッドの行番号がずれる
+        const blockRows = Math.max(0, b.rows | 0);
+        const blockFirstRow = rowBase + 1;
+        const blockLastRow = rowBase + blockRows;
+        for (let ci = 0; ci < t.columns.length; ci++) {
+          const c = t.columns[ci];
+          for (const run of verticalOffRuns(t, ci)) {
+            // このブロックに属する連なりだけを描く（verticalOffRuns は
+            // ブロックを跨ぐ連なりを既に分割している）
+            if (run.fromRow < blockFirstRow || run.toRow > blockLastRow) continue;
+            for (let r = run.fromRow; r <= run.toRow; r++) {
+              const top = b.y + t.row_pitch * (r - blockFirstRow);
+              hatchArea({ x: b.x + c.x_offset, y: top, w: c.width, h: t.row_height });
+            }
+            const top = b.y + t.row_pitch * (run.fromRow - blockFirstRow);
+            const runRect = { x: b.x + c.x_offset, y: top, w: c.width,
+              h: t.row_pitch * (run.toRow - run.fromRow) + t.row_height };
+            if (runRect.w >= 24 * px && runRect.h >= 24 * px) {
+              outputBadge(runRect); badgeDrawn = true;
+            }
+          }
         }
+        // 選択中の升（FR-3.7・2段クリックの2段目）。塗りつぶさない——塗ると
+        // 下のハッチが隠れて「出力しない升を選んでいる」ことが読めなくなる
+        if (selCell && selCell.uid === t.uid
+            && selCell.rowNo >= blockFirstRow && selCell.rowNo <= blockLastRow
+            && t.columns[selCell.colIndex]) {
+          const c = t.columns[selCell.colIndex];
+          ctx.strokeStyle = SELECTION_COLOR; ctx.lineWidth = 3 * px;
+          ctx.strokeRect(b.x + c.x_offset,
+            b.y + t.row_pitch * (selCell.rowNo - blockFirstRow), c.width, t.row_height);
+        }
+        rowBase += blockRows;
         ctx.lineWidth = 2 * px;
       }
       if (t.blocks[0]) {
         ctx.fillStyle = "#7ce38b";
+        const offCells = countOutputDisabled([], [t]);
         // 表の上に出すラベルも表の実幅に収める。最低幅の緩衝を持たせると
         // 縮小時にはみ出た文字が隣の枠へ重なる（欄ラベルと同じ扱いにする）
-        label(t.table_id, t.blocks[0].x, t.blocks[0].y - 8 * px,
-              totalW - 4 * px, null);
+        label(offCells > 0 && !badgeDrawn ? `${t.table_id} ⊘${offCells}` : t.table_id,
+              t.blocks[0].x, t.blocks[0].y - 8 * px, totalW - 4 * px, null);
       }
     }
     // issue #73 (b)・FR-F18・AC-F22・ラミィ（accessibility）差し戻し Must-A:
@@ -2937,7 +3620,7 @@ export default function Editor(
       }
     }
     ctx.restore();
-  }, [excls, fields, tables, pending, sel, splitY, zoom, pan, imgSize, hlCol, hlFieldUid,
+  }, [excls, fields, tables, pending, sel, selCell, splitY, zoom, pan, imgSize, hlCol, hlFieldUid,
       formatFaces, formatOverride, cands]);
 
   // draw() は全欄のラベルをループで measureText トリムするため、ドラッグ中の
@@ -3117,6 +3800,7 @@ export default function Editor(
       // issue #73 (b): 枠候補は直前の画像の座標に基づくため、別の画像を
       // 開いたら破棄する（確定済みの fields/tables はそのまま維持）
       setCands([]); setFramesMsg(""); setRecentCandTableUids([]);
+      setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
       // 上部の案内（決定カード／未適用バー）の初期状態は、画像を開いた
       // 瞬間に確定させる——候補生成の完了で書き換えると、framesMsg の
@@ -3169,17 +3853,25 @@ export default function Editor(
                     ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })),
                   // output 省略＝出力する（FR-1.7・既存テンプレ互換）
                   output: f.output === false ? false : undefined });
-      for (const tb of face.tables ?? [])
+      for (const tb of face.tables ?? []) {
+        const blocks = tb.blocks.map((b: any) =>
+          ({ x: b.origin.x, y: b.origin.y + oy, rows: b.rows }));
+        const columns = tb.columns.map((c: any) => ({
+          name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
+          subfields: (c.subfields ?? []).join(","),
+          normalize: c.normalize,
+          marks: c.choice_marks ?? [],
+          output: c.output === false ? false : undefined }));
+        // 升単位の「出力しない」（issue #66 段9・FR-3.1）。実在しない行・列は
+        // 落とす（core の _validate_disabled_cells が拒否する形を state へ入れない）。
+        // 空のときは cellsOff 自体を持たせない＝往復でキーが増えない
+        const cellsOff = cellsOffFromJson(
+          tb.output_disabled_cells, columns,
+          blocks.reduce((s: number, b: any) => s + Math.max(0, b.rows | 0), 0));
         ts.push({ uid: uid(), table_id: tb.table_id, row_pitch: tb.row_pitch,
-                  row_height: tb.row_height,
-                  blocks: tb.blocks.map((b: any) =>
-                    ({ x: b.origin.x, y: b.origin.y + oy, rows: b.rows })),
-                  columns: tb.columns.map((c: any) => ({
-                    name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
-                    subfields: (c.subfields ?? []).join(","),
-                    normalize: c.normalize,
-                    marks: c.choice_marks ?? [],
-                    output: c.output === false ? false : undefined })) });
+                  row_height: tb.row_height, blocks, columns,
+                  ...(cellsOff.size ? { cellsOff } : {}) });
+      }
     }
     setFields(fs); setTables(ts); setExcls(es);
     // back 面が無いテンプレート（buildTemplateJson が片面のみ書き出した
@@ -3192,6 +3884,9 @@ export default function Editor(
     // 出力順の読み込み時基準（issue #66 段6・FR-2.2）。この後の並べ替えが
     // あったかどうかを、この時点の配列順と比べて判定する
     setLoadedOrder(outputOrderSnapshot(fs, ts));
+    // 読み込み直後は「取り消した升の指定」は無い（FR-3.5・保存前確認の入力）
+    droppedCellsRef.current = 0;
+    setSelCell(null); setExpandedTableUid(null); setGridRowLimit({});
     // 欄数・金額列数の読み込み時基準（issue #59 H-9）は、この関数の呼び出し側
     // （auto-load useEffect・loadTemplate）が refreshLoadedCounts で verify
     // 応答から別途取得する。toEditorState 自身は同期関数で verify（非同期）を
@@ -3300,6 +3995,7 @@ export default function Editor(
     // スバル差し戻し Should-1: テンプレートが入れ替わったら枠候補も破棄する
     // （overlaps フラグは切り替え前のテンプレート基準のまま残ってしまうため）
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+    setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
     setRecentCandTableUids([]);
     markDirty(false);
     // レビュー H-2: ファイルで開いた経路は従来動作（帯もカードも出さない・
@@ -3397,6 +4093,7 @@ export default function Editor(
     // スバル差し戻し Should-1: テンプレート切替では枠候補を破棄する
     // （重なりフラグが旧テンプレ基準で残るため）
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+    setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
     setRecentCandTableUids([]);
     markDirty(false);
     if (!opts.auto) {
@@ -3477,6 +4174,7 @@ export default function Editor(
     // 健全性の事実なので残す（設計 §2.4）
     if (o.alignReason === "size") { setErrMsg(""); setLastAlignReason(undefined); }
     setCands([]); setCandSelected({}); setOverlapAcceptNotice("");
+    setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
     setRecentCandTableUids([]);
     // R-7: 前のテンプレートの基準が残ると保存時の差分表示が誤る
     setLoadedCounts({ fields: 0, amountCells: 0, exclusions: 0, columns: 0 });
@@ -3638,6 +4336,7 @@ export default function Editor(
     // ——画像は変わっていないので、必要なら「ページ全体から枠候補を生成」を
     // 押し直せば同じ候補が overlaps=false で即座に取り直せる
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+    setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
     setRecentCandTableUids([]);
     // S-1（R-7）: 読み込み時の基準が前のテンプレートのまま残ると、保存時の
     // 差分確認が「無編集なのに欄が減った」と誤って言う（既存の穴・1行）
@@ -3928,7 +4627,8 @@ export default function Editor(
       : null;
     const columnDecrease = columnDecreaseFor(loadedCounts.columns, tpl.columns);
     const warnings = saveConfirmWarnings(
-      { isShipped, imageSizeMismatch, exclusionNotice: exclNotice, columnDecrease });
+      { isShipped, imageSizeMismatch, exclusionNotice: exclNotice, columnDecrease,
+        droppedCells: droppedCellsRef.current });
     if (warnings.length) {
       const proceed = await askConfirm(warnings);
       if (!proceed) {
@@ -4004,11 +4704,13 @@ export default function Editor(
           exclusions: loadedCounts.exclusions, columns: loadedCounts.columns },
         { fields: tpl.cells, amountCells: tpl.amount_cells, exclusions: exclCount,
           columns: tplColumns });
-      // 出力しない欄の件数（issue #66 段3・保存サマリ）。列位置表示の唯一の
-      // 入力源は verify（column_names）に一本化する（FR-0.1）
-      const disabledCount = countOutputDisabled(resolved.fields, tables);
+      // 出力しない欄・升の件数（issue #66 段3／段9・保存サマリ・FR-3.4）。
+      // 列位置表示の唯一の入力源は verify（column_names）に一本化する（FR-0.1）。
+      // 件数は物理升単位で、verify の output_disabled_cells と単位が揃う
+      const disabledBreak = outputDisabledBreakdown(resolved.fields, tables);
+      const disabledCount = disabledBreak.fields + disabledBreak.cells;
       const popNote = unclearPopulationNote(
-        loadedCounts.columns - 6, tplColumns - 6, disabledCount);
+        loadedCounts.columns - 6, tplColumns - 6, disabledBreak.fields, disabledBreak.cells);
       setLoadedCounts({ fields: tpl.cells, amountCells: tpl.amount_cells,
                         exclusions: exclCount, columns: tplColumns });
       setColumnNames(Array.isArray(tpl.column_names) ? tpl.column_names : null);
@@ -4016,6 +4718,7 @@ export default function Editor(
       // resolved.fields／tables は今回実際に書き出した並びそのもの
       const orderNote = orderChangeReportNote(orderChangedNow, tpl.cells ?? resolved.fields.length);
       setLoadedOrder(outputOrderSnapshot(resolved.fields, tables));
+      droppedCellsRef.current = 0;   // 保存できたので取り消しの注意は持ち越さない
       setMsg(carveNote + `保存＋コア検証 OK（`
         + (tpl.cells != null
            ? (columnsUnknown
@@ -4257,7 +4960,13 @@ export default function Editor(
       // overlaps_existing が全候補 false 固定になる。GUI 側でも現在の
       // fields/tables に対して独立に重なりを再判定し、どちらか一方でも
       // 検出したら overlaps=true に確定する（安全網を二重化する）
-      const newCands = candidatesFromDetectFrames(ev).map((c) => ({
+      const rawCands = candidatesFromDetectFrames(ev);
+      // 提案の cell_indexes は **同一応答の candidates[] の受け取り順** でしか
+      // 意味を持たない（設計 D-3・不変条件 7）。フィルタや並べ替えより前、
+      // 受信直後のここで id へ解決する——以後は id で持つので、採用・除去で
+      // 配列が縮んでも壊れない
+      const newSuggestions = suggestionsFromDetectFrames(ev, rawCands);
+      const newCands = rawCands.map((c) => ({
         ...c,
         overlaps: candidateOverlapFlag(
           c.overlaps,
@@ -4273,6 +4982,8 @@ export default function Editor(
       if (eff.pushHistory) pushHistoryNow({ fields: o.fields, tables: o.tables, excls,
                                             splitY: o.splitY, cands: newCands });
       setCands(newCands);
+      setSuggestions(newSuggestions);
+      setCandShown(CAND_PAGE_SIZE);
       if (eff.markDirty) markDirty(true);
       // ラミィ差し戻し（3回目・Must）: 生成完了のたびに枠候補タブへ切り替える
       // （候補が既にある状態での再生成でも切り替わるようにする。候補0件の
@@ -4295,10 +5006,15 @@ export default function Editor(
         setFramesMsg(`${zr ?? "候補が見つかりませんでした。"}（${statsText}・${ev.elapsed_ms ?? 0}ms）`
           + (extraNotes ? ` ／ ${extraNotes}` : ""));
       } else {
+        // 新モデルでは candidates は升（kind:"field"）だけになり、等ピッチの
+        // 並びは suggestions として別に届く。旧コア（表候補を candidates に
+        // 混ぜて返す）に当たったときのために kind:"table" の件数も出す
         const tableCount = newCands.filter((c) => c.kind === "table").length;
         const fieldCount = newCands.filter((c) => c.kind === "field").length;
         const overlapCount = newCands.filter((c) => c.overlaps).length;
-        setFramesMsg(`枠候補: 表${tableCount}・欄${fieldCount}件`
+        setFramesMsg(`枠候補: 升${fieldCount}件`
+          + (tableCount ? `・表${tableCount}件` : "")
+          + (newSuggestions.length ? `・まとめ提案${newSuggestions.length}件` : "")
           + (overlapCount ? `（うち重なりのため対象外 ${overlapCount} 件） ` : "")
           + `・${statsText}・${ev.elapsed_ms ?? 0}ms`
           + (extraNotes ? ` ／ ${extraNotes}` : ""));
@@ -4339,12 +5055,17 @@ export default function Editor(
     const result = applyCandidates(fields, tables, cands, candSelected, uid);
     if (result.acceptedCount === 0) { setFramesMsg("選択した候補がありません（重なりのある候補は対象外です）"); return; }
     const newTableUids = result.tables.slice(beforeTablesLen).map((t) => t.uid);
+    // 升候補は 100 件超になりうる（実測: formC 180・sample-1 138）。一括採用は
+    // 押した瞬間から Ctrl+Z 1手で戻せる必要があるので、400ms 静止の経路に
+    // 任せずここで1コマ積む（設計 D-8・§4.0 Q3/Q4）
+    pushHistoryNow({ fields: result.fields, tables: result.tables, excls, splitY,
+                     cands: result.cands });
     setFields(result.fields);
     setTables(result.tables);
     setCands(result.cands);
     setRecentCandTableUids((prev) => [...prev, ...newTableUids]);
     markDirty(true);
-    setFramesMsg(`${result.acceptedCount} 件を採用しました`);
+    setFramesMsg(`${result.acceptedCount} 件を採用しました（Ctrl+Z で戻せます）`);
   };
 
   // AC-F20: 候補だけを空にし、確定枠（fields/tables）は触らない。
@@ -4379,6 +5100,35 @@ export default function Editor(
 
   const removeOneCandidate = (id: string) => {
     setCands((cs) => cs.filter((c) => c.id !== id));
+  };
+
+  // ---- まとめ提案の3操作（issue #73 (b) 第2弾・AC-3.28）----
+  // 採用の直前に pushHistoryNow を **明示的に呼ぶ**。400ms 静止の経路に
+  // 任せると、押した直後の Ctrl+Z が無反応になる（carve に同じ対策がある）。
+  // 確認モーダルは置かない——一括でも Ctrl+Z 1手で戻せるため（設計 D-8）。
+  // 既存枠と重なる提案の「表にまとめる」だけは既存の確認をそのまま通す
+  const adoptSuggestion = async (s: Suggestion, mode: "table" | "cells") => {
+    if (mode === "table" && s.overlaps
+        && !(await askUiConfirm("adopt-overlapping-candidate"))) return;
+    const r = adoptSuggestionResult({ fields, tables, cands, suggestions }, s, mode, uid);
+    if (!r) return;
+    if (r.acceptedCount === 0) {
+      setFramesMsg("この提案の升は既に採用済みか、既存の枠と重なるため採用できません");
+      return;
+    }
+    pushHistoryNow({ fields: r.fields, tables: r.tables, excls, splitY, cands: r.cands });
+    setFields(r.fields); setTables(r.tables); setCands(r.cands);
+    setSuggestions(r.suggestions);
+    if (r.newTableUid) setRecentCandTableUids((prev) => [...prev, r.newTableUid!]);
+    if (mode === "table" && s.overlaps) setOverlapAcceptNotice(overlapAcceptedNotice());
+    markDirty(true);
+    const tableId = r.newTableUid
+      ? r.tables.find((t) => t.uid === r.newTableUid)?.table_id : undefined;
+    setFramesMsg(suggestionAdoptMessage(mode, s, r.cands.length, tableId));
+  };
+  const removeSuggestion = (s: Suggestion) => {
+    setSuggestions((ss) => dismissSuggestion(ss, s.id));
+    setFramesMsg(suggestionAdoptMessage("dismiss", s, cands.length));
   };
 
   // 「接頭辞」入力を使った表の列名一括リネーム（FR-F24）。今回の生成で
@@ -4589,6 +5339,17 @@ export default function Editor(
       // 普通のクリックは従来どおり最前面（ドラッグ移動の起点を変えない）
       const h = e.ctrlKey ? nextOverlapPick(hitAll(p), sel) : hit(p);
       setSel(h);
+      // 升の2段クリック（FR-3.7・かなた §1.5）: 1回目は表を選ぶ（既存操作の
+      // 入口をそのまま残す）。**既にその表を選んでいる状態**でのクリックだけが
+      // 升の選択になる。行間・列間の隙間は cellAtPoint が null を返すので、
+      // そこは「表の選択のみ」に落ちる
+      if (h?.type === "table" && sel?.type === "table" && sel.uid === h.uid) {
+        const t = tables.find((v) => v.uid === h.uid);
+        const at = t ? cellAtPoint(t, p.x, p.y) : null;
+        if (at) { setSelCell({ uid: h.uid, ...at }); setPanelTab("selected"); }
+      } else if (!h || h.type !== "table" || h.uid !== selCell?.uid) {
+        setSelCell(null);
+      }
       if (h) {
         // setSel は非同期なので selRect()（閉包の sel）は前回選択を返す。
         // 必ず今回ヒットした h から矩形を引く（issue #12: 別図形の座標が適用される）
@@ -4859,8 +5620,17 @@ export default function Editor(
     // 入力欄相当の判定に isContentEditable を加える（issue #69 Q-H3）。
     // tag 判定（input/textarea/select）だけでは contentEditable 要素での
     // 編集中に Delete 等のショートカットが割り込みうる
-    const typing = tag === "input" || tag === "textarea" || tag === "select"
-      || !!el?.isContentEditable;
+    // チェックボックス（升・列の出力トグル）にフォーカスがある状態でも
+    // Ctrl+Z／Ctrl+Y だけは効かせる（issue #66 段9・AC-3.27）。升を1つ外した
+    // 直後は必ずそのチェックにフォーカスが残るため、ここを一律「入力中」に
+    // すると「外した直後の Ctrl+Z が無反応」になる。テキスト編集ではないので
+    // 取り消しを止める理由が無い一方、Delete・矢印は従来どおり止める
+    // ——一覧を触っている最中に Delete が選択中の枠を消すのは予測できない
+    const isToggleInput = tag === "input"
+      && ["checkbox", "radio"].includes((el as HTMLInputElement | null)?.type ?? "");
+    const undoCombo = (e.ctrlKey || e.metaKey) && /^[zy]$/i.test(e.key);
+    const typing = (tag === "input" || tag === "textarea" || tag === "select"
+      || !!el?.isContentEditable) && !(isToggleInput && undoCombo);
     const ka = keyAction(e,
       { active, typing, isButtonFocused: tag === "button", hasSel: !!sel });
     if (!ka) return;
@@ -4876,6 +5646,9 @@ export default function Editor(
       case "zoom-in": zoomBy(1.15); break;
       case "zoom-out": zoomBy(1 / 1.15); break;
       case "escape":
+        // 升を選んでいるときは **升の選択だけ** 外し、表の選択は残す
+        // （かなた §1.5・2段クリックの逆順で戻す）
+        if (selCell) { setSelCell(null); break; }
         setSel(null); setPending(null); setFbTarget(null);
         setExTarget(null); setMergeTarget(null); drag.current = null;
         break;
@@ -4948,6 +5721,96 @@ export default function Editor(
   };
   const updateTable = (u: string, patch: Partial<Table>) => {
     setTables((ts) => ts.map((t) => t.uid === u ? { ...t, ...patch } : t)); markDirty(true);
+  };
+  // ---- 升（表の1マス）単位の出力制御（issue #66 段9・FR-3.x）----
+  /// その列で「出力する」升の数（中間状態の title・読み上げに使う）
+  const countColumnOutputCells = (t: Table, c: Column): number => {
+    const rows = tableTotalRows(t);
+    let n = 0;
+    for (let r = 1; r <= rows; r++) if (isCellOutput(t, r, c)) n++;
+    return n;
+  };
+  /// 升1つの切り替え。1クリック=1コマにする（400ms 静止の経路に頼ると、
+  /// 押した直後の Ctrl+Z が無反応になる既知の穴に当たる）
+  const toggleCell = (t: Table, rowNo: number, columnName: string) => {
+    const next = tables.map((v) => v.uid === t.uid
+      ? toggleCellOutput(v, rowNo, columnName) : v);
+    pushHistoryNow({ fields, tables: next, excls, splitY, cands });
+    setTables(next);
+    markDirty(true);
+  };
+  /// 列の一括トグル（AC-3.21）。遷移は toggleColumnOutput が持つ。
+  /// 一度に行数ぶんの升が変わるので、結果は既存の sr-only 領域へ流す
+  /// （ライブ領域を増やさない・かなた §6.3）
+  const toggleColumnCells = (t: Table, columnIndex: number) => {
+    const c = t.columns[columnIndex];
+    if (!c) return;
+    const next = tables.map((v) => v.uid === t.uid ? toggleColumnOutput(v, columnIndex) : v);
+    pushHistoryNow({ fields, tables: next, excls, splitY, cands });
+    setTables(next);
+    markDirty(true);
+    const rows = tableTotalRows(t);
+    const name = c.name || `列${columnIndex + 1}`;
+    // 読み上げは **押した後の状態** から作る。列 off から戻すと升の指定が
+    // 生き返って mixed で止まることがあり、押す前の状態だけを見ると
+    // 「9升 を出力するにしました」と実際の出力に反する文が流れる
+    const after = next.find((v) => v.uid === t.uid);
+    const ac = after?.columns[columnIndex];
+    const state = after && ac ? columnCellState(after, ac) : "all";
+    const off = after && ac ? rows - countColumnOutputCells(after, ac) : 0;
+    setReorderMsg(
+      state === "all" ? `${name} の ${rows}升 を出力するにしました`
+        : state === "none" ? `${name} の ${rows}升 を出力しないにしました`
+          : `${name} の列を戻しました（${rows}升 のうち ${off}升 は出力しないままです）`);
+  };
+  /// ブロックの行数変更・ブロック増減（FR-3.5）。升の指定を
+  /// (ブロック番号, ブロック内行番号) 基準で写し直し、**同じ patch で**
+  /// 差し替える（2回に分けると Undo が2コマになる）。落ちた件数は保存前
+  /// 確認へ積む（AC-3.24）
+  const changeTableBlocks = (t: Table, nextBlocks: Block[]) => {
+    const r = remapCellsOffOnBlocksChange(t, nextBlocks);
+    updateTable(t.uid, { blocks: nextBlocks, cellsOff: r.cellsOff });
+    if (r.dropped > 0) {
+      droppedCellsRef.current += r.dropped;
+      setMsg(`行の外に出た「出力しない升」の指定 ${r.dropped} 件を取り消しました`);
+    }
+    if (selCell && selCell.uid === t.uid
+        && selCell.rowNo > nextBlocks.reduce((s, b) => s + Math.max(0, b.rows | 0), 0)) {
+      setSelCell(null);
+    }
+  };
+  /// ブロック行数の確定（レビュー H-2）。<input type="number"> は打鍵ごとに
+  /// onChange が来るので、3→10 と打つ途中の "1" でも changeTableBlocks が走り、
+  /// remapCellsOffOnBlocksChange が 2・3 行目の升の指定を「行の外」として
+  /// 捨てていた。確定は onBlur と Enter だけにし、整数でない・1 未満の
+  /// 中間値は捨てて元の行数へ戻す
+  const commitBlockRows = (t: Table, index: number, key: string) => {
+    const draft = blockRowsDraft;
+    setBlockRowsDraft(null);
+    if (!draft || draft.key !== key) return;
+    const cur = t.blocks[index]?.rows;
+    if (cur === undefined) return;
+    const n = Number(draft.value);
+    if (draft.value.trim() === "" || !Number.isInteger(n) || n < 1 || n === cur) return;
+    changeTableBlocks(t, t.blocks.map((v, j) => j === index ? { ...v, rows: n } : v));
+  };
+  /// 列名の確定（レビュー H-3）。列名を全部消して打ち直す間も打鍵ごとに
+  /// 確定していたため、空名を経由した時点で升の指定が捨てられていた。
+  /// 名前と升の指定は **同じ patch** で入れる（2回に分けると Undo が2コマに
+  /// なる・FR-3.5）。旧名は編集を始めた時点の名前を使うので、途中で何度
+  /// 消しても 1 回の確定で正しく張り替わる。空名では確定しない——名前の無い
+  /// 列は「表名_行番号_」という出力列名になり、升の指定も宛先を失う
+  const commitColumnName = (t: Table, index: number, key: string) => {
+    const draft = colNameDraft;
+    setColNameDraft(null);
+    if (!draft || draft.key !== key) return;
+    const name = draft.value;
+    if (name === "") { setMsg("列名は空にできません（前の名前に戻しました）"); return; }
+    if (name === t.columns[index]?.name) return;
+    updateTable(t.uid, {
+      columns: t.columns.map((v, j) => j === index ? { ...v, name } : v),
+      cellsOff: remapCellsOffOnColumnRename(t, index, name, draft.from),
+    });
   };
   // 出力列タブの [↑][↓]（issue #66 段7・FR-2.1・付録A）。境界（面の先頭/末尾）
   // では moveFieldOutputOrder が null を返す——ボタン側も同じ判定で disabled に
@@ -5194,6 +6057,60 @@ export default function Editor(
     }
     const t = tables.find((x) => x.uid === sel.uid);
     if (!t) return null;
+    // 「選択中の升」セクション（issue #66 段9・FR-3.7・かなた §2.3）。
+    // 升を選んでいないときはセクションごと出さない（空の器を残さない）。
+    // 行の一括ボタンは置かない——行単位は後回しの決定を、UI に存在しない形で
+    // 担保する（面をまたぐ並べ替えボタンを作らないのと同じ手）
+    const selectedCellSection = (tb: Table) => {
+      if (!selCell || selCell.uid !== tb.uid) return null;
+      const c = tb.columns[selCell.colIndex];
+      if (!c) return null;
+      const rowNo = selCell.rowNo;
+      const rows = tableTotalRows(tb);
+      const out = isCellOutput(tb, rowNo, c);
+      const name = cellCheckboxDisplayName(tb.table_id, rowNo, c.name || `列${selCell.colIndex + 1}`);
+      const pos = orderChangedSinceLoad
+        ? null : cellColumnPosition(columnNames, tb.table_id, rowNo, c.name,
+            tb.columns.map((v) => v.name));
+      const state = columnCellState(tb, c);
+      // 升の矩形（キャンバスと同じ算出）。ブロックを跨いだ通し番号から引く
+      let base = 0; let rect: Rect | null = null;
+      for (const b of tb.blocks) {
+        const n = Math.max(0, b.rows | 0);
+        if (rowNo > base && rowNo <= base + n) {
+          rect = { x: b.x + c.x_offset, y: b.y + tb.row_pitch * (rowNo - base - 1),
+                   w: c.width, h: tb.row_height };
+          break;
+        }
+        base += n;
+      }
+      return (<>
+        <h4>選択中の升</h4>
+        <p className="note" style={{ color: "var(--sub)" }}>{name}</p>
+        {rect && <div className="mono">x:{rect.x} y:{rect.y} w:{rect.w} h:{rect.h}</div>}
+        <label style={{ flexDirection: "row", alignItems: "center", gap: 4, margin: "4px 0" }}>
+          <input type="checkbox" checked={out}
+            disabled={!isOutput(c)}
+            title={isOutput(c) ? undefined
+              : "この列は列ごと出力しない設定です。列を戻すと升の指定が効きます"}
+            aria-label={outputCheckboxLabel(name, out, pos)}
+            onChange={() => toggleCell(tb, rowNo, c.name)} />
+          <span className="lbl">出力する</span>
+        </label>
+        {out && pos && (
+          <p className="note">この升は CSV・Excel の{pos.first === pos.last
+            ? `${pos.first}列目` : `${pos.first}〜${pos.last}列目`}です</p>)}
+        {rows > 0 && (
+          <button className="btn" type="button"
+            aria-label={columnBulkToggleAriaLabel(tb.table_id, c.name, rows, state,
+              rows - countColumnOutputCells(tb, c))}
+            onMouseEnter={() => setHlCol(selCell.colIndex)}
+            onMouseLeave={() => setHlCol(null)}
+            onClick={() => toggleColumnCells(tb, selCell.colIndex)}>
+            {columnBulkToggleLabel(state, rows,
+              isOutput(c) ? 0 : countColumnCellsOff(tb, c))}</button>)}
+      </>);
+    };
     return (
       <div className="panel">
         <h3>選択中のくり返し行（表）</h3>
@@ -5228,13 +6145,24 @@ export default function Editor(
         <label>行の高さ <input type="number" step={1} value={t.row_height}
           onChange={(e) => updateTable(t.uid,
             { row_height: Math.max(1, Math.round(+e.target.value)) })} /></label>
-        {t.blocks.map((b, i) => (
-          <label key={i}>ブロック{i + 1} 行数 <input type="number" value={b.rows}
-            onChange={(e) => updateTable(t.uid, { blocks: t.blocks.map((v, j) =>
-              j === i ? { ...v, rows: +e.target.value } : v) })} /></label>))}
-        <button onClick={() => updateTable(t.uid, { blocks: [...t.blocks,
+        {/* 行数は打鍵ごとに確定しない（レビュー H-2）。確定は onBlur と Enter */}
+        {t.blocks.map((b, i) => {
+          const key = `${t.uid}:${i}`;
+          const draft = blockRowsDraft?.key === key ? blockRowsDraft.value : null;
+          return (
+            <label key={i}>ブロック{i + 1} 行数 <input type="number" min={1} step={1}
+              value={draft ?? String(b.rows)}
+              onChange={(e) => setBlockRowsDraft({ key, value: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+                if (e.key === "Escape") { e.preventDefault(); setBlockRowsDraft(null); }
+              }}
+              onBlur={() => commitBlockRows(t, i, key)} /></label>);
+        })}
+        <button onClick={() => changeTableBlocks(t, [...t.blocks,
           { ...t.blocks[t.blocks.length - 1],
-            x: t.blocks[t.blocks.length - 1].x + 1020 }] })}>右ブロックを追加（複製）</button>
+            x: t.blocks[t.blocks.length - 1].x + 1020 }])}>右ブロックを追加（複製）</button>
+        {selectedCellSection(t)}
         <h4>列</h4>
         {t.columns.length === 0 &&
           <p className="note">列がありません。「くり返し行（家族・明細）」で外枠を描くと生成されます。</p>}
@@ -5254,9 +6182,25 @@ export default function Editor(
               title={i === t.columns.length - 1 ? "この表の末尾列です" : undefined}
               aria-label={`${c.name || `列${i + 1}`} を1つ下へ`}
               onClick={() => moveTableColumn(t.uid, i, "down")}>↓</button>
-            <input className="w8" value={c.name} title="列名"
-              onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
-                j === i ? { ...v, name: e.target.value } : v) })} />
+            {/* 列名を変えたら升の指定（cellsOff）も同じ patch で張り替える
+                （FR-3.5）。2回に分けると Undo が2コマになる。
+                確定は onBlur と Enter（レビュー H-3）——打鍵ごとに確定すると、
+                名前を全部消した瞬間に升の指定が捨てられていた */}
+            {(() => {
+              const key = `${t.uid}:${i}`;
+              const draft = colNameDraft?.key === key ? colNameDraft.value : null;
+              return (
+                <input className="w8" value={draft ?? c.name} title="列名"
+                  onFocus={() => setColNameDraft({ key, from: c.name, value: c.name })}
+                  onChange={(e) => setColNameDraft(
+                    (d) => ({ key, from: d?.key === key ? d.from : c.name,
+                              value: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+                    if (e.key === "Escape") { e.preventDefault(); setColNameDraft(null); }
+                  }}
+                  onBlur={() => commitColumnName(t, i, key)} />);
+            })()}
             <input className="w4" type="number" value={c.x_offset} title="x_offset"
               onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
                 j === i ? { ...v, x_offset: +e.target.value } : v) })} />
@@ -5320,15 +6264,34 @@ export default function Editor(
                 j === i ? { ...v, normalize: e.target.value || undefined } : v) })}>
               <option value="">正規化なし</option><option value="amount">金額</option>
             </select>
-            <label style={{ flexDirection: "row", alignItems: "center", gap: 4, margin: 0 }}>
-              <input type="checkbox" checked={isOutput(c)}
-                aria-label={outputCheckboxLabel(c.name || `列${i + 1}`, isOutput(c),
-                  orderChangedSinceLoad ? null
-                    : findTableColumnPositions(columnNames, t.table_id, c.name))}
-                onChange={(e) => updateTable(t.uid, { columns: t.columns.map((v, j) =>
-                  j === i ? { ...v, output: e.target.checked ? undefined : false } : v) })} />
-              <span className="lbl">出力</span>
-            </label>
+            {/* 列単位の正面入口はここに残す（かなた §2.4）。差分は1つだけ:
+                列の一部の升だけ出力しないときはチェックを中間状態
+                （indeterminate）にする。aria-checked="mixed" は使わない
+                ——ネイティブの indeterminate を立てれば支援技術は "mixed" と
+                して読み、既存 AC-1.25 の読み上げ形（outputCheckboxLabel）から
+                外れない。押したときの向きは columnCellState が決める */}
+            {(() => {
+              const state = columnCellState(t, c);
+              const rows = tableTotalRows(t);
+              const offCount = rows - countColumnOutputCells(t, c);
+              return (
+                <label style={{ flexDirection: "row", alignItems: "center", gap: 4, margin: 0 }}
+                  title={!isOutput(c)
+                    ? `この列は列ごと出力しない設定です。列を戻すと升の指定（${countColumnCellsOff(t, c)}升）が効きます`
+                    : state === "mixed"
+                      ? `この列は ${rows}升 のうち ${offCount}升 が出力されません`
+                      : state === "none"
+                        ? `この列は ${rows}升 すべてを升ごとに出力しない設定です。押すと升の指定（${countColumnCellsOff(t, c)}升）を消して全升を出力します`
+                        : "列ごと出力しないにすると、この列の升の指定は保存されません（列を戻すまで画面上は保持します）"}>
+                  <input type="checkbox" checked={state === "all"}
+                    ref={(el) => { if (el) el.indeterminate = state === "mixed"; }}
+                    aria-label={outputCheckboxLabel(c.name || `列${i + 1}`, state === "all",
+                      orderChangedSinceLoad ? null
+                        : findTableColumnPositions(columnNames, t.table_id, c.name))}
+                    onChange={() => toggleColumnCells(t, i)} />
+                  <span className="lbl">出力</span>
+                </label>);
+            })()}
             {/* issue #66 段5・付録A: 表の内部列に「表の中で何番目／帳票では左から
                 何番目」を薄く併記する。x_offset 順は列を後から足すと定義順とずれる
                 ため、両方示す（column_names は使わない・表単体でローカルに求まる） */}
@@ -5336,7 +6299,8 @@ export default function Editor(
               {tableColumnOrderNote(t.columns, i, isOutput(c))}
             </span>
             <button onClick={() => updateTable(t.uid,
-              { columns: t.columns.filter((_, j) => j !== i) })}>×</button>
+              { columns: t.columns.filter((_, j) => j !== i),
+                cellsOff: remapCellsOffOnColumnDelete(t, i) })}>×</button>
           </div>))}
         <button onClick={removeSel}>テーブル削除</button>
         {/* 操作を左右する一次情報なので通常 note（--faint）より濃い色で出す（レビュー N-1） */}
@@ -5406,21 +6370,132 @@ export default function Editor(
           {faceHidden && hiddenBadge}
         </div>);
     };
-    const tableRow = (t: Table, faceHidden: boolean) => (
-      <div key={t.uid} className={`panel-outrow${faceHidden ? " format-hidden" : ""}`}
-        onMouseEnter={() => setHlFieldUid(t.uid)} onMouseLeave={() => setHlFieldUid(null)}
-        onFocus={() => setHlFieldUid(t.uid)} onBlur={() => setHlFieldUid(null)}>
-        <span className="reorder-btns" title="表は面のいちばん後ろに出力されます" />
-        <span className="colpos" title="表は面のいちばん後ろに出力されます">表</span>
-        <span className="name">{t.table_id}（列{t.columns.length}・うち出力
-          {t.columns.filter((c) => isOutput(c)).length}）</span>
-        {faceHidden && hiddenBadge}
-        <button className="btn" type="button" disabled={faceHidden}
-          title={faceHidden ? "様式が違う面の表のため選択できません（上書き表示中は選べます）" : undefined}
-          style={{ minHeight: 28, padding: "3px 10px" }}
-          onClick={faceHidden ? undefined
-            : () => { setSel({ type: "table", uid: t.uid }); setPanelTab("selected"); }}>開く</button>
+    // 升グリッド（issue #66 段9・FR-3.3・かなた §3.2 の実測）。
+    // 展開は1表だけ（expandedTableUid）——スキーマ上の最大は 1600 行 × N 列で、
+    // 全表を同時に描くと1万個規模のチェックボックスになる。
+    // ネイティブ <table> ＋ <th scope> で組み、role="grid" と矢印キー移動は
+    // 入れない（矢印はキャンバスで「選択中の枠を1px動かす」に使っており、
+    // 同じ画面で意味を2つ持たせない・かなた §6.2）
+    const cellGrid = (t: Table) => {
+      const rows = tableTotalRows(t);
+      if (t.columns.length === 0) {
+        return <p className="note">列がありません。「くり返し行（家族・明細）」で外枠を描くと生成されます。</p>;
+      }
+      if (rows === 0) return <p className="note">行数が 0 です。「選択中」タブで行数を入れてください。</p>;
+      // 総行数 100 超のときだけ 100 行ずつ追加読み込みする（D-7）。実運用の
+      // 最大は出荷テンプレの 10 行 × 8 列＝80 升なので通常は発火しない
+      const limit = Math.min(rows, gridRowLimit[t.uid] ?? 100);
+      const range = tableColumnRangeInfo(columnNames, t.table_id);
+      return (<>
+        {range && <p className="note">この表は CSV・Excel の {range.first}〜{range.last}列目
+          （{range.count}列）を占めます</p>}
+        <button type="button" className="sr-only"
+          onClick={() => document.getElementById(`cellgrid-end-${t.uid}`)?.focus()}>
+          {t.table_id} の {rows * t.columns.length}升 を飛ばす</button>
+        <div className="cellgrid-wrap">
+          {/* 直下の注記を表の説明として結び付ける（レビュー LOW）。id は
+              作ってあったが誰からも参照されていなかった。升 1 つずつに
+              aria-describedby を付けると全升で同じ文が読み上がるので、
+              表へ入った 1 回だけ読ませる */}
+          <table className="cellgrid" aria-describedby={`cellgrid-note-${t.uid}`}>
+            <thead>
+              <tr>
+                <th scope="col">行</th>
+                {t.columns.map((c, ci) => {
+                  const state = columnCellState(t, c);
+                  return (
+                    <th scope="col" key={ci} className="colhead" title={c.name}>
+                      <span className="colhead-name">{c.name || `列${ci + 1}`}</span>
+                      <input type="checkbox" checked={state === "all"}
+                        ref={(el) => { if (el) el.indeterminate = state === "mixed"; }}
+                        aria-label={columnBulkToggleAriaLabel(t.table_id, c.name, rows, state,
+                          rows - countColumnOutputCells(t, c))}
+                        onChange={() => toggleColumnCells(t, ci)} />
+                    </th>);
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {Array.from({ length: limit }, (_, i) => i + 1).map((rowNo) => (
+                <tr key={rowNo}>
+                  <th scope="row">{rowNo}<span className="sr-only">行目</span></th>
+                  {t.columns.map((c, ci) => {
+                    const out = isCellOutput(t, rowNo, c);
+                    const name = cellCheckboxDisplayName(
+                      t.table_id, rowNo, c.name || `列${ci + 1}`);
+                    return (
+                      <td key={ci} className={out ? undefined : "offcell"}
+                        onMouseEnter={() => { setHlCol(ci); setCellHoverNote(cellGridNote({
+                          hover: { tableId: t.table_id, rowNo, columnName: c.name },
+                          position: cellColumnPosition(columnNames, t.table_id, rowNo, c.name,
+                            t.columns.map((v) => v.name)),
+                          cellOutput: out, orderChanged: orderChangedSinceLoad })); }}
+                        onMouseLeave={() => { setHlCol(null); setCellHoverNote(null); }}>
+                        <input type="checkbox" checked={out} disabled={!isOutput(c)}
+                          title={isOutput(c) ? undefined
+                            : "この列は列ごと出力しない設定です（列を戻すと升の指定が効きます）"}
+                          aria-label={outputCheckboxLabel(name, out, orderChangedSinceLoad
+                            ? null : cellColumnPosition(columnNames, t.table_id, rowNo, c.name,
+                              t.columns.map((v) => v.name)))}
+                          onFocus={() => setCellHoverNote(cellGridNote({
+                            hover: { tableId: t.table_id, rowNo, columnName: c.name },
+                            position: cellColumnPosition(columnNames, t.table_id, rowNo, c.name,
+                            t.columns.map((v) => v.name)),
+                            cellOutput: out, orderChanged: orderChangedSinceLoad }))}
+                          onBlur={() => setCellHoverNote(null)}
+                          onChange={() => toggleCell(t, rowNo, c.name)} />
+                      </td>);
+                  })}
+                </tr>))}
+            </tbody>
+          </table>
+        </div>
+        <p className="note" id={`cellgrid-note-${t.uid}`}>
+          {cellHoverNote ?? "升にふれると列番号が出ます"}</p>
+        {limit < rows && (
+          <button className="btn" type="button"
+            onClick={() => setGridRowLimit((m) =>
+              ({ ...m, [t.uid]: Math.min(rows, limit + 100) }))}>
+            もっと見る（残り {rows - limit} 行）</button>)}
+        <span id={`cellgrid-end-${t.uid}`} tabIndex={-1} />
+      </>);
+    };
+    const tableRow = (t: Table, faceHidden: boolean) => {
+      const rows = tableTotalRows(t);
+      const total = rows * t.columns.length;
+      const off = countOutputDisabled([], [t]);
+      const expanded = expandedTableUid === t.uid;
+      return (
+      <div key={t.uid}>
+        <div className={`panel-outrow tablerow${faceHidden ? " format-hidden" : ""}`}
+          onMouseEnter={() => setHlFieldUid(t.uid)} onMouseLeave={() => setHlFieldUid(null)}
+          onFocus={() => setHlFieldUid(t.uid)} onBlur={() => setHlFieldUid(null)}>
+          <span className="reorder-btns" title="表は面のいちばん後ろに出力されます" />
+          <span className="colpos" title="表は面のいちばん後ろに出力されます">表</span>
+          {/* 閉じたままでも「出力しない升の数」が読めるようにする
+              （かなた §3.1: 開かなくても状態が分かる） */}
+          <span className="name">{t.table_id}（{rows}行 × {t.columns.length}列 = {total}升・
+            {off > 0 ? `出力しない ${off}` : "すべて出力する"}）</span>
+          {faceHidden && hiddenBadge}
+          <button className="btn" type="button" disabled={faceHidden}
+            title={faceHidden ? "様式が違う面の表のため選択できません（上書き表示中は選べます）" : undefined}
+            style={{ minHeight: 28, padding: "3px 10px" }}
+            onClick={faceHidden ? undefined
+              : () => { setSel({ type: "table", uid: t.uid }); setPanelTab("selected"); }}>開く</button>
+          {/* 升グリッドの開閉は表の行の中に置く（別の .panel-outrow にすると
+              「1 行 = 1 欄/1 表」という一覧の数え方が崩れる）。既定は閉じる
+              ——閉じたままでも「出力しない升の数」は上の名前に出ている */}
+          <button className="btn" type="button" disabled={faceHidden}
+            aria-expanded={expanded}
+            title={faceHidden ? "様式が違う面の表のため選択できません（上書き表示中は選べます）"
+              : "この表の行×列を出して、升ごとに出力する/しないを切り替えます"}
+            style={{ minHeight: 28, padding: "3px 10px" }}
+            onClick={() => setExpandedTableUid(expanded ? null : t.uid)}>
+            {expanded ? "▾ 升" : "▸ 升"}</button>
+        </div>
+        {expanded && !faceHidden && cellGrid(t)}
       </div>);
+    };
     const faceSection = (
       label: string, group: { fields: Field[]; tables: Table[] }, faceId: "front" | "back") => {
       const faceHidden = hidden.has(faceId);
@@ -5468,8 +6543,10 @@ export default function Editor(
           title 属性で全文を保つ（DOM/ARIA には全文が残るため aria-live の
           読み上げは変わらない・視覚的な省略のみ） */}
       <div style={{ flexShrink: 0, padding: "10px 18px 6px" }}>
+        {/* 見出しには升候補と提案の **両方の件数** を出す（かなた §4.3）。
+            0 のほうは書かない */}
         <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>
-          枠候補{cands.length > 0 ? `（${cands.length} 件）` : ""}</h3>
+          {candidatePanelHeading(cands.length, suggestions.length)}</h3>
         {/* ラミィ差し戻し（3回目・Must）: overlapAcceptNotice の可視表示は
             タブ非依存の常時表示エリア（errMsg と同じ場所）へ移した——タブを
             離れても見えなくならないようにするため。ここには残さない。
@@ -5493,7 +6570,7 @@ export default function Editor(
         {cands.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
             <button className="btn" type="button" onClick={acceptSelectedCandidates}>
-              選んだ候補を採用
+              {acceptSelectedLabel(cands, candSelected)}
             </button>
             <button className="btn" type="button" onClick={clearAllCandidates}>
               すべて除去
@@ -5533,8 +6610,44 @@ export default function Editor(
           issue #87 項目3: 見た目の指定は App.css の .cand-list へ移した
           （行の高さを詰めて、可視領域に入る候補の数を増やすため） */}
       <div className="cand-list">
-        {cands.length === 0 && <p className="note">候補がありません。</p>}
-        {cands.map((c) => (
+        {/* まとめ提案は **升候補より上**（かなた §4.2）。提案は「読んで一度だけ
+            決める」少数、升候補は「1件ずつ触る」多数（数十〜数百件）。提案を
+            下に置くと 148 件のスクロールの底に埋まり、そもそも読まれない。
+            提案にチェックボックスは置かない——「選んだ候補を採用」の対象に
+            混ぜると一括採用の意味が変わる */}
+        {suggestions.length > 0 && (<>
+          <h4 style={{ margin: "10px 0 6px" }}>まとめ提案（{suggestions.length} 件）</h4>
+          {suggestions.map((s) => {
+            const txt = suggestionCardText(s);
+            return (
+              <div key={s.id} className="cand-suggest">
+                <p>{txt.main}</p>
+                {txt.heading && <p className="note">{txt.heading}</p>}
+                <p className="note">{txt.naming}</p>
+                {s.overlaps && (
+                  <p className="note">
+                    既存の枠と重なります（升のまま採用はできます）</p>)}
+                {/* 提案が複数あっても読み上げで一意になるよう、行×列を
+                    名前に入れる（ラミィ Should）。見えている文字は変えない */}
+                <div className="cand-suggest-btns">
+                  <button className="btn outline" type="button"
+                    aria-label={suggestionButtonAriaLabel(s, "table")}
+                    onClick={() => { void adoptSuggestion(s, "table"); }}>表にまとめる</button>
+                  <button className="btn" type="button"
+                    aria-label={suggestionButtonAriaLabel(s, "cells")}
+                    onClick={() => { void adoptSuggestion(s, "cells"); }}>升のまま採用</button>
+                  <button className="btn" type="button"
+                    aria-label={suggestionButtonAriaLabel(s, "remove")}
+                    onClick={() => removeSuggestion(s)}>この提案を消す</button>
+                </div>
+              </div>);
+          })}
+          <h4 style={{ margin: "10px 0 6px" }}>升候補（{cands.length} 件）</h4>
+        </>)}
+        {cands.length === 0 && (
+          <p className="note">{suggestions.length > 0
+            ? "残っている升の候補はありません。" : "候補がありません。"}</p>)}
+        {cands.slice(0, candShown).map((c) => (
           <div key={c.id} className="panel-outrow">
             <input type="checkbox" className="cand-check"
               checked={!!candSelected[c.id]} disabled={c.overlaps}
@@ -5565,6 +6678,12 @@ export default function Editor(
               onClick={() => removeOneCandidate(c.id)}>除去</button>
           </div>
         ))}
+        {/* ページングにしない（かなた §4.5）。「何ページ目に何があったか」を
+            覚えさせず、上から順に見る動作を切らない */}
+        {cands.length > candShown && (
+          <button className="btn" type="button"
+            onClick={() => setCandShown((n) => n + CAND_PAGE_SIZE)}>
+            もっと見る（残り {cands.length - candShown} 件）</button>)}
       </div>
     </div>
   );

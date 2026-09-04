@@ -28,7 +28,9 @@ const bundle = await build({
       // 衝突しやすいので独立した1行にする
       'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n' +
       // 初回読み込みフロー（候補先行・2026-09-04）。ここも独立した1行にする
-      'export { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } from "./Editor.tsx";\n',
+      'export { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } from "./Editor.tsx";\n' +
+      // 升（表の1マス）単位の出力制御・まとめ提案（issue #66 段9・#73 (b)）
+      'export { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel } from "./Editor.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -52,6 +54,7 @@ const mod = await import(pathToFileURL(outFile).href);
 const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
 const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
+const { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1038,10 +1041,16 @@ test("isOutput / outputAttrForJson: output省略・trueは出力する、false�
   assert.deepEqual(outputAttrForJson(false), { output: false });
 });
 
-test("countOutputDisabled: 欄・表の列のうち output:false の総数を数える（タブ見出しバッジ用）", () => {
+test("countOutputDisabled: 出力しない欄と物理升の総数を数える（AC-3.22・FR-3.4）", () => {
+  // 第3弾（段9）で表側の単位が「列の数」から「物理升の数」へ変わった。
+  // 列 off は 行数 × 1 列ぶんの升として数える（verify の
+  // output_disabled_cells = len(cells) - len(output_cells) と単位を揃える）
   const fields = [{ output: false }, { output: true }, {}];
-  const tables = [{ columns: [{ output: false }, {}] }, { columns: [{ output: false }] }];
-  assert.equal(countOutputDisabled(fields, tables), 3);
+  const tables = [
+    { columns: [{ name: "a", output: false }, { name: "b" }], blocks: [{ rows: 3 }] },
+    { columns: [{ name: "c", output: false }], blocks: [{ rows: 2 }, { rows: 2 }] },
+  ];
+  assert.equal(countOutputDisabled(fields, tables), 1 + 3 + 4);
   assert.equal(countOutputDisabled([], []), 0);
 });
 
@@ -1436,12 +1445,20 @@ test("columnDecreaseFor: baseline が数値でなくても unknown（レビュ�
   assert.deepEqual(columnDecreaseFor(NaN, 220), { kind: "unknown" });
 });
 
-test("unclearPopulationNote: 要確認セル数の母集団が縮小したときだけ確定文言を返す（AC-1.16・T-S8）", () => {
-  assert.equal(unclearPopulationNote(214, 214, 0), null, "抽出列数不変なら null");
-  assert.equal(unclearPopulationNote(214, 211, 0), null,
-    "抽出列数は減っても対象外欄が0件なら null（別要因の減少・列並べ替え等は本関数の対象外）");
-  const note = unclearPopulationNote(214, 211, 3);
-  assert.equal(note, "要確認セル数の母集団: 214列 → 211列（出力しない 3 欄を除く）");
+test("unclearPopulationNote: 要確認セル数の母集団が縮小したときだけ確定文言を返す（AC-1.16・T-S8・AC-H25/FR-3.8）", () => {
+  assert.equal(unclearPopulationNote(214, 214, 0, 0), null, "抽出列数不変なら null");
+  assert.equal(unclearPopulationNote(214, 211, 0, 0), null,
+    "抽出列数は減っても対象外が0件なら null（別要因の減少・列並べ替え等は本関数の対象外）");
+  assert.equal(unclearPopulationNote(214, 211, 3, 0),
+    "要確認セル数の母集団: 214列 → 211列（出力しない 欄 3）");
+  // 欄と升は別に数えて別に書く。0 のほうの項は落とす（FR-3.8）
+  assert.equal(unclearPopulationNote(214, 199, 0, 13),
+    "要確認セル数の母集団: 214列 → 199列（出力しない 升 13）");
+  const note = unclearPopulationNote(214, 199, 2, 13);
+  assert.equal(note, "要確認セル数の母集団: 214列 → 199列（出力しない 欄 2・升 13）");
+  // 「を除く」と書かない＝列差（15）と内訳の合計（15）の一致を画面が約束しない。
+  // subfields を持つ列の升は 1 升 = N 列に展開されるため一致しないことがある
+  assert.ok(!note.includes("を除く"), "因果表現（を除く）を使わない");
 });
 
 // ---------------------------------------------------------------- issue #66 段4（FR-1.9・かなたS-5）
@@ -3519,6 +3536,538 @@ test("Should-1 templateDecisionMsg: バーが出る操作では .msg を空に�
     "テンプレート読込: 帳票B（欄 1・表 1）");
   assert.equal(templateDecisionMsg(false, newTemplateNotice(false)),
     newTemplateNotice(false));
+});
+
+
+// ------------------------------------------------ issue #66 段9（升＝表の1マス単位の出力制御）
+// AC 番号は設計書（plans/design_cells.md §7.1）の AC-3.x を正本にする。
+// PM の AC-H 系との対応: H19/H20（state と保存の往復）= AC-3.19/3.20、
+// H21/H22（読み上げ名）= cellCheckboxDisplayName・columnBulkToggleAriaLabel、
+// H23（⊘は連なりに1個）= AC-3.30、H24（行×列グリッド）= cellGridNote、
+// H25（保存前確認の文言）= unclearPopulationNote、H26（往復でキーが増えない）
+// = AC-3.26、H27（Undo 1コマ）= toggleCell/toggleColumnCells の pushHistoryNow、
+// H28（母集団の内訳）= AC-3.22/3.33。
+// 表を「升の集まり」として扱う第3弾。core（template.py の
+// output_disabled_cells）は実装済みで、ここは GUI 側の state ↔ JSON の
+// 往復・件数・破壊的編集への追従・描画単位を固定する。
+
+const tbl = (over = {}) => ({
+  uid: "t1", table_id: "detail", row_pitch: 100, row_height: 80,
+  blocks: [{ x: 100, y: 200, rows: 3 }],
+  columns: [
+    { name: "品名", x_offset: 0, width: 200, kind: "text", subfields: "", marks: [] },
+    { name: "金額", x_offset: 200, width: 150, kind: "text", subfields: "", marks: [] },
+  ],
+  ...over,
+});
+
+test("AC-3.19 cellKey / parseCellKey: 列名に ':' が入っても最初の ':' で復元できる", () => {
+  assert.equal(cellKey(3, "備考"), "3:備考");
+  assert.deepEqual(parseCellKey("3:備考"), { rowNo: 3, column: "備考" });
+  // 列名の中の ':' は列名側に残す（row_no は必ず数字なので最初の ':' で切れる）
+  assert.deepEqual(parseCellKey("12:金額:税込"), { rowNo: 12, column: "金額:税込" });
+  assert.equal(parseCellKey("備考"), null);
+  assert.equal(parseCellKey(":備考"), null);
+  assert.equal(parseCellKey("0:備考"), null, "row_no は 1 起点");
+  assert.equal(parseCellKey("3:"), null, "列名が空のキーは壊れている");
+});
+
+test("AC-3.19 tableTotalRows / isCellOutput: 列が優先（列 off なら升の指定に関係なく出力しない）", () => {
+  const t = tbl({ blocks: [{ x: 0, y: 0, rows: 3 }, { x: 500, y: 0, rows: 2 }] });
+  assert.equal(tableTotalRows(t), 5);
+  assert.equal(tableTotalRows({ blocks: [] }), 0);
+  assert.equal(tableTotalRows({ blocks: [{ rows: -3 }] }), 0, "入力途中の負値は 0 に切る");
+
+  const t2 = tbl({ cellsOff: new Set(["2:金額"]) });
+  assert.equal(isCellOutput(t2, 1, t2.columns[1]), true);
+  assert.equal(isCellOutput(t2, 2, t2.columns[1]), false);
+  assert.equal(isCellOutput(t2, 2, t2.columns[0]), true, "別の列は影響を受けない");
+  // 列 off は升の指定に関係なく false（不変条件 2）
+  const t3 = tbl({ cellsOff: new Set(["2:金額"]),
+    columns: [tbl().columns[0], { ...tbl().columns[1], output: false }] });
+  assert.equal(isCellOutput(t3, 1, t3.columns[1]), false);
+});
+
+test("AC-3.19 toggleCellOutput: 新しい Set を返す（Undo の1コマとして丸ごと差し替わる）", () => {
+  const t = tbl();
+  const a = toggleCellOutput(t, 2, "金額");
+  assert.deepEqual([...a.cellsOff], ["2:金額"]);
+  assert.equal(t.cellsOff, undefined, "元の Table は変えない");
+  const b = toggleCellOutput(a, 2, "金額");
+  assert.deepEqual([...b.cellsOff], []);
+  assert.notEqual(a.cellsOff, b.cellsOff, "毎回新しい Set");
+});
+
+test("AC-3.29 columnCellState: 列 off / 全升 off / 一部 off の3値を1関数で決める", () => {
+  const base = tbl();
+  assert.equal(columnCellState(base, base.columns[1]), "all");
+  const mixed = tbl({ cellsOff: new Set(["1:金額"]) });
+  assert.equal(columnCellState(mixed, mixed.columns[1]), "mixed");
+  const allOff = tbl({ cellsOff: new Set(["1:金額", "2:金額", "3:金額"]) });
+  assert.equal(columnCellState(allOff, allOff.columns[1]), "none",
+    "個別に全行外しても『すべて出力しない』");
+  const colOff = tbl({ columns: [base.columns[0], { ...base.columns[1], output: false }] });
+  assert.equal(columnCellState(colOff, colOff.columns[1]), "none");
+  // 範囲外の指定（行を減らした残骸）は数えない
+  const stale = tbl({ cellsOff: new Set(["9:金額"]) });
+  assert.equal(columnCellState(stale, stale.columns[1]), "all");
+});
+
+test("AC-3.21 toggleColumnOutput: 中間からは外す方向へ倒し、列を戻すと升の指定は生き返る", () => {
+  // all → 列 off（cellsOff は触らない）
+  const a = toggleColumnOutput(tbl({ cellsOff: new Set(["1:金額"]) }), 1);
+  assert.equal(a.columns[1].output, false);
+  assert.deepEqual([...a.cellsOff], ["1:金額"], "列を戻したとき元の指定に戻せるよう保持する");
+  // mixed → 列 off（押すたびに向きが変わらない）
+  const m = toggleColumnOutput(tbl({ cellsOff: new Set(["2:金額"]) }), 1);
+  assert.equal(m.columns[1].output, false);
+  // 列 off → 列 on。**cellsOff は触らない**——升チェックの説明文「列を戻すと
+  // 升の指定が効きます」・列チェックの説明文「列を戻すまで画面上は保持します」・
+  // isCellOutput の doc が画面上で約束しているのはこちら。ここで全消去すると
+  // 「戻した瞬間に指定が消える」で説明文と真逆になる（レビュー H-1 差し戻し）
+  const back = toggleColumnOutput(a, 1);
+  assert.equal(back.columns[1].output, undefined);
+  assert.deepEqual([...back.cellsOff], ["1:金額"], "列を戻したら升の指定が生き返る");
+  assert.equal(columnCellState(back, back.columns[1]), "mixed",
+    "戻した直後は中間状態（indeterminate）。外れたままの升があることは形が示す");
+  assert.equal(isCellOutput(back, 1, back.columns[1]), false);
+  assert.equal(isCellOutput(back, 2, back.columns[1]), true);
+  // off → on → off と往復しても指定を失わない
+  assert.deepEqual([...toggleColumnOutput(back, 1).cellsOff], ["1:金額"]);
+
+  // 全升 off（列は on のまま 1 升ずつ全部外した）から戻すときだけ全消去する
+  // ——消す先の「列 off」が無いので、消さないと押しても何も変わらない
+  const allOff = tbl({ cellsOff: new Set(["1:金額", "2:金額", "3:金額", "1:品名"]) });
+  assert.equal(columnCellState(allOff, allOff.columns[1]), "none");
+  const back2 = toggleColumnOutput(allOff, 1);
+  assert.equal(back2.columns[1].output, undefined);
+  assert.deepEqual([...back2.cellsOff], ["1:品名"], "他の列の指定は残す");
+  assert.equal(columnCellState(back2, back2.columns[1]), "all");
+});
+
+test("AC-3.29 countColumnCellsOff: 列 off でも「戻したら何升効くか」を数える", () => {
+  const t = tbl({ cellsOff: new Set(["1:金額", "3:金額", "1:品名", "9:金額"]) });
+  assert.equal(countColumnCellsOff(t, t.columns[1]), 2, "行の範囲外（9行目）は数えない");
+  // 列 off でも数えられる。isCellOutput は列 off なら一律 false なので、
+  // rows - countColumnOutputCells では列の全升になってしまい説明文が嘘になる
+  const off = tbl({ cellsOff: t.cellsOff,
+    columns: [t.columns[0], { ...t.columns[1], output: false }] });
+  assert.equal(countColumnCellsOff(off, off.columns[1]), 2);
+  assert.equal(countColumnCellsOff(tbl(), tbl().columns[1]), 0);
+});
+
+test("AC-3.19 disabledCellsForJson: row_no 昇順 → 列定義順で並ぶ（同じ編集で同じ配列）", () => {
+  const t = tbl({ blocks: [{ x: 0, y: 0, rows: 3 }],
+    cellsOff: new Set(["3:品名", "1:金額", "1:品名", "2:金額"]) });
+  assert.deepEqual(disabledCellsForJson(t), [
+    { row_no: 1, column: "品名" }, { row_no: 1, column: "金額" },
+    { row_no: 2, column: "金額" }, { row_no: 3, column: "品名" },
+  ]);
+  // Set の挿入順を変えても同じ配列になる（template_hash の再現性）
+  const t2 = tbl({ cellsOff: new Set(["2:金額", "1:品名", "3:品名", "1:金額"]) });
+  assert.deepEqual(disabledCellsForJson(t2), disabledCellsForJson(t));
+});
+
+test("AC-3.20 disabledCellsForJson: 列 off・実在しない行/列は書かない・空なら null", () => {
+  assert.equal(disabledCellsForJson(tbl()), null, "空なら null（キーごと省略する）");
+  const colOff = tbl({ cellsOff: new Set(["1:金額"]),
+    columns: [tbl().columns[0], { ...tbl().columns[1], output: false }] });
+  assert.equal(disabledCellsForJson(colOff), null, "列 off の列の指定は書かない（列が優先）");
+  const stale = tbl({ cellsOff: new Set(["9:金額", "1:存在しない列", "2:品名"]) });
+  assert.deepEqual(disabledCellsForJson(stale), [{ row_no: 2, column: "品名" }],
+    "範囲外の行・実在しない列名は GUI 側で刈り込む（load_template の拒否に頼らない）");
+  // buildTemplateJson が使う形
+  assert.deepEqual(disabledCellsAttrForJson(tbl()), {});
+  assert.deepEqual(disabledCellsAttrForJson(stale),
+    { output_disabled_cells: [{ row_no: 2, column: "品名" }] });
+});
+
+test("AC-3.25 cellsOffFromJson: 読み込みで復元し、実在しない行・列は落とす", () => {
+  const cols = tbl().columns;
+  const s = cellsOffFromJson(
+    [{ row_no: 1, column: "金額" }, { row_no: 9, column: "金額" },
+     { row_no: 2, column: "無い列" }, { row_no: 0, column: "品名" },
+     { row_no: 3, column: "品名" }, "こわれた"],
+    cols, 3);
+  assert.deepEqual([...s].sort(), ["1:金額", "3:品名"]);
+  assert.deepEqual([...cellsOffFromJson(undefined, cols, 3)], [], "キー無し（旧テンプレ）は空");
+  assert.deepEqual([...cellsOffFromJson("x", cols, 3)], [], "配列でなければ空に倒す");
+});
+
+test("AC-3.26 buildTemplateJson: 升を触っていない表に output_disabled_cells を書かない", () => {
+  const base = {
+    fields: [], excls: [], splitY: 1000, W: 2000, H: 2000,
+    meta: { template_id: "t", render_dpi: 300, image: { width: 2000, height: 2000 },
+            record: { pages: 1 } },
+  };
+  const plain = buildTemplateJson({ ...base, tables: [tbl()] });
+  const tblJson = plain.template.faces[0].tables[0];
+  assert.ok(!("output_disabled_cells" in tblJson),
+    "空配列すら書かない（無関係な保存で template_hash を動かさない）");
+  const withCells = buildTemplateJson({ ...base,
+    tables: [tbl({ cellsOff: new Set(["2:金額"]) })] });
+  assert.deepEqual(withCells.template.faces[0].tables[0].output_disabled_cells,
+    [{ row_no: 2, column: "金額" }]);
+});
+
+test("AC-3.30 / AC-H23 verticalOffRuns: 縦の連なりを1本にまとめ、ブロック跨ぎは分割する", () => {
+  // 飛び飛びの升 → 連なりごとに1本（⊘の数はここで決まる）
+  const scatter = tbl({ blocks: [{ x: 0, y: 0, rows: 6 }],
+    cellsOff: new Set(["1:金額", "2:金額", "4:金額", "6:金額"]) });
+  assert.deepEqual(verticalOffRuns(scatter, 1),
+    [{ fromRow: 1, toRow: 2 }, { fromRow: 4, toRow: 4 }, { fromRow: 6, toRow: 6 }]);
+  // 列 off → 各ブロックで1本（現状の列単位表示と同じ絵になる）
+  const colOff = tbl({ blocks: [{ x: 0, y: 0, rows: 3 }, { x: 500, y: 0, rows: 2 }],
+    columns: [tbl().columns[0], { ...tbl().columns[1], output: false }] });
+  assert.deepEqual(verticalOffRuns(colOff, 1),
+    [{ fromRow: 1, toRow: 3 }, { fromRow: 4, toRow: 5 }]);
+  // 通し番号は連続でも、ブロックが変われば紙の上で別の場所へ飛ぶので分割する
+  const across = tbl({ blocks: [{ x: 0, y: 0, rows: 3 }, { x: 500, y: 0, rows: 2 }],
+    cellsOff: new Set(["3:金額", "4:金額"]) });
+  assert.deepEqual(verticalOffRuns(across, 1),
+    [{ fromRow: 3, toRow: 3 }, { fromRow: 4, toRow: 4 }]);
+  assert.deepEqual(verticalOffRuns(tbl(), 1), []);
+  assert.deepEqual(verticalOffRuns(tbl(), 9), [], "無い列添字は空");
+});
+
+test("AC-3.31 cellAtPoint: 行の隙間・列の隙間では null（表の選択だけに落とす）", () => {
+  // row_pitch 100・row_height 80 → 行と行の間に 20px の隙間がある
+  const t = tbl({ blocks: [{ x: 100, y: 200, rows: 3 }] });
+  assert.deepEqual(cellAtPoint(t, 150, 210), { rowNo: 1, colIndex: 0 });
+  assert.deepEqual(cellAtPoint(t, 350, 310), { rowNo: 2, colIndex: 1 });
+  assert.equal(cellAtPoint(t, 150, 290), null, "行間の隙間（280〜300）は升の外");
+  assert.equal(cellAtPoint(t, 900, 210), null, "列の外");
+  assert.equal(cellAtPoint(t, 150, 100), null, "表の上");
+  // 2ブロック目は通し番号で続く
+  const t2 = tbl({ blocks: [{ x: 100, y: 200, rows: 2 }, { x: 1100, y: 200, rows: 2 }] });
+  assert.deepEqual(cellAtPoint(t2, 1150, 310), { rowNo: 4, colIndex: 0 });
+});
+
+test("AC-3.32 cellColumnPosition: 100行目以降（3桁の行番号）でも引ける・未取得なら null", () => {
+  const names = ["管理", "detail_01_品名", "detail_01_金額", "detail_100_品名",
+                 "family_01_生年月日_年", "family_01_生年月日_月"];
+  assert.deepEqual(cellColumnPosition(names, "detail", 1, "品名"), { first: 2, last: 2 });
+  assert.deepEqual(cellColumnPosition(names, "detail", 100, "品名"), { first: 4, last: 4 },
+    "行番号は数値で比較する（文字列比較だと 100 行目を取り違える）");
+  assert.equal(cellColumnPosition(names, "detail", 2, "品名"), null);
+  assert.equal(cellColumnPosition(null, "detail", 1, "品名"), null, "column_names 未取得は null");
+  // subfields を持つ列は 1 升 = N 列（AC-H33 と同じ事実の別の見え方）
+  assert.deepEqual(cellColumnPosition(names, "family", 1, "生年月日"), { first: 5, last: 6 });
+});
+
+test("AC-3.23 remapCellsOffOnColumnRename / Delete: 列名変更・列削除に追従する", () => {
+  const t = tbl({ cellsOff: new Set(["1:品名", "2:金額"]) });
+  assert.deepEqual([...remapCellsOffOnColumnRename(t, 1, "税込金額")].sort(),
+    ["1:品名", "2:税込金額"]);
+  assert.deepEqual([...remapCellsOffOnColumnDelete(t, 1)], ["1:品名"]);
+  // 空名へは張り替えない（レビュー H-3）。`2:` は parseCellKey が解けない
+  // キーで、作った瞬間にその升の指定が捨てられる——列名を全部消してから
+  // 打ち直すだけで升の指定が消えていた経路
+  assert.deepEqual([...remapCellsOffOnColumnRename(t, 1, "")].sort(),
+    ["1:品名", "2:金額"], "空名（打ち直しの途中）では現状のまま返す");
+  // 旧名を明示できる（確定時に「編集を始めた時点の名前」から張り替えるため）。
+  // 列名が既に新しくなっていても 1 回の確定で写せる
+  const renamed = tbl({ cellsOff: new Set(["1:品名", "2:金額"]),
+    columns: [tbl().columns[0], { ...tbl().columns[1], name: "税込金額" }] });
+  assert.deepEqual([...remapCellsOffOnColumnRename(renamed, 1, "税込金額", "金額")].sort(),
+    ["1:品名", "2:税込金額"]);
+  // 列の並べ替えはキーが列名なので追従不要（moveTableColumnOrder は cellsOff を触らない）
+  const moved = moveTableColumnOrder(t.columns, 0, "down");
+  assert.deepEqual(moved.map((c) => c.name), ["金額", "品名"]);
+  assert.deepEqual([...t.cellsOff].sort(), ["1:品名", "2:金額"]);
+});
+
+test("AC-3.24 remapCellsOffOnBlocksChange: (ブロック, ブロック内行) 基準で写し、落ちた件数を返す", () => {
+  // blocks:[5,5] の第1ブロックを 3 行へ減らす。旧 row_no=6（第2ブロック1行目）は
+  // 新 row_no=4 になる——写し直さないと「行数を変えただけで別の升が消えた」になる
+  const t = { blocks: [{ rows: 5 }, { rows: 5 }],
+              cellsOff: new Set(["2:金額", "6:金額", "10:金額"]) };
+  const r = remapCellsOffOnBlocksChange(t, [{ rows: 3 }, { rows: 5 }]);
+  assert.deepEqual([...r.cellsOff].sort(), ["2:金額", "4:金額", "8:金額"]);
+  assert.equal(r.dropped, 0);
+  // 減った行の指定は落とす（件数は保存前確認へ）
+  const r2 = remapCellsOffOnBlocksChange(
+    { blocks: [{ rows: 5 }], cellsOff: new Set(["1:金額", "5:金額"]) }, [{ rows: 3 }]);
+  assert.deepEqual([...r2.cellsOff], ["1:金額"]);
+  assert.equal(r2.dropped, 1);
+  // ブロックごと消えた場合も落とす
+  const r3 = remapCellsOffOnBlocksChange(
+    { blocks: [{ rows: 2 }, { rows: 2 }], cellsOff: new Set(["3:金額"]) }, [{ rows: 2 }]);
+  assert.deepEqual([...r3.cellsOff], []);
+  assert.equal(r3.dropped, 1);
+  // ブロックを足しても既存の指定は動かない（末尾に増えるだけ）
+  const r4 = remapCellsOffOnBlocksChange(
+    { blocks: [{ rows: 2 }], cellsOff: new Set(["2:金額"]) }, [{ rows: 2 }, { rows: 3 }]);
+  assert.deepEqual([...r4.cellsOff], ["2:金額"]);
+  assert.equal(r4.dropped, 0);
+});
+
+test("M-1 acceptSelectedLabel: 一括採用は画面に見えている 50 件ではなく全件が対象", () => {
+  // 一覧は CAND_PAGE_SIZE 件ずつしか描かないのに、チェックの既定は全件。
+  // 空テンプレートから formC（180 件）を開くと画面には 50 件しか見えないまま
+  // 180 件が一度に採用される——押す前に件数を出す
+  const cands = Array.from({ length: 180 }, (_, i) => ({ id: `c${i}` }));
+  const all = Object.fromEntries(cands.map((c) => [c.id, true]));
+  assert.equal(acceptSelectedLabel(cands, all), "選んだ候補を採用（180 件）");
+  assert.ok(cands.length > CAND_PAGE_SIZE, "そもそも 1 画面に収まらない件数であること");
+  // 重なりのある候補はチェックの状態に関わらず採用されない（applyCandidates の
+  // 既存規則）ので、ラベルにも数えない——押した後の結果と食い違わせない
+  const mixed = [{ id: "a" }, { id: "b", overlaps: true }, { id: "c" }];
+  assert.equal(acceptSelectedLabel(mixed, { a: true, b: true, c: false }),
+    "選んだ候補を採用（1 件）");
+  assert.equal(acceptSelectedLabel([], {}), "選んだ候補を採用（0 件）");
+});
+
+test("Should suggestionButtonAriaLabel: 提案が複数あってもボタン名が一意になる", () => {
+  const s3 = { table: { rows: 10, columns: [1, 2, 3, 4, 5, 6, 7, 8] } };
+  assert.equal(suggestionButtonAriaLabel(s3, "table"), "10行×8列の提案を表にまとめる");
+  assert.equal(suggestionButtonAriaLabel(s3, "cells"), "10行×8列の提案を升のまま採用");
+  assert.equal(suggestionButtonAriaLabel(s3, "remove"), "10行×8列の提案を消す");
+  // 別の提案とは名前が重ならない（読み上げで「表にまとめる」が並んでも選べる）
+  const other = { table: { rows: 3, columns: [1] } };
+  assert.notEqual(suggestionButtonAriaLabel(s3, "table"),
+    suggestionButtonAriaLabel(other, "table"));
+  assert.equal(suggestionButtonAriaLabel(other, "table"), "3行×1列の提案を表にまとめる");
+});
+
+test("AC-3.32 cellColumnPosition: 列名が別の列名の接頭辞でも取り違えない", () => {
+  // 「品名」と「品名_税」が同じ表にあると、品名_税 の分割列
+  // detail_01_品名_税_1 を「品名」の分割列として拾っていた
+  const names = ["detail_01_品名", "detail_01_品名_税_1", "detail_01_品名_税_2"];
+  assert.deepEqual(cellColumnPosition(names, "detail", 1, "品名", ["品名", "品名_税"]),
+    { first: 1, last: 1 }, "兄弟列のほうに長く一致する列名は数えない");
+  assert.deepEqual(cellColumnPosition(names, "detail", 1, "品名_税", ["品名", "品名_税"]),
+    { first: 2, last: 3 });
+  // 兄弟列を渡さなければ従来どおり（既存の呼び出しを壊さない）
+  assert.deepEqual(cellColumnPosition(names, "detail", 1, "品名"), { first: 1, last: 3 });
+  // 紛らわしい兄弟がいなければ分割列は今までどおり拾う
+  const plain = ["detail_01_金額_1", "detail_01_金額_2"];
+  assert.deepEqual(cellColumnPosition(plain, "detail", 1, "金額", ["金額"]),
+    { first: 1, last: 2 });
+});
+
+test("AC-3.22 outputDisabledBreakdown: 列 off は行数ぶんの升・二重計上しない", () => {
+  const t = tbl({ blocks: [{ x: 0, y: 0, rows: 3 }],
+    columns: [tbl().columns[0], { ...tbl().columns[1], output: false }],
+    cellsOff: new Set(["1:金額", "2:品名"]) });
+  // 金額列 off = 3 升。1:金額 は列 off の列の例外なので数えない（保存でも書かない）。
+  // 2:品名 は列が出力する升なので数える → 合計 4
+  assert.deepEqual(outputDisabledBreakdown([{ output: false }], [t]), { fields: 1, cells: 4 });
+  assert.equal(countOutputDisabled([{ output: false }], [t]), 5);
+  // 保存で書かれる件数（= verify の output_disabled_cells の増分）と単位が揃う
+  const written = disabledCellsForJson(t) ?? [];
+  assert.equal(written.length, 1, "列 off ぶんは升の指定として書かず、列 output:false が担う");
+});
+
+test("AC-3.24 saveConfirmWarnings: 行数変更で取り消した升の指定を保存前に1行出す", () => {
+  const w = saveConfirmWarnings({ isShipped: false, imageSizeMismatch: null,
+    exclusionNotice: null, columnDecrease: null, droppedCells: 2 });
+  assert.equal(w.length, 1);
+  assert.equal(w[0].key, "cells-dropped");
+  assert.ok(w[0].text.includes("2 件"));
+  assert.deepEqual(saveConfirmWarnings({ isShipped: false, imageSizeMismatch: null,
+    exclusionNotice: null, columnDecrease: null }), [], "省略時は 0 件扱い（第2弾の呼び出しをそのまま通す）");
+});
+
+test("AC-H21/H22 cellCheckboxDisplayName / outputCheckboxLabel: 表名を含み、表内で重複しない", () => {
+  const name = cellCheckboxDisplayName("明細", 3, "備考");
+  assert.equal(name, "明細 3行目 備考");
+  assert.equal(outputCheckboxLabel(name, true, { first: 47, last: 47 }),
+    "明細 3行目 備考を出力する（現在: 47列目）");
+  assert.equal(outputCheckboxLabel(name, false, null),
+    "明細 3行目 備考を出力する（現在: 出力対象外）");
+  assert.equal(outputCheckboxLabel(name, true, null),
+    "明細 3行目 備考を出力する（現在: 出力する）");
+  // 表が複数ある紙でも一意（PM の AC 文言「3行目 備考」だけだと重複する）
+  assert.notEqual(cellCheckboxDisplayName("明細", 3, "備考"),
+                  cellCheckboxDisplayName("家族", 3, "備考"));
+});
+
+test("AC-H21/H22 columnBulkToggleLabel / AriaLabel: 中間状態でも向きは『外す』に固定", () => {
+  assert.equal(columnBulkToggleLabel("all", 28), "この列 28升 をまとめて出力しない");
+  assert.equal(columnBulkToggleLabel("mixed", 28), "この列 28升 をまとめて出力しない");
+  assert.equal(columnBulkToggleLabel("none", 28), "この列 28升 をまとめて出力する");
+  assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "mixed", 12),
+    "明細 備考 の 28升 をまとめて切り替える（現在: 12升が出力対象外）");
+  assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "all", 0),
+    "明細 備考 の 28升 をまとめて切り替える（現在: すべて出力する）");
+  assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "none", 28),
+    "明細 備考 の 28升 をまとめて切り替える（現在: すべて出力対象外）");
+});
+
+test("H-1 columnBulkToggleLabel: 列 off から戻しても残る升があるなら約束しない", () => {
+  // 列 off → 列 on で升の指定は生き返るので、全升を出力するとは書けない
+  assert.equal(columnBulkToggleLabel("none", 9, 3),
+    "この列を出力する（外したままの 3升 は残ります）");
+  // 残る指定が無いとき（全升 off から戻す＝全消去される）は従来どおり
+  assert.equal(columnBulkToggleLabel("none", 9, 0), "この列 9升 をまとめて出力する");
+  assert.equal(columnBulkToggleLabel("mixed", 9, 3), "この列 9升 をまとめて出力しない");
+});
+
+test("AC-H24 cellGridNote: 触っている升の列番号を1行に出す（並べ替え直後は出さない）", () => {
+  const hover = { tableId: "detail", rowNo: 3, columnName: "備考" };
+  assert.equal(cellGridNote({ hover: null, position: null, cellOutput: true, orderChanged: false }),
+    "升にふれると列番号が出ます");
+  assert.equal(cellGridNote({ hover, position: { first: 47, last: 47 },
+    cellOutput: true, orderChanged: false }), "detail_3_備考 = 左から47列目");
+  assert.equal(cellGridNote({ hover, position: { first: 47, last: 49 },
+    cellOutput: true, orderChanged: false }), "detail_3_備考 = 左から47〜49列目");
+  assert.equal(cellGridNote({ hover, position: { first: 47, last: 47 },
+    cellOutput: false, orderChanged: false }), "detail_3_備考 = 出力しません");
+  assert.equal(cellGridNote({ hover, position: { first: 47, last: 47 },
+    cellOutput: true, orderChanged: true }), "保存すると列番号が確定します",
+    "並べ替え直後は誤った番号を出さない（FR-0.1）");
+});
+
+test("AC-3.33 subfields を持つ列の升は 1 升 = N 列（母集団の内訳と列差は一致しない）", () => {
+  // core の CellSpec.output_columns() は subfields があると <列名>_<sub> を N 個返す。
+  // 1 升外すと CSV は 3 列減るが、GUI の内訳は「升 1」と数える。
+  // だから母集団の文で「差 15 と 欄2・升13 の合計が一致する」とは言えない
+  const names = ["family_01_生年月日_年", "family_01_生年月日_月", "family_01_生年月日_日"];
+  const pos = cellColumnPosition(names, "family", 1, "生年月日");
+  assert.deepEqual(pos, { first: 1, last: 3 }, "1 升が 3 列を占める");
+  const t = {
+    table_id: "family", blocks: [{ rows: 1 }],
+    columns: [{ name: "生年月日", x_offset: 0, width: 100, kind: "text",
+                subfields: "年,月,日", marks: [] }],
+    cellsOff: new Set(["1:生年月日"]),
+  };
+  assert.deepEqual(outputDisabledBreakdown([], [t]), { fields: 0, cells: 1 },
+    "升の数は 1（3 ではない）");
+  // よって母集団の文は因果（を除く）で結ばず、内訳の列挙に留める
+  assert.equal(unclearPopulationNote(3, 0, 0, 1),
+    "要確認セル数の母集団: 3列 → 0列（出力しない 升 1）");
+});
+
+
+// ------------------------------------------------ issue #73 (b) 第2弾（まとめ提案）
+// 升候補は candidates[]（kind:"field"）、等ピッチの並びは **トップレベル
+// suggestions[]** として別に届く（設計 D-2）。対応づけは同一応答内の添字
+// （cell_indexes）で、受信直後に id へ解決する（D-3・不変条件 7）。
+
+const detectEv = (over = {}) => ({
+  event: "detect_frames", ok: true,
+  candidates: [
+    { kind: "field", face_id: "page", rect: { x: 0, y: 0, w: 100, h: 50 },
+      residual_px: 0.1, overlaps_existing: false },
+    { kind: "field", face_id: "page", rect: { x: 100, y: 0, w: 100, h: 50 },
+      residual_px: 0.2, overlaps_existing: false },
+    { kind: "field", face_id: "page", rect: { x: 0, y: 50, w: 100, h: 50 },
+      residual_px: 0.3, overlaps_existing: false },
+    { kind: "field", face_id: "page", rect: { x: 100, y: 50, w: 100, h: 50 },
+      residual_px: 0.4, overlaps_existing: false },
+  ],
+  suggestions: [
+    { kind: "table", face_id: "page", rect: { x: 0, y: 0, w: 200, h: 100 },
+      blocks: [{ x: 0, y: 0, rows: 2 }], row_pitch: 50, row_height: 50,
+      columns: [{ x_offset: 0, width: 100 }, { x_offset: 100, width: 100 }],
+      residual_px: 0.5, overlaps_existing: false,
+      cell_indexes: [0, 1, 2, 3], heading_excluded: true },
+  ],
+  ...over,
+});
+
+test("AC-H33 suggestionsFromDetectFrames: cell_indexes を受信直後に id へ解決する", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  const ss = suggestionsFromDetectFrames(ev, cands);
+  assert.equal(ss.length, 1);
+  assert.deepEqual(ss[0].cellIds, cands.map((c) => c.id),
+    "添字は同一応答の candidates[] の受け取り順でしか意味を持たないので、ここで id にする");
+  assert.equal(ss[0].headingExcluded, true);
+  assert.equal(ss[0].table.rows, 2);
+  assert.equal(ss[0].table.columns.length, 2);
+  // 範囲外の添字は落とす（不変条件 7）
+  const bad = detectEv();
+  bad.suggestions[0].cell_indexes = [0, 9, -1, 2, "x"];
+  assert.deepEqual(suggestionsFromDetectFrames(bad, cands).map((s) => s.cellIds),
+    [[cands[0].id, cands[2].id]]);
+  // suggestions が無い応答（旧コア）は空＝升候補だけ表示（安全に劣化する）
+  assert.deepEqual(suggestionsFromDetectFrames({ candidates: [] }, []), []);
+  // candidates 側は 1 行も変えずに新コアの応答を処理できる（設計 D-2 理由3）
+  assert.deepEqual(cands.map((c) => c.kind), ["field", "field", "field", "field"]);
+});
+
+test("AC-H42 suggestionCardText: heading_excluded が真のときだけ見出し行の1行を出す", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  const [s] = suggestionsFromDetectFrames(ev, cands);
+  const txt = suggestionCardText(s);
+  assert.equal(txt.main, "この 2行 × 2列（4升）は表にまとめられます");
+  assert.equal(txt.heading, "見出し行は含めていません");
+  assert.ok(txt.naming.startsWith("まとめると列名は 列1 … 列2 になります"));
+  // false は「見出しを見つけて含めた」ではなく「見出しらしい行が無かった
+  // （または判定条件に届かなかった）」であり、core は前者と後者を区別できない。
+  // 区別できないことを断言しない＝何も出さない
+  const ev2 = detectEv();
+  ev2.suggestions[0].heading_excluded = false;
+  const [s2] = suggestionsFromDetectFrames(ev2, candidatesFromDetectFrames(ev2));
+  assert.equal(suggestionCardText(s2).heading, null);
+});
+
+test("AC-H35 candidatePanelHeading: 升候補と提案の両方の件数を出す（0 は書かない）", () => {
+  assert.equal(candidatePanelHeading(148, 3), "枠候補（升 148 件・まとめ提案 3 件）");
+  assert.equal(candidatePanelHeading(148, 0), "枠候補（升 148 件）");
+  assert.equal(candidatePanelHeading(0, 3), "枠候補（まとめ提案 3 件）");
+  assert.equal(candidatePanelHeading(0, 0), "枠候補");
+});
+
+test("AC-H34 adoptSuggestionResult: 表にまとめる／升のまま採用 は該当の升だけ候補から消す", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  const [s] = suggestionsFromDetectFrames(ev, cands);
+  // この提案に含まれない升を1件足しておく（採用で消えないことを見る）
+  const extra = { id: "cX", kind: "field", rect: { x: 900, y: 900, w: 10, h: 10 },
+                  faceHint: null, residual: 0, overlaps: false };
+  const base = { fields: [], tables: [], cands: [...cands, extra], suggestions: [s] };
+  let n = 0;
+  const mk = () => `u${++n}`;
+
+  const asTable = adoptSuggestionResult(base, s, "table", mk);
+  assert.equal(asTable.tables.length, 1, "追加のみ（既存は書き換えない・不変条件 8）");
+  assert.equal(asTable.tables[0].blocks[0].rows, 2);
+  assert.deepEqual(asTable.cands.map((c) => c.id), ["cX"], "構成する 4 升だけ消える");
+  assert.deepEqual(asTable.suggestions, []);
+  assert.equal(asTable.fields.length, 0);
+
+  n = 0;
+  const asCells = adoptSuggestionResult(base, s, "cells", mk);
+  assert.equal(asCells.fields.length, 4, "升のまま採用は 4 欄が増える");
+  assert.equal(asCells.tables.length, 0);
+  assert.deepEqual(asCells.cands.map((c) => c.id), ["cX"]);
+  assert.deepEqual(asCells.suggestions, []);
+
+  // 「この提案を消す」は cands を触らない
+  assert.deepEqual(dismissSuggestion([s], s.id), []);
+  assert.deepEqual(base.cands.map((c) => c.id).length, 5, "元の候補配列は不変");
+});
+
+test("AC-H34 adoptSuggestionResult: 重なりのある升は既存規則どおり採用対象外", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev).map((c, i) =>
+    (i === 0 ? { ...c, overlaps: true } : c));
+  const [s] = suggestionsFromDetectFrames(ev, cands);
+  const r = adoptSuggestionResult({ fields: [], tables: [], cands, suggestions: [s] },
+    s, "cells", (() => { let n = 0; return () => `u${++n}`; })());
+  assert.equal(r.fields.length, 3, "overlaps の升は applyCandidates が対象外にする");
+  assert.deepEqual(r.cands.map((c) => c.id), [cands[0].id], "対象外だった升は候補に残る");
+});
+
+test("AC-H36 suggestionAdoptMessage: 結果文に Ctrl+Z で戻せることを添える", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  const [s] = suggestionsFromDetectFrames(ev, cands);
+  assert.equal(suggestionAdoptMessage("table", s, 68, "table1"),
+    "2行 × 2列 を表 table1 にまとめました。升の候補は 68 件になりました（Ctrl+Z で戻せます）");
+  assert.equal(suggestionAdoptMessage("cells", s, 68),
+    "4升 を欄として採用しました。升の候補は 68 件になりました（Ctrl+Z で戻せます）");
+  // 消すだけの操作は候補が残るので、残り件数ではなく「残っている」と言う
+  assert.equal(suggestionAdoptMessage("dismiss", s, 148),
+    "提案を消しました。4升 は升の候補に残っています");
+});
+
+test("AC-H35 CAND_PAGE_SIZE: 升候補は 50 件ずつ伸ばす（ページングにしない）", () => {
+  assert.equal(CAND_PAGE_SIZE, 50);
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

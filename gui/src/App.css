@@ -207,6 +207,12 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 /* issue #71 (a')・スバル差し戻し1: 様式不一致で隠れている面の欄・表は
    一覧でも選べない旨をグレー表示＋バッジで示す（--faint は 2.6:1 で本文
    基準割れのため使わず、既存 .off と同じ --sub=約5.9:1 を使う） */
+/* 表の行は欄の行より中身が多い（表名＋行数×列数＝升数＋出力しない件数に
+   ボタン2個）。右パネルが狭いと名前が数文字幅まで潰れて5行に折り返すので、
+   入りきらないときだけボタンを次の行へ送る。1行＝1表という一覧の数え方は
+   変えない（折り返しても .panel-outrow は1つのまま） */
+.panel-outrow.tablerow { flex-wrap: wrap; }
+.panel-outrow.tablerow .name { min-width: 12em; }
 .panel-outrow.format-hidden { opacity: 0.7; }
 .panel-outrow.format-hidden .name { color: var(--sub); cursor: not-allowed; }
 .format-hidden-badge { font-size: 10px; background: var(--warn-bg);
@@ -327,3 +333,47 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .btn.danger { background: var(--err-ink); border-color: var(--err-ink);
   color: #fff; font-weight: 600; }
 .btn.danger:hover { background: #7a1717; }
+
+/* ------------------------------------------------------------------
+   升（表の1マス）単位の出力制御・段9（issue #66）。かなた UI 案 §3.2 の
+   実測に基づく: 升の高さ 28px（WCAG 2.5.8 の 24×24 を上回る）・最小幅 30px・
+   可視領域 240px（28 行のうち 7〜8 行が同時に見える）。
+   横スクロールは列名の長さと右パネルの幅しだいで出る——列名を最小幅の 30px
+   まで潰すと1文字も読めないため、列見出しは max-width 64px まで伸ばす方を
+   採った（table-layout は auto なので、width 指定では max-content を抑えられ
+   ない）。実測: 出荷テンプレートの detail（5列）を右パネル幅 251px で開くと
+   内容が 282px になり 31px ぶん横へスクロールする（2026-09-04・実 Tauri 窓・
+   .cellgrid-wrap の clientWidth / scrollWidth）。グリッドは overflow:auto の
+   枠の中だけでスクロールし、右パネル自体は横に伸びない。
+   **デザイントークンの新規追加はゼロ**——斜線背景も --line2 を使う */
+.cellgrid-wrap { max-height: 240px; overflow: auto; border: 1px solid var(--line);
+  border-radius: 6px; margin: 4px 0; }
+.cellgrid { border-collapse: separate; border-spacing: 0; width: 100%;
+  font-size: 11px; color: var(--sub); }
+.cellgrid th, .cellgrid td { min-width: 30px; height: 28px; text-align: center;
+  padding: 0 2px; border-bottom: 1px solid var(--line); }
+.cellgrid thead th { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.cellgrid tbody th { position: sticky; left: 0; z-index: 1; background: var(--surface);
+  font-weight: 400; min-width: 26px; }
+.cellgrid input { min-width: 16px; min-height: 16px; margin: 0; }
+/* 列名は 30px には入らないので省略に倒す（title に全文）。45 度の縦書きは
+   読み上げ順・折り返し・行の高さのすべてで割に合わない（かなた §3.4） */
+.cellgrid .colhead { max-width: 64px; }
+.cellgrid .colhead .colhead-name { display: block; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+/* 出力しない升は斜線。状態はチェックボックスの形が持つので装飾扱い
+   （色だけに頼らない・AC-1.22 と同じ考え方） */
+.cellgrid .offcell {
+  background: repeating-linear-gradient(-45deg, var(--line2) 0 2px, transparent 2px 6px); }
+/* まとめ提案カード（issue #73 (b) 第2弾）。.panel-outrow の2段グリッドでは
+   3〜4 行＋ボタン3個が収まらない */
+.cand-suggest { border: 1px solid var(--line2); border-radius: 7px; padding: 8px 10px;
+  margin: 0 0 8px; background: var(--surface); }
+.cand-suggest p { margin: 0 0 4px; }
+.cand-suggest .cand-suggest-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.cand-suggest .cand-suggest-btns .btn { min-height: 30px; padding: 3px 10px; }
+/* 升グリッドの直前に置くスキップボタン（かなた §6.2 Should）。普段は
+   .sr-only で隠れ、Tab で到達したときだけ見える定番のスキップリンク型
+   ——新しいクラスは足さず、既存 .sr-only に focus 時の解除だけを足す */
+.sr-only:focus { position: static; width: auto; height: auto; margin: 0;
+  overflow: visible; clip: auto; white-space: normal; }
