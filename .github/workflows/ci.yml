@@ -165,6 +165,15 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('gui/src-tauri/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
+      # tauri-build（build.rs）は tauri.conf.json の bundle.resources に書いたパスの存在を
+      # 検査する。同梱 exe（core-dist/・gitignore 済み・PyInstaller で作る）は CI に無いので
+      # 空のフォルダを置いて通す。cargo test が検査するのは Rust 側のロジックだけで、
+      # 同梱物の中身は使わない（2026-09-04 の初回 CI で `resource path doesn't exist` を実測）
+      - name: 同梱 exe のプレースホルダ（tauri-build の存在検査用）
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path core-dist/chouhyo-core | Out-Null
+          Set-Content -Path core-dist/chouhyo-core/CI_PLACEHOLDER.txt -Value 'CI では同梱 exe を作らない（build_dist.py はリリース手順で実行する）'
       - name: cargo test
         working-directory: gui/src-tauri
         run: cargo test --quiet
