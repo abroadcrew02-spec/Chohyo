@@ -37,9 +37,17 @@ def test_cli_top_level_handler_hides_exception_message(tmp_path):
         "workdir": str(tmp_path / "wd"),
         "log_dir": str(tmp_path / "logs"),
     }), encoding="utf-8")
+    # --replay を付けて ReplayClient を使う: 検査対象は「未捕捉例外の隠蔽」で
+    # あって Vision クライアントの生成ではない。--replay 無しだと cmd_run が
+    # 先に RealVisionClient を作り、gcloud の ADC が無い環境（CI）では資格情報
+    # エラーで template_loaded の前に止まって別の理由で落ちる（2026-09-04 CI 実測。
+    # 手元は %APPDATA%\gcloud の ADC があるため再現しなかった）
+    replay = tmp_path / "responses"
+    replay.mkdir()
     r = subprocess.run(
         [str(PYTHON), "-X", "utf8", "-m", "chouhyo_ocr.cli",
-         "--config", str(cfg), "run", "--input", str(bogus)],
+         "--config", str(cfg), "run", "--input", str(bogus),
+         "--replay", str(replay)],
         cwd=app_root() / "core", capture_output=True, text=True,
         encoding="utf-8", timeout=120)
     assert r.returncode == 1
