@@ -159,8 +159,23 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
 /// 保つ——debug-images は --template を受けるが白リスト外のまま（GUI からは
 /// 呼べない・方針どおり）なので、ここに含めても inject_default_template まで
 /// 到達しない。
+///
+/// **detect-frames は意図的に含めない**（レビュー H-3・2026-09-04）。#58 の
+/// 注入は「CLI 既定値が core-dist 側の別実体テンプレートを指す」問題への
+/// 対処だが、detect-frames の `--template` は既定値が `None` で
+/// （cli.py の add_parser("detect-frames")）、この唯一の例外では二重実体が
+/// そもそも起きない。注入すると逆に害がある: core は `--template` を受けると
+/// ①除外領域を白潰し ②face_id 割り当て ③overlaps_existing 判定 に加えて
+/// ④`--dpi` をテンプレートの `render_dpi` で上書きする（cmd_detect_frames）。
+/// 出荷テンプレートは除外を 9 件持ち、うち綴じ穴の帯 2 本は高さ 1880px ある
+/// ため、GUI が空のテンプレートで開いた候補生成でも罫線が黙って消えていた。
+///
+/// GUI は自分で `--dpi` を必ず渡すので、注入をやめると dpi の根拠は1本になる
+/// ——`emptyTemplateFor`（Editor.tsx）の `render_dpi` は 300 固定、下地を作る
+/// `expand-page` は `--dpi` 既定 300 で GUI は未指定（cli.py:1350）。両者が
+/// 一致していることを確認済み（2026-09-04）。
 const TEMPLATE_ACCEPTING_SUBCOMMANDS: &[&str] = &[
-    "run", "render", "remap", "verify", "expand-page", "debug-images", "detect-frames",
+    "run", "render", "remap", "verify", "expand-page", "debug-images",
 ];
 
 /// サブコマンドが `--template` を受け付けるのに引数へ含まれていない場合、
@@ -1130,8 +1145,12 @@ fn read_config(app: AppHandle) -> Result<serde_json::Value, String> {
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
-/// config.json が受け付ける既知キー（`core/chouhyo_ocr/config.py:26-40` の
+/// config.json が受け付ける既知キー（`core/chouhyo_ocr/config.py` の
 /// `Config` dataclass フィールドと一致させる・issue Q-MC/S-MA）。
+///
+/// 唯一の例外は末尾が `_fallback_reason` の2フィールド——1回限りの診断
+/// 情報で `save_config` が `config.json` から除くため、GUI からも書けない
+/// のが正しい（`config.py` の M-1）。
 ///
 /// `last_template`（issue #72 (t)・07 FR-F29・08 設計 §3.5.1）は意図的に
 /// `CONFIG_PATH_KEYS` に入れない——パスではなく「区分＋表示名」の文字列
@@ -1141,15 +1160,55 @@ fn read_config(app: AppHandle) -> Result<serde_json::Value, String> {
 /// （`validate_config_patch` のコメント参照）——不正値は読み出し時に
 /// `resolve_last_template`／`user_templates::resolve_last_template_path` が
 /// 例外を投げずに出荷既定へフォールバックする（AC-F60）。
+///
+/// 真偽値のキー（`CONFIG_BOOL_KEYS`）と `last_applied_template`
+/// （`""` | `"shipped"` | `"user:<表示名>"`）は逆に、型と形を **ここでも**
+/// 検証する（`validate_config_patch`）。真偽値は core の `_validate` が
+/// bool 以外を `ConfigError` で拒否するため、書けてしまうと次のコア起動から
+/// run/verify/render/remap がすべて立ち上がらない。`last_applied_template` は
+/// core 側が例外を投げず `""`（記憶なし）へ倒す（`last_template` と同じ
+/// AC-F60 の扱い）ので起動不能にはならないが、倒された記憶は画面に何も
+/// 出ない——「適用したはずのテンプレートが次に開いたとき戻らない」形で
+/// 消えるため、やはり書く手前で弾く。
 const KNOWN_CONFIG_KEYS: &[&str] = &[
     "unclear_threshold", "era_threshold", "send_limit",
     "output_dir", "workdir", "log_dir",
     "api_monthly_cap", "unclear_char_level",
-    "last_template",
+    "snap_blocks", "last_template",
+    "auto_detect_frames_on_open", "last_applied_template",
 ];
 
 /// パス文字列として安全性検査が要るキー（`is_safe_root` を通す・issue Q-MC/S-MA）。
 const CONFIG_PATH_KEYS: &[&str] = &["output_dir", "workdir", "log_dir"];
+
+/// core の `_validate` が **bool 以外を `ConfigError` にする** キー
+/// （`config.py` の `Config` dataclass のうち真偽値のもの）。JSON の
+/// `true`/`false` 以外（`"yes"`・`0`・`1`）を書かせると、次のコア起動から
+/// 全コマンドが止まる。
+const CONFIG_BOOL_KEYS: &[&str] = &[
+    "unclear_char_level", "snap_blocks", "auto_detect_frames_on_open",
+];
+
+/// `last_applied_template` の形を検証する（編集タブの「このテンプレートを
+/// 適用する」が書く記憶・07 v1.6 FR-F55。表記規則は FR-F29／§7.3 と同じ）。
+///
+/// 許すのは `""`（記憶なし）・`"shipped"`・`"user:<表示名>"` の3形だけ。
+/// 表示名は利用者テンプレート保存と同じ `validate_name_shape` を通す——
+/// 絶対パス（`C:\...`）・`..`・パス区切りは、いずれも同関数の文字種検査
+/// （英数・かな漢字・`-`・`_`・空白のみ）で落ちる。**絶対パスは保存しない**
+/// 方針（07 §7.3）はここが最後の関門になる。
+fn validate_last_applied_template(s: &str) -> Result<(), String> {
+    if s.is_empty() || s == "shipped" {
+        return Ok(());
+    }
+    let Some(name) = s.strip_prefix("user:") else {
+        return Err("last_applied_template は空文字・shipped・\
+                    user:<テンプレート名> のいずれかで指定してください".to_string());
+    };
+    user_templates::validate_name_shape(name)
+        .map(|_| ())
+        .map_err(|e| format!("last_applied_template のテンプレート名が不正です: {e}"))
+}
 
 /// `write_config` の patch を検証する（issue Q-MC/S-MA）。
 ///
@@ -1167,6 +1226,11 @@ const CONFIG_PATH_KEYS: &[&str] = &["output_dir", "workdir", "log_dir"];
 /// 判断した。patch 側で拒否できなかった不正値は、次のコア起動時に
 /// `ConfigError` として core 側で捕捉される（起動不能にはなるが、少なくとも
 /// 理由が明示される）。
+///
+/// 例外は `CONFIG_BOOL_KEYS` の型検査と `last_applied_template` の形検査
+/// だけ（理由は `KNOWN_CONFIG_KEYS` のコメント）。範囲の検証は増やさない——
+/// 表示名の文字種検証も利用者テンプレート保存と同じ
+/// `user_templates::validate_name_shape` を使い、許可リストを二重に持たない。
 fn validate_config_patch(patch: &serde_json::Value) -> Result<(), String> {
     let obj = patch.as_object()
         .ok_or_else(|| "設定の形式が不正です（オブジェクトではありません）".to_string())?;
@@ -1184,6 +1248,17 @@ fn validate_config_patch(patch: &serde_json::Value) -> Result<(), String> {
                 "{key} に使えないパスです（空・ドライブ直下・ネットワークパス・.. は指定できません）"
             ));
         }
+    }
+    for key in CONFIG_BOOL_KEYS {
+        let Some(v) = obj.get(*key) else { continue };
+        if !v.is_boolean() {
+            return Err(format!("{key} は true / false で指定してください"));
+        }
+    }
+    if let Some(v) = obj.get("last_applied_template") {
+        let s = v.as_str().ok_or_else(
+            || "last_applied_template は文字列で指定してください".to_string())?;
+        validate_last_applied_template(s)?;
     }
     Ok(())
 }
@@ -1308,10 +1383,23 @@ fn read_file_b64(app: AppHandle, picked: State<'_, PickedPaths>,
 /// 保証している。同梱 exe 優先起動時は frozen 側の app_root() が core-dist
 /// 側の別実体を指すため、注入なしでは「read_default_template はここ、run は
 /// 別ファイル」という二重実体が成立していた。
+///
+/// 引数 `template` を渡すと config を見ずにその指定を解決する（2026-09-04・
+/// 初回読み込みフロー設計 §4.4）。編集画面の自動適用が「出荷テンプレートを
+/// 副作用なしで読む」ために使う——旧来は config.last_template を "shipped" へ
+/// 書き戻してから読む回避策しかなく、画像を開いただけで実行タブの選択が
+/// 出荷へ戻る隠れた副作用になっていた。名前付き引数なので `Option` の追加は
+/// 既存の引数なし呼び出しと後方互換。
 #[tauri::command]
-fn read_default_template(app: AppHandle) -> Result<String, String> {
+fn read_default_template(app: AppHandle, template: Option<String>) -> Result<String, String> {
     let root = repo_root(&app)?;
-    let p = resolve_last_template(&app, &root);
+    let p = match template {
+        Some(t) => {
+            let user_dir = user_templates::user_templates_dir(&app).ok();
+            user_templates::resolve_last_template_path(&t, &root, user_dir.as_deref())
+        }
+        None => resolve_last_template(&app, &root),
+    };
     // 絶対パスは webview へ返さない。既存の read_text/write_text と同じ
     // 粒度（固定文言＋OS エラーの Display 表現のみ）に揃える（issue #61 L-2）。
     // 実害は情報開示のみ（CSP で外部送出は塞がれている）だが、他コマンドと
@@ -2081,6 +2169,22 @@ mod tests {
         assert_eq!(inject_default_template(eq_form.clone(), &tpl), eq_form);
     }
 
+    #[test]
+    fn does_not_inject_template_into_detect_frames() {
+        // レビュー H-3: detect-frames へは注入しない。注入されると core が
+        // 除外領域の白潰し・face_id 割り当て・overlaps_existing 判定に加えて
+        // --dpi をテンプレートの render_dpi で上書きし、GUI が空の
+        // テンプレートで作った候補から罫線が黙って消える。
+        // detect-frames は --template の既定値が None の唯一のサブコマンドで、
+        // #58 の「CLI 既定値が別実体を指す」問題が起きない
+        let tpl = PathBuf::from("C:\\app\\templates\\chouhyo-v1.json");
+        let bare = v(&["detect-frames", "--input", "C:\\in", "--dpi", "300"]);
+        assert_eq!(inject_default_template(bare.clone(), &tpl), bare);
+        // GUI が自分で渡した場合はそのまま（二重に積まない）
+        let explicit = v(&["detect-frames", "--input", "C:\\in", "--template", "C:\\u\\t.json"]);
+        assert_eq!(inject_default_template(explicit.clone(), &tpl), explicit);
+    }
+
     // --- staged 保存（issue #56 T1・保存経路のトランザクション化）---
     use super::{backup_path, discard_staged_file, is_shipped_template, promote_staged,
                 staged_path, validate_template_target};
@@ -2527,6 +2631,38 @@ mod tests {
         assert!(validate_config_patch(&json!({"last_template": "user:sample"})).is_ok());
         assert!(validate_config_patch(&json!({"last_template": ""})).is_ok());
         assert!(validate_config_patch(&json!({"last_template": "C:\\"})).is_ok());
+    }
+
+    #[test]
+    fn validate_config_patch_checks_bool_keys_type() {
+        for key in ["unclear_char_level", "snap_blocks", "auto_detect_frames_on_open"] {
+            assert!(validate_config_patch(&json!({key: true})).is_ok(), "{key}: true");
+            assert!(validate_config_patch(&json!({key: false})).is_ok(), "{key}: false");
+            // core の _validate は bool 以外を ConfigError にする（書かせると
+            // 次の起動から全コマンドが止まる）。0/1 も bool ではない
+            assert!(validate_config_patch(&json!({key: "yes"})).is_err(), "{key}: 文字列");
+            assert!(validate_config_patch(&json!({key: 1})).is_err(), "{key}: 整数");
+        }
+    }
+
+    #[test]
+    fn validate_config_patch_checks_last_applied_template_shape() {
+        for ok in ["", "shipped", "user:sample", "user:サンプル 帳票"] {
+            assert!(validate_config_patch(&json!({"last_applied_template": ok})).is_ok(),
+                    "{ok}: 受理する3形");
+        }
+        // 絶対パスは保存しない（07 §7.3）。区分無し・空の名前・.. ・パス区切りも
+        // validate_name_shape の文字種検査で落ちる。core 側は同じ値を例外に
+        // せず ""（記憶なし）へ倒すので、ここで弾かないと「適用したはずの
+        // テンプレートが黙って忘れられる」だけになる
+        for ng in ["C:\\templates\\a.json", "user:C:\\templates\\a", "user:",
+                   "user:..", "user:a\\b", "user:a/b", "user:a:b", "sample",
+                   "shipped:sample"] {
+            assert!(validate_config_patch(&json!({"last_applied_template": ng})).is_err(),
+                    "{ng}: 拒否する");
+        }
+        assert!(validate_config_patch(&json!({"last_applied_template": 5})).is_err(),
+                "非文字列");
     }
 
     // --- config.json の tmp + rename 書き込み（issue #97）---

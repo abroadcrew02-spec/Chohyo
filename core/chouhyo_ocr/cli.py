@@ -33,9 +33,9 @@ def _load_config_and_init_log(config_path) -> Config:
     2026-09-02 マリン指摘）。
 
     本番の呼び出し順は「load_config → log.init」——Config._validate は
-    last_template のフォールバックが起きても例外を投げず（AC-F60）、
-    Config.last_template_fallback_reason へ理由コードを積むだけでログは
-    出さない。_validate の時点ではまだ log.init が呼ばれておらず、そこで
+    last_template・last_applied_template のフォールバックが起きても例外を
+    投げず（AC-F60）、Config.*_fallback_reason へ理由コードを積むだけで
+    ログは出さない。_validate の時点ではまだ log.init が呼ばれておらず、そこで
     warn しても logging_safe が未初期化（_app/_err が None）で黙って
     消える。ここで load_config の直後に log.init し、その直後に warn する
     ことで、フォールバックが起きたことを確実にログへ残す。
@@ -45,6 +45,9 @@ def _load_config_and_init_log(config_path) -> Config:
     if cfg.last_template_fallback_reason:
         log.warn("config_last_template_fallback",
                  error_code=cfg.last_template_fallback_reason)
+    if cfg.last_applied_template_fallback_reason:
+        log.warn("config_last_applied_template_fallback",
+                 error_code=cfg.last_applied_template_fallback_reason)
     return cfg
 
 

@@ -1466,6 +1466,87 @@ mod tests {
     }
 
     #[test]
+    fn resolve_last_template_path_for_shipped_state_has_no_side_effect() {
+        // AC-F86（07 §8.4）: 記憶が出荷テンプレートを指す状態で読み出しても
+        // config.json の last_template が書き換わらないこと。
+        //
+        // read_default_template（lib.rs）の両分岐（template: Some/None）は
+        // 最終的にこの純関数へ収束する——Some("shipped") は直接この値を渡し、
+        // None は resolve_last_template 経由で config を読んでから同じ値
+        // （空文字列も "shipped" と同じ結果になる）を渡す。この関数は
+        // `last: &str` しか受け取らず config.json のパス自体を知らないため、
+        // config.json への書き込み経路が構造的に存在しない。ここでは
+        // 「出荷テンプレートが解決される」ことと「呼び出し前後でファイル
+        // ツリーが一切変化しない」ことを固定する。
+        let root = mkdir("f86_root");
+        let templates = root.join("templates");
+        std::fs::create_dir_all(&templates).unwrap();
+        std::fs::write(templates.join("chouhyo-v1.json"), "{\"faces\":[]}").unwrap();
+        let shipped_default = templates.join("chouhyo-v1.json");
+
+        let user_dir = mkdir("f86_user_dir");
+        std::fs::write(user_dir.join("mine.json"), "{}").unwrap();
+        let canonical_user_dir = user_dir.canonicalize().unwrap();
+
+        // config.json を模したファイルも同じ root に置き、内容を呼び出し前後で
+        // 比較する（この関数はパスを知らないので触れないはずだが、念のため
+        // 実ファイルで固定する）。
+        let config_path = root.join("config.json");
+        std::fs::write(&config_path, "{\"last_template\":\"shipped\"}").unwrap();
+        let before = snapshot_tree(&root);
+        let before_user = snapshot_tree(&user_dir);
+
+        // 「記憶が出荷テンプレートを指す」の2通りの表現——明示指定（"shipped"）と
+        // 記憶なし相当（""）——がどちらも出荷既定に解決される（AC-F86 前段）。
+        assert_eq!(
+            resolve_last_template_path("shipped", &root, Some(&canonical_user_dir)),
+            shipped_default
+        );
+        assert_eq!(
+            resolve_last_template_path("", &root, Some(&canonical_user_dir)),
+            shipped_default
+        );
+
+        // 呼び出し後もファイルツリーは完全に同一（config.json 含め一切変化なし）
+        let after = snapshot_tree(&root);
+        let after_user = snapshot_tree(&user_dir);
+        assert_eq!(before, after, "root 配下が読み出しだけで変化した");
+        assert_eq!(before_user, after_user, "user_dir 配下が読み出しだけで変化した");
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            "{\"last_template\":\"shipped\"}",
+            "config.json の内容が読み出しだけで書き換わった"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&user_dir);
+    }
+
+    /// ディレクトリ配下の (相対パス, 内容) を列挙し、読み出し前後の比較に使う。
+    /// mtime ではなく内容そのものを比較する（同一 mtime 解像度の環境でも
+    /// 内容変化なら確実に検出するため）。
+    fn snapshot_tree(dir: &Path) -> Vec<(PathBuf, String)> {
+        fn walk(base: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
+            entries.sort();
+            for p in entries {
+                if p.is_dir() {
+                    walk(base, &p, out);
+                } else {
+                    let rel = p.strip_prefix(base).unwrap().to_path_buf();
+                    let content = std::fs::read_to_string(&p).unwrap_or_default();
+                    out.push((rel, content));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out
+    }
+
+    #[test]
     fn parse_last_template_recognizes_prefixes() {
         assert_eq!(parse_last_template(""), LastTemplateTarget::Shipped);
         assert_eq!(parse_last_template("shipped"), LastTemplateTarget::Shipped);

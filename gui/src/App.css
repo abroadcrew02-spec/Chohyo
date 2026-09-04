@@ -212,6 +212,31 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .format-hidden-badge { font-size: 10px; background: var(--warn-bg);
   border: 1px solid var(--warn-line); border-radius: 4px; padding: 1px 6px;
   color: var(--warn-ink); white-space: nowrap; }
+/* 照合パネルの推奨表示（初回読み込みフロー・UI 設計 §3）。記号1文字（★）は
+   読み上げも視認も不確実なので語のバッジにする。形は .format-hidden-badge と
+   同じで色だけ --ok-* に替える（デザイントークンの新規追加はなし） */
+.recommend-badge { font-size: 10px; background: var(--ok-bg);
+  border: 1px solid var(--ok-line); border-radius: 4px; padding: 1px 6px;
+  color: var(--ok-ink); white-space: nowrap; margin-right: 4px; }
+/* 決定カードのテンプレート1行（初回読み込みフロー）。名前・メタが長いと
+   折り返して行の高さが崩れ、一覧の 200px にわずかしか入らなくなる——
+   .cand-list と同じ型で省略に倒し、ボタン（決定の操作）は縮めない */
+.tpl-row { flex-wrap: nowrap; }
+.tpl-row .tpl-row-name { flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-row .tpl-row-meta { flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-row .btn { flex-shrink: 0; }
+/* 決定カードの補足テキスト（ラミィ a11y レビュー Should-2・2026-09-04）。
+   .note のスコープ付き指定は .panel／.modal にしか無く、どちらでもない
+   決定カードでは見出しと同じ 14px・--ink で出ていた（実測: .tpl-row-meta
+   も同値）。メタ情報を本文より弱くして視覚階層を戻す。--sub は白地で
+   5.9:1（本文基準 4.5:1 を満たす）。--faint は 2.6:1 なので使わない */
+/* .tpl-note は未適用バーの下に出す作り方の案内（newTemplateNotice）。カードの
+   外に出るため .tpl-card の子孫セレクタでは拾えない——同じ弱さで揃える */
+.tpl-card .note, .tpl-note, .tpl-row-meta {
+  font-size: 11.5px; color: var(--sub); line-height: 1.7; }
+.tpl-note { margin: -2px 18px 8px; }
 /* 並べ替え成功時の 600ms フラッシュ（issue #66 段7・付録A・C-2 success）。
    連打時は setTimeout の張り直し（flashRow）側で「最後の1回」に一本化する */
 .panel-outrow.flash, .colrow.flash { background: var(--ok-bg);

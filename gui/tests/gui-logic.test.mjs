@@ -26,7 +26,9 @@ const bundle = await build({
       'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } from "./RunScreen.tsx";\n' +
       // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
       // 衝突しやすいので独立した1行にする
-      'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n',
+      'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n' +
+      // 初回読み込みフロー（候補先行・2026-09-04）。ここも独立した1行にする
+      'export { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } from "./Editor.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -49,6 +51,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 const mod = await import(pathToFileURL(outFile).href);
 const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
+const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -3302,6 +3305,220 @@ test("AC-F40 noticeFor: run のサマリから実行時のお知らせへ配線�
   // 吸着が動かない既定運用（両方0）では、サマリで通知自体を出さない
   assert.equal(noticeFor({ event: "summary", snap_failsafe_pages: 0,
                            snap_excluded_pages: 0 }), null);
+});
+
+// ---------------------------------------------- 初回読み込みフロー（2026-09-04）
+// テンプレート編集で帳票を開いたときの分岐（前回のテンプレートを自動適用する／
+// この紙の枠候補を自動で作る）。AC-F67〜AC-F75。
+
+test("AC-F67 autoDetectEnabled: 明示 false のときだけ OFF（欠落・非 bool は ON）", () => {
+  assert.equal(autoDetectEnabled({}), true);
+  assert.equal(autoDetectEnabled({ auto_detect_frames_on_open: true }), true);
+  assert.equal(autoDetectEnabled({ auto_detect_frames_on_open: false }), false);
+  // 非 bool は ON（従来動作＝OFF ではなく、既定の新動作へ倒す）
+  assert.equal(autoDetectEnabled({ auto_detect_frames_on_open: "no" }), true);
+  assert.equal(autoDetectEnabled({ auto_detect_frames_on_open: 0 }), true);
+  assert.equal(autoDetectEnabled(null), true);
+  assert.equal(autoDetectEnabled(undefined), true);
+});
+
+test("AC-F68 initialFrameView: OFF・ファイル起点・記憶ありは template", () => {
+  const v = (autoDetect, appliedMemory, hasOpenedTemplateFile) =>
+    initialFrameView({ autoDetect, appliedMemory, hasOpenedTemplateFile });
+  assert.equal(v(false, "user:帳票B", false), "template");   // OFF×記憶あり
+  assert.equal(v(false, "", false), "template");             // OFF×記憶なし
+  assert.equal(v(true, "", false), "candidates");            // ON×記憶なし
+  assert.equal(v(true, "shipped", false), "template");       // ON×出荷の記憶
+  assert.equal(v(true, "user:帳票B", false), "template");    // ON×利用者の記憶
+  // 「テンプレートを開く」で人が開いたファイルは、記憶で黙って差し替えない
+  assert.equal(v(true, "", true), "template");
+  assert.equal(v(true, "user:帳票B", true), "template");
+});
+
+test("AC-F68 shouldAutoApplyMemory: OFF・ファイル起点では記憶を復元しない", () => {
+  // template を返す理由は3つあり、記憶があるとき以外は「何もしない」。
+  // view だけを見て適用すると、OFF にしたのに前回のテンプレートが載る
+  assert.equal(shouldAutoApplyMemory({ autoDetect: true, hasOpenedTemplateFile: false }), true);
+  assert.equal(shouldAutoApplyMemory({ autoDetect: false, hasOpenedTemplateFile: false }), false);
+  assert.equal(shouldAutoApplyMemory({ autoDetect: true, hasOpenedTemplateFile: true }), false);
+  assert.equal(shouldAutoApplyMemory({ autoDetect: false, hasOpenedTemplateFile: true }), false);
+});
+
+test("AC-F69 autoApplyTarget: 3形式だけを受け付け、それ以外は記憶なし", () => {
+  assert.equal(autoApplyTarget(""), null);
+  assert.deepEqual(autoApplyTarget("shipped"), { kind: "shipped" });
+  assert.deepEqual(autoApplyTarget("user:帳票B"), { kind: "user", name: "帳票B" });
+  assert.equal(autoApplyTarget("user:"), null);          // 名前が空
+  // 絶対パスは GUI が持たない（07 §7.3）
+  assert.equal(autoApplyTarget("C:" + String.fromCharCode(92) + "x.json"), null);
+  assert.equal(autoApplyTarget("shipped:formB"), null);  // 旧案の形式
+  assert.equal(autoApplyTarget("sample"), null);
+});
+
+test("AC-F75 appliedTemplateMemory / applyTemplateMemoryValue: 非文字列は記憶なし・往復する", () => {
+  for (const v of [123, null, undefined, {}, [], true]) {
+    assert.equal(appliedTemplateMemory({ last_applied_template: v }), "", String(v));
+  }
+  assert.equal(appliedTemplateMemory({}), "");
+  assert.equal(appliedTemplateMemory(null), "");
+  assert.equal(appliedTemplateMemory({ last_applied_template: "user:帳票B" }), "user:帳票B");
+  // 往復（記憶へ書いた値を読み直すと同じ target になる）
+  for (const t of [{ kind: "shipped" }, { kind: "user", name: "帳票B" }]) {
+    assert.deepEqual(autoApplyTarget(applyTemplateMemoryValue(t)), t);
+  }
+});
+
+test("AC-F70 detectFramesEffects: 自動生成は赤帯を消さず・未保存にせず・履歴も積まない", () => {
+  const m = detectFramesEffects(true);
+  assert.deepEqual(m, { clearErrMsg: true, markDirty: true, pushHistory: true,
+                        errorTo: "errMsg" });
+  const a = detectFramesEffects(false);
+  assert.equal(a.clearErrMsg, false);
+  assert.equal(a.markDirty, false);
+  assert.equal(a.pushHistory, false);
+  assert.equal(a.errorTo, "framesMsg");   // 画像側の赤帯を奪わない（M-8）
+});
+
+test("AC-F71 autoDetectFailureNotice: 画像は出ていると伝え、やり直しの導線を示す", () => {
+  const t = autoDetectFailureNotice(new Error("core が落ちました"));
+  assert.match(t, /画像は表示しています/);
+  assert.match(t, /ページ全体から枠候補を生成/);
+  assert.match(t, /core が落ちました/);
+  // 画像側の失敗と読める語を混ぜない（M-8: 画像表示を妨げない）
+  assert.ok(!/画像を開けませんでした/.test(t), t);
+  assert.ok(!/画像を読み込めませんでした/.test(t), t);
+});
+
+test("AC-F72 candidateOverlapFlag: --template を渡していない core の判定は採らない", () => {
+  // 発端: Rust の inject_default_template が detect-frames にも
+  // config.last_template を注入し、GUI が渡していないのに core が「画面に
+  // 無いテンプレート」基準の overlaps_existing を返していた（実窓実測・
+  // 2026-09-04）。注入は lib.rs 側で止めた（H-3）が、core へ何が渡ったかを
+  // GUI が推測せずに済む形として、この二重の安全網は残す
+  assert.equal(candidateOverlapFlag(true, false, false), false);   // core だけ true → 採らない
+  assert.equal(candidateOverlapFlag(true, false, true), true);     // GUI が渡した判定は採る
+  assert.equal(candidateOverlapFlag(false, true, false), true);    // GUI 自身の再判定は常に採る
+  assert.equal(candidateOverlapFlag(false, true, true), true);
+  assert.equal(candidateOverlapFlag(false, false, false), false);
+});
+
+test("AC-F72 applyCandidates: 空テンプレートなら重なりは1件も出ず全部採用できる", () => {
+  // 実コアは --template 未指定時 overlaps_existing を返さない（＝false）。
+  // 空テンプレの上では GUI 側の再判定（candidateOverlapsExisting）も必ず false
+  const H = 3510;
+  const cands = candidatesFromDetectFrames({
+    candidates: [
+      { kind: "table", rect: { x: 100, y: 1000, w: 750, h: 400 },
+        blocks: [{ x: 100, y: 1000, rows: 5 }], row_pitch: 80, row_height: 70,
+        columns: [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 550 }] },
+      { kind: "field", rect: { x: 450, y: 320, w: 300, h: 60 } },
+      { kind: "field", rect: { x: 600, y: 100, w: 300, h: 80 } },
+      { kind: "field", rect: { x: 100, y: 1950, w: 850, h: 150 } },
+    ],
+  }).map((c) => ({ ...c, overlaps: c.overlaps || candidateOverlapsExisting(c, [], [], H) }));
+  assert.equal(cands.length, 4);
+  assert.deepEqual(cands.map((c) => c.overlaps), [false, false, false, false]);
+
+  const selected = {};
+  for (const c of cands) selected[c.id] = candidateDefaultChecked(c);
+  assert.deepEqual(Object.values(selected), [true, true, true, true]);
+  let n = 0;
+  const r = applyCandidates([], [], cands, selected, () => "u" + (n++));
+  assert.equal(r.acceptedCount, 4);
+  assert.equal(r.cands.length, 0);
+  assert.equal(r.fields.length, 3);
+  assert.equal(r.tables.length, 1);
+});
+
+test("AC-F73 buildTemplateJson: 候補だけから作った欄に出荷由来の field_id は混ざらない", () => {
+  const H = 3510;
+  const cands = candidatesFromDetectFrames({
+    candidates: [
+      { kind: "field", rect: { x: 450, y: 320, w: 300, h: 60 } },
+      { kind: "field", rect: { x: 600, y: 100, w: 300, h: 80 } },
+    ],
+  }).map((c) => ({ ...c, overlaps: c.overlaps || candidateOverlapsExisting(c, [], [], H) }));
+  const selected = {};
+  for (const c of cands) selected[c.id] = true;
+  let n = 0;
+  const r = applyCandidates([], [], cands, selected, () => "u" + (n++));
+  for (const f of r.fields) assert.match(f.field_id, /^field_[0-9][0-9]$/);
+  const { template } = buildTemplateJson({
+    fields: r.fields, tables: r.tables, excls: [], splitY: H, W: 2490, H,
+    meta: { template_id: "new-template", render_dpi: 300,
+            image: { width: 2490, height: H }, record: { pages: 1 } },
+  });
+  const text = JSON.stringify(template);
+  // 出荷テンプレートの代表 id が紛れ込んでいない（空テンプレの上で作った証拠）
+  assert.ok(!/person_/.test(text), text.slice(0, 200));
+  assert.ok(!/family/.test(text), text.slice(0, 200));
+});
+
+test("AC-F74 formatBandApplies: 判定の根拠が別テンプレートなら帯を出さない", () => {
+  const f = (view, appliedMemory, lastTemplate, hasOpenedTemplateFile) =>
+    formatBandApplies({ view, appliedMemory, lastTemplate, hasOpenedTemplateFile });
+  assert.equal(f("candidates", "user:帳票B", "user:帳票B", false), false);
+  assert.equal(f("template", "user:帳票B", "user:帳票B", false), true);
+  assert.equal(f("template", "user:帳票B", "shipped", false), false);  // 乖離（R-6）
+  assert.equal(f("template", "", "shipped", true), true);   // --template を渡した判定
+  assert.equal(f("candidates", "", "", true), false);       // 候補パスでは常に出さない
+});
+
+test("H-1 candidateResultApplies: 古い世代の生成結果は捨てる", () => {
+  const now = { seq: 3, epoch: 7 };
+  // 生成を始めたときの世代と一致していれば流してよい
+  assert.equal(candidateResultApplies({ seq: 3, epoch: 7 }, now), true);
+  // 別の紙へ移った（R-3・既存の穴）
+  assert.equal(candidateResultApplies({ seq: 2, epoch: 7 }, now), false);
+  // 同じ紙のままテンプレートを適用した（H-1・seq だけでは見抜けない穴）。
+  // 「このテンプレートを使う」は seq を進めないため、epoch を見ないと
+  // 適用中のテンプレートの上へ重なり0件の候補が復活する
+  assert.equal(candidateResultApplies({ seq: 3, epoch: 6 }, now), false);
+  // 両方進んでいる（紙を替えたうえでテンプレートも適用した）
+  assert.equal(candidateResultApplies({ seq: 2, epoch: 6 }, now), false);
+  // 進むのは片方向だけ（世代番号は減らない）が、判定は単純な一致で足りる
+  assert.equal(candidateResultApplies({ seq: 4, epoch: 8 }, now), false);
+});
+
+test("初回読み込みフローの文言: 由来・状態・次の一手が読み取れる", () => {
+  const auto = appliedTemplateBarText("帳票B", true, 12, 1);
+  assert.match(auto, /適用中のテンプレート: 帳票B/);
+  assert.match(auto, /前回と同じものを自動で適用しました/);
+  assert.match(auto, /欄 12・表 1/);
+  // 選び直した後は「自動」の括弧書きを消す（手動扱いへ切り替わる）
+  const manual = appliedTemplateBarText("帳票B", false, 12, 1);
+  assert.ok(!/自動で適用/.test(manual), manual);
+
+  assert.match(unappliedTemplateBarText(), /適用していません/);
+  assert.match(unappliedTemplateBarText(), /枠候補/);
+  assert.match(templateChoiceNotice(), /まだ適用していません/);
+  assert.match(staleAppliedMemoryNotice("帳票B"), /帳票B/);
+  assert.match(staleAppliedMemoryNotice("帳票B"), /見つかりませんでした/);
+
+  // 同名ボタンが並ぶので accessible name にテンプレート名を含める。
+  // 可視ラベルをそのまま先頭に含む形にする（WCAG 2.5.3 Label in Name）
+  const n = useTemplateButtonName("帳票B", "user");
+  assert.ok(n.startsWith("このテンプレートを使う"), n);
+  assert.match(n, /帳票B/);
+  assert.match(useTemplateButtonName("chouhyo-v1", "shipped"), /出荷/);
+});
+
+// ラミィ a11y レビュー Should-1（2026-09-04・WCAG 4.1.3）。テンプレ適用と
+// 候補での作り直しは適用中バー／未適用バー（role="status"）を必ず同時に
+// 更新するため、.msg 側は空にして読み上げを1本へ集約する。実測では
+// .msg・寸法不一致の黄帯・バーの3領域が同時に非空だった。
+test("Should-1 templateDecisionMsg: バーが出る操作では .msg を空にする", () => {
+  // 適用: 内容は appliedTemplateBarText が全部言うので .msg は空
+  assert.equal(templateDecisionMsg(true, "テンプレート読込: 帳票B（欄 1・表 1）"), "");
+  // 候補で作り直し: 次の一手は unappliedTemplateBarText が言う
+  assert.equal(templateDecisionMsg(true, newTemplateNotice(true)), "");
+  assert.equal(templateDecisionMsg(true, newTemplateNotice(false)), "");
+  // バーは画像がある間だけ描かれる。画像未読込（利用者テンプレート一覧から
+  // 開いた場合など）は据え置き——消すと操作の結果がどこにも出ない
+  assert.equal(templateDecisionMsg(false, "テンプレート読込: 帳票B（欄 1・表 1）"),
+    "テンプレート読込: 帳票B（欄 1・表 1）");
+  assert.equal(templateDecisionMsg(false, newTemplateNotice(false)),
+    newTemplateNotice(false));
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

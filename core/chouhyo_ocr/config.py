@@ -46,6 +46,14 @@ class Config:
     # ——チェックボックス1つで一般利用者が押せる場所に置くと、ON にする前の
     # 差分全件確認（Q-F14 の受け入れ手順）を踏まずに ON になる
     snap_blocks: bool = False
+    # 07 v1.6 FR-F52。テンプレート編集で画像・PDF を開いたときに、罫線から
+    # 枠候補を自動生成するか（#73 の枠候補生成を「開いた直後」へ広げる
+    # フロー）。
+    # **既定 ON**——候補は破線で並ぶだけで、採用するまで既存の枠も読み取り
+    # 結果も変わらない（採用は利用者の明示操作）。罫線の多い紙で待ち時間が
+    # 気になるときだけ false にする。snap_blocks・unclear_char_level と同じ
+    # 扱いで GUI 設定画面には出さず、設定6項目（要件 §5.8）にも数えない
+    auto_detect_frames_on_open: bool = True
     # issue #72 (t)・FR-F29・08 §3.5.1。実行画面・編集画面が最後に使った
     # テンプレートの区分＋表示名（絶対パスは保存しない）。値は "shipped"
     # （出荷テンプレート）または "user:<表示名>"（利用者テンプレート）の
@@ -60,10 +68,54 @@ class Config:
     # が log.init の直後に読んで warn する。**config.json には永続化しない**
     # （save_config が除く・下記参照）——設定ではなく1回限りの診断情報
     last_template_fallback_reason: str = ""
+    # 07 v1.6 FR-F55。テンプレート編集で「このテンプレートを適用する」を
+    # 選んだときだけ書く記憶。実行タブ用の last_template（既定 "shipped"）
+    # とは**別キー**で、既定は ""（記憶なし）。値は ""・"shipped"・
+    # "user:<表示名>" のいずれかで、
+    # **絶対パスは保存しない**（07 §7.3）。名前の文字種検証（許可リスト・
+    # NFC 正規化・予約デバイス名）は Rust 側の
+    # user_templates::validate_name_shape を唯一の正とし、ここでは形
+    # （区分＋非空の名前・パス区切りや .. を含まない）だけを見る——同じ規則を
+    # 2箇所に持つと、片方だけ変えたときに黙ってズレる。**last_template と
+    # 同じく _validate は例外を投げない**——形が不正なら ""（記憶なし）へ
+    # 倒す（AC-F60・FR-F29「設定1行で起動不能にしない」）
+    last_applied_template: str = ""
+    # last_applied_template を倒したときの理由コード（空文字列 =
+    # フォールバックなし）。last_template_fallback_reason と同じ流儀で、
+    # **config.json には永続化しない**（save_config が除く）。_validate の
+    # 時点では logging_safe が未初期化なので理由だけ積み、log.init の直後に
+    # cli._load_config_and_init_log が読んで warn する
+    last_applied_template_fallback_reason: str = ""
 
 
 def config_path() -> Path:
     return project_root() / "config.json"
+
+
+def _is_valid_last_applied_template(v: object) -> bool:
+    """last_applied_template の形を判定する（区分＋表示名・パスではない）。
+
+    許すのは ""（記憶なし）・"shipped"・"user:<表示名>" の3形。表示名の
+    文字種そのもの（許可リスト・長さ・予約デバイス名）は Rust 側の
+    user_templates::validate_name_shape が唯一の正で、ここでは「パスとして
+    解釈されうる形」だけを弾く——Rust が通す名前（英数・かな漢字・"-"・
+    "_"・空白のみ）はすべてここも通るので、GUI が正しく書いた記憶を core が
+    形不正と誤判定して捨てることはない。
+    """
+    if not isinstance(v, str):
+        return False
+    if v in ("", "shipped"):
+        return True
+    if not v.startswith("user:"):
+        return False
+    name = v[len("user:"):]
+    if not name or ".." in name:
+        return False
+    # パス区切り・ドライブ文字（":"）・制御文字は表示名に現れない。絶対パス
+    # （"user:C:\tmp\a.json"）はこの3種のいずれかに必ず当たる
+    if any(c in name for c in ("/", "\\", ":")):
+        return False
+    return not any(ord(c) < 0x20 or ord(c) == 0x7F for c in name)
 
 
 def _validate(cfg: Config) -> Config:
@@ -90,7 +142,28 @@ def _validate(cfg: Config) -> Config:
     if not isinstance(cfg.snap_blocks, bool):
         raise ConfigError(
             f"snap_blocks は true/false にする（現在: {cfg.snap_blocks!r}）")
-    # issue #72 (t)・FR-F29・AC-F60: last_template だけは ConfigError を
+    if not isinstance(cfg.auto_detect_frames_on_open, bool):
+        raise ConfigError(
+            "auto_detect_frames_on_open は true/false にする"
+            f"（現在: {cfg.auto_detect_frames_on_open!r}）")
+    # last_template と同じ扱い（AC-F60・FR-F29「設定1行で起動不能に
+    # しない」・08 §3.10 不変条件6・07 v1.6 FR-F55／AC-F84）。
+    # config.json は手編集でも別プロセス（GUI）からも書けるため、記憶の
+    # 1行が壊れているだけで run／verify／render／remap が起動不能になる
+    # 事態を作らない。形が不正なら ""（記憶なし）へ倒し、理由コードだけ
+    # 積む——ここで warn しない理由は last_template と同じ（本番順序では
+    # logging_safe が未初期化で消える。実際に警告を出すのは
+    # cli._load_config_and_init_log）
+    if _is_valid_last_applied_template(cfg.last_applied_template):
+        # 「今回の読み込みで実際に倒したか」を示す一時情報。手編集で
+        # 紛れ込んでも（save_config は書かない）正規化して事実と揃える
+        if cfg.last_applied_template_fallback_reason:
+            cfg = replace(cfg, last_applied_template_fallback_reason="")
+    else:
+        cfg = replace(cfg, last_applied_template="",
+                      last_applied_template_fallback_reason="invalid_format")
+    # issue #72 (t)・FR-F29・AC-F60: last_template も（上の
+    # last_applied_template と同じく）ConfigError を
     # 投げない。config.json は手編集や別プロセス（GUI）からも書けるため、
     # 他のキーと同じく例外にすると「last_template の1行が壊れているだけで
     # run／verify／render／remap すべてが起動不能」になる——FR-F29 が明記する
@@ -144,9 +217,10 @@ def load_config(path: str | Path | None = None) -> Config:
 def save_config(cfg: Config, path: str | Path | None = None) -> None:
     p = Path(path) if path else config_path()
     data = asdict(cfg)
-    # last_template_fallback_reason は1回限りの診断情報であって設定では
-    # ない（M-1）。config.json に書くと利用者設定と混ざって見えるため除く
+    # *_fallback_reason は1回限りの診断情報であって設定ではない（M-1）。
+    # config.json に書くと利用者設定と混ざって見えるため除く
     data.pop("last_template_fallback_reason", None)
+    data.pop("last_applied_template_fallback_reason", None)
     # 一時ファイル + os.replace（issue #97・api_budget._save と同型）。本番の
     # 呼び出し元は現状 GUI 側（Rust の write_config）だが、書き込み経路ごとに
     # 保護の有無が違う状態を残さないため Python 側も揃える。tmp 名をプロセス

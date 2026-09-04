@@ -283,8 +283,12 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
     // read_default_template は config.last_template を解決して返す
     // （実物: gui/src-tauri/src/lib.rs・あくあ実装）。"user:<名前>" が
     // demoUserTemplateContent に無ければ出荷（DEMO_TEMPLATE）へフォールバック
-    // する（AC-F60 と同じ「例外を投げず安全側へ倒す」方針をデモにも揃える）
+    // する（AC-F60 と同じ「例外を投げず安全側へ倒す」方針をデモにも揃える）。
+    // 任意引数 template（2026-09-04）が渡されたときは config を見ない——
+    // 実物も同じで、これが「出荷テンプレートを副作用なしで読む」経路になる
     case "read_default_template": {
+      const { template } = (args ?? {}) as { template?: string };
+      if (template === "shipped") return JSON.stringify(DEMO_TEMPLATE);
       const lt = demoConfigRead().last_template;
       const m = typeof lt === "string" ? /^user:(.+)$/.exec(lt) : null;
       const content = m ? demoUserTemplateContent.get(m[1]) : undefined;
@@ -405,17 +409,25 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
       // --template 未指定時 "page"。固定で表1＋欄3（うち1件
       // overlaps_existing）を返す
       if (a[0] === "detect-frames") {
+        // 「生成中」の画面を検証するための遅延フック（デモモード限定・
+        // レビュー H-1／M-2 の受入確認用）。実コアの detect-frames は実測で
+        // 数百ms〜3秒かかるのに対し、疑似応答は同じ tick で解決するため
+        // framesGenerating=true の状態が画面に現れない。デモ設定に
+        // demo_detect_frames_delay_ms（数値）があるときだけその分待つ
+        // ——既定（キー無し）は従来どおり即時に返す
+        const delay = demoConfigRead().demo_detect_frames_delay_ms;
+        if (typeof delay === "number" && delay > 0) {
+          await new Promise((r) => setTimeout(r, delay));
+        }
         return JSON.stringify({
           event: "detect_frames", ok: true, elapsed_ms: 850,
           input_size: [2490, 3510],
           stats: { lines_h: 8, lines_v: 6, rects: 10, rails_h: 8, rails_v: 6 },
           candidates: [
             // 表候補の位置は DEMO_TEMPLATE の既存要素（person_氏名 x:400-1000,
-            // y:300-390／family x:200-820,y:600-890）と意図せず重ならない
-            // 場所に置く——GUI 側の候補パネル「重なりのため対象外」表示は
-            // c2（欄候補・意図的な overlaps_existing:true）の1件だけを
-            // 検証対象にするため（candidateOverlapsExisting 自体の単体
-            // テストは gui-logic 側で別途行う）
+            // y:300-390／family x:200-820,y:600-890）と重ならない場所に置く
+            // ——候補パネルの「重なりのため対象外」表示は c2（下記・
+            // person_氏名 に重なる欄候補）の1件だけを検証対象にするため
             { kind: "table", face_id: "page",
               rect: { x: 100, y: 1000, w: 750, h: 400 },
               blocks: [{ x: 100, y: 1000, rows: 5 }],
@@ -423,9 +435,17 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
               columns: [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 150 },
                         { x_offset: 350, width: 400 }],
               residual_px: 0.4, overlaps_existing: false },
+            // c2 は DEMO_TEMPLATE の person_氏名（x:400-1000・y:300-390）と
+            // 幾何的に重なる位置に置き、overlaps_existing は **false** で返す。
+            // 実コアは --template を渡さない限り overlaps_existing を立てない
+            // （編集画面はテンプレートの絶対パスを持たないので、実運用でも
+            // ほぼ常に渡さない）ため、旧デモの true は実コアと食い違っていた。
+            // GUI 側の candidateOverlapsExisting に判定させれば、テンプレート
+            // 適用中＝1件重なり／空テンプレ＝0件重なり の両方が疑似応答の
+            // 細工なしで再現できる（AC-G06／AC-G11 の裏取り）
             { kind: "field", face_id: "page",
-              rect: { x: 100, y: 100, w: 400, h: 80 },
-              residual_px: 0.0, overlaps_existing: true },
+              rect: { x: 450, y: 320, w: 300, h: 60 },
+              residual_px: 0.0, overlaps_existing: false },
             { kind: "field", face_id: "page",
               rect: { x: 600, y: 100, w: 300, h: 80 },
               residual_px: 0.2, overlaps_existing: false },

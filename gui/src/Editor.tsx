@@ -1322,6 +1322,151 @@ export function restoredTemplateNotice(
     + `欄 ${fieldCount}・表 ${tableCount}。${base.line2}` };
 }
 
+// ------------------------------------------------ 初回読み込みフロー（2026-09-04）
+// テンプレート編集で帳票を開いたときに「前に使ったテンプレートを適用する」か
+// 「この紙の枠候補を自動で作る」かを決める分岐（設計 §1・§4.6）。
+//
+// 分岐は **state として持たない**。1回の画像読み込みで一度だけ決まる値で、
+// 「候補を作るのは必ず空テンプレートの上」という構造のほうがフラグより強い
+// （フラグは配列と食い違いうるが fields.length===0 は食い違わない）。
+
+/// `config.auto_detect_frames_on_open`（既定 true）。欠落・非 bool は ON へ
+/// 倒す——OFF は「従来動作に戻す」逃げ道であって、設定の壊れで勝手に
+/// 有効化されるほうが不意打ちになる。
+export function autoDetectEnabled(cfg: Record<string, unknown> | null | undefined): boolean {
+  return cfg?.auto_detect_frames_on_open !== false;
+}
+
+/// `config.last_applied_template`（編集画面で適用したテンプレートの記憶）。
+/// 文字列以外は「記憶なし」（""）へ倒す。値の形の検証は autoApplyTarget 側。
+export function appliedTemplateMemory(cfg: Record<string, unknown> | null | undefined): string {
+  const v = cfg?.last_applied_template;
+  return typeof v === "string" ? v : "";
+}
+
+/// 記憶の値が指す先。GUI は絶対パスを持たないため、区分と表示名しか扱わない
+/// （07 §7.3）。`""`・不正形式はすべて null（記憶なし）。
+export type AppliedTemplateTarget = { kind: "shipped" } | { kind: "user"; name: string };
+
+export function autoApplyTarget(memory: string): AppliedTemplateTarget | null {
+  if (memory === "shipped") return { kind: "shipped" };
+  if (memory.startsWith("user:") && memory.length > "user:".length) {
+    return { kind: "user", name: memory.slice("user:".length) };
+  }
+  return null;
+}
+
+/// 適用した先を記憶へ書き戻すときの表記（`last_template` と同じ2形式）。
+export function applyTemplateMemoryValue(target: AppliedTemplateTarget): string {
+  return target.kind === "user" ? `user:${target.name}` : "shipped";
+}
+
+/// 画像を1回開くときにどちらの手順を踏むか。
+///   - 自動生成 OFF               → template（従来動作のまま）
+///   - 「テンプレートを開く」で開いたファイルがある → template
+///     （人がファイルで開いた物を、記憶が指す別テンプレートで黙って
+///      差し替えない。dirty=false なので確認も出ないまま消えてしまう）
+///   - 記憶がある                 → template（前回と同じものを自動で適用）
+///   - それ以外                   → candidates（空テンプレ＋候補を自動生成）
+export function initialFrameView(o: {
+  autoDetect: boolean; appliedMemory: string; hasOpenedTemplateFile: boolean;
+}): "template" | "candidates" {
+  if (!o.autoDetect) return "template";
+  if (o.hasOpenedTemplateFile) return "template";
+  return autoApplyTarget(o.appliedMemory) ? "template" : "candidates";
+}
+
+/// 記憶したテンプレートを自動で適用してよいか。
+///
+/// initialFrameView が "template" を返す理由は3つある——①自動生成 OFF
+/// ②人が「テンプレートを開く」でファイルを開いている ③記憶がある。
+/// ①②は「今のテンプレートをそのまま使う」＝**何もしない**（設計 §5.1 の
+/// T-1/T-2「従来と完全に同じ」）。自動適用してよいのは③だけで、view だけを
+/// 見て適用すると OFF にしたのに記憶が復元される。
+export function shouldAutoApplyMemory(o: {
+  autoDetect: boolean; hasOpenedTemplateFile: boolean;
+}): boolean {
+  return o.autoDetect && !o.hasOpenedTemplateFile;
+}
+
+/// 様式判定の帯（黄帯・面ごとの非表示）を出してよいか（設計 §2.5）。
+///
+/// expand-page は `--template` を tplPath が非 null のときしか渡さず、それ
+/// 以外は Rust の inject_default_template が **config.last_template** の解決
+/// 結果を注入する。一方で自動適用するのは last_applied_template なので、
+/// 実行タブでテンプレート選択を変えると両者が乖離し、**別テンプレート基準の
+/// 判定で帯が出る**。判定を偽って「一致」と言うのではなく、根拠が別物なら
+/// 帯そのものを出さない（verdict 未提供の旧コアと同じ扱いになる）。
+export function formatBandApplies(o: {
+  view: "template" | "candidates"; appliedMemory: string; lastTemplate: string;
+  hasOpenedTemplateFile: boolean;
+}): boolean {
+  if (o.view !== "template") return false;
+  if (o.hasOpenedTemplateFile) return true;   // --template を実際に渡した判定
+  return o.appliedMemory === o.lastTemplate;
+}
+
+/// 記憶が指すテンプレートの実体が無かったとき（削除された・名前を変えた）。
+/// 事前に存在確認はせず、読み込みの失敗をそのままシグナルにする（確認と
+/// 読み出しの間の削除を拾えない・IPC が1往復増える、の2点を避ける）。
+export function staleAppliedMemoryNotice(name: string): string {
+  return `前回適用したテンプレート（${name}）が見つかりませんでした。`
+    + "枠候補を作り直しました。";
+}
+
+/// 画面上部に何を出すかの段階（UI 設計 §2）。データの真実（fields/cands）
+/// とは独立した「表示の段階」だけを持つ。null は帯もカードの組み替えもしない
+/// 従来動作（自動生成 OFF・ファイルで開いた場合・画像未読込）。
+export type TplDecision =
+  | null
+  | { state: "deciding" }
+  | { state: "applied"; name: string; auto: boolean; fields: number; tables: number }
+  | { state: "candidates" };
+
+/// 適用中バーの文（UI 設計 §4）。自動適用のときだけ由来を添える——別の
+/// テンプレートを選び直したら括弧書きは消える（手動扱いへ切り替わる）。
+/// 緑（成功）にはしない：自動適用は成果ではなく既定動作。
+export function appliedTemplateBarText(
+  name: string, auto: boolean, fieldCount: number, tableCount: number): string {
+  const how = auto ? "（前回と同じものを自動で適用しました）" : "";
+  return `適用中のテンプレート: ${name}${how}・欄 ${fieldCount}・表 ${tableCount}`;
+}
+
+/// 未適用バーの文（UI 設計 §5）。画像を開いた瞬間に確定させ、候補生成の
+/// 完了では書き換えない（書き換えると framesMsg と同時に2領域が更新される）。
+export function unappliedTemplateBarText(): string {
+  return "テンプレートは適用していません。破線は枠の候補です。"
+    + "右の「枠候補」から採用して、この紙のテンプレートを作ってください。";
+}
+
+/// テンプレートの適用／候補での作り直しで .msg（role="status"）へ出す文
+/// （ラミィ a11y レビュー Should-1・2026-09-04）。
+///
+/// これらの操作は適用中バー／未適用バー（同じく role="status"）を必ず同時に
+/// 更新する。同じ瞬間に .msg も書き換えると、寸法不一致の黄帯と合わせて
+/// 3つのライブ領域が同時に非空になり、スクリーンリーダーは3文を続けて読む
+/// ——どれが「今起きた変化」なのか読み手に判別できない（実測・Playwright・
+/// 2026-09-04）。変化の報告はバー1本に集約し、.msg 側は空にする。
+///
+/// バーは画像がある間だけ描かれる（未読込では存在しない）。バーが無い経路
+/// では従来の文言を残す——消すと操作の結果がどこにも出なくなる。
+export function templateDecisionMsg(barVisible: boolean, fallback: string): string {
+  return barVisible ? "" : fallback;
+}
+
+/// 決定カードの中の案内（UI 設計 §5）。警告（黄）でも成功（緑）でもない
+/// ——候補パスは正常な分岐なので、案内の温度（.tipbox）で出す。
+export function templateChoiceNotice(): string {
+  return "テンプレートはまだ適用していません。破線は自動で見つけた枠の候補です。";
+}
+
+/// 一覧のボタンの accessible name（UI 設計 §7）。行が複数並ぶと
+/// 「このテンプレートを使う」が同名で何個も並ぶため、名前を含める。
+/// 可視ラベルを先頭にそのまま含む形にしてある（WCAG 2.5.3 Label in Name）。
+export function useTemplateButtonName(name: string, kind: "shipped" | "user"): string {
+  return `このテンプレートを使う（${name}${kind === "shipped" ? "・出荷" : ""}）`;
+}
+
 /// テンプレート切替時（照合パネルの「開く」・利用者テンプレート一覧から
 /// 開く・取り込み）、表示中の画像の寸法とテンプレートの image 寸法が
 /// 食い違っていたら黄帯へ出す注意（issue #72 (t)・スバル差し戻し2）。
@@ -1665,6 +1810,46 @@ export function candidateOverlapsExisting(
   return false;
 }
 
+/// core の `overlaps_existing` を信用してよいか（実窓での実測・2026-09-04）。
+///
+/// 発端は Rust 側の暗黙注入だった。GUI が `--template` を渡さなくても
+/// `inject_default_template` が detect-frames へ `config.last_template` の
+/// 解決結果を注入し、core は**画面に出ていない別のテンプレート**に対する
+/// 重なりを返していた——実測（formC-1.png・出荷テンプレ注入・2026-09-04）では、
+/// 空のテンプレートの上で候補を作ったのに「重なりのため対象外 2 件」になり、
+/// 一括採用から2件が黙って外れていた。注入そのものは
+/// `TEMPLATE_ACCEPTING_SUBCOMMANDS` から detect-frames を外して止めてあるが
+/// （lib.rs・2026-09-04）、この関数は二重の安全網として残す——core へ何が
+/// 渡ったかを GUI 側で断定せずに済む形にしておく。
+///
+/// GUI が自分で `--template` を渡したときだけ core の判定を採り、それ以外は
+/// GUI 自身の再判定（今画面にある fields/tables との幾何判定）だけを使う
+/// ——後者は「画面に見えている枠と重なるか」そのものなので、常に正しい。
+export function candidateOverlapFlag(
+  coreOverlaps: boolean, guiOverlaps: boolean, templatePassed: boolean): boolean {
+  return (templatePassed && coreOverlaps) || guiOverlaps;
+}
+
+/// 走り終えた枠候補の生成結果を、今の画面へ流してよいか（レビュー H-1・
+/// 2026-09-04）。
+///
+/// 世代は2本ある。`seq` は帳票を1枚開くたびに進む「紙の世代」、`epoch` は
+/// 確定枠（fields／tables）を差し替えるたびに進む「枠の世代」。候補は
+/// **生成を始めた時点の確定枠**を基準に重なりを判定して返ってくるので、
+/// どちらかが進んでいたら前提が崩れている。
+///
+/// `seq` だけを見ていた旧実装には穴があった: 同じ紙のまま生成中（最大3秒）に
+/// 決定カードの「このテンプレートを使う」を押すと、確定枠はテンプレートの
+/// 12件へ差し替わるのに `seq` は進まない。遅れて解決した候補は「重なり 0 件・
+/// 全件チェック済み」のまま復活し、一括採用が適用中の枠に重なる枠を足せて
+/// しまう（「候補と確定枠を同時に出さない」の破れ）。両方を見て捨てる。
+export function candidateResultApplies(
+  started: { seq: number; epoch: number },
+  now: { seq: number; epoch: number },
+): boolean {
+  return started.seq === now.seq && started.epoch === now.epoch;
+}
+
 /// 候補チェックボックスの aria-label（ラミィ／accessibility 差し戻し
 /// Should）。可視情報（種別・id・面ヒント・重なり）と同じ内容にする——
 /// disabled の理由が title だけに留まらないようにする（スクリーンリーダー
@@ -1804,6 +1989,29 @@ const ZERO_REASON_JA: Record<string, string> = {
 export function zeroReasonNotice(reason: string | null | undefined): string | null {
   if (!reason) return null;
   return ZERO_REASON_JA[reason] ?? `候補が見つかりませんでした（${reason}）`;
+}
+
+/// 枠候補の生成が「手動（ツールバーのボタン）」か「自動（画像を開いた直後）」
+/// かで変わる副作用の可否を1箇所に固定する（設計 §3.3・M-7）。
+///
+/// 全部 manual の写しになるが、`if (manual)` を4箇所へ散らすより退行に強い
+/// ——自動生成は利用者の編集ではないので、赤帯を消さない・未保存にしない・
+/// Undo の1コマにしない。失敗の出し先も分ける（自動の失敗で画像側の赤帯を
+/// 奪わない）。
+export function detectFramesEffects(manual: boolean): {
+  clearErrMsg: boolean; markDirty: boolean; pushHistory: boolean;
+  errorTo: "errMsg" | "framesMsg";
+} {
+  return { clearErrMsg: manual, markDirty: manual, pushHistory: manual,
+           errorTo: manual ? "errMsg" : "framesMsg" };
+}
+
+/// 自動生成が失敗したときの案内（M-8）。**画像は既に表示されている**ので、
+/// 画像を開けなかったと誤解させる語は入れない。やり直しの導線（ツールバーの
+/// 手動生成）を必ず添える。
+export function autoDetectFailureNotice(err: unknown): string {
+  return `枠候補を自動で作れませんでした（${String(err)}）。`
+    + "画像は表示しています。ツールバーの「ページ全体から枠候補を生成」でやり直せます。";
 }
 
 /// 枠候補タブへ自動切替するかどうか（ラミィ／accessibility 3回目確認・
@@ -2119,6 +2327,36 @@ export default function Editor(
   // （overlaps_existing は既定オフ）。生成のたびに作り直す
   const [candSelected, setCandSelected] = useState<Record<string, boolean>>({});
   const [framesGenerating, setFramesGenerating] = useState(false);
+  // 画像を1回開くごとに進む世代番号（設計 §1.2・R-3）。非同期の候補生成が
+  // 「前の紙」へ着地するのを止める——生成中に次の紙を開いたら結果を捨てる
+  const loadSeqRef = useRef(0);
+  // 確定枠（fields／tables）を丸ごと差し替えるたびに進む世代番号
+  // （レビュー H-1・candidateResultApplies 参照）。loadSeqRef が「紙の世代」
+  // なのに対し、こちらは「今キャンバスに載っている枠の世代」。同じ紙のまま
+  // テンプレートを適用しても進むので、生成中の適用で古い候補が復活する経路を
+  // 塞げる。確定枠を差し替える経路（applyTemplateByName／loadTemplate／
+  // createTemplateForThisImage／runCandidateFlow）は必ず bumpFrameEpoch を通す
+  const frameEpochRef = useRef(0);
+  const bumpFrameEpoch = (): number => {
+    frameEpochRef.current += 1;
+    return frameEpochRef.current;
+  };
+  // 同一 tick の二重起動防止。framesGenerating は state なので同じ tick では
+  // まだ false のまま読める（savingRef と同じ流儀）
+  const detectingRef = useRef(false);
+  // 画面上部に何を出すか（決定カード／適用中バー／未適用バー）。データの
+  // 真実（fields・cands）とは独立した表示の段階だけを持つ。null は従来動作
+  const [tplDecision, setTplDecision] = useState<TplDecision>(null);
+  // カードが消えて帯に置き換わる／帯からカードへ戻るときのフォーカスの
+  // 行き先（UI 設計 §7）。押したボタンが処理後に消えるため body へ落とさない
+  const appliedBarBtnRef = useRef<HTMLButtonElement>(null);
+  const firstUseTemplateBtnRef = useRef<HTMLButtonElement>(null);
+  // フォーカスを動かすのは「人が押した」ときだけ（自動適用では動かさない・
+  // UI §7）。押した時点では移動先がまだ描かれていないので、要求だけ立てて
+  // 描画後の effect で実際に動かす——requestAnimationFrame では React の
+  // コミット前に走ることがあり、実窓で activeElement が body へ落ちていた
+  // （実測・2026-09-04）
+  const focusAfterDecisionRef = useRef<"bar" | "chooser" | null>(null);
   const [framesMsg, setFramesMsg] = useState("");
   // 表候補を採用後に列名を一括で置き換える接頭辞（既定 field・FR-F24）
   const [candPrefix, setCandPrefix] = useState("field");
@@ -2165,6 +2403,22 @@ export default function Editor(
   // 行う（0→N限定をやめ、生成のたびに切り替える）。ここで残すのは
   // 「候補が尽きたら直前のタブへ戻す」（一括除去・全採用・テンプレ切替）
   // 側だけ——こちらは cands.length の推移を見るのが自然で、二重管理にならない
+  useEffect(() => {
+    const want = focusAfterDecisionRef.current;
+    if (!want || !tplDecision) return;
+    if (want === "bar" && tplDecision.state === "applied") {
+      focusAfterDecisionRef.current = null;
+      appliedBarBtnRef.current?.focus();
+    } else if (want === "chooser" && tplDecision.state === "deciding") {
+      focusAfterDecisionRef.current = null;
+      // 一覧が空なら「候補から新しく作る」へ落とす（行き先が消えないように）。
+      // セレクタは決定カード（.tpl-card）の中に限る（レビュー LOW）——
+      // `.card .btn.outline` は適用中バー（.card）や将来足すカードの
+      // .btn.outline も拾い、フォーカスが無関係なボタンへ飛びうる
+      (firstUseTemplateBtnRef.current
+        ?? document.querySelector<HTMLButtonElement>(".tpl-card .btn.outline"))?.focus();
+    }
+  }, [tplDecision]);
   const prevCandsLenRef = useRef(0);
   useEffect(() => {
     if (prevCandsLenRef.current > 0 && cands.length === 0 && panelTab === "candidates") {
@@ -2761,6 +3015,23 @@ export default function Editor(
     if (!(await confirmDiscard())) return;
     const p = await invoke<string | null>("pick_image");
     if (!p) return;
+    // 画像を1回開くごとに世代を進める（R-3）。走行中の自動生成の結果が
+    // 「前の紙」へ着地するのを止める
+    loadSeqRef.current += 1;
+    const seq = loadSeqRef.current;
+    // 初回読み込みフローの分岐材料。config はこの1回だけ読む（設計 §6.1）
+    let autoDetect = true;
+    let appliedMemory = "";
+    let lastTemplate = "";
+    try {
+      const cfg = await invoke<Record<string, unknown>>("read_config");
+      autoDetect = autoDetectEnabled(cfg);
+      appliedMemory = appliedTemplateMemory(cfg);
+      lastTemplate = typeof cfg.last_template === "string" ? cfg.last_template : "";
+    } catch { /* 読めなければ既定（自動生成 ON・記憶なし）へ倒す */ }
+    const hasOpenedTemplateFile = tplPath !== null;
+    const view = initialFrameView({ autoDetect, appliedMemory, hasOpenedTemplateFile });
+    const autoApply = shouldAutoApplyMemory({ autoDetect, hasOpenedTemplateFile });
     const isPdf = p.toLowerCase().endsWith(".pdf");
     let imagePath = p;
     let note = "";
@@ -2847,14 +3118,25 @@ export default function Editor(
       // 開いたら破棄する（確定済みの fields/tables はそのまま維持）
       setCands([]); setFramesMsg(""); setRecentCandTableUids([]);
       setMsg(`画像 ${im.naturalWidth}×${im.naturalHeight}${note}`);
+      // 上部の案内（決定カード／未適用バー）の初期状態は、画像を開いた
+      // 瞬間に確定させる——候補生成の完了で書き換えると、framesMsg の
+      // ライブ領域と同時に2つが更新されて読み上げが打ち切られる（UI §7）
+      setTplDecision(view === "candidates" ? { state: "deciding" } : null);
       draw();
+      // 起動点はここ1箇所（設計 §3.4）。setImgPath/toEditorState と同じ tick
+      // で走るため、以降の処理は state を読まず引数で受け取る
+      void startInitialFrameFlow({
+        seq, view, autoApply, memory: appliedMemory, lastTemplate,
+        imagePath, w: im.naturalWidth, h: im.naturalHeight, alignReason,
+      });
     };
     im.onerror = () => { setErrMsg("画像の表示に失敗しました"); setMsg(""); };
     im.src = src;
     // 照合提示（issue #72 (t)・FR-F28）。現在開いているテンプレートが一致
     // 判定なら提示を畳んでおく（設計08 §3.4）。画像の描画（im.onload）を
     // 待たずに並行して照合する——結果はパネル1つの表示だけに使う
-    setMatchCollapsed(verdict === "match");
+    // 候補パスでは畳まない（テンプレートを選ぶ場そのものなので）
+    setMatchCollapsed(view === "template" && verdict === "match");
     void runMatchTemplates(imagePath);
   };
 
@@ -3008,6 +3290,8 @@ export default function Editor(
       setErrMsg(`テンプレートを読み込めませんでした: ${e}`);
       return;
     }
+    // H-1: 確定枠がここで入れ替わる。走行中の候補生成があれば結果を捨てる
+    bumpFrameEpoch();
     const { fieldCount, tableCount } = toEditorState(parsed);
     resetHistory();   // 別テンプレートをまたぐ Undo は誤操作のもと
     setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
@@ -3018,6 +3302,12 @@ export default function Editor(
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
     setRecentCandTableUids([]);
     markDirty(false);
+    // レビュー H-2: ファイルで開いた経路は従来動作（帯もカードも出さない・
+    // T-2）へ戻す。ここを更新しないと、直前に適用していたテンプレートの名前を
+    // 出したままの帯が残り（別のテンプレートを開いたのに名前が変わらない）、
+    // 候補パスから開いた場合は破線が消えたのに「まだ適用していません」の
+    // カードだけが居残る
+    setTplDecision(null);
     // 画像がまだ無ければ、DOM 案内をキャンバスの文字（draw()）と同じ内容に
     // 揃える（マリンレビュー M-1）。以前は常に「テンプレート読込: <path>」
     // 固定で、利用者自身の JSON を開いても canvas 側の「出荷テンプレート」
@@ -3039,57 +3329,192 @@ export default function Editor(
     await refreshLoadedCounts(p);
   };
 
-  // issue #72 (t)・FR-F26/F27/F29・設計08 §3.2.2/§3.6。利用者テンプレート
-  // （kind="user"）または出荷テンプレート（kind="shipped"）を、名前だけを
-  // 手掛かりに開く。GUI は絶対パスを持たない（07 §7.3）ため、利用者
-  // テンプレートは read_user_template(name)、出荷テンプレートは
-  // last_template を "shipped"（config.py の既定値・唯一の非 user: 有効値）
-  // へ戻したうえで read_default_template（既存の出荷解決経路・§3.5.2）を
-  // 使う——専用の「出荷テンプレートを名前で読む」コマンドは無いため、この
-  // 2既存コマンドの組み合わせで賄う。「利用者テンプレート一覧から開く」
-  // 「照合パネルの『開く』」の両方から呼ぶ。
-  const openMatchedTemplate = async (kind: "shipped" | "user", name: string) => {
-    if (!(await confirmDiscard())) return;
-    let text: string;
+  // issue #72 (t)・FR-F26/F27/F29・設計08 §3.2.2/§3.6 ＋ 初回読み込みフロー
+  // （2026-09-04・設計 §4.4・§5.2）。利用者テンプレート（kind="user"）または
+  // 出荷テンプレート（kind="shipped"）を、名前だけを手掛かりに適用する。
+  // GUI は絶対パスを持たない（07 §7.3）ため、利用者テンプレートは
+  // read_user_template(name)、出荷テンプレートは read_default_template に
+  // template:"shipped" を渡して読む。
+  //
+  // 旧実装は出荷を読むために config.last_template を先に "shipped" へ書き
+  // 戻していた。この副作用を自動適用でやると「画像を開いただけで実行タブの
+  // 選択が出荷へ戻る」ため、Rust 側に任意引数を足して副作用なしで読めるよう
+  // にし、config への書き込みは**読み込みに成功した後**へ移した（読めなかった
+  // ときに config だけ書き換わる順序も同時に直る）。
+  //
+  // 戻り値は「適用できたか」。自動経路はこの false を「記憶が使えない」
+  // シグナルとして受け取り、候補パスへ倒す（事前の存在確認はしない・§4.3）。
+  const applyTemplateByName = async (
+    target: AppliedTemplateTarget,
+    opts: { auto: boolean; displayName?: string },
+  ): Promise<boolean> => {
+    let parsed: any;
     try {
-      if (kind === "user") {
-        text = await invoke<string>("read_user_template", { name });
-      } else {
-        await invoke("write_config", { patch: { last_template: "shipped" } });
-        text = await invoke<string>("read_default_template");
-      }
-      const parsed = JSON.parse(text);
+      const text = target.kind === "user"
+        ? await invoke<string>("read_user_template", { name: target.name })
+        : await invoke<string>("read_default_template", { template: "shipped" });
+      parsed = JSON.parse(text);
       if (!parsed || !Array.isArray(parsed.faces)) {
         throw new Error("faces が無い（テンプレート JSON ではありません）");
       }
-      const { fieldCount, tableCount } = toEditorState(parsed);
-      resetHistory();
-      setTplPath(null);   // 絶対パスを持たないテンプレート（ファイル保存ダイアログの既定にしない）
-      setErrMsg(""); setWarnMsg("");
+    } catch (e) {
+      // 自動適用の失敗は呼び出し側が候補パスへ倒すので、ここでは赤帯を出さない
+      if (!opts.auto) setErrMsg(`テンプレートを読み込めませんでした: ${e}`);
+      return false;
+    }
+    // 帯に出す名前。出荷テンプレートは照合パネルの行と同じ表示（template_id）に
+    // 揃える——自動適用のときだけ「出荷テンプレート」と別の呼び方になると、
+    // 同じ物を指しているのか読み手に分からない（実窓実測・2026-09-04）
+    const name = opts.displayName
+      ?? (target.kind === "user" ? target.name
+          : (typeof parsed.template_id === "string" && parsed.template_id)
+            || "出荷テンプレート");
+    // H-1: 生成中（最大3秒）にこのボタンを押せた場合、確定枠はここで
+    // テンプレートのものへ入れ替わる。世代を進めて、遅れて解決する候補が
+    // 適用中のテンプレートの上へ復活しないようにする
+    bumpFrameEpoch();
+    const { fieldCount, tableCount } = toEditorState(parsed);
+    resetHistory();
+    setTplPath(null);   // 絶対パスを持たないテンプレート（保存ダイアログの既定にしない）
+    setWarnMsg("");
+    if (opts.auto) {
+      // 自動適用は「画像を開いた直後の復元」であって切替ではない。位置合わせ
+      // の赤帯・様式判定の帯は loadImage が『この画像 × このテンプレート』
+      // として立てたものなので、ここでは1つも触らない——帯を出してよいかは
+      // 呼び出し側が formatBandApplies で決める（根拠が別テンプレートなら
+      // そちらで消す）
+    } else {
+      setFormatFaces([]);
+      setFormatOverride(false);
       // テンプレートを切り替えたので、直前の画像に対する様式判定（別テンプレ
       // 基準の mismatch/undecidable）は意味を持たない。ここでは画像の
       // 再照合まではしない（開き直すと loadImage が再評価する・§3.5.2 注記）。
       // 代わりに、表示中の画像とこのテンプレートの寸法だけは即座に比較して
       // 案内する（issue #72 (t)・スバル差し戻し2・ブロックはしない）
-      setFormatFaces([]);
+      setErrMsg(""); setLastAlignReason(undefined);
       setFormatWarnMsg(templateSwitchImageSizeNotice(imgSize, parsed.image) ?? "");
-      setFormatOverride(false);
-      // スバル差し戻し Should-1: テンプレート切替（照合パネルの「開く」・
-      // 利用者テンプレート一覧から開く・出荷へ戻す、いずれも本関数を通る）
-      // では枠候補を破棄する（重なりフラグが旧テンプレ基準で残るため）
-      setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
-      setRecentCandTableUids([]);
-      markDirty(false);
-      if (kind === "user") {
-        await invoke("write_config", { patch: { last_template: `user:${name}` } }).catch(() => {});
-      }
-      setMsg(`テンプレート読込: ${name}（欄 ${fieldCount}・表 ${tableCount}）`);
-      await refreshLoadedCounts(null);
-      setMatchResult(null);
-      setUserTplPanel(null);
-    } catch (e) {
-      setErrMsg(`テンプレートを読み込めませんでした: ${e}`);
     }
+    // スバル差し戻し Should-1: テンプレート切替では枠候補を破棄する
+    // （重なりフラグが旧テンプレ基準で残るため）
+    setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
+    setRecentCandTableUids([]);
+    markDirty(false);
+    if (!opts.auto) {
+      // 実行タブの既定（last_template）を動かすのは、人が選んだときだけ。
+      // 記憶（last_applied_template）も同じ点でだけ書く——自動適用は記憶の
+      // 復元にすぎず、既に同じ値が入っている（設計 §4.2）
+      const memo = applyTemplateMemoryValue(target);
+      await invoke("write_config",
+        { patch: { last_template: memo, last_applied_template: memo } }).catch(() => {});
+      // Should-1: 直後に setTplDecision で適用中バーが同じ内容
+      // （appliedTemplateBarText）を出す。.msg にも書くとライブ領域が2つ
+      // 同時に非空になるため、バーが描かれる場面では .msg を空にする
+      setMsg(templateDecisionMsg(hasImage,
+        `テンプレート読込: ${name}（欄 ${fieldCount}・表 ${tableCount}）`));
+    }
+    setTplDecision({ state: "applied", name, auto: opts.auto,
+                     fields: fieldCount, tables: tableCount });
+    await refreshLoadedCounts(null);
+    return true;
+  };
+
+  // 帳票を開いた直後の1回だけ走る入口（設計 §6.2）。useEffect は使わない
+  // ——StrictMode の二重実行で detect-frames が2回走り、依存配列に fields を
+  // 入れれば編集のたびに再発火する。起動点は im.onload の末尾1箇所に固定する。
+  const startInitialFrameFlow = async (o: {
+    seq: number; view: "template" | "candidates"; autoApply: boolean;
+    memory: string; lastTemplate: string;
+    imagePath: string; w: number; h: number;
+    alignReason: ExpandAlignReason | undefined;
+  }): Promise<void> => {
+    if (o.view === "template") {
+      if (!o.autoApply) return;   // 自動生成 OFF・ファイル起点＝従来動作のまま
+      const target = autoApplyTarget(o.memory);
+      if (!target) return;
+      const ok = await applyTemplateByName(target, { auto: true });
+      if (o.seq !== loadSeqRef.current) return;   // 別の紙へ移った
+      if (!ok) {
+        // 記憶が指すテンプレートの実体が無い。黙って出荷へ倒さず、記憶を
+        // 捨てて（config の自己修復）候補パスへ進む（設計 §4.3・不変条件7）
+        await invoke("write_config", { patch: { last_applied_template: "" } })
+          .catch(() => {});
+        // レビュー M-1: ここから先は記憶なしで開いたのと同じ候補パスなので、
+        // 上部の表示も同じにする。loadImage は view==="template" として
+        // tplDecision を null にしたまま来る——1行足さないと、候補は出るのに
+        // 決定カードも未適用バーも無い（テンプレートを選ぶ導線が消える）
+        setTplDecision({ state: "deciding" });
+        return runCandidateFlow({ ...o, notice: staleAppliedMemoryNotice(
+          target.kind === "user" ? target.name : "出荷テンプレート") });
+      }
+      // 様式判定の帯は「今適用しているテンプレート」に対してのみ出す。
+      // 判定の根拠（expand-page へ注入された last_template）が別テンプレート
+      // なら、偽って「一致」と言うのではなく帯そのものを出さない（§2.5）
+      if (!formatBandApplies({ view: "template", appliedMemory: o.memory,
+                               lastTemplate: o.lastTemplate,
+                               hasOpenedTemplateFile: false })) {
+        setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
+      }
+      return;
+    }
+    return runCandidateFlow(o);
+  };
+
+  // 候補パス（設計 §6.2）。**空テンプレートへ切り替えてから**候補を作る——
+  // この順序が「候補と確定枠を同時に描かない」「一括採用が既存枠を1つも
+  // 削らない」「出荷由来の field_id が混ざらない」を副作用なしで満たす。
+  const runCandidateFlow = async (o: {
+    seq: number; imagePath: string; w: number; h: number;
+    alignReason: ExpandAlignReason | undefined; notice?: string;
+  }): Promise<void> => {
+    // 1) 空テンプレートへ。createTemplateForThisImage との唯一の差は
+    //    markDirty(false)——自動で切り替えただけの状態は「未保存の作業」ではない
+    const epoch = bumpFrameEpoch();
+    toEditorState(emptyTemplateFor(o.w, o.h, o.h));
+    setTplPath(null);
+    setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
+    // 寸法／向き不一致の赤帯は、この画像の実寸から作る空テンプレートでは
+    // 定義上解消される。テンプレート破損（reason==="template"）はアプリ
+    // 健全性の事実なので残す（設計 §2.4）
+    if (o.alignReason === "size") { setErrMsg(""); setLastAlignReason(undefined); }
+    setCands([]); setCandSelected({}); setOverlapAcceptNotice("");
+    setRecentCandTableUids([]);
+    // R-7: 前のテンプレートの基準が残ると保存時の差分表示が誤る
+    setLoadedCounts({ fields: 0, amountCells: 0, exclusions: 0, columns: 0 });
+    setColumnNames(null);
+    markDirty(false);
+    resetHistory();
+
+    // 2) 自動生成（state を読まない・空テンプレートを明示する）
+    const r = await detectFrames({
+      manual: false, seq: o.seq, epoch, imagePath: o.imagePath, templatePath: null,
+      fields: [], tables: [], splitY: o.h, renderDpi: meta.current.render_dpi,
+    });
+    // H-1: 紙の世代・枠の世代のどちらかが進んでいたら、この続き（履歴の
+    // 置き直しと案内文）も今の画面のものではない
+    if (!candidateResultApplies({ seq: o.seq, epoch },
+                                { seq: loadSeqRef.current, epoch: frameEpochRef.current })) return;
+
+    // 3) 履歴の起点を「空テンプレート＋候補」へ置き直す（設計 §1.3）。
+    //    400ms 静止の履歴 effect が、空テンプレ確定から候補到着までの間に
+    //    1コマ積んでしまうため——そのままだと Ctrl+Z で「空テンプレ・候補
+    //    なし」へ戻れてしまい、自動生成を Undo の起点にする意図と食い違う
+    resetHistory();
+    setMsg(`${o.notice ? `${o.notice} ` : ""}画像 ${o.w}×${o.h}・`
+      + newTemplateNotice(r.count > 0));
+  };
+
+  // 「利用者テンプレート一覧から開く」「照合パネルの『このテンプレートを
+  // 使う』」の両方から呼ぶ手動適用。
+  const openMatchedTemplate = async (kind: "shipped" | "user", name: string) => {
+    if (!(await confirmDiscard())) return;
+    const target: AppliedTemplateTarget =
+      kind === "user" ? { kind: "user", name } : { kind: "shipped" };
+    // 押したボタンは適用と同時に消える（決定カードが畳まれる）ため、
+    // フォーカスを body へ落とさず適用中バーの先頭ボタンへ移す（UI §7）
+    focusAfterDecisionRef.current = "bar";
+    const ok = await applyTemplateByName(target, { auto: false, displayName: name });
+    if (!ok) { focusAfterDecisionRef.current = null; return; }
+    setUserTplPanel(null);
   };
 
   // 「利用者テンプレートから開く」パネルを開く（一覧を取得するだけ・破壊的操作なし）。
@@ -3198,6 +3623,7 @@ export default function Editor(
     if (!(await confirmDiscard())) return;
     const { W, H } = curSize();
     const empty = emptyTemplateFor(W, H, H);
+    const epoch = bumpFrameEpoch();   // H-1: 確定枠を空へ差し替える
     toEditorState(empty);
     resetHistory();
     setTplPath(null);
@@ -3213,8 +3639,64 @@ export default function Editor(
     // 押し直せば同じ候補が overlaps=false で即座に取り直せる
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
     setRecentCandTableUids([]);
+    // S-1（R-7）: 読み込み時の基準が前のテンプレートのまま残ると、保存時の
+    // 差分確認が「無編集なのに欄が減った」と誤って言う（既存の穴・1行）
+    setLoadedCounts({ fields: 0, amountCells: 0, exclusions: 0, columns: 0 });
+    setColumnNames(null);
     markDirty(true);   // 空でも「まだ保存していない」新規状態として扱う
-    setMsg(newTemplateNotice(false));
+    setTplDecision({ state: "candidates" });
+    // Should-1: 未適用バー（unappliedTemplateBarText）が同じ瞬間に立つ。
+    // 「候補から採用してテンプレートを作る」という次の一手はバー側が言う
+    // ので、.msg は空にして読み上げを1本に絞る
+    setMsg(templateDecisionMsg(hasImage, newTemplateNotice(false)));
+    // Q-A2（Orchestrator 判断・2026-09-04）: このボタンを押した人の意図は
+    // 「この紙の枠が欲しい」なので、空テンプレートへ切り替えたあと同じ自動
+    // 経路で候補生成まで続ける。自動生成を OFF にしている環境では走らせない
+    // ——OFF は「従来動作に戻す」設定であって、押した瞬間だけ例外にしない
+    let autoDetect = true;
+    try {
+      autoDetect = autoDetectEnabled(await invoke<Record<string, unknown>>("read_config"));
+    } catch { /* 読めなければ既定（ON） */ }
+    if (!autoDetect || !imgPath) return;
+    const seq = loadSeqRef.current;
+    const r = await detectFrames({
+      manual: false, seq, epoch, imagePath: imgPath, templatePath: null,
+      fields: [], tables: [], splitY: H, renderDpi: meta.current.render_dpi,
+    });
+    // H-1: 生成中に紙かテンプレートが入れ替わっていたら、履歴の置き直しも
+    // 案内文も今の画面のものではない（runCandidateFlow と同じ判定）
+    if (!candidateResultApplies({ seq, epoch },
+                                { seq: loadSeqRef.current, epoch: frameEpochRef.current })) return;
+    // 空テンプレート確定から候補到着までの間に履歴が1コマ積まれるため、
+    // 起点を「空テンプレート＋候補」へ置き直す（runCandidateFlow と同じ理由）
+    resetHistory();
+    if (r.count > 0) {
+      setMsg(templateDecisionMsg(hasImage, newTemplateNotice(true)));
+      // 押したボタン（黄帯・赤帯の中）はこの後も残るが、次の作業は右パネル
+      // なのでフォーカスを候補タブへ送る（UI §7）
+      requestAnimationFrame(() => document.getElementById("edittab-candidates")?.focus());
+    }
+  };
+
+  // 適用中バー「候補から作り直す」／決定カード「候補から新しく作る」。
+  // 既に空テンプレート＋候補が載っている（候補パスで開いた直後）なら作り
+  // 直さず、案内を1行の未適用バーへ畳むだけにする——同じ候補をもう一度
+  // 作らせるのは待たせるだけで、結果も変わらない
+  const startFromCandidates = async () => {
+    if (fields.length === 0 && tables.length === 0 && cands.length > 0) {
+      setTplDecision({ state: "candidates" });
+      requestAnimationFrame(() => document.getElementById("edittab-candidates")?.focus());
+      return;
+    }
+    await createTemplateForThisImage();
+  };
+
+  // 適用中バー「別のテンプレートを選ぶ」／未適用バー「保存済みのテンプレート
+  // から選ぶ」。適用中のテンプレートは外さない（決定カードを開き直すだけ）
+  const reopenTemplateChooser = () => {
+    focusAfterDecisionRef.current = "chooser";
+    setTplDecision({ state: "deciding" });
+    setMatchCollapsed(false);
   };
 
   // 確認ダイアログでキャンセルされたときの共通後始末。ファイルには一切
@@ -3707,23 +4189,68 @@ export default function Editor(
   // ---------- 枠候補の一括生成（issue #73 (b)・detect-frames・設計08 §4）----------
   // detect-grid（上記 generate）とは独立の経路。領域指定（pending）は不要——
   // ページ全体を core が解析する（§4.5.6「2ボタンに分ける」の新設側）
-  const runDetectFrames = async () => {
-    if (!imgPath) { setFramesMsg(""); setErrMsg("画像を開いてから実行してください"); return; }
-    if (framesGenerating) return;
+  /// 枠候補の一括生成。**React state を一切読まない**（設計 §3.1・不変条件3）。
+  ///
+  /// 自動経路は setImgPath／toEditorState と同じ tick で走るため、クロージャ
+  /// から読める imgPath／tplPath／fields／tables／splitY はすべて「前の紙・
+  /// 前のテンプレート」の値になる。ここを踏むと「別の紙の座標で候補が出る」
+  /// 「空テンプレのはずが全候補 overlaps」という #73 が潰した故障が再発する
+  /// ので、必要な入力は全部必須引数で受け取り、抜け道を型で塞ぐ。
+  /// meta.current（render_dpi）は ref なので toEditorState 直後に同期で
+  /// 正しい値になる——ここだけが例外。
+  const detectFrames = async (o: {
+    manual: boolean;
+    seq: number;
+    /// 生成を始める時点の「枠の世代」（frameEpochRef の値）。呼び出し側が
+    /// fields/tables を採った時点と同じ値を渡す——関数内で ref を再読みすると、
+    /// 引数の枠と照合する世代がずれる窓が残る（レビュー LOW-1・2026-09-04）
+    epoch: number;
+    imagePath: string;
+    templatePath: string | null;
+    fields: Field[];
+    tables: Table[];
+    splitY: number;
+    renderDpi: number;
+  }): Promise<{ count: number; zeroReason: string | null }> => {
+    const none = { count: 0, zeroReason: null as string | null };
+    const eff = detectFramesEffects(o.manual);
+    if (!o.imagePath) {
+      // 自動時は無言で降りる（画像が無い＝そもそも呼ばれない経路）
+      if (o.manual) { setFramesMsg(""); setErrMsg("画像を開いてから実行してください"); }
+      return none;
+    }
+    if (detectingRef.current) return none;
+    // H-1: 生成を始めた時点の「枠の世代」。候補はこの時点の確定枠を基準に
+    // 重なりを判定して返るので、解決までに差し替わっていたら結果を捨てる
+    const epoch = o.epoch;
+    detectingRef.current = true;
     setFramesGenerating(true);
     setFramesMsg("枠候補を生成しています…");
-    setErrMsg("");
+    if (eff.clearErrMsg) setErrMsg("");
     setRecentCandTableUids([]);
     try {
-      const args = ["detect-frames", "--input", imgPath, "--dpi", String(meta.current.render_dpi)];
-      if (tplPath) args.push("--template", tplPath);
+      const args = ["detect-frames", "--input", o.imagePath, "--dpi", String(o.renderDpi)];
+      if (o.templatePath) args.push("--template", o.templatePath);
       const out = await invoke<string>("run_core_capture", { args });
+      // 生成中に次の紙を開いた（seq）か、確定枠が差し替わった（epoch）なら
+      // この結果は捨てる（R-3・レビュー H-1）。ここより下は setCands・
+      // setCandSelected・setPanelTab・setFramesMsg のいずれも「今の画面」に
+      // 対する書き込みになるため、判定は1か所・この位置で行う
+      if (!candidateResultApplies({ seq: o.seq, epoch },
+                                  { seq: loadSeqRef.current, epoch: frameEpochRef.current })) {
+        return none;
+      }
       const ev = out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
         .find((e) => e && e.event === "detect_frames");
       if (!ev?.ok) {
-        setFramesMsg("");
-        setErrMsg(ev?.error ? `枠候補を生成できませんでした: ${ev.error}` : "枠候補を生成できませんでした。");
-        return;
+        if (eff.errorTo === "errMsg") {
+          setFramesMsg("");
+          setErrMsg(ev?.error ? `枠候補を生成できませんでした: ${ev.error}` : "枠候補を生成できませんでした。");
+        } else {
+          // M-8: 自動生成の失敗で画像側の赤帯を奪わない
+          setFramesMsg(autoDetectFailureNotice(ev?.error ?? "不明"));
+        }
+        return none;
       }
       // スバル差し戻し Must-1: tplPath が null の経路（起動時復元・(t) の
       // テンプレート切替）では --template を渡せず、core の
@@ -3732,20 +4259,26 @@ export default function Editor(
       // 検出したら overlaps=true に確定する（安全網を二重化する）
       const newCands = candidatesFromDetectFrames(ev).map((c) => ({
         ...c,
-        overlaps: c.overlaps || candidateOverlapsExisting(c, fields, tables, splitY),
+        overlaps: candidateOverlapFlag(
+          c.overlaps,
+          candidateOverlapsExisting(c, o.fields, o.tables, o.splitY),
+          o.templatePath !== null),
       }));
       const defaults: Record<string, boolean> = {};
       for (const c of newCands) defaults[c.id] = candidateDefaultChecked(c);
       setCandSelected(defaults);
-      // 候補生成は Undo 1コマとして即座に積む（400ms静止の経路に頼らない・
-      // 設計08 §4.5.3）。生成前の状態（現在の cands 含む）を丸ごと退避する
-      pushHistoryNow({ fields, tables, excls, splitY, cands: newCands });
+      // 手動生成は Undo 1コマとして即座に積む（400ms静止の経路に頼らない・
+      // 設計08 §4.5.3）。生成前の状態（現在の cands 含む）を丸ごと退避する。
+      // 自動生成は積まない（M-7）——利用者の編集ではないため
+      if (eff.pushHistory) pushHistoryNow({ fields: o.fields, tables: o.tables, excls,
+                                            splitY: o.splitY, cands: newCands });
       setCands(newCands);
-      markDirty(true);
+      if (eff.markDirty) markDirty(true);
       // ラミィ差し戻し（3回目・Must）: 生成完了のたびに枠候補タブへ切り替える
       // （候補が既にある状態での再生成でも切り替わるようにする。候補0件の
-      // ときは切り替えない——結果文は常時ライブ領域（sr-only）が伝える）
-      if (shouldSwitchToCandidatesTab(cands.length, newCands.length, ev.zero_reason)) {
+      // ときは切り替えない——結果文は常時ライブ領域（sr-only）が伝える）。
+      // 第1引数は意図的に使われない（shouldSwitchToCandidatesTab の void prevLen）
+      if (shouldSwitchToCandidatesTab(0, newCands.length, ev.zero_reason)) {
         setPanelTab("candidates");
       }
       const zr = zeroReasonNotice(ev.zero_reason);
@@ -3770,12 +4303,29 @@ export default function Editor(
           + `・${statsText}・${ev.elapsed_ms ?? 0}ms`
           + (extraNotes ? ` ／ ${extraNotes}` : ""));
       }
+      return { count: newCands.length, zeroReason: ev.zero_reason ?? null };
     } catch (e) {
-      setFramesMsg("");
-      setErrMsg(`枠候補の生成に失敗しました: ${e}`);
+      if (eff.errorTo === "errMsg") {
+        setFramesMsg("");
+        setErrMsg(`枠候補の生成に失敗しました: ${e}`);
+      } else {
+        setFramesMsg(autoDetectFailureNotice(e));
+      }
+      return none;
     } finally {
+      detectingRef.current = false;
       setFramesGenerating(false);
     }
+  };
+
+  /// ツールバー「ページ全体から枠候補を生成」。手動経路は今の state を
+  /// そのまま渡すだけの薄いラッパにする（検出ロジック本体は1つに保つ）
+  const runDetectFrames = () => {
+    void detectFrames({
+      manual: true, seq: loadSeqRef.current, epoch: frameEpochRef.current,
+      imagePath: imgPath, templatePath: tplPath,
+      fields, tables, splitY, renderDpi: meta.current.render_dpi,
+    });
   };
 
   // 表候補を採用した結果できた table の uid を集める（「接頭辞で列名を一括
@@ -5039,8 +5589,16 @@ export default function Editor(
     <div className="editor">
       <div className="adminstrip">この画面では<b>帳票の読み取り位置（枠）を定義します</b>（管理者向け）。通常の読み取りは「実行」タブから行ってください。</div>
       <div className="toolbar">
-        <button className="btn" onClick={loadImage}>帳票を開く（PDF・画像）</button>
-        <button className="btn" onClick={loadTemplate}>テンプレートを開く</button>
+        {/* レビュー M-2: 生成中（最大3秒）は「開く」系を止める。detectFrames の
+            detectingRef が2本目を無言で捨てる（{count:0} を返す）ため、押せる
+            ままだと「2枚目を開いたのに候補が作られない」が黙って起きる。
+            ツール群・生成ボタンと同じ title で理由を出す */}
+        <button className="btn" onClick={loadImage} disabled={framesGenerating}
+          title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
+          帳票を開く（PDF・画像）</button>
+        <button className="btn" onClick={loadTemplate} disabled={framesGenerating}
+          title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
+          テンプレートを開く</button>
         <button className="btn" onClick={openUserTemplateList}>利用者テンプレートから開く</button>
         <button ref={saveBtnRef} className="btn primary" onClick={saveTemplate}>保存して検証</button>
         <button className="btn" onClick={saveAsUserTemplate}>利用者テンプレートとして保存</button>
@@ -5190,18 +5748,77 @@ export default function Editor(
           流していない（二重読み上げにならない） */}
       {warnMsg && <div className="warnbox" role="status" aria-live="polite"
         style={{ margin: "8px 18px" }}>{warnMsg}</div>}
+      {/* 適用中バー／未適用バー（初回読み込みフロー・UI 設計 §4/§5）。
+          テンプレートを決めたら決定カードを畳み、1行の帯に置き換える。
+          適用／解除の読み上げはこの帯の1領域だけで行う（framesMsg・
+          reorderMsg の sr-only へは同じ文を流さない・UI §7 Must 13）。
+          帯そのものは画像がある間ずっとマウントしたままにして中身だけ
+          入れ替える——role="status" の器を後から差し込むと、環境によって
+          最初の1回が読まれない（保存成功の緑帯と同じ作り）。
+          適用中は .card（中立）にする。緑（成功）にしない: 自動適用は
+          成果ではなく既定動作。未適用は .tipbox（案内の温度）で、
+          .warnbox（問題が起きている）にはしない */}
+      {hasImage && (
+        <>
+        <div className={tplDecision?.state === "applied" ? "card"
+          : tplDecision?.state === "candidates" ? "tipbox" : undefined}
+          style={tplDecision && tplDecision.state !== "deciding"
+            ? { margin: "8px 18px", display: "flex", alignItems: "center",
+                justifyContent: "space-between", gap: 12, flexWrap: "wrap" }
+            : undefined}>
+          <span role="status" aria-live="polite">
+            {tplDecision?.state === "applied"
+              ? appliedTemplateBarText(tplDecision.name, tplDecision.auto,
+                                       tplDecision.fields, tplDecision.tables)
+              : tplDecision?.state === "candidates" ? unappliedTemplateBarText() : ""}
+          </span>
+          {tplDecision?.state === "applied" && (
+            <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <button ref={appliedBarBtnRef} type="button" className="btn"
+                onClick={reopenTemplateChooser}>別のテンプレートを選ぶ</button>
+              <button type="button" className="btn"
+                onClick={() => { void startFromCandidates(); }}>候補から作り直す</button>
+            </span>
+          )}
+          {tplDecision?.state === "candidates" && (
+            <button type="button" className="btn"
+              onClick={reopenTemplateChooser}>保存済みのテンプレートから選ぶ</button>
+          )}
+        </div>
+        {/* 前回レビューの残件: 空テンプレートで開いたときの作り方の案内
+            （newTemplateNotice）は .msg に載せていたが、未適用バーが立つ場面
+            では templateDecisionMsg が .msg を空にするため画面から消えていた。
+            候補が0件のときはここだけが「どう描き始めるか」を伝える。
+            ライブ領域は付けない——バー（role="status"）と同時に読み上げると
+            変化の報告が2本になる（UI §7 Must 13） */}
+        {tplDecision?.state === "candidates" && (
+          <p className="tpl-note">{newTemplateNotice(cands.length > 0)}</p>
+        )}
+        </>
+      )}
       {/* issue #72 (t)・FR-F28/F46: 照合提示（「この画像に合うテンプレート」）。
           画像を開くたびに match_templates を呼び直す（loadImage 参照）。
           現在開いているテンプレートが一致判定なら畳んでおく（matchCollapsed） */}
-      {(matchLoading || matchError || matchResult) && (
-        <div className="card" style={{ margin: "8px 18px" }}>
+      {(matchLoading || matchError || matchResult)
+        && tplDecision?.state !== "applied" && tplDecision?.state !== "candidates" && (
+        // 決定カードは「決めるまでの一時的な存在」。決めたら上の1行帯に
+        // 置き換わる（UI §1）。過去に候補パネルを全幅カードにして canvas が
+        // 0px まで潰れた事故があるため、カードは 40vh・一覧は 200px で
+        // 内部スクロールに閉じ込める（UI §1.1・App.css の .canvas min-height
+        // と二重の保険）
+        <div className="card tpl-card" style={{ margin: "8px 18px", maxHeight: "40vh",
+          display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <b>この画像に合うテンプレート</b>
+            <b>{tplDecision?.state === "deciding"
+              ? "テンプレートを選ぶ" : "この画像に合うテンプレート"}</b>
             <button type="button" className="btn"
               onClick={() => setMatchCollapsed((c) => !c)}>
               {matchCollapsed ? "表示する" : "折りたたむ"}
             </button>
           </div>
+          {tplDecision?.state === "deciding" && !matchCollapsed && (
+            <p className="note" style={{ margin: "6px 0 2px" }}>{templateChoiceNotice()}</p>
+          )}
           {!matchCollapsed && (matchLoading ? (
             <p className="note">照合しています…</p>
           ) : matchError ? (
@@ -5210,18 +5827,41 @@ export default function Editor(
             const ranked = rankCandidates(matchResult.candidates, matchResult.truncated);
             return (
               <>
-                <p className="note">{ranked.notice}</p>
-                {ranked.rows.map((c) => (
-                  <div key={`${c.kind}:${c.name}`} className="panel-outrow">
-                    <span>{c.name}{c.kind === "shipped" ? "（出荷）" : ""}
-                      {ranked.recommend === c.name && " ★推奨"}</span>
-                    <span className="note">欄{c.fields}・表{c.tables}
-                      {c.updated_at ? `・更新 ${c.updated_at}` : ""}
-                      {ranked.showScore ? `・スコア ${c.score.toFixed(2)}` : ""}</span>
-                    <button className="btn" type="button"
-                      onClick={() => openMatchedTemplate(c.kind, c.name)}>開く</button>
-                  </div>
-                ))}
+                <p className="note" style={{ margin: "2px 0 6px" }}>{ranked.notice}</p>
+                {ranked.rows.length === 0 && (
+                  <p className="note">この画像に合うテンプレートは見つかりませんでした。
+                    候補から新しく作ってください。</p>
+                )}
+                <div style={{ maxHeight: 200, overflowY: "auto", minHeight: 0 }}>
+                  {ranked.rows.map((c, i) => (
+                    <div key={`${c.kind}:${c.name}`} className="panel-outrow tpl-row">
+                      {/* 推奨は色だけに頼らず「推奨」の語で示す。僅差・打ち切り
+                          のときは rankCandidates が recommend=null を返すので、
+                          primary が0個になり「機械は決められない」が形で伝わる */}
+                      <span className="tpl-row-name">
+                        {ranked.recommend === c.name
+                          && <span className="recommend-badge">推奨</span>}
+                        {c.name}{c.kind === "shipped" ? "（出荷）" : ""}</span>
+                      <span className="note tpl-row-meta">欄{c.fields}・表{c.tables}
+                        {c.updated_at ? `・更新 ${c.updated_at}` : ""}
+                        {ranked.showScore ? `・スコア ${c.score.toFixed(2)}` : ""}</span>
+                      {/* 同じラベルのボタンが行数ぶん並ぶため、accessible name
+                          にテンプレート名を含める（UI §7）。可視ラベルを先頭に
+                          そのまま含む形にしてある（WCAG 2.5.3 Label in Name） */}
+                      {/* レビュー H-1: 生成中は押せない。世代番号
+                          （candidateResultApplies）で古い結果は捨てるが、
+                          押した瞬間から候補が消えるまでの見た目のちらつきも
+                          避ける。隣の「候補から新しく作る」と同じ扱い */}
+                      <button ref={i === 0 ? firstUseTemplateBtnRef : undefined}
+                        className={ranked.recommend === c.name ? "btn primary" : "btn"}
+                        type="button" aria-label={useTemplateButtonName(c.name, c.kind)}
+                        disabled={framesGenerating}
+                        title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
+                        onClick={() => { void openMatchedTemplate(c.kind, c.name); }}>
+                        このテンプレートを使う</button>
+                    </div>
+                  ))}
+                </div>
                 {matchResult.excluded.length > 0 && (
                   <p className="note">読めないテンプレート {matchResult.excluded.length} 件（
                     {matchResult.excluded.map((e) => `${e.name}: ${excludedReasonJa(e.reason)}`).join("、")}）</p>
@@ -5229,6 +5869,20 @@ export default function Editor(
               </>
             );
           })())}
+          {/* 二択のもう一方。区切り線の下に置いて「または」の関係を示す
+              （UI §2 W1）。候補0件でも押せるままにする——空のテンプレートから
+              手で描く導線がここしかない */}
+          {tplDecision?.state === "deciding" && !matchCollapsed && (
+            <div style={{ borderTop: "1px solid var(--line)", marginTop: 8, paddingTop: 8,
+              display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <button type="button" className="btn outline" disabled={framesGenerating}
+                title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
+                onClick={() => { void startFromCandidates(); }}>候補から新しく作る</button>
+              <span className="note">
+                {framesGenerating ? "枠候補を生成しています…"
+                  : "右の「枠候補」から採用して、この紙のテンプレートを作ります"}</span>
+            </div>
+          )}
         </div>
       )}
       <div className="editor-body">
@@ -5262,7 +5916,10 @@ export default function Editor(
               aria-selected={panelTab === "candidates"} aria-controls="edittabpanel"
               className={panelTab === "candidates" ? "active" : ""}
               disabled={cands.length === 0}
-              title={cands.length === 0 ? "「ページ全体から枠候補を生成」で候補ができると使えます" : undefined}
+              title={cands.length > 0 ? undefined
+                : tplDecision?.state === "applied"
+                  ? "テンプレートを適用中は使えません。「候補から作り直す」で戻せます"
+                  : "「ページ全体から枠候補を生成」で候補ができると使えます"}
               onClick={() => setPanelTab("candidates")}>
               枠候補
               {cands.length > 0 && <span className="badge">{cands.length}</span>}

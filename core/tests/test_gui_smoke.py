@@ -54,6 +54,18 @@ def page():
         errors: list[str] = []
         pg.on("pageerror", lambda e: errors.append(str(e)))
         pg.goto(URL, wait_until="networkidle")
+        # 既存テストは「枠候補の自動生成 OFF」（config.auto_detect_frames_on_open
+        # = false）で回す。この一群は**テンプレートを適用している状態**の
+        # 挙動（様式不一致の帯・重なり判定・Undo）を固定するもので、既定 ON の
+        # 初回読み込みフローでは記憶が無い限り候補パスに入って前提が変わる。
+        # OFF は設計 T-1「従来と完全に同じ」の回帰網でもある——ON 側の検証は
+        # ファイル末尾の test_editor_autodetect_* が各自の config で行う。
+        # デモの read_config は localStorage を返すだけなので、**実運用の
+        # config.json には一切触れない**
+        pg.evaluate(
+            "() => window.localStorage.setItem('chouhyo-demo-config',"
+            " JSON.stringify({ auto_detect_frames_on_open: false }))")
+        pg.reload(wait_until="networkidle")
         # 固定 sleep をやめ、初期画面が描けたことで待つ（issue #79）
         expect(pg.get_by_text("読み取る帳票の選択")).to_be_visible()
         yield pg
@@ -312,6 +324,24 @@ def test_editor_delete_ignored_while_run_tab_active(page):
     expect(page.get_by_text("次の作業（目視確認）")).to_be_visible()
 
 
+def _expect_template_applied(page, name):
+    """テンプレート「name」が適用されたことを、報告先の違いに依らずに待つ。
+
+    適用の報告先は画像を開いているかで変わる（Editor.tsx の
+    templateDecisionMsg・a11y Should-1）。画像があるときは適用中バーが立ち、
+    ライブ領域を1本に絞るため `.msg` は空になる。画像が無いときはバーが
+    無いので従来どおり `.msg` に出る。スモークは module スコープの page を
+    共有していて「直前のテストが画像を開いたか」で両方に振れるため、どちらでも
+    通る形で待つ——この待ちの目的は適用の完了であって、どちらのライブ領域に
+    出たかではない。
+    """
+    expect(
+        page.get_by_text(f"適用中のテンプレート: {name}", exact=False)
+        .or_(page.get_by_text(f"テンプレート読込: {name}", exact=False))
+        .first
+    ).to_be_visible()
+
+
 def test_editor_user_template_list_opens_saved_template(page):
     # issue #72 (t)・FR-F27/F29: 「利用者テンプレートから開く」は
     # list_user_templates（表示名のみ・絶対パスなし・設計08 §3.2.2）の一覧を
@@ -328,7 +358,7 @@ def test_editor_user_template_list_opens_saved_template(page):
     expect(dialog.get_by_text("読み込めません（JSON として読めません）")).to_be_visible()
 
     dialog.get_by_role("button", name="開く", exact=True).click()
-    page.wait_for_selector("text=テンプレート読込: 帳票B")
+    _expect_template_applied(page, "帳票B")
 
     # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.locator(".tabs button", has_text="実行").click()
@@ -352,11 +382,17 @@ def test_editor_match_panel_shows_candidates_after_opening_image(page):
     # 描けたことを待つ（issue #79）——描画前に is_visible() を読むと常に
     # False になり、畳まれたまま先へ進んで後の判定が落ちる
     show_btn = page.get_by_role("button", name="表示する")
-    expect(show_btn.or_(page.get_by_text("★推奨")).first).to_be_visible()
+    expect(show_btn.or_(page.locator(".recommend-badge")).first).to_be_visible()
     if show_btn.is_visible():
         show_btn.click()
 
-    expect(page.get_by_text("★推奨")).to_be_visible()   # 1件だけの一致候補が推奨される
+    # 推奨は記号（旧「★推奨」）ではなく語のバッジで示す（UI 設計 §3・
+    # 色だけに頼らない・読み上げでも「推奨」と読める）
+    expect(page.locator(".recommend-badge")).to_have_text("推奨")
+    # 一覧のボタンは行ごとに同じ見た目のラベルだが、accessible name には
+    # テンプレート名が入る（同名ボタンが並ぶのを避ける・UI §7）
+    expect(page.get_by_role(
+        "button", name="このテンプレートを使う（帳票B）")).to_be_visible()
     expect(page.get_by_text("帳票B", exact=False).first).to_be_visible()
     # 照合できなかったテンプレートの件数・理由が出る（FR-F28）
     expect(page.get_by_text("読めないテンプレート 1 件", exact=False)).to_be_visible()
@@ -563,7 +599,12 @@ def test_editor_size_mismatch_new_template_generate_accept_save(page):
     page.wait_for_selector("text=枠候補（4 件）")
 
     page.get_by_role("button", name="選んだ候補を採用").click()
-    page.wait_for_selector("text=3 件を採用しました")
+    # 4件（旧: 3件）。デモの c2 は「実コアが --template 無しでも
+    # overlaps_existing:true を返す」という実物と食い違う疑似応答だったため、
+    # person_氏名 に幾何的に重なる位置へ移して false で返すように直した。
+    # 空テンプレートの上では重なる相手がいないので4件すべてが対象になる
+    # ——この件数差そのものが「候補は空テンプレートの上で作る」の回帰検知
+    page.wait_for_selector("text=4 件を採用しました")
 
     seen_dialog_types = []
 
@@ -585,3 +626,335 @@ def test_editor_size_mismatch_new_template_generate_accept_save(page):
     # 「次の作業（目視確認）」ではなく手順1〜3の初期画面を待つ）
     page.locator(".tabs button", has_text="実行").click()
     page.wait_for_selector("text=読み取る帳票の選択")
+
+# ---------------------------------------------------------- 初回読み込みフロー
+# テンプレート編集で帳票を開いたときの分岐（AC-F76〜AC-F83・Q-A2・2026-09-04）。
+#
+# 上の既存テスト群は fixture で自動生成 OFF に固定してある（従来動作の回帰網）。
+# ここから下は各テストが自分で config を置いてから reload する——ON の既定と
+# 記憶の有無で挙動が変わるため、前のテストの残りに依存させない。
+# reload はデモの巡回カウンタ（bridge.ts の demoImagePickCount）も初期化する
+# ので、「帳票を開く」1回目は必ず mismatch.png になる。
+
+
+def _apply_demo_config(page, cfg):
+    """デモの config（localStorage）を丸ごと置き換えて再読み込みする。
+
+    デモモードの read_config は localStorage を返すだけなので、これが実物の
+    config.json を書き替える代わりになる。**実運用の config.json には触れない**。
+    """
+    page.evaluate(
+        "(cfg) => window.localStorage.setItem('chouhyo-demo-config', JSON.stringify(cfg))",
+        cfg,
+    )
+    page.reload(wait_until="networkidle")
+    expect(page.locator(".tabs button", has_text="テンプレート編集")).to_be_visible()
+
+
+def _open_editor(page):
+    page.locator(".tabs button", has_text="テンプレート編集").click()
+    page.wait_for_selector("text=管理者向け")
+
+
+# 記憶なし（初めてこの紙を開く）／記憶あり（前回 帳票B を適用した）の2状態
+_NO_MEMORY = {"auto_detect_frames_on_open": True, "last_applied_template": "",
+              "last_template": "shipped"}
+_REMEMBERS_B = {"auto_detect_frames_on_open": True, "last_applied_template": "user:帳票B",
+                "last_template": "user:帳票B"}
+
+
+def test_editor_autodetect_no_memory_shows_candidates(page):
+    # AC-F76: 記憶が無い状態で帳票を開くと、テンプレートは適用せずこの紙の
+    # 枠候補を自動で作る。右パネルは枠候補タブへ切り替わり件数が出る。
+    _apply_demo_config(page, _NO_MEMORY)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+
+    page.wait_for_selector("text=枠候補（4 件）")
+    expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
+    # 上部は「決定カード」に組み替わり、未適用であることを案内する
+    expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_be_visible()
+    expect(page.get_by_text("テンプレートはまだ適用していません", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="候補から新しく作る", exact=True)).to_be_visible()
+    # AC-F83 の否定形: 候補パスでは様式不一致の帯を出さない（設計 §2.1）。
+    # 1回目の疑似画像は mismatch.png なので、旧実装ならここで黄帯が出る
+    expect(page.get_by_text("様式が合いません", exact=False)).to_have_count(0)
+    expect(page.get_by_role(
+        "button", name="判定を無視して枠を表示する", exact=False)).to_have_count(0)
+
+
+def test_editor_autodetect_starts_from_empty_template(page):
+    # AC-F77/AC-F72: 候補は**空のテンプレートの上**で作る。出荷テンプレートの
+    # 枠は1件も載っていない（出力列タブが disabled＝欄・表が0件の機械的な証拠）
+    # ため、重なりのある候補も0件になる。
+    _apply_demo_config(page, _NO_MEMORY)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+
+    page.wait_for_selector("text=枠候補（4 件）")
+    expect(page.locator("#edittab-output")).to_be_disabled()
+    expect(page.get_by_text("既存と重なり")).to_have_count(0)
+
+
+def test_editor_autodetect_apply_template_discards_candidates(page):
+    # AC-F79/AC-F82: 決定カードの「このテンプレートを使う」で適用すると、
+    # 候補は破棄され欄一覧（出力列タブ）が出る。候補を1件も採用していない
+    # 段階なので、**保存確認は出さない**（失うものが無い操作に確認を挟むと
+    # 二択が三択に増える）。
+    _apply_demo_config(page, _NO_MEMORY)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=枠候補（4 件）")
+
+    native_dialogs = []
+
+    def handle_dialog(dialog):
+        native_dialogs.append(dialog.type)
+        dialog.dismiss()
+
+    page.on("dialog", handle_dialog)
+    try:
+        page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
+        _expect_template_applied(page, "帳票B")
+    finally:
+        page.remove_listener("dialog", handle_dialog)
+    # 画面内モーダル（保存前確認・破棄確認はどちらも role="alertdialog"）
+    expect(page.get_by_role("alertdialog")).to_have_count(0)
+    assert native_dialogs == [], f"ネイティブの確認が出た: {native_dialogs}"
+
+    # 候補は破棄され、確定枠が載る
+    expect(page.locator("#edittab-candidates")).to_be_disabled()
+    expect(page.locator("#edittab-output")).to_be_enabled()
+    page.locator("#edittab-output").click()
+    expect(page.get_by_role("button", name="person_氏名", exact=True)).to_be_visible()
+    # 決定カードは1行の適用中バーへ畳まれる。手動で選んだので「自動で適用
+    # しました」の括弧書きは付かない
+    expect(page.get_by_text("適用中のテンプレート: 帳票B", exact=False)).to_be_visible()
+    expect(page.get_by_text("前回と同じものを自動で適用しました", exact=False)).to_have_count(0)
+    expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_have_count(0)
+
+
+def test_editor_autodetect_reopen_applies_remembered_template(page):
+    # AC-F80: 適用したテンプレートは config.last_applied_template に覚え、
+    # 次に帳票を開いたときは候補生成をスキップしてそれを自動で適用する。
+    _apply_demo_config(page, _NO_MEMORY)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=枠候補（4 件）")
+    page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
+    _expect_template_applied(page, "帳票B")
+    # 記憶が書けたことを、固定 sleep ではなく保存された中身そのもので待つ
+    page.wait_for_function(
+        """() => {
+            try {
+                const raw = window.localStorage.getItem('chouhyo-demo-config');
+                return !!raw && JSON.parse(raw).last_applied_template === 'user:帳票B';
+            } catch (e) { return false; }
+        }"""
+    )
+
+    page.reload(wait_until="networkidle")
+    expect(page.locator(".tabs button", has_text="テンプレート編集")).to_be_visible()
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+
+    expect(page.get_by_text("前回と同じものを自動で適用しました", exact=False)).to_be_visible()
+    expect(page.locator("#edittab-output")).to_be_enabled()
+    # 候補生成は走らない（記憶があるので二択を出す場面ではない）
+    expect(page.get_by_text("枠候補（", exact=False)).to_have_count(0)
+    expect(page.locator("#edittab-candidates")).to_be_disabled()
+
+
+def test_editor_autodetect_off_keeps_legacy_flow(page):
+    # AC-F81: config.auto_detect_frames_on_open=false は従来動作へ完全に戻す。
+    # 記憶があっても自動適用せず、候補も作らない。
+    _apply_demo_config(page, {"auto_detect_frames_on_open": False,
+                              "last_applied_template": "user:帳票B",
+                              "last_template": "shipped"})
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=この画像に合うテンプレート")
+
+    expect(page.locator("#edittab-candidates")).to_be_disabled()
+    expect(page.get_by_text("適用中のテンプレート", exact=False)).to_have_count(0)
+    expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_have_count(0)
+    # 起動時に読み込んだ出荷（デモ）テンプレートがそのまま残る
+    page.locator("#edittab-output").click()
+    expect(page.get_by_role("button", name="person_氏名", exact=True)).to_be_visible()
+
+
+def test_editor_autodetect_applied_template_still_warns_on_mismatch(page):
+    # AC-F83: 様式不一致の黄帯と2ボタンは「テンプレートを適用している状態」
+    # では従来どおり出る（候補パスで出さないだけ・設計 §2.3 の読み替え）。
+    _apply_demo_config(page, _REMEMBERS_B)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()   # 1回目 = mismatch.png
+
+    expect(page.get_by_text("様式が合いません", exact=False).first).to_be_visible()
+    expect(page.get_by_role(
+        "button", name="判定を無視して枠を表示する", exact=False)).to_be_visible()
+    expect(page.get_by_text("前回と同じものを自動で適用しました", exact=False)).to_be_visible()
+    expect(page.get_by_text("枠候補（", exact=False)).to_have_count(0)
+
+
+def test_editor_autodetect_new_template_button_generates_candidates(page):
+    # Q-A2（Orchestrator 判断）: 「この紙用に新しいテンプレートを作る」を
+    # 押したら、空テンプレートへ切り替えたあと候補生成まで続ける——押した人の
+    # 意図は「この紙の枠が欲しい」なので、そこで手を止めさせない。
+    #
+    # 疑似画像は mismatch → match → undecidable → size-mismatch の順で巡回
+    # する。各回の待ちは、その画像でしか出ない案内で行う（回数を数えて待つと
+    # 前の回の表示のまま先へ進める）。
+    _apply_demo_config(page, _REMEMBERS_B)
+    _open_editor(page)
+    open_btn = page.get_by_role("button", name="帳票を開く（PDF・画像）")
+    open_btn.click()
+    page.wait_for_selector("text=様式が合いません")
+    open_btn.click()
+    page.wait_for_selector("text=位置合わせ済み")
+    open_btn.click()
+    page.wait_for_selector("text=判定できませんでした")
+    open_btn.click()
+    page.wait_for_selector("text=用紙サイズ／向きがテンプレートと合っていません")
+
+    page.get_by_role("button", name="この紙用に新しいテンプレートを作る", exact=True).click()
+    # ツールバーの「ページ全体から枠候補を生成」は押さない
+    page.wait_for_selector("text=枠候補（4 件）")
+    expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
+    # 空テンプレートの上なので重なりは0件
+    expect(page.get_by_text("既存と重なり")).to_have_count(0)
+    # 未適用バーへ切り替わる（適用中バーではない）
+    expect(page.get_by_text("テンプレートは適用していません", exact=False)).to_be_visible()
+    expect(page.get_by_text("適用中のテンプレート", exact=False)).to_have_count(0)
+
+
+# ---------------------------------------- レビュー差し戻し（H-1〜H-3・M-1〜M-4）
+# 生成中の一手で不変条件が破れる穴（H-1）の受入。デモの detect-frames は本来
+# 同じ tick で解決してしまい「生成中」の画面が存在しないため、デモ設定の
+# demo_detect_frames_delay_ms（bridge.ts）で実コアの待ち（実測 数百ms〜3秒）を
+# 再現する。世代番号そのものの判定は gui-logic の candidateResultApplies で
+# 固定してあり、ここで見るのは画面側の締め出し（disabled）と復帰。
+_GENERATING_DELAY_MS = 3000
+
+
+def test_editor_locks_frame_replacing_actions_while_generating(page):
+    # H-1／M-2 ＋ AC-F78: 候補の生成中は「確定枠を差し替える操作」をすべて
+    # 止め、完了後に必ず戻す。
+    #
+    # H-1 の経路: 生成中に決定カードの「このテンプレートを使う」を押すと、
+    # 確定枠はテンプレートの側へ入れ替わるのに遅れて解決した候補が
+    # 「重なり0件・全件チェック済み」で復活し、一括採用で適用中の枠に重なる
+    # 枠を足せてしまう。M-2 の経路: 「帳票を開く」「テンプレートを開く」は
+    # detectingRef の早期 return に当たり、2枚目の候補が黙って作られない。
+    cfg = dict(_NO_MEMORY)
+    cfg["demo_detect_frames_delay_ms"] = _GENERATING_DELAY_MS
+    _apply_demo_config(page, cfg)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+
+    use_btn = page.get_by_role("button", name="このテンプレートを使う（帳票B）")
+    expect(use_btn).to_be_disabled()
+    expect(page.get_by_role("button", name="帳票を開く（PDF・画像）")).to_be_disabled()
+    expect(page.get_by_role("button", name="テンプレートを開く", exact=True)).to_be_disabled()
+    expect(page.get_by_role("button", name="候補から新しく作る", exact=True)).to_be_disabled()
+    expect(page.get_by_role("button", name="欄を追加", exact=True)).to_be_disabled()
+
+    # AC-F78: 完了後は欄の追加・除外範囲・くり返し行・表裏の境界と「開く」系が
+    # すべて操作できる状態に戻る（生成中の締め出しが居残らない）
+    page.wait_for_selector("text=枠候補（4 件）")
+    for name in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
+        expect(page.get_by_role("button", name=name, exact=True)).to_be_enabled()
+    expect(page.get_by_role("button", name="帳票を開く（PDF・画像）")).to_be_enabled()
+    expect(page.get_by_role("button", name="テンプレートを開く", exact=True)).to_be_enabled()
+    expect(use_btn).to_be_enabled()
+    # 空テンプレートの上で作った候補なので重なりは0件のまま
+    expect(page.get_by_text("既存と重なり")).to_have_count(0)
+
+
+def test_editor_open_template_file_clears_applied_bar(page):
+    # H-2: 適用中に「テンプレートを開く」でファイルから別のテンプレートを
+    # 開いたら、前の名前を出したままの帯を残さない。ファイル起点は従来動作
+    # （帯もカードも出さない・T-2）へ戻す。
+    _apply_demo_config(page, _NO_MEMORY)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+    page.wait_for_selector("text=枠候補（4 件）")
+    page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
+    _expect_template_applied(page, "帳票B")
+    expect(page.get_by_text("適用中のテンプレート: 帳票B", exact=False)).to_be_visible()
+
+    page.get_by_role("button", name="テンプレートを開く", exact=True).click()
+    # デモの pick_json は固定パスを返す。帯が消えたことは名前ではなく
+    # 「適用中のテンプレート」という語そのものの不在で見る
+    page.wait_for_selector("text=テンプレート読込: C:")
+    expect(page.get_by_text("適用中のテンプレート", exact=False)).to_have_count(0)
+    expect(page.get_by_text("テンプレートは適用していません", exact=False)).to_have_count(0)
+    expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_have_count(0)
+
+
+def test_editor_stale_memory_still_offers_template_chooser(page):
+    # M-1（T-5）: 記憶が指すテンプレートの実体が無いときは記憶を捨てて候補
+    # パスへ落ちる。このとき決定カードも未適用バーも出ないと、「破線は何か」
+    # 「どこからテンプレートを選ぶのか」が画面から消える。
+    _apply_demo_config(page, {"auto_detect_frames_on_open": True,
+                              "last_applied_template": "user:存在しない",
+                              "last_template": "shipped"})
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+
+    page.wait_for_selector("text=枠候補（4 件）")
+    expect(page.get_by_text("見つかりませんでした", exact=False).first).to_be_visible()
+    expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="このテンプレートを使う（帳票B）")).to_be_visible()
+    expect(page.get_by_role("button", name="候補から新しく作る", exact=True)).to_be_visible()
+    # 記憶は自己修復で空になる（次に開いたときに同じ失敗を繰り返さない）
+    page.wait_for_function(
+        """() => {
+            try {
+                const raw = window.localStorage.getItem('chouhyo-demo-config');
+                return !!raw && JSON.parse(raw).last_applied_template === '';
+            } catch (e) { return false; }
+        }"""
+    )
+
+
+def test_editor_auto_apply_does_not_touch_last_template(page):
+    # AC-F86 の GUI 分: 記憶からの自動適用は「復元」であって選択ではない。
+    # 実行画面の選択（config.last_template）を書き換えない——書き換わると
+    # 帳票を開いただけで実行タブの読み取り対象が変わる。
+    _apply_demo_config(page, {"auto_detect_frames_on_open": True,
+                              "last_applied_template": "shipped",
+                              "last_template": "user:帳票B"})
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
+
+    expect(page.get_by_text("前回と同じものを自動で適用しました", exact=False)).to_be_visible()
+    expect(page.get_by_text("枠候補（", exact=False)).to_have_count(0)
+    assert page.evaluate(
+        "() => JSON.parse(window.localStorage.getItem('chouhyo-demo-config')).last_template"
+    ) == "user:帳票B"
+
+
+def test_editor_new_template_keeps_drawing_hint_on_screen(page):
+    # 前回レビューの残件: 未適用バーが立つと templateDecisionMsg が .msg を
+    # 空にするため、「どう描き始めるか」の案内（newTemplateNotice）が画面から
+    # 消えていた。バーの下に .note として出す。候補が0件の間は「くり返し行で
+    # 表の外枠を描く」案内、候補が届いたら「候補を確認して採用」へ入れ替わる。
+    cfg = dict(_REMEMBERS_B)
+    cfg["demo_detect_frames_delay_ms"] = _GENERATING_DELAY_MS
+    _apply_demo_config(page, cfg)
+    _open_editor(page)
+    page.get_by_role("button", name="帳票を開く（PDF・画像）").click()   # 1回目 = mismatch.png
+    page.wait_for_selector("text=様式が合いません")
+    page.get_by_role("button", name="この紙用に新しいテンプレートを作る", exact=True).click()
+
+    hint = page.locator(".tpl-note")
+    expect(page.get_by_text("テンプレートは適用していません", exact=False)).to_be_visible()
+    expect(hint).to_contain_text("空のテンプレートで開きました")
+    expect(hint).to_contain_text("くり返し行（家族・明細）")
+    # 変化の報告は未適用バー1本に絞る（案内側にライブ領域は付けない・UI §7）
+    assert hint.get_attribute("aria-live") is None
+    assert hint.get_attribute("role") is None
+
+    page.wait_for_selector("text=枠候補（4 件）")
+    expect(hint).to_contain_text("候補を確認して採用してください")

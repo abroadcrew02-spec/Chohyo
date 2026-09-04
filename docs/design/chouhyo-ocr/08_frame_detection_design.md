@@ -3,8 +3,8 @@
 ## 0. 文書情報
 
 - 文書ID: chouhyo-ocr-08
-- 版数: `v0.2`（§1〜§6 を確定。**§6＝(f) は 2026-09-03 の実装と同一の作業で書き下ろした**）
-- 最終更新: 2026-09-03
+- 版数: `v0.3`（§1〜§6 を確定。**§6＝(f) は 2026-09-03 の実装と同一の作業で書き下ろした**。**v0.3 で編集画面の初回読み込みフローを §3.5・§3.6・§4.5 に追記**・07 v1.6 の FR-F51〜F55 に対応・**2026-09-04 レビュー反映**で §3.6・§4.4・§4.5 を実装へ合わせた）
+- 最終更新: 2026-09-04
 - 上位文書: [07_frame_detection_requirements.md](07_frame_detection_requirements.md) v1.1（**要件の正本**。本書は実装方針のみを書き、要件を再定義しない）
 - 関連: [02_design.md](02_design.md)（D-15・D-25・D-26・§6.2）／[03_test_requirements.md](03_test_requirements.md) §2・§3（テストレベルと回帰ゲート基準値の正本）／[05_output_columns_requirements.md](05_output_columns_requirements.md)（列契約）
 - GitHub Issue: #77（ログ匿名化・§1）／#71（(a') 既存判定の接続・§2）
@@ -19,6 +19,7 @@
 | #73 (b) | ページ全体からの枠候補生成 | **§4 に設計を確定**（FR-F19 と切り抜きの衝突は §7-10 の判断待ち） |
 | #74 (c) | 位置合わせ残差・吸着量の記録 | **§5 に設計を確定**（実装済み: `f935a79`） |
 | #75 (f) | 実行時のブロック単位吸着 | **§6 に設計を確定**（core 実装済み・2026-09-03。診断コマンド `snap-diff`・GUI・README は別作業） |
+| 初回読み込みフロー | 候補先行・適用は人が選ぶ（07 v1.6 FR-F51〜F55／AC-F67〜F86） | **§3.5・§3.6・§4.5.7 に設計を確定**（2026-09-04・(b) と (t) の合流点にあたるため新章を立てず既存節へ載せた） |
 
 **§7 に、07 v1.3 と本設計の食い違い（要件側の修正提案）を列挙する。** 7-1〜7-9 は (a')・(t) の設計時に出したもので要件へ反映済み。**未決は 7-10〜7-13 の4件**で、7-10（既存枠と切り抜きの衝突）は (b) の実装着手前に結論が要る。
 
@@ -863,7 +864,7 @@ staged ファイル（`<name>.json.saving.json`）は拡張子が `json` で親�
 
 **ジャンクション残余（LOW 受容）の再評価トリガ**: 読み取りルート配下にジャンクションを張られた場合の残余リスクは LOW として受容している。前提は「読めるのは roots 配下の限られた拡張子だけ」「roots は repo_root と `workdir/editor_pages` の2つだけ」。次のいずれかに手を入れるときは **HIGH 相当として再評価**すること——(1) roots を参照するコマンドの許可拡張子を増やす (2) `read_text` に roots を許す（現在は pick 済みパスのみ） (3) `workdir` を GUI から自由入力できるようにする。コード側の同じ注意書きは `gui/src-tauri/src/lib.rs` の `allowed_roots` に置いてある。
 
-### 3.3 照合提示（FR-F28・FR-F46・NFR-F09）
+### 3.3 照合と適用の選択面（FR-F28・FR-F46・FR-F54・NFR-F09）
 
 #### 3.3.1 経路の決定: 新サブコマンド `match-templates`
 
@@ -965,6 +966,20 @@ export function rankCandidates(cands: Candidate[], truncated: boolean):
 - 各行の表示: 表示名・`kind`（出荷／利用者の区分を明示）・`template_id`・欄数／表数・最終更新日時（FR-F46 ④）
 - `excluded` は一覧の下に「読み込めなかったテンプレート: N 件（内訳）」として**必ず出す**（黙って減らさない・FR-F28）
 
+#### 3.4.1 一覧は「候補の陳列」ではなく「適用の選択面」（FR-F54・07 v1.6）
+
+一覧の役割を、照合結果を見せる場から**適用を決める場**へ変える。帳票を開いた直後に候補が自動で出る（§4.5.7）ため、利用者が最初に決めるのは「保存済みのテンプレートを使うか、出たばかりの候補から作るか」の二択であり、その二択が同じ面で完結していないと候補パネルと一覧を往復することになる。
+
+| 要素 | 決定 |
+|---|---|
+| 一覧の各行のボタン | 「**このテンプレートを使う**」（出荷テンプレートの行も同じ文言。区分は行内の「（出荷）」表示で示す） |
+| 対の操作 | 「**候補から新しく作る**」を一覧の下に置く。動詞を「使う／作る」で揃える |
+| 決めた後 | 一覧を畳み、1行の帯に置き換える。文言は「**適用中のテンプレート: 〈名前〉**」。記憶からの自動適用のときだけ「**（前回と同じものを自動で適用しました）**」を添え、利用者が別のものを選び直したらこの括弧書きを消す |
+| 帯からの戻り導線 | 同じ帯の中に「別のテンプレートを選ぶ」と「候補から新しく作る」を置く |
+| 適用の確認 | 候補を1件も採用しておらず未保存の編集も無ければ**確認なしで即適用**。採用済み・未保存の編集があるときだけ確認を1枚出す（FR-F54） |
+
+⚠️ **既存の「開く」という語は利用者テンプレート一覧のモーダル側にだけ残す。** あちらはファイルを明示的に開く操作、ここは適用を決める操作で、経路が違う。同じ語を両方に使うと、記憶より優先される「明示的に開いた状態」（§3.6）との区別が画面上で付かなくなる。
+
 ### 3.5 実行画面の選択（FR-F27・FR-F29・AC-F26・AC-F60・AC-F61）
 
 #### 3.5.1 選択値の永続
@@ -973,13 +988,37 @@ export function rankCandidates(cands: Candidate[], truncated: boolean):
 
 ```
 last_template: str  = ""     # "" = 出荷テンプレート
-                             # 形式: "shipped:<name>" | "user:<name>"
+                             # 形式: "shipped" | "user:<表示名>"
 ```
+
+⚠️ **`"shipped:<name>"` は旧案で、正式な値ではない**（2026-09-04 訂正）。実装は `parse_last_template`（`user_templates.rs:747`）が `"user:"` 接頭辞だけを見て、**それ以外はすべて出荷既定へ倒す**（`shipped:bar` を未知として扱うテストが `user_templates.rs:1477` にある）。07 FR-F29 の記載（`"shipped"` または `"user:<名前>"`）が正で、本書 v0.2 までの記載が追随できていなかった。
 
 - **絶対パスを保存しない**（07 FR-F29）。区分＋表示名のみ
 - **3箇所同時更新**（07 FR-F29 の⚠️）: Rust `KNOWN_CONFIG_KEYS`（`lib.rs:797-802`）／Python `Config` dataclass（`config.py:26-40`）／`config.py:_validate`
-- ⚠️ **`_validate` はこのキーで例外を投げない。** 他のキーは不正値で `ConfigError` を上げるが、それをやると AC-F60（範囲外を手書きしてもフォールバックして起動する）と矛盾する。**型が str でない、または形式・名前検証に通らない場合は `""` へ落とす**（＝出荷テンプレート）。この1キーだけ挙動が違うことを `config.py` のコメントに明記する
+- ⚠️ **`_validate` はこのキーで例外を投げない。** 他のキーは不正値で `ConfigError` を上げるが、それをやると AC-F60（範囲外を手書きしてもフォールバックして起動する）と矛盾する。**型が str でない、または形式・名前検証に通らない場合は `""` へ落とす**（＝出荷テンプレート）。この扱いが他のキーと違うことを `config.py` のコメントに明記する（v1.6 以降は `last_applied_template` も同じ扱いで、例外を投げない文字列キーは2つになる）
 - `CONFIG_PATH_KEYS`（`is_safe_root` を通すキー）には**入れない**——パスではないため
+
+**v1.6 で 2 キーを足す**（07 FR-F52・FR-F55）。
+
+```
+auto_detect_frames_on_open: bool = True   # 帳票を開いた直後の候補自動生成
+last_applied_template:      str  = ""     # "" = 記憶なし
+                                          # 形式: "shipped" | "user:<表示名>"
+```
+
+役割分担——**同じ「テンプレートの選択」でも読む人・書く人・使い道が違う**ため、1キーに寄せない。
+
+| | `last_template` | `last_applied_template` |
+|---|---|---|
+| 何の選択か | **実行画面**で読み取りに使うテンプレート | **編集画面**で最後に適用したテンプレート |
+| 誰が書くか | 実行画面の選択操作／編集画面でテンプレートを開いたとき（`Editor.tsx` の既存経路） | 照合パネルからの適用のみ。**記憶からの自動適用では書かない**（値が同じため）。**「テンプレートを開く」（ファイル選択）でも書かない**——任意パスのファイルは表示名へ写せず `"user:<名前>"` の形式にならない |
+| 誰が読むか | `inject_default_template`（`run`／`verify`／`expand-page`／`render`／`remap`） | 編集画面が帳票を開いた直後だけ |
+| 不正値の扱い | `""` へ倒す（AC-F60） | `""` へ倒す（AC-F84）。**同じ扱いに揃える** |
+| 自動適用の影響 | **受けない**（FR-F55。編集画面で紙を開いただけで読み取り対象が入れ替わらない） | — |
+
+⚠️ **2 キーが乖離しうることを前提に設計する。** 実行画面で選択を変えると `last_template !== last_applied_template` になり、`expand-page` の様式判定は `last_template` 側のテンプレートを基準に返る（`inject_default_template` がそれを注入するため）。**このとき編集画面は様式判定の帯を出さない**——別テンプレート基準の判定を、いま適用しているテンプレートの判定として見せることになるため。判定を偽って「一致」と言うのではなく、帯そのものを出さない（07 FR-F53・純関数は §3.6）。恒久策（`expand-page` へ区分＋表示名でテンプレートを指定する経路）は §3.11 T-7 に回す。
+
+⚠️ **`auto_detect_frames_on_open` は `last_applied_template` と扱いが違う。** bool の型違いは `ConfigError` で止める（`snap_blocks` と同型）。true/false しか取り得ない欄の型違いは疑いようのない設定誤りであり、黙って既定の ON へ倒すと「OFF にしたつもりが ON のまま動く」ほうが害が大きい。**倒すのは文字列キーだけ**、という線引きにする。
 
 #### 3.5.2 実行時のテンプレート解決
 
@@ -992,14 +1031,46 @@ inject_default_template(args, root, app):
     "user:<name>"    -> user_templates_dir()/<name>.json
                         名前検証 + §3.2.5 のエントリ検査を再実行
                         通らなければ出荷テンプレートへフォールバック（AC-F60）
-    "shipped:<name>" -> templates/<name>.json（実在しなければ出荷既定）
+    "shipped"        -> templates/chouhyo-v1.json
     ""・未知の形式    -> templates/chouhyo-v1.json（現状どおり）
 ```
 
 - **読み出し時に再検査する**のは既存の `workdir_pages_dir`（`lib.rs:356-369`）と同じ流儀。`config.json` は手編集や別プロセスからも書ける
-- この配線により、`run`／`verify`／`expand-page`／`render`／`remap` のすべてが同じ選択値を使う（`TEMPLATE_ACCEPTING_SUBCOMMANDS`・`lib.rs:125-127`）
+- この配線により、`run`／`render`／`remap`／`verify`／`expand-page`／`debug-images` のすべてが同じ選択値を使う（`TEMPLATE_ACCEPTING_SUBCOMMANDS`・`lib.rs:177-179`）。**`detect-frames` はここに入れない**（§4.4）——編集画面が渡す `--dpi` と空テンプレートの前提を壊すため
 - **不変条件**: 「編集画面が開いているテンプレート」と「`config.last_template`」を一致させる。編集画面で保存済みテンプレートを開いたら、その場で `write_config({last_template})` を行う。ズレると expand-page の照合対象と画面の枠が食い違う
 - 代替案（不採用）: `run_core_with_template(args, {kind, name})` という新コマンドで都度渡す。明示的だが、`--template` を受ける5サブコマンドすべてに同じ引き回しが要り、`inject_default_template` と二重の解決経路ができる
+
+**編集画面が記憶から適用するときの解決（v1.6）**
+
+編集画面は「出荷テンプレートを**副作用なしで**読む」経路を必要とする。現行は `write_config({last_template:"shipped"})` を先に書いてから `read_default_template()` を呼ぶ回避策になっており、これを自動経路で踏むと**帳票を開いただけで実行画面の選択が出荷へ戻る**（FR-F55 が禁じた副作用）。
+
+対策は**新コマンドを増やさず、既存コマンドへ任意引数を足す**。
+
+```rust
+#[tauri::command]
+fn read_default_template(app: AppHandle, template: Option<String>) -> Result<String, String>
+//  template = None          -> 従来どおり config.last_template を解決して読む（挙動不変）
+//  template = Some("shipped") -> 出荷テンプレートを直接読む（config を1バイトも書かない）
+```
+
+Tauri は名前付き引数なので、引数を渡さない既存の呼び出しは無改造で通る。あわせて照合パネルの出荷分岐も `template: "shipped"` を使う形に直し、`write_config` は**読み込みが成功した後**へ移す（読めなかったときに設定だけ書き換わる現行の順序を正す）。
+
+記憶値からパスを求める関数の契約:
+
+```rust
+fn resolve_last_applied_template_path(
+    memory: &str, root: &Path, user_dir: Option<&Path>) -> Option<PathBuf>
+//  ""・形式が不正・表示名が空 -> None（＝記憶なし）
+//  "shipped"                 -> 出荷テンプレートのパス
+//  "user:<名前>"             -> 名前検証（§3.2.4）と親一致検査（§3.2.5）を通したうえで
+//                               user_dir/<名前>.json
+//  ⚠️ 実体が在るかは確かめない。存在確認は行わず、読み込みの失敗を「記憶なし」の
+//     シグナルとして呼び出し側が扱う
+```
+
+- **`Option` の `None` は「記憶なし」1つの意味に固定する。** 失敗と記憶なしを同じ値で返すと、呼び出し側が「候補生成へ倒す」以外の判断をしようがなくなる——が、本設計ではどちらも候補生成へ倒すのが正しい振る舞いなので、区別を持たないことが仕様になる
+- **既存の `resolve_last_template_path`（`user_templates.rs:762`）は流用しない。** この関数は「実体が無ければ出荷テンプレートへフォールバックする」仕様で、**「記憶したものを読めた」と「出荷へ倒れた」を戻り値から区別できない**。記憶が使えないときは候補生成へ倒す（黙って出荷を載せない）という FR-F55 と真逆の結果になる
+- **事前の存在確認はしない。** `list_user_templates` で在ることを確かめてから読むと、①IPC が1往復増える ②確認と読み出しの間に削除されると結局同じ失敗を踏む（TOCTOU）。読み込みの失敗をそのままシグナルにすれば、経路が1本で済み、`config` の自己修復（`last_applied_template` を `""` へ書き戻す）も同じ場所に置ける
 
 #### 3.5.3 RunScreen の UI
 
@@ -1016,6 +1087,115 @@ inject_default_template(args, root, app):
   3. **空のテンプレートで開く**——`image` は開いた画像の実寸（`imgSize`）、`faces` は現行の front/back 2面（`splitY` の既定値）、`cells`・`tables`・`exclusions` は空
 - ⚠️ **枠候補の一括生成は (b) の範囲なので今回は作らない。** 導線の到達点は「空のテンプレートで開いた状態」まで。候補ゼロ相当の案内（FR-F31）として、**既存の等分割生成（`detect-grid --mode grid`）と手動作図**を次の手段として示す。07 FR-F31 は「候補ゼロの画面に放置しない」なので、(b) 未実装でもこの案内で満たせる
 - 純関数（gui-logic でテスト）: `emptyTemplateFor(width, height, splitY)`／`newTemplateNotice(hasCandidates: boolean)`
+
+#### 3.6.1 帳票を開いたときの分岐（v1.6・07 FR-F51〜F55）
+
+上の「起動時」はタブを開いた時点の話で、**帳票（画像・PDF）を開いた時点の分岐はここで決める**。分岐は排他の2経路（テンプレートを適用する／候補を生成する）だが、**どちらの経路にいるかを state として持たない**。
+
+理由は2つ。①描画はすでに `cands`（候補）と `fields`／`tables`（確定枠）の2配列で決まっており、モードの旗を足すと配列と食い違いうる第2の真実ができる（候補を採用した直後は「候補経路なのに確定枠がある」状態になり旗の意味が壊れる）②「候補と確定枠を同時に描かない」は、**候補経路が必ず空テンプレートの上で走る**という構造で担保するほうが強い。旗は破れるが `fields.length === 0` は破れない。
+
+したがってモードは「1回の読み込みでどちらの手順を踏むか」を決める分岐値にとどめ、純関数へ閉じる。
+
+```ts
+export function initialFrameView(o: {
+  autoDetect: boolean; appliedMemory: string; hasOpenedTemplateFile: boolean;
+}): "template" | "candidates"
+//  !autoDetect          -> "template"   （OFF は v1.5 までと完全に同じ）
+//  hasOpenedTemplateFile-> "template"   （人がファイルで開いた物を奪わない）
+//  記憶が解釈できる      -> "template"
+//  それ以外              -> "candidates"
+```
+
+`hasOpenedTemplateFile`（＝いま開いているテンプレートのファイルパスが非 null）を見るのは、**「テンプレートを開く」で JSON を読み込んだ直後に帳票を開くと、記憶が別のテンプレートを指していれば利用者が開いた物を黙って差し替えてしまう**ため。未保存の編集が無ければ確認も出ないので、気づく手掛かりが残らない。
+
+**「帳票を開く」1回の遷移**
+
+| # | 入口条件 | 経路 | テンプレート | 候補 | 帯 | 未保存 | 履歴 | 画面 |
+|---|---|---|---|---|---|---|---|---|
+| T-1 | 自動生成 OFF | template | 現状維持 | 生成しない | 従来どおり | 変えない | 変えない | v1.5 までと完全に同じ |
+| T-2 | ファイルでテンプレートを開いている | template | 現状維持 | 生成しない | 従来どおり（`--template` を渡した判定なので正しい） | 変えない | 変えない | 従来と同じ |
+| T-3 | 記憶が出荷テンプレート | template | 出荷を適用 | 生成しない | 実行画面の選択と一致するときだけ表示 | false | 初期化 | 枠が乗る＋選択面 |
+| T-4 | 記憶が利用者テンプレート・実在 | template | それを適用 | 生成しない | 同上 | false | 初期化 | 同上 |
+| T-5 | 記憶が利用者テンプレート・**実体なし** | → C-1 へ | 空 | 自動生成 | 出さない | false | 初期化 | **C-1 と同じ**（決定カード・未適用バー）＋「前回適用したテンプレートが見つかりませんでした」 |
+| C-1 | 記憶なし／形式が不正 | candidates | 空（開いた画像の実寸から作る） | 自動生成 | 出さない（赤い案内はテンプレート破損のときだけ残す） | false | 初期化（候補確定後） | 破線の候補＋候補タブ＋件数 |
+| C-2 | C-1 で候補0件 | candidates | 空 | 0件 | 同上 | false | 初期化 | 候補ゼロの理由＋手動生成の案内 |
+| C-3 | C-1 で生成が失敗 | candidates | 空 | 0件 | 同上 | false | 初期化 | 失敗の案内（画像は表示済み） |
+
+**T-5 の画面は C-1 と同じにする。** 経路としては「テンプレートを適用しようとして失敗した」だが、着地点は記憶なしで開いたのと同じ候補パスで、利用者から見て違うのは案内文の1行だけ。上部の表示（決定カード＋未適用バー）を C-1 と揃えないと、候補は出ているのにテンプレートを選ぶ導線が画面から消える——`loadImage` は分岐を `view === "template"` として通るため、何もしなければ上部は空のままになる。実装は候補生成へ入る前に決定カードの状態を明示的に立てる（§3.6.2 の `setTplDecision({ state: "deciding" })`）。
+
+**候補 0 件のときの案内**（C-2）。未適用バーの直下に、`newTemplateNotice(cands.length > 0)` を**非ライブの `.note`** として置く。ライブ領域（`.msg`）は候補件数の読み上げに使っており、同じ内容を2つのライブ領域へ入れると読み上げが重なる。0 件のときだけ出すのではなく件数に応じて文面が変わる純関数をそのまま使うことで、「0 件の画面に何も出ない」経路を構造的に潰す（07 FR-F31）。
+
+**帳票を開いた後の遷移**
+
+| 起点 | 操作 | 遷移先 | 副作用 |
+|---|---|---|---|
+| C-1（候補あり） | 「このテンプレートを使う」 | T-3／T-4 相当 | 候補を全破棄・`last_applied_template` を書く・履歴を初期化・タブは既存の復帰処理が拾う |
+| C-1 | 候補を採用（一括／個別） | C-1 のまま | 未保存フラグが立ち、確定枠が増える。以後の適用では破棄の確認が出る |
+| C-1 | 「すべて除去」 | C-1（候補0） | 確定枠は不変 |
+| T-3／T-4（様式不一致の帯あり） | 「この紙用に新しいテンプレートを作る」 | 空テンプレート＋自動生成 | 未保存フラグが立つ（手動導線のため）。**続けて候補生成まで走らせる**——候補が欲しくて押している操作であり、空の画面で止めると手動生成をもう1回押させることになる |
+| T-3／T-4 | ツールバーの「ページ全体から枠候補を生成」 | 手動生成 | 従来どおり（エラー表示の消去・未保存フラグ・履歴1コマ）。既存枠と重なる候補は一括採用の対象外 |
+| いずれか | 「テンプレートを開く」（ファイルから JSON を読む） | **T-2（従来動作）** | 決定カード・適用中バー・未適用バーをすべて消す（`setTplDecision(null)`）。候補も破棄する。残したままだと、別のテンプレートを開いたのに直前の名前を出した帯が居座り、候補パスから開いた場合は破線が消えたのに「まだ適用していません」のカードだけが残る |
+| いずれか | 「帳票を開く」の再押下 | 上の表へ戻る | 読み込みの世代番号が進み、走行中の自動生成の結果は捨てられる |
+
+#### 3.6.2 手順（この順序を守る）
+
+```ts
+// 帳票を開いた直後に1回だけ呼ぶ
+const startInitialFrameFlow = async (o) => {
+  if (o.view === "template") {
+    if (!o.autoApply) return;                      // OFF・ファイル起点＝v1.5 までと同じ
+    const target = autoApplyTarget(o.memory);      // null なら記憶なし
+    if (!target) return;
+    const ok = await applyTemplateByName(target, { auto: true });
+    if (o.seq !== loadSeqRef.current) return;      // 別の紙へ移った
+    if (!ok) {                                     // 実体なし → 記憶を捨てて候補へ
+      await invoke("write_config", { patch: { last_applied_template: "" } }).catch(() => {});
+      setTplDecision({ state: "deciding" });       // C-1 と同じ画面へ揃える
+      return runCandidateFlow({ ...o, notice: staleAppliedMemoryNotice(表示名) });
+    }
+    if (!formatBandApplies({ ... })) {             // 別テンプレート基準の判定は出さない
+      setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
+    }
+    return;
+  }
+  return runCandidateFlow(o);
+};
+
+const runCandidateFlow = async (o) => {
+  // 1) 空テンプレートへ（手動の「新しいテンプレートを作る」との唯一の差は未保存フラグを立てないこと）
+  toEditorState(emptyTemplateFor(o.w, o.h, o.h));
+  setTplPath(null);
+  setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
+  if (o.alignReason === "size") { setErrMsg(""); setLastAlignReason(undefined); }
+  setCands([]); setCandSelected({}); setOverlapAcceptNotice("");
+  setLoadedCounts({ fields: 0, amountCells: 0, exclusions: 0, columns: 0 });
+  setColumnNames(null);        // 前のテンプレートの列構成を残さない
+  markDirty(false);
+  resetHistory();
+
+  // 2) 自動生成（React state を読まない・空テンプレートを明示的に渡す）
+  const r = await detectFrames({ manual: false, seq: o.seq, imagePath: o.imagePath,
+                                 templatePath: null, fields: [], tables: [],
+                                 splitY: o.h, renderDpi: meta.current.render_dpi });
+  if (o.seq !== loadSeqRef.current) return;
+
+  // 3) 履歴の起点を「空テンプレート＋候補」へ置き直す
+  resetHistory();
+  // 記憶が壊れていた場合の案内は、候補件数の案内と同じ .msg に前置きする
+  setMsg(`${o.notice ? `${o.notice} ` : ""}画像 ${o.w}×${o.h}・`
+    + newTemplateNotice(r.count > 0));
+};
+```
+
+**`autoApply` を最初に見る理由**: `shouldAutoApplyMemory({ autoDetect, hasOpenedTemplateFile })` が false のとき（自動生成 OFF／利用者がファイルでテンプレートを開いている）は、記憶があっても復元しない。T-1・T-2 を「v1.5 までと完全に同じ」にするのはこの1行で、`autoApplyTarget` から先に見ると **OFF でも記憶が復元される**（利用者が切ったはずの機能が別の形で効く）。
+
+**古い記憶の案内を `setFramesMsg` に出さない理由**: `framesMsg` は候補パネルの領域で、`runCandidateFlow` が候補件数の案内を `.msg` へ書く。2つの領域が同時に非空になるとライブ領域が競合し、読み上げが打ち切られる。案内は `notice` として `runCandidateFlow` へ渡し、件数の案内と1本にまとめて `setMsg` する。
+
+**`columnNames` を捨てる理由**: 「出力列」タブが前のテンプレートの列名を出したまま残る。確定枠は空になっているので、列だけが幽霊として残る形になる。
+
+**3 の `resetHistory()` を2回呼ぶ理由**: 履歴は 400ms 静止ごとに1コマ積む作りで、空テンプレートの確定から候補の到着（NFR-F02 の上限 3.0 秒）までの間に1コマ入る。そのままだと Ctrl+Z で「空テンプレート・候補なし」へ戻れてしまい、「自動生成は Undo の起点」という位置づけと食い違う。2回目で past／future を空にし、次の静止で「空テンプレート＋候補」が新しい基準になる。結果、自動生成の直後の Ctrl+Z は無反応、候補を採用した後の Ctrl+Z は「空テンプレート＋全候補」へ戻る（AC-F21 の粒度と整合）。
+
+**`loadedCounts` を 0 に戻す理由**: 保存時の差分表示が前のテンプレートの件数を基準にしてしまう。これは手動の「この紙用に新しいテンプレートを作る」にも同じ穴があり、本件で表に出るため合わせて直す。
 
 ### 3.7 書き出し・取り込み（FR-F49・AC-F63）
 
@@ -1081,6 +1261,10 @@ inject_default_template(args, root, app):
 7. **1件の不正テンプレートで照合ループを止めない**（FR-F28）
 8. **確定は人。** `match-templates` の結果でテンプレートを自動選択しない（07 4.2(h)）
 9. **編集画面が開いているテンプレート＝`config.last_template`** を一致させる（§3.5.2）
+10. **`last_applied_template` が不正・実体なしでも例外で止めない**（v1.6）。候補生成へ倒し、`config` を `""` へ自己修復する。**黙って出荷テンプレートへフォールバックしない**
+11. **GUI は絶対パスを持たない**（v1.6）。記憶の値は `""`／`"shipped"`／`"user:<表示名>"` の3形式のみ
+12. **記憶からの自動適用は `last_template` を書かない**（v1.6・07 FR-F55）。`last_template` の書き込み点を増やさない
+13. **様式判定の帯は「いま適用しているテンプレート」に対してのみ出す**（v1.6・07 FR-F53）。判定の根拠が別テンプレートなら帯を出さない。偽って「一致」とも言わない
 
 ### 3.11 リスク
 
@@ -1092,6 +1276,9 @@ inject_default_template(args, root, app):
 | T-4 | `match-templates` が 20 件 × `check_page` で NFR-F09（3.0 秒）を超える | 画像を開く操作が待たされる | 打ち切りを実装（§3.3.3）。resize 結果の1段キャッシュ。**実測は AC-F54 で取る**——現時点で 1 件あたりの所要は未計測（※要確認） |
 | T-5 | 編集画面の開いているテンプレートと `config.last_template` がズレる | 照合対象と画面の枠が食い違う | 不変条件9。テンプレートを開く経路（起動時・`read_user_template`・`pick_json`）をすべて1つの関数へ集約する |
 | T-6 | B 案で保存先がリポジトリ外になり、開発中に中身を確認しにくい | 開発効率 | 開発環境（`CHOUHYO_USER_DIR` 未設定）ではリポジトリ直下が使われるので影響なし。配布環境の確認は `%APPDATA%` を開く |
+| T-7 | **`last_template` と `last_applied_template` の乖離**（v1.6）。実行画面で選択を変えると、`expand-page` の様式判定が別テンプレート基準になる | 判定と画面の枠が食い違い、嘘の帯が出る | 一致しないときは帯を出さない（§3.5.1・07 FR-F53）。恒久策は `expand-page` へ区分＋表示名でテンプレートを指定する経路を通すことだが、`inject_default_template` にヒントを渡す配線が要るため後続の増分へ回す |
+| T-8 | **記憶はアプリに1つ、紙は毎回違う**（v1.6）。自動適用が別様式の紙に効くと、期待した候補生成が黙って飛ばされる | 中〜高。とくに罫線が薄く判定不能になる紙では帯が出ず、間違ったテンプレートが載ったまま候補も出ない | 適用中の帯に「候補から新しく作る」を常時置く（§3.4.1）。判定不能の紙の救済は 07 未解決リスト R-1 として別 issue へ |
+| T-9 | **候補生成が毎回の読み込みに乗る**（v1.6）。NFR-F02 の上限は 3.0 秒（外挿値・未検証） | 帳票を開くたびに待たされる | 生成中はツール操作を無効化して進行を表示する（既存）。最終手段が `auto_detect_frames_on_open` の OFF。**所要秒数は実測するまで README に書かない** |
 
 ## 4. (b) ページ全体からの枠候補一括生成（#73）
 
@@ -1369,7 +1556,14 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 
 ⚠️ **これでも 0.0 は出る。** レールが本当に1本の線分だけで構成されていれば散らばりは 0 で、`rows==2` の候補は 0.0 のままになる（sample-1 の生画像経路の実測で表候補13件中7件が該当）。`residual_px` は**線の位置のばらつき**の量であって、「ピッチが行高に対して極端」という疑わしさは測っていない。後者は閾値較正の課題（Q-F6 相当・§4.10）として残す。
 
-**Rust 側の白リスト追加が要る**: `ALLOWED_SUBCOMMANDS`（`lib.rs:23`）へ `detect-frames`、`allowed_flags`（`lib.rs:35`）へ `("--input", true)`・`("--page", true)`・`("--dpi", true)`・`("--template", true)`、`TEMPLATE_ACCEPTING_SUBCOMMANDS`（`lib.rs:125`）へも追加（`inject_default_template` の対象にする）。`--input` は既存の `check_scope_dir` で `editor_pages` ＋ picked に限定される。
+**Rust 側の白リスト追加が要る**: `ALLOWED_SUBCOMMANDS`（`lib.rs:46`）へ `detect-frames`、`allowed_flags`（`lib.rs:58`）へ `("--input", true)`・`("--page", true)`・`("--dpi", true)`・`("--template", true)`。`--input` は既存の `check_scope_dir` で `editor_pages` ＋ picked に限定される。
+
+⚠️ **`TEMPLATE_ACCEPTING_SUBCOMMANDS`（`lib.rs:177`）へ `detect-frames` を足したのは誤りで、2026-09-04 に撤去した。** 注入対象にすると `inject_default_template` が出荷テンプレートを `--template` として押し込み、GUI が意図していない2つの副作用が起きる:
+
+1. **候補が黙って減る。** `--template` があると `detect-frames` は面の `exclusions` を検出前に白で潰す（§4.1.5）。出荷テンプレートの除外領域は綴じ穴の帯2本で、そこに掛かる罫線が消えて候補が落ちる。利用者には「検出されなかった」としか見えない
+2. **`--dpi` が上書きされる。** `--template` 指定時はテンプレートの `render_dpi` を優先する（`cli.py:975`・FR-F23）。GUI は編集中のテンプレートの dpi を `--dpi` で渡しているので、この優先が効くと渡した値が捨てられる
+
+dpi の根拠は **GUI が渡す `--dpi` の1本**に統一する。候補パスの下地は `emptyTemplateFor` が作る空テンプレートで、その `render_dpi` は 300（`Editor.tsx:1665`）。`expand-page` の `--dpi` 既定も 300（`cli.py:1350`）なので、画面に出ている下地と候補座標のスケールが一致する。撤去後も GUI 側に `candidateOverlapFlag` の安全網を残す（§4.5.2）。
 
 ### 4.5 編集画面（FR-F18〜F25）
 
@@ -1390,6 +1584,19 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 3. 重なる候補を利用者が**個別に**採用しようとしたときだけ、「既存の枠と重なります。採用すると保存時に検証で弾かれます」と警告を出し、採用するかどうかを人に決めさせる（自動で切り抜かない）
 
 これは 07 に書かれていない挙動なので §7-10 に修正提案として挙げる。
+
+**重なりフラグの採り方（`candidateOverlapFlag`・2026-09-04 追加）**
+
+重なりの判定は2つある——core が `detect-frames` の中で `--template` の枠と突き合わせて返す `overlaps_existing` と、GUI が今画面にある `fields`／`tables` との幾何で出す再判定。**core の判定を採るのは、GUI が自分で `--template` を渡したときだけ**にする。
+
+```ts
+export function candidateOverlapFlag(
+  coreOverlaps: boolean, guiOverlaps: boolean, templatePassed: boolean): boolean {
+  return (templatePassed && coreOverlaps) || guiOverlaps;
+}
+```
+
+GUI が `--template` を渡していないのに core 側が枠を持っていた場合（`inject_default_template` による注入がまさにそれ）、その `overlaps_existing` は**画面に無い枠**を基準にしている。それを採ると、空テンプレートの上の候補が「既存と重なり」として一括採用から黙って外れる——注入を撤去する前（§4.4）に実際に2件が外れた。注入そのものは止めてあるので、この関数は**二重の安全網**として残す。GUI 自身の再判定（`guiOverlaps`）は「画面に見えている枠と重なるか」そのものなので常に有効で、OR で必ず反映する。
 
 #### 4.5.3 操作（FR-F20・FR-F21）
 
@@ -1425,6 +1632,81 @@ detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]
 - `detect-grid`（領域指定・`pending` が必要・`grid.py`）は**残す**。ページ全体の検出が成立しない帳票（`zero_reason` が付いた場合）の退避先であり、FR-F31 の案内先でもある
 - UI 上は「ページ全体から候補生成」（新・領域不要）と「選択範囲から生成」（現行・`pending` 必須）の2ボタンに分ける
 - **core の `detect-grid` は1行も変えない**（`grid.detect_ruled` の `--region` 必須・`len(h_lines)<3` の挙動もそのまま）
+
+#### 4.5.7 自動起動（v1.6・07 FR-F51）
+
+帳票を開いた直後に候補生成を1回走らせる。**検出の実装は自動・手動で1本のまま**にし、違いは起動点と副作用の2つだけに閉じる。
+
+**起動点**
+
+- 画像の読み込み完了処理（`im.onload`）の**末尾**から明示的に1回呼ぶ。既存の setter 群（寸法・パス・帯の反映・候補のクリア・再描画）の後に置く
+- **`useEffect` を使わない。** React 18 の StrictMode で二重に走り `detect-frames` が2回起動する。依存配列に確定枠を入れれば編集のたびに再発火する。起点は1つに固定する
+- 二重起動の防止は ref のフラグで行う（`framesGenerating` は state で、同じ tick では立ち上がりを掴めない。保存処理が同じ流儀の ref を既に持つ）。UI の無効化は従来どおり `framesGenerating` を使う
+
+**世代番号は2本持つ（2026-09-04・レビュー H-1）**
+
+非同期の完了後に「この結果を今の画面へ流してよいか」を確かめる。当初は紙の世代（`loadSeqRef`・帳票を1枚開くたびに進む）1本だったが、それでは塞げない経路がある——同じ紙のまま生成中（最大 3.0 秒）に決定カードの「このテンプレートを使う」を押すと、確定枠はテンプレートの側へ入れ替わるのに `loadSeqRef` は進まない。遅れて解決した候補が「重なり 0 件・全件チェック済み」のまま復活し、一括採用が適用中の枠に重なる枠を足せてしまう（「候補と確定枠を同時に出さない」の破れ）。
+
+| 世代 | 進む契機 | 意味 |
+|---|---|---|
+| `loadSeqRef` | 帳票を1枚開くたび | 紙の世代 |
+| `frameEpochRef` | 確定枠（`fields`／`tables`）を丸ごと差し替えるたび | いまキャンバスに載っている枠の世代 |
+
+- **確定枠を差し替える経路はすべて `bumpFrameEpoch()` を通す**: `applyTemplateByName`（記憶からの自動適用・照合パネルからの適用）／`loadTemplate`（ファイルから開く）／`createTemplateForThisImage`（この紙用に新しく作る）／`runCandidateFlow`（候補パスの空テンプレート化）。1つでも漏れると、その経路で古い候補が復活する
+- 照合は `setCands` の直前で行う。純関数 `candidateResultApplies({seq, epoch}, {seq, epoch})` が両方一致したときだけ真を返し、偽なら結果を捨てる（案内文と履歴の置き直しも含めて捨てる——今の画面のものではないため）
+- **生成中は「使う」も無効化する。** 世代の照合は結果を捨てる側の防御で、押せてしまうこと自体は残る。確定枠を差し替える操作（「このテンプレートを使う」「帳票を開く」「テンプレートを開く」「候補から新しく作る」「欄を追加」）は生成中すべて `disabled` にし、完了後に必ず戻す（AC-F78）
+
+**副作用の切り分け（純関数に固定する）**
+
+```ts
+export function detectFramesEffects(manual: boolean): {
+  clearErrMsg: boolean;   // エラー帯を消してよいか
+  markDirty: boolean;     // 未保存フラグを立てるか
+  pushHistory: boolean;   // 履歴を1コマ積むか
+  errorTo: "errMsg" | "framesMsg";  // 失敗の出し先
+}
+```
+
+4 項目とも `manual` の写しになるが、**判断の置き場を1箇所へ固定して純関数で押さえる**のが目的で、`if (manual)` を4箇所へ散らすより退行に強い。将来「自動でも未保存にしたい」等が出ても、変えるのはこの関数だけになる。
+
+失敗時は自動・手動で出し先を分ける。自動生成の失敗はエラー帯（`errMsg`）を触らず候補パネルへ出す——エラー帯には位置合わせの結果が出ており、候補生成の失敗で上書きすると、様式判定の赤い案内が消える。候補0件は失敗ではないので、既存の理由文をそのまま使いタブも切り替えない。
+
+**空テンプレートの上でしか走らせない**
+
+候補経路は必ず `emptyTemplateFor(w, h, h)` へ差し替えてから生成する。これで2つが副作用なしに成立する:
+
+1. 一括採用が死なない——`overlaps_existing` の再判定は確定枠が空配列なら常に false（§4.5.2-2 が一括採用から外す条件が発火しない）
+2. 出荷テンプレート由来の `field_id` が新しいテンプレートに混ざらない
+
+旗ではなく `fields.length === 0` という構造で担保する点は §3.6.1 のとおり。
+
+**stale closure 対策（実装上の最大の危険）**
+
+自動経路は画像パス・寸法・確定枠の差し替えと**同じ tick** で走る。React の state は次のレンダーまで更新されないため、クロージャから読むと**前の紙・前のテンプレートの値**を掴む。ここを踏むと「別の紙の座標で候補が出る」「空テンプレートのはずが全候補が重なり扱いになる」という、#73 で潰した故障が再発する。
+
+対策は**引数で渡すこと**、それも型で強制すること。
+
+```ts
+const detectFrames = async (o: {
+  manual: boolean;
+  seq: number;                 // 読み込みの世代番号
+  imagePath: string;
+  templatePath: string | null; // 自動（空テンプレート）は必ず null
+  fields: Field[];             // 重なり再判定の母集団。空テンプレートなら []
+  tables: Table[];             //  同上
+  splitY: number;
+  renderDpi: number;
+}): Promise<{ count: number; zeroReason: string | null }>;
+
+// 手動（ツールバー）は薄いラッパのまま残す
+const runDetectFrames = () => detectFrames({ manual: true, seq: loadSeqRef.current,
+  imagePath: imgPath, templatePath: tplPath, fields, tables, splitY,
+  renderDpi: meta.current.render_dpi });
+```
+
+`imagePath`・`fields`・`tables`・`splitY` を**必須引数**にすることで、クロージャから読める形をコンパイル時に残さない。`meta.current`（`render_dpi`）だけは ref なので差し替えの直後に同期で正しい値になり、例外として ref のまま使ってよい。
+
+**様式不一致の帯からの新規作成（07 v1.6）**: 黄帯の「この紙用に新しいテンプレートを作る」は、空テンプレートで止めず**続けて候補生成まで走らせる**。押した利用者は候補が欲しくて押しており、空の画面で止めると手動生成をもう1回押させることになる。ただしこちらは利用者の操作なので、副作用は手動側（未保存フラグを立てる）を使う。
 
 ### 4.6 性能（NFR-F02）とガード
 
@@ -1508,7 +1790,7 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 | core | シオン | `core/chouhyo_ocr/grid.py` | `detect_frames(gray, dpi, template=None)` を追加。**既存の `detect_ruled`／`make_uniform` は1行も変えない** |
 | core | シオン | `core/chouhyo_ocr/cli.py` | `detect-frames` サブコマンド |
 | core | シオン | `core/tests/test_detect_frames.py`（新規） | AC-F16・F17・F18・F55 |
-| GUI | フブキ（`coder_frontend`） | `gui/src-tauri/src/lib.rs` | `ALLOWED_SUBCOMMANDS`／`allowed_flags`／`TEMPLATE_ACCEPTING_SUBCOMMANDS` に `detect-frames` を追加（**それ以外は触らない**） |
+| GUI | フブキ（`coder_frontend`） | `gui/src-tauri/src/lib.rs` | `ALLOWED_SUBCOMMANDS`／`allowed_flags` に `detect-frames` を追加（**それ以外は触らない**）。`TEMPLATE_ACCEPTING_SUBCOMMANDS` へは**足さない**（2026-09-04 撤去・§4.4） |
 | GUI | フブキ | `gui/src/Editor.tsx` | `Cand` 状態・描画・一括/個別の採用と除去・`Snap.cands`・生成中表示・仮名と一括リネーム・ボタン2分割 |
 | GUI | フブキ | `gui/tests/gui-logic.test.mjs` | AC-F19〜F23（export リストへの追加が要る） |
 
@@ -1522,6 +1804,9 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 6. **候補生成1回＝Undo 1コマ**（FR-F21）。`Snap` に `cands` を含める
 7. **OCR を使わない**（07 §9.2）
 8. 閾値は**すべて `render_dpi` 由来の絶対長**。領域幅比を1つも導入しない（FR-F15）
+9. **候補の自動生成は空テンプレートの上でのみ行う**（v1.6・FR-F51）。確定枠がある状態で自動生成を走らせない（手動生成は従来どおり可）
+10. **自動生成はエラー帯を書き換えず、未保存フラグを立てず、履歴を積まない**（v1.6・FR-F51）。手動生成の副作用は現状維持
+11. **自動経路は React state を読まない**（v1.6）。画像パス・寸法・確定枠・面の境界・dpi はすべて明示引数（`meta.current` の ref 参照のみ例外）
 
 ### 4.10 リスク
 
@@ -2134,7 +2419,7 @@ chouhyo-ocr snap-diff [--template <path>] [--page <page_id>] [--limit N]
 
 ### 7-12. `detect-frames` のサブコマンド名と Rust 白リストの追加を要件に載せる
 
-- (b) は core の新サブコマンドを1つ増やす。GUI から呼ぶには `ALLOWED_SUBCOMMANDS`（`lib.rs:23`）・`allowed_flags`（`lib.rs:35`）・`TEMPLATE_ACCEPTING_SUBCOMMANDS`（`lib.rs:125`）の3箇所に追加が要る（(t) の `match-templates` と同じ手順）
+- (b) は core の新サブコマンドを1つ増やす。GUI から呼ぶには `ALLOWED_SUBCOMMANDS`（`lib.rs:46`）・`allowed_flags`（`lib.rs:58`）の2箇所に追加が要る。⚠️ 当初は `TEMPLATE_ACCEPTING_SUBCOMMANDS`（`lib.rs:177`）も含む3箇所と書いていたが、**注入対象にしたのは誤りで 2026-09-04 に撤去した**（除外領域の白潰しと `--dpi` の上書きが起きる・§4.4）
 - 07 §5.2 は機能だけを書き、コマンド名と GUI 境界の追加に触れていない。**`detect-frames --input <img|pdf> [--page N] [--dpi N] [--template <path>]` を要件に固定**したい（`match-templates` を v1.3 で要件に載せたのと同じ扱い）
 - `--input` のスコープは既存の `check_scope_dir`（`editor_pages` ＋ picked）で足りる。**新しい権限は要らない**ことも明記したい——(t) と違い、ディレクトリ列挙も一括読み取りも発生しない
 
