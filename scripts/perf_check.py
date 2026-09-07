@@ -40,6 +40,9 @@ from pathlib import Path
 import psutil
 
 ROOT = Path(__file__).resolve().parents[1]
+# 他プロセスの平均 CPU% がこれを超えたら「並行負荷あり」と表示する（8 論理コアで
+# 1 コア分＝12.5%。エージェントの pytest やビルドが重なると 20〜40% になる・issue #128）
+OTHER_LOAD_WARN_PCT = 10.0
 BASE = ROOT / "workdir_build" / "perf"
 PAGE = ROOT / "testdata" / "local" / "pages" / "sample-1.png"
 RESP = ROOT / "testdata" / "local" / "s2" / "resp_DOCUMENT_TEXT_DETECTION.json"
@@ -125,6 +128,14 @@ def measure_pipeline(N: int, snap: bool = False) -> int:
         cwd=ROOT / "core", stdout=log_out, stderr=log_err)
     ps = psutil.Process(proc.pid)
     peak = 0
+    # 並行負荷の検知（issue #128）: 他のテストやエージェントが同時に走っていると
+    # 壁時計が 1.3→2.9 s/枚まで伸びる。システム全体の CPU% から自分の子プロセス
+    # 群の分を引いた「他プロセスの負荷」を平均し、高ければ計測値を参考扱いにする
+    ncpu = psutil.cpu_count() or 1
+    psutil.cpu_percent(None)
+    other_load: list[float] = []
+    child_cpu_prev = 0.0
+    t_prev = time.perf_counter()
     samples: list[int] = []   # RSS の推移（リーク兆候の判定に使う・M-14 (b)）
     while proc.poll() is None:
         try:
@@ -135,6 +146,16 @@ def measure_pipeline(N: int, snap: bool = False) -> int:
                 except psutil.Error:
                     pass
             peak = max(peak, rss)
+            child_cpu = 0.0
+            for pr in [ps, *ps.children(recursive=True)]:
+                try:
+                    ct = pr.cpu_times(); child_cpu += ct.user + ct.system
+                except psutil.Error:
+                    pass
+            now = time.perf_counter(); dt = max(1e-6, now - t_prev)
+            child_pct = (child_cpu - child_cpu_prev) / dt / ncpu * 100.0
+            child_cpu_prev, t_prev = child_cpu, now
+            other_load.append(max(0.0, psutil.cpu_percent(None) - child_pct))
             samples.append(rss)
         except psutil.Error:
             break
@@ -166,6 +187,11 @@ def measure_pipeline(N: int, snap: bool = False) -> int:
           f"align_failed={summary['align_failed']}")
     print(_snap_line(snap, summary))
     print(f"elapsed={elapsed:.1f}s ({elapsed/N:.2f}s/枚)")
+    if other_load:
+        avg_other = sum(other_load) / len(other_load)
+        tag = ("並行負荷あり（他プロセスの CPU が高い。計測値は参考・静かな環境で測り直す）"
+               if avg_other > OTHER_LOAD_WARN_PCT else "並行負荷なし")
+        print(f"other_load_avg={avg_other:.0f}%  {tag}")
     print(f"peak_rss={peak/mb:.0f}MB  xlsx={xlsx.stat().st_size/mb:.1f}MB  "
           f"db={db.stat().st_size/mb:.1f}MB")
 
