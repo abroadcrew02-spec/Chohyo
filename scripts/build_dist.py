@@ -30,6 +30,14 @@ APP = DIST / "chouhyo-core"
 
 
 def main() -> int:
+    # コンソールが cp932/cp1252 でも日本語の起動確認ログで落ちないよう UTF-8 へ
+    # （CI の Windows ランナーで UnicodeEncodeError になった・2026-09-07）
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     # 同梱 exe が古いまま放置される事故（2026-09-02）の再発防止: ビルド開始時に
     # 既存のスタンプを消しておく。この後失敗して return したときに古いスタンプが
     # 残って「鮮度検査 PASS」と誤判定されるのを防ぐ

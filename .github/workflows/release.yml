@@ -29,6 +29,13 @@ concurrency:
   # 中途半端なまま残る（ci.yml の push ジョブと同じ理由でキャンセルしない）。
   cancel-in-progress: false
 
+# Windows ランナーのコンソールは cp1252 なので、build_dist.py が出す日本語の
+# 起動確認ログで UnicodeEncodeError にならないよう Python の入出力を UTF-8 に固定する
+# （2026-09-07 の workflow_dispatch 実行で実際に落ちた）
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: "1"
+
 permissions:
   contents: read
 
