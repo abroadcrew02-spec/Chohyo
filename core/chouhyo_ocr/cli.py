@@ -1208,30 +1208,53 @@ def _remove_workdir_entry(p: Path) -> None:
             p.unlink()
 
 
-def _purge_workdir(wd: Path) -> tuple[bool, int, int]:
-    """workdir 配下を資格情報以外すべて削除する（issue #83・keep-list 方式）。
+def _purge_workdir(wd: Path, cfg: Config) -> tuple[bool, int, int]:
+    """workdir 配下のうち、このツールが作ったと分かるものだけを削除する
+    （許可リスト方式・issue #108 PM決定 (b)・2026-09-07）。cfg は "logs"
+    フォルダの判定（`_is_tool_workdir_entry`・`_log_dir_matches`）に使う。
 
     以前は shutil.rmtree(wd) で workdir ごと丸ごと消しており、workdir 直下に
     置かれる暗号化資格情報 cred_store.blob_name()（cred.dpapi）まで巻き込んで
-    消えていた。「消してよいものを列挙する」方式は列挙漏れがそのまま個人情報
-    の残留・削除漏れになるため採らず、「残すものだけを cred.dpapi 1つに限定し、
-    それ以外は種類を問わず全部消す」fail-closed な keep-list 方式に切り替える
-    （PM判断・#83）。将来 workdir 配下の中間データの種類が増えても、この
-    keep-list には載らない限り自動で消える。
+    消えていた（issue #83）。その修正として「残すものだけを cred.dpapi 1つに
+    限定し、それ以外は種類を問わず全部消す」fail-closed な keep-list 方式に
+    切り替えたが、これは workdir に原本や利用者のファイルが同居していると
+    それらも一緒に消してしまう問題を残していた（issue #108）。ここでは
+    `_is_tool_workdir_entry`（応急 (a) で導入した許可リスト——`pages/`・
+    `intermediate.sqlite` 等）が認識できるものだけを削除し、それ以外は
+    種類を問わず残す——fail-closed の向きを「消してよいものが分からなければ
+    全部消す」から「消してよいと分かるものだけ消す」へ反転する。将来 workdir
+    配下の中間データの種類が増えたら `_TOOL_WORKDIR_DIR_NAMES`／
+    `_TOOL_WORKDIR_FILE_NAMES` に名前を足す。
+
+    cred.dpapi は従来どおり温存する。ただし cred.dpapi という名前の
+    reparse point（symlink・ジャンクション）は資格情報の実体ではなく
+    偽装されうるため、許可リストとは無関係に削除する（#83 いろは指摘
+    由来のセキュリティ上のカーブアウト・reparse point 判定を名前一致より
+    先に見る）。
 
     golden/・s2/ のような開発素材が workdir に同居していても、ここでは
-    特別扱いしない（purge の責務ではなく、workdir 構造側の別課題）。
+    特別扱いしない（許可リストに載らない名前は種類を問わず残るだけ）。
 
     reparse point 対策（#83 のレビュー指摘）: workdir 自身が
     symlink・ジャンクションの場合はこの関数を呼ぶ前に cmd_purge が弾く
     （wd.iterdir() は reparse point 越しにリンク先を列挙してしまうため、
     ここへ来る時点で wd は実ディレクトリであることが前提）。配下の各
     エントリが reparse point の場合は _remove_workdir_entry がリンク自体
-    だけを外す。cred.dpapi という名前の symlink は資格情報の実体ではない
-    ため keep 対象にしない（reparse point 判定を名前一致より先に見る）。
+    だけを外す（リンク先の中身は辿らない）。
 
     個々の削除は OSError を捕まえて続行する——1件の失敗（使用中・読み取り
     専用）で残りを諦めると中途半端に個人情報が残るため。
+
+    許可リストのフォルダ（`pages/` 等）は、直下1階層だけツールの命名
+    （拡張子・`_TOOL_SUBDIR_EXTENSIONS`）を見て個別に消す（issue #108
+    追補・2026-09-07）——フォルダごと丸ごと消すと、利用者がそのフォルダへ
+    直接ファイルを置いた場合に巻き込んでしまうため。個別に消した結果
+    フォルダの中身が空になれば、フォルダ自体も片付ける（残った中身が
+    あれば、フォルダはそのまま残す）。フォルダが reparse point の場合は
+    中身を辿らずリンク自体だけを外す（下記と同じ規律）。
+
+    残した件数・その一覧は呼び出し側（cmd_purge）が同じ許可リストを見る
+    `_scan_workdir_entries` で別途求める——ここでは二重に集計しない。
 
     戻り値: (cred.dpapi を残せたか, 削除できた件数, 削除できなかった件数)。
     workdir が存在しない場合は (False, 0, 0)。
@@ -1245,6 +1268,35 @@ def _purge_workdir(wd: Path) -> tuple[bool, int, int]:
         if not _is_reparse_point(p) and p.name == blob and p.is_file():
             kept_cred = True
             continue
+        is_fake_cred = _is_reparse_point(p) and p.name == blob
+        if is_fake_cred:
+            try:
+                _remove_workdir_entry(p)
+                removed += 1
+            except OSError:
+                failed += 1
+            continue
+        if not _is_tool_workdir_entry(p, cfg):
+            continue  # 許可リストに無い＝ツール由来と分からないものは残す
+
+        if p.is_dir() and p.name in _TOOL_SUBDIR_EXTENSIONS and not _is_reparse_point(p):
+            removable, kept_children = _classify_tool_subdir(p)
+            for child in removable:
+                try:
+                    _remove_workdir_entry(child)
+                    removed += 1
+                except OSError:
+                    failed += 1
+            if not kept_children:
+                # 認識できるものだけの中身だった（または元々空だった）なら
+                # フォルダ自体も片付ける。残った中身があれば触らない
+                try:
+                    if not any(p.iterdir()):
+                        p.rmdir()
+                except OSError:
+                    pass  # 消せなくても致命的ではない（中身は既に空）
+            continue
+
         try:
             _remove_workdir_entry(p)
             removed += 1
@@ -1264,25 +1316,95 @@ def _abs_path_str(p: Path) -> str:
     return str(p if p.is_absolute() else Path.cwd() / p)
 
 
-# workdir 直下エントリの分類（issue #108・応急 (a)）。ここでの分類は purge
-# 本体（_purge_workdir・keep-list 方式＝cred.dpapi 以外は種類を問わず削除）を
-# 変えるものではなく、削除前に「見えている」ことを保証する安全確認専用——
-# tool_items に入らないものが1件でもあれば --yes は削除せず拒否する
-# （fail-closed）。新しい種類の中間データを追加したらここにも名前を足す
+# workdir 直下エントリの分類（issue #108）。応急 (a) では削除前の安全確認
+# （tool_items に入らないものが1件でもあれば --yes を拒否）専用だったが、
+# PM決定 (b)（2026-09-07）で `_purge_workdir` 本体の許可リストにも
+# 転用した——tool_items と判定したものだけを実際に削除し、それ以外は
+# 種類を問わず残す。新しい種類の中間データを追加したらここにも名前を足す。
+# ※ ".tmp" の裸の拡張子一致は入れない——grep で確認した実際の一時ファイル
+# （cred_store・config・api_budget・vision_client の `_atomic_write_*`）は
+# いずれも `%LOCALAPPDATA%` か output_dir・workdir/responses/ 配下に
+# `<name>.<pid>.tmp` として書かれ、workdir 直下には現れない。実際には
+# 作られない拡張子を許可リストに入れると、利用者の `原本.tmp` のような
+# ファイルまで誤ってツール由来と判定してしまう（issue #108 追補・
+# 2026-09-07 レビュー指摘）
+# "logs" はここに含めない——cfg.log_dir の既定値は workdir の**兄弟**パス
+# （GUI 既定も workdir／logs が並列）であり、既定運用では workdir 直下に
+# 作られない。無条件でこの集合に入れると、利用者が workdir 直下へ自分の
+# 用途で "logs" という名前のフォルダを作った場合に、ツール由来と誤判定して
+# 消してしまう（issue #108 の目的に反する・2026-09-07 レビュー指摘）。
+# "logs" だけは `_is_tool_workdir_entry` が cfg.log_dir の解決先と個別に
+# 突き合わせて判定する（他の6つは pages・aligned・editor_pages・
+# detect_frames_pages・responses・debug いずれも workdir 直下へ実際に
+# 作られることを 2026-09-07 に grep で再確認済み）
 _TOOL_WORKDIR_DIR_NAMES = frozenset({
     "pages", "aligned", "editor_pages", "detect_frames_pages", "responses",
-    "debug", "logs",
+    "debug",
 })
 _TOOL_WORKDIR_FILE_NAMES = frozenset({
     "intermediate.sqlite", "intermediate.sqlite-wal", "intermediate.sqlite-shm",
     ".run.lock",
 })
 
+# 許可リストのフォルダ直下（1階層のみ）で、ツールが実際に書くファイルの
+# 拡張子（issue #108 追補・2026-09-07）。フォルダ全体を無条件で消すと、
+# 利用者がそのフォルダへ直接ファイルを置いた場合に巻き込んでしまうため、
+# 直下1階層だけ命名を見て個別に残す。中身は見ない・ネストしたサブフォルダは
+# 拡張子を問わず「認識できない」側へ回す（許可リストに無い名前と同じ扱い）。
+# 対応表の正はコード実測（grep 2026-09-07）:
+#   pages/               ingest.expand()（<stem>-<連番>.png）
+#   aligned/              pipeline._run_locked／debug_images.py
+#                         （<page_id>_<face_id>.png）
+#   editor_pages/         ingest.expand() ＋ cli.cmd_expand_page の
+#                         <stem>-p<NNNN>-aligned.png（いずれも .png）
+#   detect_frames_pages/  ingest.expand()（<stem>-<連番>.png）
+#   responses/            vision_client.save_response
+#                         （<page_id>.json／<page_id>.meta.json）
+#   debug/                debug_images.write_debug_images
+#                         （<page_id>_debug.png）
+#   logs/                 logging_safe.init（app.log／error.log）。
+#                         既定の log_dir は workdir の外なので、workdir 直下に
+#                         現れるのは利用者が log_dir を workdir 配下に設定した
+#                         場合のみ
+_TOOL_SUBDIR_EXTENSIONS: dict[str, frozenset[str]] = {
+    "pages": frozenset({".png"}),
+    "aligned": frozenset({".png"}),
+    "editor_pages": frozenset({".png"}),
+    "detect_frames_pages": frozenset({".png"}),
+    "responses": frozenset({".json"}),
+    "debug": frozenset({".png"}),
+    "logs": frozenset({".log"}),
+}
 
-def _is_tool_workdir_entry(p: Path) -> bool:
+
+def _log_dir_matches(p: Path, cfg: Config) -> bool:
+    """workdir 直下の "logs" という名前のフォルダ `p` が、実際に
+    `cfg.log_dir` の解決先と一致するか（issue #108 レビュー指摘・
+    2026-09-07）。大文字小文字・区切りの正規化のみ行う（Windows のパス
+    比較として妥当な範囲）。シンボリックリンクの解決はしない——p 自体の
+    reparse point 判定は呼び出し側が別途行う。
+    """
+    log_dir = Path(cfg.log_dir)
+    if not log_dir.is_absolute():
+        log_dir = Path.cwd() / log_dir
+    p_abs = p if p.is_absolute() else Path.cwd() / p
+    return (os.path.normcase(os.path.normpath(str(p_abs)))
+            == os.path.normcase(os.path.normpath(str(log_dir))))
+
+
+def _is_tool_workdir_entry(p: Path, cfg: Config) -> bool:
     """workdir 直下の1エントリが、このツールが作ったものと分かる名前か。
 
-    判定は名前だけで中身は見ない（reparse point 越しの中身検査を避ける）。
+    判定は基本的に名前だけで中身は見ない（reparse point 越しの中身検査を
+    避ける）。**例外は "logs"**——既定では workdir の兄弟パスであり
+    workdir 直下には現れないため、名前一致だけでは判定せず、実際に
+    `cfg.log_dir` が指す先と一致するときだけツール由来と認める
+    （`_log_dir_matches`・issue #108 レビュー指摘・2026-09-07）。利用者が
+    workdir 直下に自分の用途で "logs" フォルダを作っていても、log_dir が
+    別の場所を指していれば誤って削除しない。
+
+    許可リストのフォルダ自身の判定はここまで——直下1階層の個別判定は
+    `_classify_tool_subdir` が別途行う（issue #108 追補）。
     ※ snap-diff（診断コマンド）は SQLite を一時ディレクトリへ複製するだけで
     workdir 配下には何も書かない（08 §6.3）ため、"snap*" 名は対象に含めない
     ——実際に作られない名前を許可リストに入れると、その名前の利用者ファイルを
@@ -1290,31 +1412,81 @@ def _is_tool_workdir_entry(p: Path) -> bool:
     """
     name = p.name
     if p.is_dir():
+        if name == "logs":
+            return _log_dir_matches(p, cfg)
         return name in _TOOL_WORKDIR_DIR_NAMES
-    return name in _TOOL_WORKDIR_FILE_NAMES or name.endswith(".tmp")
+    return name in _TOOL_WORKDIR_FILE_NAMES
 
 
-def _scan_workdir_entries(wd: Path) -> tuple[int, int, list[str]]:
+def _classify_tool_subdir(p: Path) -> tuple[list[Path], list[Path]]:
+    """許可リストのフォルダ `p` の直下（1階層のみ）を
+    (削除してよいファイル, 残すエントリ) に分ける（issue #108 追補）。
+
+    判定は拡張子だけで中身は見ない。`_TOOL_SUBDIR_EXTENSIONS` に載って
+    いない拡張子・reparse point・サブフォルダはすべて「残す」側——
+    利用者がこのフォルダへ直接ファイルを置いた場合に巻き込まないため。
+    p が reparse point（ジャンクション等）の場合は中身を辿らず両方とも
+    空リストで返す（呼び出し側が p 自体を丸ごと扱う）。
+    """
+    if _is_reparse_point(p):
+        return [], []
+    exts = _TOOL_SUBDIR_EXTENSIONS.get(p.name, frozenset())
+    removable: list[Path] = []
+    kept: list[Path] = []
+    try:
+        children = sorted(p.iterdir())
+    except OSError:
+        return [], []
+    for child in children:
+        if (not _is_reparse_point(child) and child.is_file()
+                and child.suffix.lower() in exts):
+            removable.append(child)
+        else:
+            kept.append(child)
+    return removable, kept
+
+
+def _scan_workdir_entries(wd: Path, cfg: Config) -> tuple[int, int, list[str]]:
     """workdir 直下を走査し (tool_items, other_items, other_examples) を返す
-    （issue #108）。cred.dpapi（cred_store.blob_name()）は名前が一致すれば
-    reparse point かどうかに関わらずどちらにも数えない——資格情報として
-    残せるかどうかの判定は `_purge_workdir` 側に委ね、ここは削除前の可視化
-    専用。存在しない workdir は (0, 0, []) を返す。
+    （issue #108）。`_purge_workdir` と同じ許可リスト（`_is_tool_workdir_entry`・
+    `_classify_tool_subdir`）を見るため、実際に削除される件数（tool_items の
+    数え方は下記）・残る件数（other_items）と一致する——`--preview` の表示にも、
+    実削除後の `purged` イベントの `kept`/`kept_examples`（PM決定 (b)・
+    2026-09-07）にもこの結果をそのまま使う。cfg は "logs" フォルダの判定に使う。
+
+    `tool_items` は直下エントリ単位（許可リストのフォルダは中身を問わず1件と
+    数える・応急 (a) から変更なし）。`other_items`/`other_examples` は直下の
+    未認識エントリに加え、許可リストのフォルダ直下1階層にある未認識ファイル
+    も含む（issue #108 追補・2026-09-07）——`"pages/自分のメモ.txt"` の形で
+    フォルダ名を前置し、直下の未認識エントリと区別できるようにする。
+
+    cred.dpapi（cred_store.blob_name()）は名前が一致すれば reparse point か
+    どうかに関わらずどちらにも数えない——資格情報として残せるかどうかの
+    判定は `_purge_workdir` 側に委ねる。存在しない workdir は (0, 0, []) を返す。
     """
     if not wd.is_dir():
         return 0, 0, []
     blob = cred_store.blob_name()
     tool_items = other_items = 0
     other_examples: list[str] = []
+
+    def _add_example(name: str) -> None:
+        nonlocal other_items
+        other_items += 1
+        if len(other_examples) < 5:
+            other_examples.append(name)
+
     for p in sorted(wd.iterdir()):
         if p.name == blob:
             continue
-        if _is_tool_workdir_entry(p):
-            tool_items += 1
-        else:
-            other_items += 1
-            if len(other_examples) < 5:
-                other_examples.append(p.name)
+        if not _is_tool_workdir_entry(p, cfg):
+            _add_example(p.name)
+            continue
+        tool_items += 1
+        if p.is_dir() and p.name in _TOOL_SUBDIR_EXTENSIONS:
+            _removable, kept_children = _classify_tool_subdir(p)
+            for child in kept_children:
+                _add_example(f"{p.name}/{child.name}")
     return tool_items, other_items, other_examples
 
 
@@ -1341,8 +1513,14 @@ def cmd_purge(args) -> int:
     wd_abs = _abs_path_str(wd)
 
     if args.preview:
-        # --preview は --yes と同時指定されても削除しない（優先・issue #108）
-        tool_items, other_items, other_examples = _scan_workdir_entries(wd)
+        # --preview は --yes と同時指定されても削除しない（優先・issue #108）。
+        # この優先順位は argparse の相互排他指定では**なく**、この if を
+        # --yes チェックより前に置くコード順だけで担保している（両方とも
+        # action="store_true" の独立フラグ・2026-09-07 レビュー指摘）。
+        # Rust 側は `--preview` があるとき `--yes` を argv から落とす
+        # 二重防御を別途持つ（lib.rs・4d54235）——ここが崩れても GUI 経由の
+        # 呼び出しでは安全側に倒れる
+        tool_items, other_items, other_examples = _scan_workdir_entries(wd, cfg)
         reason = _unsafe_workdir_reason(wd, cfg.workdir)
         _progress({"event": "purge_preview", "path": wd_abs,
                    "output_dir": _abs_path_str(Path(cfg.output_dir)),
@@ -1369,31 +1547,32 @@ def cmd_purge(args) -> int:
                    "unsafe_reason": reason, "path": wd_abs})
         return 2
 
-    # workdir 直下に、このツールが作ったと分からないものが1件でもあれば
-    # 削除しない——原本や大事なファイルが同居していても誤って巻き込まない
-    # ための最終防御（issue #108）
-    tool_items, other_items, other_examples = _scan_workdir_entries(wd)
-    if other_items > 0:
-        print(f"workdir 直下にこのツールが作ったと分からないものが "
-              f"{other_items} 件あるため削除しない（{wd_abs}）。原本や大事な"
-              "ファイルが紛れていないか確認してから再実行する。",
-              file=sys.stderr)
-        _progress({"event": "purge_refused", "reason": "other_items",
-                   "other_items": other_items, "other_examples": other_examples,
-                   "path": wd_abs})
-        return 2
-
-    cred_kept, wd_removed, wd_failed = _purge_workdir(wd)
+    # workdir 直下のうち、このツールが作ったと分かるものだけを削除する
+    # （許可リスト方式・issue #108 PM決定 (b)・2026-09-07）。認識できない
+    # ものは削除せず残し、件数と例を報告する——原本や大事なファイルが
+    # 同居していても誤って巻き込まない。`_purge_workdir` と同じ許可リストを
+    # 見る `_scan_workdir_entries` を削除前に呼んで、残る件数・例を確定する
+    # （削除で状態が変わる前に求める・両者は同じ判定を見るため実削除後の
+    # 「残った」件数と一致する）
+    _tool_items, wd_kept, wd_kept_examples = _scan_workdir_entries(wd, cfg)
+    cred_kept, wd_removed, wd_failed = _purge_workdir(wd, cfg)
     # cred.dpapi の中身は出さない。"path" は絶対パス（issue #108）——
     # workdir のルート自体は利用者が設定した値であり記入値ではないため出す。
-    # 資格情報側で足すのは残せたかどうかの真偽値と削除件数のみ（S-MC）
+    # 資格情報側で足すのは残せたかどうかの真偽値と削除件数のみ（S-MC）。
+    # "kept"/"kept_examples" は許可リストに無く残したファイルの件数・例
+    # （最大5件・相対名。PM決定 (b)・2026-09-07）——cred.dpapi は含まない。
+    # 変数名を wd_kept にしているのは、下の --include-output 側の
+    # `_output_purge_targets` が返す（別物の）kept と紛れないようにするため
     event = {"event": "purged", "path": wd_abs, "cred_kept": cred_kept,
-              "removed": wd_removed, "failed": wd_failed}
+              "removed": wd_removed, "failed": wd_failed,
+              "kept": wd_kept, "kept_examples": wd_kept_examples}
     # --include-output 側（削除 N 件／対象外として残したファイル N 件）と
     # 同じ形で、workdir 側も人が読む1行を必ず出す（AZKi 指摘: 消し損ねが
-    # あっても「purged」とだけ出て気づかれない事故を防ぐ）
+    # あっても「purged」とだけ出て気づかれない事故を防ぐ）。kept は0でも
+    # 常に出す——「認識できないものは無かった」ことも同じ1行で分かる
     cred_note = "資格情報は残した" if cred_kept else "資格情報は無かった"
-    print(f"中間データ {wd_removed} 件を削除した（{cred_note}）")
+    print(f"中間データ {wd_removed} 件を削除し、ツールが作ったものではない "
+          f"{wd_kept} 件は残した（{cred_note}）")
     rc = 0
     if wd_failed:
         print(f"workdir 内の {wd_failed} 件を削除できなかった（使用中または"
@@ -1563,6 +1742,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--preview", action="store_true",
                    help="何も削除せず、削除対象の場所と件数だけを出す"
                         "（--yes と同時指定時は --preview を優先・issue #108）")
+    # --preview と --yes はどちらも独立した store_true フラグで、argparse の
+    # 相互排他機構（add_mutually_exclusive_group）は使っていない。優先順位は
+    # cmd_purge 側の if 文の並び順だけで担保している（2026-09-07 レビュー
+    # 指摘）。GUI（Rust）は rebuild_args で --preview 指定時に --yes を
+    # argv から落とす二重防御を別途持つ（lib.rs・4d54235）
     p.set_defaults(fn=cmd_purge)
 
     args = ap.parse_args(argv)

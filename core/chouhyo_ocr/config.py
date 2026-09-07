@@ -13,6 +13,7 @@ import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+from . import logging_safe as log
 from .paths import project_root
 
 
@@ -199,6 +200,13 @@ def _is_profile_root(p: Path) -> bool:
     """
     home = os.environ.get("USERPROFILE")
     if not home or not home.strip():
+        # 欠落は異常な実行環境のサイン（通常の Windows セッションでは必ず
+        # 設定されている）。判定自体は fail-closed に倒さず False を返す
+        # （プロファイル直下判定が効かないだけで、他の unsafe_root 判定・
+        # other_items の可視化は引き続き働く）が、無音にはしない
+        # （issue #108 レビュー指摘・2026-09-07）。値（環境変数の中身）は
+        # そもそも無いので出しようがない
+        log.warn("userprofile_missing")
         return False
     base = Path(home)
     targets = (base, base / "Documents", base / "Desktop", base / "Downloads")

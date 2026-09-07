@@ -20,15 +20,18 @@ type Summary = {
   // 構造異常や枠外率など送信後の判定も含む総数のため、この値はその内数
   // （旧コアでは undefined）
   format_mismatch_pre_send?: number;
-  // issue #119: 今回の run が実際に処理したページ数／そのうち失敗として
-  // 確定した件数（cli.py の終了コード判定と同じ母集団・pipeline.py の
-  // Summary.processed_pages/processed_failed）。`pages`／`rows` は workdir の
-  // 累計（保持している中間データの量）のため、過去に成功実績がある workdir
-  // で今回のバッチが全滅しても pages/rows の方が大きく埋もれてしまう——
-  // completionNotice の様式不一致判定はこちらを分母にする（旧コアでは
-  // undefined・そのときは従来どおり rows にフォールバック）
+  // issue #119: 今回の run が実際に処理したページ数（cli.py の終了コード
+  // 判定と同じ母集団・pipeline.py の Summary.processed_pages）。`pages`／
+  // `rows` は workdir の累計（保持している中間データの量）のため、過去に
+  // 成功実績がある workdir で今回のバッチが全滅しても pages/rows の方が
+  // 大きく埋もれてしまう——completionNotice の様式不一致判定はこちらを
+  // 分母にする（旧コアでは undefined・そのときは従来どおり rows にフォール
+  // バックする）。
+  // `processed_failed`（同じキー組）は現状どの画面表示からも参照していない
+  // ため、実在を確認していない数値関係を勝手に語らないよう型に含めていない
+  // （レビュー L-3）。使う場面ができたら Summary へ追加し、実測で意味を
+  // 確認してから配線すること
   processed_pages?: number;
-  processed_failed?: number;
   risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
   // 中間データの整列結果を再利用し送信しなかったページ数（issue #72 (t)・
   // 実機通し確認の指摘。core が summary へ追加中のキー・旧コアでは
@@ -297,7 +300,12 @@ export function accumulationNotice(ev: Record<string, any>): string | null {
  *  ため、結果通知だけパスを隠すと整合しない。
  *
  *  「削除できなかった件数」を必ず出すのは、Excel で開いたままのファイルが
- *  あると黙って残るため——「削除しました」だけだと片付いたと誤解する。 */
+ *  あると黙って残るため——「削除しました」だけだと片付いたと誤解する。
+ *
+ *  `kept`（issue #108・本対応 (b)）: ツールが作ったもの以外で残した件数。
+ *  `kept` キー自体が無い（旧コア・許可リスト方式へ移行する前）なら何も
+ *  言わない——存在しない挙動を語らない。キーはあっても 0 件なら、既存の
+ *  「0件表示はノイズ」流儀に合わせて出さない。 */
 export function purgeNotice(ev: Record<string, any>): string {
   const n = (v: unknown) => (typeof v === "number" && v > 0 ? v : 0);
   const path = typeof ev.path === "string" && ev.path ? ev.path : "";
@@ -307,6 +315,12 @@ export function purgeNotice(ev: Record<string, any>): string {
   if (n(ev.failed) > 0) {
     parts.push(`${n(ev.failed)} 件は削除できませんでした`
       + `（他のプログラムが使用中の可能性があります。閉じてからもう一度お試しください）。`);
+  }
+  if (ev.kept !== undefined && n(ev.kept) > 0) {
+    const examples = Array.isArray(ev.kept_examples) ? ev.kept_examples.slice(0, 5) : [];
+    const suffix = examples.length > 0 ? `（例: ${examples.join("、")}）` : "";
+    parts.push(`このツールが作ったものではないファイルは ${n(ev.kept)} 件残しています${suffix}。`
+      + `不要であれば手で削除してください。`);
   }
   if (ev.output_removed !== undefined || ev.output_failed !== undefined) {
     parts.push(`出力ファイルを ${n(ev.output_removed)} 件削除しました`
@@ -323,6 +337,12 @@ export function purgeNotice(ev: Record<string, any>): string {
  * 中間データ削除の事前確認（issue #108）
  * ------------------------------------------------------------------ */
 
+/** 設定画面（App.tsx の Settings）が workdir を指す呼称にそのまま揃える
+ *  （レビュー L-6: 中間データ削除まわりの文言が「削除先」「保存先」
+ *  「削除対象のフォルダ」とばらばらで、利用者が設定画面のどの項目を
+ *  見ればよいか辿れなかった）。 */
+const WORKDIR_LABEL = "中間データの保存先";
+
 /** `is_safe_root`（Rust）・core 側に新設される同等の述語が返す理由コード
  *  → 平易な言葉（issue #108）。core の実測に無い理由コードを追加しない
  *  （ルール2: 捏造禁止）。 */
@@ -330,7 +350,7 @@ export const UNSAFE_REASON_JA: Record<string, string> = {
   drive_root: "ドライブの直下が指定されています",
   unc: "ネットワーク上の共有フォルダ（UNC パス）が指定されています",
   dot: "現在のフォルダがそのまま指定されています",
-  empty: "保存先が設定されていません",
+  empty: `${WORKDIR_LABEL}が設定されていません`,
   profile_root: "ユーザーのフォルダの直下が指定されています",
   reparse_point: "ジャンクションまたはシンボリックリンクが指定されています",
 };
@@ -385,16 +405,23 @@ export function parsePurgePreview(text: string): PurgePreview {
     rawFirstLine: (text.split("\n")[0] ?? "").trim() };
 }
 
-/** プレビュー結果から「削除を進めてよいか」を決める（issue #108）。
+/** プレビュー結果から「削除を進めてよいか」を決める（issue #108・本対応 (b)
+ *  で core の契約が変わったことに追従）。
  *
  *  優先順位: ①プレビュー自体が読めない（fail-closed）②安全な置き場でない
- *  （`safe_root:false`）③ツール以外のファイルが1件でもある。①②③のどれかに
- *  該当したら削除ボタンは出さない——explain/confirm の二段確認へは進めない。 */
+ *  （`safe_root:false`）。①②に該当したら削除ボタンは出さない——explain/
+ *  confirm の二段確認へは進めない。
+ *
+ *  **`other_items > 0`（ツール以外のファイルがある）はもう止める理由では
+ *  ない**（本対応 (b)）。core 側の `purge --yes` が許可リスト方式に変わり、
+ *  ツール以外のファイルは削除せずそのまま残すようになったため、GUI 側も
+ *  「止める」から「進めつつ、残るものを事前に見せる」へ変える。件数・例は
+ *  `purgePreview`（呼び出し側が保持する状態）からそのまま explain 画面が
+ *  読む——purgeGate の戻り値には含めない。 */
 export type PurgeGate =
   | { allowed: true }
   | { allowed: false; reason: "preview_failed" }
-  | { allowed: false; reason: "unsafe_root"; detail: string }
-  | { allowed: false; reason: "other_items"; otherItems: number; examples: string[] };
+  | { allowed: false; reason: "unsafe_root"; detail: string };
 
 export function purgeGate(preview: PurgePreview | null): PurgeGate {
   if (!preview || !preview.parsed) return { allowed: false, reason: "preview_failed" };
@@ -402,48 +429,64 @@ export function purgeGate(preview: PurgePreview | null): PurgeGate {
     return { allowed: false, reason: "unsafe_root",
       detail: unsafeRootNotice(preview.unsafeReason) ?? "安全な置き場か確認できませんでした" };
   }
-  if (preview.otherItems > 0) {
-    return { allowed: false, reason: "other_items",
-      otherItems: preview.otherItems, examples: preview.otherExamples };
-  }
   return { allowed: true };
 }
 
-/** 「このフォルダにはツールが作ったもの以外がある」の1文（issue #108）。
- *  purgeGate（`other_items`）と purge_refused イベント（core 側の二重防御）の
- *  両方から使う——利用者から見て言っていることが変わらないようにする。 */
-function otherItemsNotice(otherItems: number, examples: string[]): string {
-  const shown = examples.slice(0, 5);
-  const suffix = shown.length > 0 ? `（例: ${shown.join("、")}）` : "";
-  return `このフォルダにはツールが作ったもの以外のファイルが ${otherItems} 件あります${suffix}。`
-    + `削除を止めました。原本などを別の場所へ移してから、もう一度お試しください。`;
+/** `safe_root:false`（置き場が安全でない）を画面の1文にする（issue #108）。
+ *  purgeBlockedNotice（`purge --preview` 経由）と purgeRefusedNotice
+ *  （`purge --yes` 実行時の二重防御）の両方から使う——同じ理由なら同じ
+ *  粒度・同じ言い回しで伝える（レビュー M-1）。 */
+function unsafeRootBlockedText(detail: string): string {
+  return `${WORKDIR_LABEL}の確認で問題が見つかりました（${detail}）。削除は行いません。`;
 }
 
-/** 削除を止めた理由を画面に出す1文（issue #108）。allowed のときは null。 */
+/** 削除を止めた理由を画面に出す1文（issue #108）。allowed のときは null。
+ *  本対応 (b) で other_items の分岐は無くなった（止める理由ではなくなった
+ *  ため）。
+ *
+ *  M-5（レビュー）: `preview_failed`（`--preview` を持たない旧コア・設定
+ *  不正・workdir 不在など）は「もう一度お試しください」だけだと、何度
+ *  押しても解消しない状況で同じ案内を繰り返すことになる。設定画面の
+ *  どこを見ればよいか・それでも直らなければ管理者に相談する、まで導く。 */
 export function purgeBlockedNotice(gate: PurgeGate): string | null {
   if (gate.allowed) return null;
   if (gate.reason === "preview_failed") {
-    return "削除してよい場所か確認できませんでした。もう一度お試しください。";
+    return "削除してよい場所か確認できませんでした。もう一度お試しください。"
+      + `改善しない場合は、設定画面の「${WORKDIR_LABEL}」を確認するか、`
+      + "管理者に相談してください。";
   }
-  if (gate.reason === "unsafe_root") {
-    return `削除先の確認で問題が見つかりました（${gate.detail}）。削除は行いません。`;
-  }
-  return otherItemsNotice(gate.otherItems, gate.examples);
+  return unsafeRootBlockedText(gate.detail);
 }
 
-/** `purge --yes` の実行時に core が二重防御として返す `event:"purge_refused"`
- *  （issue #108・通常はプレビューの時点で止まるための保険）を画面の文言へ。
+/** explain 段（削除の1段目）で「対象外ファイルは消さずに残す」旨を伝える1文
+ *  （issue #108・本対応 (b)）。`other_items > 0` のときだけ返す——0件表示は
+ *  ノイズになるので出さない（既存の noticeFor 系と同じ流儀）。 */
+export function purgeKeptNotice(otherItems: number, examples: string[]): string | null {
+  if (otherItems <= 0) return null;
+  const shown = examples.slice(0, 5);
+  const suffix = shown.length > 0 ? `（例: ${shown.join("、")}）` : "";
+  return `このツールが作ったものではないファイルが ${otherItems} 件あります${suffix}。`
+    + `残るものはこのツールでは消しません。不要であれば手で削除してください。`;
+}
+
+/** `purge --yes` の実行時に core が返す `event:"purge_refused"`（issue #108・
+ *  通常はプレビューの時点で止まるための保険）を画面の文言へ。
  *
- *  `reason` は "unsafe_root" | "other_items" の2値のみ（`purge_preview` の
- *  `unsafe_reason` のような詳細コードは持たない）——プレビューと違って、
- *  安全でない理由の内訳までは伝えられない。 */
+ *  本対応 (b) で `unsafe_root` の拒否だけが残った（`other_items` は削除を
+ *  続けつつ残す方式に変わったため、拒否理由ではなくなった）。
+ *
+ *  M-1（レビュー）: 「詳細コードを持たない」としていたのは誤りで、core
+ *  （cli.py:1368-1369）は `unsafe_reason` を `purge_preview` と同じ理由コード
+ *  で載せている。`unsafeRootNotice` を再利用し、プレビュー（purgeBlockedNotice
+ *  の unsafe_root 分岐）と同じ粒度・同じ言い回しにする。`unsafe_reason` が
+ *  無い（旧コア・キー欠落）ときだけ汎用文へフォールバックする——存在しない
+ *  理由コードを捏造しない。 */
 export function purgeRefusedNotice(ev: Record<string, any>): string {
-  if (ev.reason === "other_items") {
-    const otherItems = typeof ev.other_items === "number" ? ev.other_items : 0;
-    const examples = Array.isArray(ev.other_examples) ? ev.other_examples : [];
-    return otherItemsNotice(otherItems, examples);
-  }
-  return "削除先が安全でないと判定されたため、削除を止めました。設定の保存先を確認してください。";
+  const reason = typeof ev.unsafe_reason === "string" ? ev.unsafe_reason : null;
+  const detail = unsafeRootNotice(reason);
+  if (detail) return unsafeRootBlockedText(detail);
+  return `${WORKDIR_LABEL}が安全でないと判定されたため、削除を止めました。`
+    + `設定画面の「${WORKDIR_LABEL}」を確認してください。`;
 }
 
 /** 認証キー取り込み（`import-credentials --delete-source`）の stdout から
@@ -800,17 +843,48 @@ export function truncatedFailureNotice(total: number, shown: number): string | n
   return rest > 0 ? `他 ${rest} 件（一覧の表示は ${shown} 件までです）` : null;
 }
 
+/** `kill_core` が失敗したときに Rust 側が返す「既に終了している」旨の
+ *  文字列（issue #118・H-1・lib.rs:973 `slot.take().ok_or("実行中の処理が
+ *  ありません")`）。中断ボタンの二度押し・処理が自然終了する直前の押下で
+ *  正常に起きる失敗であり、taskkill 自体の失敗（`kill_pid` の
+ *  「停止できませんでした」）や例外とは区別する。 */
+const KILL_CORE_ALREADY_FINISHED = "実行中の処理がありません";
+
 /** 中断ボタンの結果（issue #118）。以前は `kill_core` を呼ぶ**前**に
  *  `interruptedRef.current = true` を立て、失敗を `catch { 既に終了 }` で
  *  握りつぶしていた——kill が「既に終了」以外の理由（権限・子プロセスの
  *  分離など）で失敗すると、処理は続いているのに中断済み扱いになり、完了時の
  *  `if (!interruptedRef.current) setError(...)` が抑止されて画面に何も
- *  出なかった。`kill_core` の成否を見てから判定する——失敗時はフラグを
- *  立てず、「処理は続いている」ことを利用者に伝える。 */
-export function interruptOutcome(killed: boolean): { interrupted: boolean; notice: string | null } {
-  return killed
-    ? { interrupted: true, notice: null }
-    : { interrupted: false, notice: "中断できませんでした（処理は続いています）" };
+ *  出なかった。`kill_core` の成否を見てから判定する。
+ *
+ *  H-1（レビュー差し戻し）: 上の直しだけでは、二度押し・処理が自然終了する
+ *  直前の押下で `kill_core` が「既に終了」（`KILL_CORE_ALREADY_FINISHED`）
+ *  を返すケースを一般の失敗と区別できていなかった。これは正常な経路
+ *  （kill を呼んだ時点でもう処理が終わっていただけ）なので、`notice` は
+ *  出さない——「中断できませんでした」の赤帯が、実際は正常終了した run の
+ *  画面に残り続ける事故になっていた。
+ *
+ *  `killError` は `invoke("kill_core")` の reject を `String(e)` で受けた
+ *  もの。成功（reject なし）は呼び出し側が `null` を渡す。 */
+export function interruptOutcome(
+  killError: string | null,
+): { interrupted: boolean; notice: string | null } {
+  if (killError === null) return { interrupted: true, notice: null };
+  if (killError.includes(KILL_CORE_ALREADY_FINISHED)) {
+    return { interrupted: false, notice: null };
+  }
+  return { interrupted: false, notice: "中断できませんでした（処理は続いています）" };
+}
+
+/** `interruptedRef` の次の値（issue #118・H-1）。一度立った true を
+ *  降格させない——二度押しの2回目や、既に終了していた場合の
+ *  `interruptOutcome` が `interrupted:false` を返しても、1回目に成功して
+ *  立てた true を上書きして消さない（1回目の成功が「無かったこと」に
+ *  なると、正常終了した run に完了時のエラー文言が誤って出かねない）。 */
+export function nextInterruptedFlag(
+  current: boolean, outcome: { interrupted: boolean },
+): boolean {
+  return current || outcome.interrupted;
 }
 
 /* ------------------------------------------------------------------ *
@@ -984,6 +1058,11 @@ export default function RunScreen(
   const [storageAck, setStorageAck] = useState(false);
   const interruptedRef = useRef(false);
   const refusedRef = useRef(false);
+  // 中断ボタンの二度押し対策（issue #118・H-1）。押した直後から run が
+  // 終わるまで busy にする——kill_core の応答を待つ間にもう一度押されると、
+  // 2回目が「既に終了」を返して1回目の判定と紛れる（nextInterruptedFlag が
+  // 降格は防ぐが、そもそも起こしにくくする方が確実）
+  const [interrupting, setInterrupting] = useState(false);
   // 終了時の文言判定（completionNotice）で使う最新のサマリ。state の方は
   // start() のクロージャが古い値を掴むため、interruptedRef と同じ流儀で
   // ref にも持つ（issue N-1）
@@ -1024,6 +1103,16 @@ export default function RunScreen(
     if (p) setCredConfirm(p);
   };
 
+  /** issue #121 Security M-3: `pick_json`（kind:"credentials"）が armed に
+   *  した Rust 側の1回限りスロットを明示的に空にする。「取り消し」や
+   *  取り込み失敗のあと armed のまま放置しない——次に別経路でスロットが
+   *  参照されたときに、選び直したはずの前回のパスが残っていると事故になる。
+   *  旧 Rust（コマンド未実装）では reject するので、失敗は無視してよい
+   *  （このクリア自体は best-effort で、無くても実行は止めない）。 */
+  const clearPendingCredentials = () => {
+    invoke("clear_pending_credentials").catch(() => { /* 旧 Rust には無い・無視してよい */ });
+  };
+
   const importCredentials = async (p: string) => {
     setCredConfirm(null);
     setImporting(true);
@@ -1037,6 +1126,9 @@ export default function RunScreen(
       await runVerify();
     } catch (e) {
       setError(`認証キーの取り込みに失敗しました: ${e}`);
+      // issue #121 Security M-3: 取り込みが失敗した経路でも armed のまま
+      // 残さない
+      clearPendingCredentials();
     } finally {
       setImporting(false);
     }
@@ -1336,7 +1428,7 @@ ${ev.hint}` : ""));
   const start = async () => {
     setRunning(true); setSummary(null); setError(""); setNotice("");
     setLog([]); setDone(0); setTotal(0); setFailures([]); setFailureTotal(0);
-    setNotices([]); setRefused("");
+    setNotices([]); setRefused(""); setInterrupting(false);
     interruptedRef.current = false; refusedRef.current = false;
     summaryRef.current = null;
     // 画面を片付けたこの時点で、前回の実行 ID を「古い」側へ移す（issue #96）。
@@ -1361,6 +1453,9 @@ ${ev.hint}` : ""));
       if (!interruptedRef.current) setError(String(e));
     } finally {
       setRunning(false);
+      // issue #118・H-1: 中断ボタンの busy は run そのものが終わるまで
+      // 保持する方針なので、run の終了点であるここで戻す
+      setInterrupting(false);
       // 実行後に残量を取り直す（issue #47）。旧実装は runVerify がマウント時と
       // 資格情報の取り込み後にしか走らず、100枚読んだ直後も「残り900枚」の
       // ままだった。開始ボタンの disabled は verify を見ているため、
@@ -1369,13 +1464,19 @@ ${ev.hint}` : ""));
     }
   };
   const interrupt = async () => {
-    // issue #118: kill_core の結果を見てからフラグを立てる（interruptOutcome）。
-    // 失敗時はフラグを立てず、完了時のエラー表示（completionNotice）を
-    // 抑止しない——中断が効かなかったことと、その後の結果の両方を画面に出す
-    let killed = true;
-    try { await invoke("kill_core"); } catch { killed = false; }
-    const outcome = interruptOutcome(killed);
-    interruptedRef.current = outcome.interrupted;
+    // issue #118・H-1（レビュー差し戻し）: kill_core の結果を見てから
+    // フラグを立てる（interruptOutcome）。失敗時はフラグを立てず、完了時の
+    // エラー表示（completionNotice）を抑止しない——中断が効かなかったことと、
+    // その後の結果の両方を画面に出す。二度押し・処理終了直前の押下による
+    // 「既に終了」は無通知（interruptOutcome が notice:null で返す）。
+    // ボタンは押した直後から run が終わるまで busy にして、2回目の
+    // kill_core が「既に終了」を返すだけの二度押しをそもそも起こしにくくする
+    // （それでも起きた場合に備えて nextInterruptedFlag が降格を防ぐ）
+    setInterrupting(true);
+    let killError: string | null = null;
+    try { await invoke("kill_core"); } catch (e) { killError = String(e); }
+    const outcome = interruptOutcome(killError);
+    interruptedRef.current = nextInterruptedFlag(interruptedRef.current, outcome);
     if (outcome.notice) setError(outcome.notice);
   };
   const openOutput = () =>
@@ -1541,7 +1642,8 @@ ${ev.hint}` : ""));
                   strokeWidth="2" strokeLinecap="round"><path d="M13 2L4 14h6l-1 8 9-12h-6z" /></svg>
                 途中で終了しても問題ありません。次回起動時は未処理分から再開します。
               </div>
-              <button className="btn" onClick={interrupt}>中断</button>
+              <button className="btn" onClick={interrupt} disabled={interrupting}>
+                {interrupting ? "中断中…" : "中断"}</button>
             </div>
           </div>
         )}
@@ -1802,7 +1904,12 @@ ${ev.hint}` : ""));
           </div>
         )}
 
-        {error && <div className="error">{error}</div>}
+        {/* A11y-Must（WCAG 4.1.3 Status Messages）: フォーカスを動かさずに
+            出るエラー（run 失敗・中断できない・削除しきれなかった・
+            purge_refused、いずれも setError 経由でここに出る）はライブ領域
+            が無いとスクリーンリーダーに届かない。Editor.tsx の
+            role/aria-live パターンを踏襲する */}
+        {error && <div className="error" role="alert">{error}</div>}
 
         {log.length > 0 && (
           <details className="logbox">
@@ -1828,12 +1935,16 @@ ${ev.hint}` : ""));
               onClick={startPurgeCheck}>
               {purging ? "削除中…" : purgeChecking ? "確認中…" : "読み取ったデータを削除"}
             </button>
-            {/* issue #108: このフォルダ以外のもの（other_items>0）や、安全と
-                判定できない置き場（safe_root:false）、確認自体の失敗
-                （fail-closed）のいずれかで止めたときの案内。削除ボタンは
-                出さない——原本を移す・保存先を直すなど、画面外の作業が要る */}
+            {/* issue #108: 安全と判定できない置き場（safe_root:false）か、
+                確認自体の失敗（fail-closed）のいずれかで止めたときの案内。
+                削除ボタンは出さない——保存先を直すなど画面外の作業が要る。
+                本対応 (b): ツール以外のファイルがある（other_items>0）だけ
+                では止めない（許可リスト方式で対象外ファイルは残して進む） */}
+            {/* A11y-Must（WCAG 4.1.3）: 削除を止めた案内。フォーカスは動かない
+                ため role="alert" で読み上げる（Editor.tsx の役割別ライブ領域
+                と同じ考え方：問題を止めた通知は status より強い alert） */}
             {purgeBlocked && (
-              <div className="card warnbox" style={{ marginTop: 10 }}>
+              <div className="card warnbox" role="alert" style={{ marginTop: 10 }}>
                 {purgePreview?.path && (
                   <div style={{ fontFamily: "Consolas, monospace", fontSize: 12,
                     marginBottom: 6 }}>{purgePreview.path}</div>
@@ -1845,10 +1956,13 @@ ${ev.hint}` : ""));
         </div>
 
         {/* 認証キーの取り込み前確認（issue #52 M-10）。元のファイルを消す
-            操作を、押した本人に伝えないまま行わない */}
+            操作を、押した本人に伝えないまま行わない。issue #121 Security M-3:
+            「取り消し」でも Rust 側の1回限りスロット（pick_json が armed に
+            した分）を明示的に空にする——放置すると次の操作までスロットが
+            armed のまま残る */}
         {credConfirm && (
           <ConfirmDialog title="認証キーを取り込みます" confirmLabel="取り込む"
-            onCancel={() => setCredConfirm(null)}
+            onCancel={() => { setCredConfirm(null); clearPendingCredentials(); }}
             onConfirm={() => { void importCredentials(credConfirm); }}>
             <p style={{ margin: "0 0 10px" }}>
               選んだ認証キーを暗号化して、この PC に保存します。</p>
@@ -1859,35 +1973,61 @@ ${ev.hint}` : ""));
         )}
 
         {/* 削除の1段目: 何が消えて何が残るか（issue #52 M-11）。issue #108:
-            purge --preview の結果（対象フォルダの絶対パス・件数）を先頭に出す */}
+            purge --preview の結果（対象フォルダの絶対パス・件数）を先頭に出す。
+            本対応 (b): ツール以外のファイルは削除を止める理由ではなく、消さずに
+            残すだけになった——件数・例（purgeKeptNotice）を「残るもの」の
+            並びに添える。レビュー L-6: ラベルは設定画面の呼称（WORKDIR_LABEL）
+            に揃える */}
         {purgeStep === "explain" && (
           <ConfirmDialog title="読み取ったデータを削除します" confirmLabel="次へ"
             onCancel={() => setPurgeStep(null)}
             onConfirm={() => setPurgeStep("confirm")}>
             {purgePreview?.path && (
               <p style={{ margin: "0 0 10px" }}>
-                <b>削除対象のフォルダ</b>:{" "}
+                <b>{WORKDIR_LABEL}</b>:{" "}
                 <span style={{ fontFamily: "Consolas, monospace", fontSize: 12.5 }}>
                   {purgePreview.path}</span></p>
             )}
             <p style={{ margin: "0 0 10px" }}>
-              <b>消えるもの</b>: 読み取りの途中経過（取り込んだページの画像・
-              読み取った値・位置合わせの結果）{purgePreview
-                ? `。${purgePreview.toolItems} 件が対象です。` : "。"}
-              個人情報はここに残っています。</p>
+              <b>消えるもの</b>: このツールが作った中間データ{purgePreview
+                ? ` ${purgePreview.toolItems} 件` : ""}
+              （読み取りの途中経過：取り込んだページの画像・読み取った値・
+              位置合わせの結果）。個人情報はここに残っています。</p>
+            {/* コーディネーター追加分・#108 の確認画面の補足: purge --preview は
+                workdir 直下しか数えないため、pages/ などツールが作った
+                フォルダの中身は「消えるもの」の件数に個別には出ない——
+                フォルダごと消える。中に自分のファイルを置いていた場合の
+                事故を防ぐため、その旨を明示する */}
+            <p style={{ margin: "0 0 10px" }}>
+              このツールが作ったフォルダ（<span style={{ fontFamily: "Consolas, monospace" }}>pages</span> など）は、
+              中身ごと消えます。中に自分のファイルを置いている場合は、
+              先に別の場所へ移してください。</p>
             <p style={{ margin: "0 0 10px" }}>
               <b>残るもの</b>: 認証キー・テンプレート・設定。認証キーを取り込み
               直す必要はありません。</p>
+            {purgePreview && purgeKeptNotice(purgePreview.otherItems, purgePreview.otherExamples) && (
+              <p style={{ margin: "0 0 10px" }}>
+                {purgeKeptNotice(purgePreview.otherItems, purgePreview.otherExamples)}</p>
+            )}
             <p style={{ margin: "0 0 10px" }}>
               削除すると、同じ帳票をもう一度読み取るときは最初から送信し直しに
               なります（API 送信＝課金が発生します）。</p>
-            <label className="checkrow" style={{ marginBottom: 0 }}>
+            <label className="checkrow" style={{ marginBottom: purgeIncludeOutput ? 6 : 0 }}>
               <input type="checkbox" checked={purgeIncludeOutput}
                 onChange={(e) => setPurgeIncludeOutput(e.target.checked)} />
               <span>出力した Excel・CSV も削除する（このツールが作った
                 output_日時 のファイルだけが対象です。フォルダと、それ以外の
                 ファイルは残します）</span>
             </label>
+            {/* レビュー L-3: PurgePreview.outputDir を使う。件数までは出さない
+                （purge --preview が数えるのは workdir 側だけで、出力先の
+                件数は持っていない・指示どおりパスだけを見せる） */}
+            {purgeIncludeOutput && purgePreview?.outputDir && (
+              <div style={{ fontSize: 12, color: "var(--sub)" }}>
+                出力先: <span style={{ fontFamily: "Consolas, monospace" }}>
+                  {purgePreview.outputDir}</span>
+              </div>
+            )}
           </ConfirmDialog>
         )}
 
@@ -1903,10 +2043,16 @@ ${ev.hint}` : ""));
               読み取りの途中経過
               {purgeIncludeOutput ? "と、出力した Excel・CSV" : ""}
               を削除します。<b>元に戻せません。</b></p>
-            <p style={{ margin: 0 }}>
+            <p style={{ margin: purgeIncludeOutput && purgePreview?.outputDir ? "0 0 6px" : 0 }}>
               {purgeIncludeOutput
                 ? "提出済みであること（出力ファイルが手元に不要なこと）を確認してください。"
                 : "出力した Excel・CSV は残ります。"}</p>
+            {purgeIncludeOutput && purgePreview?.outputDir && (
+              <p style={{ margin: 0, fontSize: 12, color: "var(--sub)" }}>
+                出力先: <span style={{ fontFamily: "Consolas, monospace" }}>
+                  {purgePreview.outputDir}</span>
+              </p>
+            )}
           </ConfirmDialog>
         )}
       </div>

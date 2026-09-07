@@ -57,21 +57,30 @@ async function mockRun(): Promise<{ code: number; run_id: string }> {
   return { code: 0, run_id: runId };
 }
 
-/** 中間データ削除（issue #52 M-11）の疑似応答。
+/** 中間データ削除（issue #52 M-11・issue #108 本対応 (b)）の疑似応答。
  *
- *  実測（core/chouhyo_ocr/cli.py の cmd_purge・2026-09-03）に合わせて
- *  `event:"purged"` を1行だけ流す。`--include-output` を付けたときだけ
- *  output_* のキーが増える点も実物と同じにして、二段確認のチェックの
- *  有無で表示が変わることをブラウザだけで確認できるようにする。
- *  削除できなかった件数（failed）は 0 のままにして「非0のときだけ出す」
- *  分岐も残す——デモで常に警告文が出ると、実物の異常時と見分けが付かない。 */
+ *  実測（core/chouhyo_ocr/cli.py の cmd_purge）に合わせて `event:"purged"` を
+ *  1行だけ流す。`--include-output` を付けたときだけ output_* のキーが増える
+ *  点も実物と同じにして、二段確認のチェックの有無で表示が変わることを
+ *  ブラウザだけで確認できるようにする。削除できなかった件数（failed）は
+ *  0 のままにして「非0のときだけ出す」分岐も残す——デモで常に警告文が出ると、
+ *  実物の異常時と見分けが付かない。
+ *
+ *  `kept`／`kept_examples`（issue #108 本対応 (b)）: 許可リスト方式に変わり、
+ *  ツール以外のファイルは削除せず残すようになった。`demo_purge_preview`
+ *  設定を `mockPurgePreview` と共有し、"other_items" のときは事前確認で見た
+ *  対象外ファイルがそのまま「残った」結果になる——プレビューと結果で数字が
+ *  食い違わないようにする。 */
 async function mockPurge(includeOutput: boolean): Promise<{ code: number; run_id: string }> {
   const runId = nextDemoRunId();
   emit("core-start", { run_id: runId });
   await sleep(300);
+  const leavesOtherItems = demoConfigRead().demo_purge_preview === "other_items";
   emitLine(runId, JSON.stringify({
     event: "purged", path: "C:\\デモ\\workdir", cred_kept: true,
     removed: 12, failed: 0,
+    kept: leavesOtherItems ? 2 : 0,
+    kept_examples: leavesOtherItems ? ["原本.pdf", "メモ.txt"] : [],
     ...(includeOutput
       ? { output_dir: "C:\\デモ\\output", output_removed: 3, output_kept: 1,
           output_failed: 0 }
@@ -83,8 +92,11 @@ async function mockPurge(includeOutput: boolean): Promise<{ code: number; run_id
 /** `purge --preview`（issue #108）の疑似応答。中間データ削除ボタンを押した
  *  直後の事前確認画面（RunScreen.tsx の purgeGate）をブラウザ単体でも一通り
  *  確認できるようにする。`removed:12` の mockPurge と揃えて `tool_items:12`
- *  にし、既定は安全側（`safe_root:true`・`other_items:0`）を返す——止める側
- *  の分岐は demo_purge_preview 設定で切り替える（下記）。 */
+ *  にし、既定は安全側（`safe_root:true`・`other_items:0`）を返す。
+ *  demo_purge_preview 設定で分岐を切り替える——本対応 (b) で
+ *  "other_items" は「進めるが対象外ファイルが残る」動作確認用になった
+ *  （mockPurge 側の kept／kept_examples と数字を揃えてある）。削除そのものを
+ *  止めるのは "unsafe_root" だけ。 */
 function mockPurgePreview(): string {
   const override = demoConfigRead().demo_purge_preview;
   if (override === "other_items") {
@@ -539,6 +551,11 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
       return "{}";
     }
     case "kill_core": return null;
+    // issue #121 Security M-3: pick_json（kind:"credentials"）が armed に
+    // した Rust 側の1回限りスロットを空にするコマンド。デモには実体の
+    // スロットが無いので no-op（RunScreen.tsx の clearPendingCredentials が
+    // 呼ぶ・失敗しても実行を止めない設計なのでここで例外を投げる必要もない）
+    case "clear_pending_credentials": return null;
     // ドロップ受付の有効／無効（issue #69 セキュリティ LOW (b)）。デモには
     // Rust 側の白リストが無いので、受け取って捨てるだけ（例外を投げると
     // 実行画面の useEffect が毎回 catch に落ちる）

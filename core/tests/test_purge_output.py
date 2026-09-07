@@ -135,7 +135,10 @@ def test_without_include_output_keeps_outputs(tmp_path, capsys):
     assert "output_removed" not in ev and "対象外として残したファイル" not in raw
     assert ev["cred_kept"] is False                          # cred.dpapi は元々無い
     assert ev["removed"] == 1 and ev["failed"] == 0          # intermediate.sqlite の1件
-    assert "中間データ 1 件を削除した（資格情報は無かった）" in raw
+    # issue #108 PM決定 (b): 許可リスト方式になり、残した件数（0件でも）が
+    # 同じ1行に載る
+    assert "中間データ 1 件を削除し、ツールが作ったものではない 0 件は残した" \
+        "（資格情報は無かった）" in raw
 
 
 def test_requires_yes_even_with_include_output(tmp_path):
@@ -236,7 +239,7 @@ def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["failed"] == 0
     assert ev["removed"] == 2  # intermediate.sqlite-wal + intermediate.sqlite
-    assert "中間データ 2 件を削除した" in raw
+    assert "中間データ 2 件を削除し、ツールが作ったものではない 0 件は残した" in raw
 
 
 def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys):

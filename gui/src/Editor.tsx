@@ -3,7 +3,7 @@
 // 枠候補の生成（罫線検出・等分割）はコアの detect-grid を呼ぶ（§6.9）。
 // 座標はすべて「ページ座標」で編集し、保存時に表裏の面ローカルへ変換する。
 import { invoke } from "./bridge";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Mark = { value: string; rect: Rect };
@@ -45,8 +45,14 @@ type Tool = "select" | "field" | "excl" | "table" | "split";
 // も cands と同じ理由で Snap に含める。cands だけを戻すと、提案の cellIds が
 // 別世代の cands を指したまま残り、Undo 後に別の矩形を指す（提案は cands と
 // 常にペアで捕獲・復元しないと整合が壊れる）
+// issue #127 (4)（レビュー M-3 差し戻し）: droppedCells（行数変更で範囲外に
+// なり取り消した升の指定の累計）も同じ理由で Snap に含める。Undo のたびに
+// 一律 0 へ戻す実装だと、行数を減らす→Undo→Redo で「実際には指定がまた
+// 落ちている」のにカウンタだけ 0 のまま（過小案内）になる——他のフィールドと
+// 同じく、この累計も「その時点の state が実際に説明すべき値」を Snap で運ぶ
 type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number; cands: Cand[];
-              suggestions: Suggestion[]; candSelected: Record<string, boolean> };
+              suggestions: Suggestion[]; candSelected: Record<string, boolean>;
+              droppedCells: number };
 
 let seq = 0;
 const uid = () => `u${++seq}`;
@@ -3924,14 +3930,16 @@ export default function Editor(
     // する。色分け（表／欄／重なり）はチップの縁色に残しつつ、識別は
     // 「?」（通常）／「!」（重なり）の記号でも行う（色だけに依存しない）
     //
-    // issue #110: 候補一覧は candShown（既定 50・「もっと見る」で伸びる）ぶん
-    // しか出さないのに、キャンバス側は全候補を毎フレーム描いていた（罫線の
-    // 細かい紙は数百〜千件になりうる）。一覧の表示範囲に揃えて描く候補数を
-    // 絞る——キャンバス上で候補を直接クリックする経路は無い（採用/除去は
-    // 一覧のボタンのみ）ため、描かない分による操作上の欠落は無い
-    const visibleCands = cands.slice(0, candShown);
-    for (let i = 0; i < visibleCands.length; i++) {
-      const c = visibleCands[i];
+    // issue #110・レビュー M-2 差し戻し: 最初の実装は候補の描画そのものを
+    // candShown（既定 50）に絞ったが、一括採用（「選んだ候補を採用」）は
+    // cands 全件が対象のまま——一覧にもキャンバスにも出ない 51 件目以降が
+    // 見えないまま確定してしまう。**枠線（輪郭）は全候補を描く**（採用対象と
+    // 見えているものを一致させる）。重いのは隅マーカー・ラベル（measureText・
+    // fillText・8本の線分）側なので、そちらだけ一覧の表示範囲
+    // （candShown 以内）に絞る——一覧に出ていない候補は番号もクリック対象も
+    // 無いため、マーカー・ラベルを省いても操作上の欠落は無い
+    for (let i = 0; i < cands.length; i++) {
+      const c = cands[i];
       const r = c.rect;
       const color = c.overlaps ? "#ff9f43" : c.kind === "table" ? "#7ce38b" : "#4fc3f7";
       ctx.setLineDash([6 * px, 4 * px]);
@@ -3942,6 +3950,7 @@ export default function Editor(
       ctx.strokeStyle = color; ctx.lineWidth = 2 * px;
       ctx.strokeRect(r.x, r.y, r.w, r.h);
       ctx.setLineDash([]);
+      if (i >= candShown) continue;
       // 隅の L字マーカー（同じ暗色ハロー→色線の順。破線が薄く見える
       // ディスプレイでも実線側で視認できるよう重ね描きする）
       const m = 10 * px;
@@ -4944,7 +4953,7 @@ export default function Editor(
       // 保存が止まると「切り抜きだけがメモリに残り、元に戻す手段が無い」
       // 状態になっていた。1コマ積んで Undo で戻せるようにする
       pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands,
-                       suggestions, candSelected });
+                       suggestions, candSelected, droppedCells: droppedCellsRef.current });
       setFields(resolved.fields);
       setSel(null);
       markDirty(true);
@@ -5224,7 +5233,7 @@ export default function Editor(
     if (resolved.carved.length) {
       // issue #65-8: ファイル保存側と同じく、自動切り抜きは履歴へ積む
       pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands,
-                       suggestions, candSelected });
+                       suggestions, candSelected, droppedCells: droppedCellsRef.current });
       setFields(resolved.fields);
       setSel(null);
       markDirty(true);
@@ -5408,7 +5417,8 @@ export default function Editor(
       // 自動生成は積まない（M-7）——利用者の編集ではないため
       if (eff.pushHistory) pushHistoryNow({ fields: o.fields, tables: o.tables, excls,
                                             splitY: o.splitY, cands: newCands,
-                                            suggestions: newSuggestions, candSelected: defaults });
+                                            suggestions: newSuggestions, candSelected: defaults,
+                                            droppedCells: droppedCellsRef.current });
       setCands(newCands);
       setSuggestions(newSuggestions);
       setCandShown(CAND_PAGE_SIZE);
@@ -5463,10 +5473,21 @@ export default function Editor(
   };
 
   /// ツールバー「ページ全体から枠候補を生成」。手動経路は今の state を
-  /// そのまま渡すだけの薄いラッパにする（検出ロジック本体は1つに保つ）
+  /// そのまま渡すだけの薄いラッパにする（検出ロジック本体は1つに保つ）。
+  ///
+  /// レビュー M-4（issue #109 (b) の説明訂正）: 確定枠を差し替える経路
+  /// （テンプレート読込・適用・新規作成）だけが bumpFrameEpoch を通り、
+  /// 手動再生成そのものはこれまで世代を進めていなかった。そのため
+  /// 「生成→採用→再生成→Undo」という issue の手順では2回の生成が同じ世代の
+  /// まま進み、候補 id の世代タグ（e<epoch>_...）だけでは事故を防げず、実際に
+  /// 事故を防いでいたのは Snap への suggestions/candSelected 復元の方だった。
+  /// ここで世代を進めることで、世代タグも本来の役目（**再生成・適用をまたぐ**
+  /// 誤参照の防御）を果たすようにする——進行中の古い生成結果は
+  /// candidateResultApplies が世代不一致として捨てる（望ましい挙動）
   const runDetectFrames = () => {
+    const epoch = bumpFrameEpoch();
     void detectFrames({
-      manual: true, seq: loadSeqRef.current, epoch: frameEpochRef.current,
+      manual: true, seq: loadSeqRef.current, epoch,
       imagePath: imgPath, templatePath: tplPath,
       fields, tables, splitY, renderDpi: meta.current.render_dpi,
     });
@@ -5491,7 +5512,8 @@ export default function Editor(
     // 押した瞬間から Ctrl+Z 1手で戻せる必要があるので、400ms 静止の経路に
     // 任せずここで1コマ積む（設計 D-8・§4.0 Q3/Q4）
     pushHistoryNow({ fields: result.fields, tables: result.tables, excls, splitY,
-                     cands: result.cands, suggestions: nextSuggestions, candSelected });
+                     cands: result.cands, suggestions: nextSuggestions, candSelected,
+                     droppedCells: droppedCellsRef.current });
     setFields(result.fields);
     setTables(result.tables);
     setCands(result.cands);
@@ -5573,7 +5595,8 @@ export default function Editor(
     // 解決不能になっていないかも合わせて確認する
     const nextSuggestions = pruneSuggestionsForCands(r.suggestions, r.cands);
     pushHistoryNow({ fields: r.fields, tables: r.tables, excls, splitY, cands: r.cands,
-                     suggestions: nextSuggestions, candSelected });
+                     suggestions: nextSuggestions, candSelected,
+                     droppedCells: droppedCellsRef.current });
     setFields(r.fields); setTables(r.tables); setCands(r.cands);
     setSuggestions(nextSuggestions);
     if (r.newTableUid) setRecentCandTableUids((prev) => [...prev, r.newTableUid!]);
@@ -5645,7 +5668,7 @@ export default function Editor(
         history.current.future = [];
       }
       const carvedFields = fields.map((f) => carved.get(f.uid) ?? f);
-      snapRef.current = { fields: carvedFields, tables, excls, splitY, cands, suggestions, candSelected };
+      snapRef.current = { fields: carvedFields, tables, excls, splitY, cands, suggestions, candSelected, droppedCells: droppedCellsRef.current };
       setFields(carvedFields);
       // carve で extras が総入れ替えになった欄を選択中だと、part の添字が
       // 存在しない/別の領域を指すようになる（issue #60 M-4）。安全側へ倒し、
@@ -6006,17 +6029,23 @@ export default function Editor(
   // 履歴: 編集状態が 400ms 静止したら1コマとして積む（ドラッグ1回=1コマ）。
   // 復元直後の変化は積まない（restoring フラグ）。issue #109 (b): suggestions・
   // candSelected も cands と同じ理由で見る——cands だけ差分検知すると、提案
-  // だけを消した（removeSuggestion）操作が履歴に積まれず Undo で戻せない
+  // だけを消した（removeSuggestion）操作が履歴に積まれず Undo で戻せない。
+  // issue #127 (4)（レビュー M-3）: droppedCells も同じ理由で見る。この累計を
+  // 変えるのは changeTableBlocks だけで、そちらは pushHistoryNow を明示的に
+  // 呼ぶため実際にはここで検知する機会は無い想定だが、他フィールドと同じ
+  // 比較に含めておく（droppedCellsRef は ref なので依存配列には入れない
+  // ——setTimeout 実行時に droppedCellsRef.current を読むので古い値は掴まない）
   useEffect(() => {
     if (restoring.current) { restoring.current = false; return; }
     const t = setTimeout(() => {
-      const cur: Snap = { fields, tables, excls, splitY, cands, suggestions, candSelected };
+      const cur: Snap = { fields, tables, excls, splitY, cands, suggestions, candSelected,
+                           droppedCells: droppedCellsRef.current };
       const prev = snapRef.current;
       if (prev === null) { snapRef.current = cur; return; }   // 基準の初期化
       if (prev.fields !== cur.fields || prev.tables !== cur.tables
           || prev.excls !== cur.excls || prev.splitY !== cur.splitY
           || prev.cands !== cur.cands || prev.suggestions !== cur.suggestions
-          || prev.candSelected !== cur.candSelected) {
+          || prev.candSelected !== cur.candSelected || prev.droppedCells !== cur.droppedCells) {
         history.current.past.push(prev);
         if (history.current.past.length > 100) history.current.past.shift();
         history.current.future = [];
@@ -6036,7 +6065,7 @@ export default function Editor(
   // 防ぐ）ため、クリック時点で待たずに history へ積む。issue #73 (b) の
   // 候補生成も同じ理由で使う（設計08 §4.5.3「400ms静止の経路に頼らない」）
   const pushHistoryNow = (next: Snap) => {
-    const prev = snapRef.current ?? { fields, tables, excls, splitY, cands, suggestions, candSelected };
+    const prev = snapRef.current ?? { fields, tables, excls, splitY, cands, suggestions, candSelected, droppedCells: droppedCellsRef.current };
     // コマの積み方（1回につき1コマ・上限100で最古から落とす）は pushHistory
     // に出してある（AC-F21 をテストで固定するため）
     history.current.past = pushHistory(history.current.past, prev);
@@ -6054,14 +6083,23 @@ export default function Editor(
     // 防御的に省略時は空へ倒す
     setSuggestions(snap.suggestions ?? []);
     setCandSelected(snap.candSelected ?? {});
-    setSel(null); setPending(null); markDirty(true);
-    // issue #127 (4): 「取り消しました N 件」の累計（droppedCellsRef）は
-    // 読み込み時・保存成功時にしか 0 に戻らず、Undo で減らなかった。行数を
-    // 減らして指定が落ちた直後に Ctrl+Z で戻しても、保存前確認には
-    // 「N 件を取り消しました」が残ったまま（実際には取り消されていない）
-    // だった——Undo/Redo のどちらでも、累計は「いまの state」を正しく
-    // 説明しなくなるため 0 に戻す（次に本当に行数を減らせば、また積み直る）
-    droppedCellsRef.current = 0;
+    setSel(null);
+    // レビュー H-2（issue #117 差し戻し）: selCell は列を配列位置（colIndex）
+    // で参照する。restoreSnap は tables を丸ごと入れ替えるが selCell は
+    // 触っていなかったため、「列 C を選択→列 A を削除（colIndex が繰り上がる）
+    // →Ctrl+Z」で tables は削除前へ戻るのに selCell.colIndex は繰り上がった
+    // ままになり、パネルと「出力する」の効き先が別の列にずれていた。
+    // selCell は Snap の対象外（sel と同じ「選択は履歴に含めない」方針）
+    // なので、rowNo 側の無効化（changeTableBlocks）と同じ安全側——復元のたび
+    // 解除する
+    setSelCell(null);
+    setPending(null); markDirty(true);
+    // issue #127 (4)（レビュー M-3 で Snap 化に訂正）: 「取り消しました N 件」
+    // の累計は Snap の droppedCells をそのまま採用する——その Snap が表す
+    // 時点で実際に取り消されていた件数と一致させるため。旧い Snap（この
+    // フィールドを持たない）を復元する経路は無い前提だが、防御的に省略時は
+    // 0 へ倒す
+    droppedCellsRef.current = snap.droppedCells ?? 0;
   };
   const undoEdit = () => {
     const prev = history.current.past.pop();
@@ -6207,7 +6245,7 @@ export default function Editor(
   const toggleCell = (t: Table, rowNo: number, columnName: string) => {
     const next = tables.map((v) => v.uid === t.uid
       ? toggleCellOutput(v, rowNo, columnName) : v);
-    pushHistoryNow({ fields, tables: next, excls, splitY, cands, suggestions, candSelected });
+    pushHistoryNow({ fields, tables: next, excls, splitY, cands, suggestions, candSelected, droppedCells: droppedCellsRef.current });
     setTables(next);
     markDirty(true);
   };
@@ -6218,7 +6256,7 @@ export default function Editor(
     const c = t.columns[columnIndex];
     if (!c) return;
     const next = tables.map((v) => v.uid === t.uid ? toggleColumnOutput(v, columnIndex) : v);
-    pushHistoryNow({ fields, tables: next, excls, splitY, cands, suggestions, candSelected });
+    pushHistoryNow({ fields, tables: next, excls, splitY, cands, suggestions, candSelected, droppedCells: droppedCellsRef.current });
     setTables(next);
     markDirty(true);
     const rows = tableTotalRows(t);
@@ -6240,14 +6278,20 @@ export default function Editor(
   // props として渡すコールバックの参照が hover のたびに変わると memo が
   // 効かなくなるため、ref 越しに「常に最新版を呼ぶだけの安定した関数」に
   // 包む——依存配列を手で列挙する必要が無いぶん、書き漏れによる古い state
-  // 参照（stale closure）の事故も避けられる
+  // 参照（stale closure）の事故も避けられる。
+  // レビュー L-4: ref への代入はレンダー本体ではなく useLayoutEffect で行う
+  // （レンダー中の副作用はコンカレント機能下での二重実行・破棄済みレンダーの
+  // 混入と相性が悪い。DOM 反映と同期させたいので useEffect ではなく
+  // useLayoutEffect——次のイベントハンドラが呼ばれるまでに確実に最新化する）
   const toggleCellRef = useRef(toggleCell);
-  toggleCellRef.current = toggleCell;
+  const toggleColumnCellsRef = useRef(toggleColumnCells);
+  useLayoutEffect(() => {
+    toggleCellRef.current = toggleCell;
+    toggleColumnCellsRef.current = toggleColumnCells;
+  });
   const stableToggleCell = useCallback(
     (t: Table, rowNo: number, columnName: string) => toggleCellRef.current(t, rowNo, columnName),
     []);
-  const toggleColumnCellsRef = useRef(toggleColumnCells);
-  toggleColumnCellsRef.current = toggleColumnCells;
   const stableToggleColumnCells = useCallback(
     (t: Table, columnIndex: number) => toggleColumnCellsRef.current(t, columnIndex), []);
   // issue #110: 升グリッドが列位置・列ごとの出力升数を求めるための索引。
@@ -6289,11 +6333,17 @@ export default function Editor(
     const r = remapCellsOffOnBlocksChange(t, nextBlocks);
     const nextTables = tables.map((v) => v.uid === t.uid
       ? { ...v, blocks: nextBlocks, cellsOff: r.cellsOff } : v);
-    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands, suggestions, candSelected });
+    // レビュー M-3（issue #127 (4)）: droppedCellsRef はこの patch で増える
+    // ことがあるので、Snap に積む値は「積んだ後の累計」でなければならない
+    // ——先に増分を計算し、pushHistoryNow の next へ入れてから ref を進める
+    // （順序を逆にすると、この1コマの Snap に古い累計が焼き付く）
+    const nextDropped = droppedCellsRef.current + Math.max(0, r.dropped);
+    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands, suggestions, candSelected,
+                     droppedCells: nextDropped });
     setTables(nextTables);
     markDirty(true);
+    droppedCellsRef.current = nextDropped;
     if (r.dropped > 0) {
-      droppedCellsRef.current += r.dropped;
       setMsg(`行の外に出た「出力しない升」の指定 ${r.dropped} 件を取り消しました`);
     }
     if (selCell && selCell.uid === t.uid
@@ -6363,7 +6413,7 @@ export default function Editor(
   const moveField = (uid: string, dir: "up" | "down") => {
     const next = moveFieldOutputOrder(fields, uid, dir, splitY);
     if (!next) return;
-    pushHistoryNow({ fields: next, tables, excls, splitY, cands, suggestions, candSelected });
+    pushHistoryNow({ fields: next, tables, excls, splitY, cands, suggestions, candSelected, droppedCells: droppedCellsRef.current });
     setFields(next);
     markDirty(true);
     flashRow(uid);
@@ -6394,7 +6444,7 @@ export default function Editor(
     const next = moveTableColumnOrder(t.columns, index, dir);
     if (!next) return;
     const nextTables = tables.map((x) => x.uid === tableUid ? { ...x, columns: next } : x);
-    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands, suggestions, candSelected });
+    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands, suggestions, candSelected, droppedCells: droppedCellsRef.current });
     setTables(nextTables);
     const newIndex = dir === "up" ? index - 1 : index + 1;
     // issue #117: 列の並べ替えは「選択中の升」の列参照（colIndex＝配列添字）
@@ -7146,9 +7196,10 @@ export default function Editor(
                   <p className="note">
                     既存の枠と重なります（升のまま採用はできます）</p>)}
                 {/* 提案が複数あっても読み上げで一意になるよう、行×列を
-                    名前に入れる（ラミィ Should）。見えている文字は変えない。
-                    issue #112: 生成中は他のツールと同じく操作できなくする
-                    （disabled の理由は他の生成中ボタンと同じ title で統一） */}
+                    名前に入れる（a11y レビュー Should）。見えている文字は
+                    変えない。issue #112: 生成中は他のツールと同じく操作
+                    できなくする（disabled の理由は他の生成中ボタンと同じ
+                    title で統一） */}
                 <div className="cand-suggest-btns">
                   <button className="btn outline" type="button" disabled={framesGenerating}
                     title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}

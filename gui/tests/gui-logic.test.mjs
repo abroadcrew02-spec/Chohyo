@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeRefusedNotice } from "./RunScreen.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } from "./RunScreen.tsx";\n' +
       // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
       // 衝突しやすいので独立した1行にする
       'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n' +
@@ -51,7 +51,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeRefusedNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
 const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
 const { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel, pruneSuggestionsForCands, duplicateColumnNames, duplicateColumnNamesNotice, remapSelCellOnColumnDelete, remapSelCellOnColumnMove, buildCellColumnPositionIndex, countCellsOffByColumn, cellsOffDropSummary, mergeCellsOffDropSummaries, cellsOffDropNotice, nextBlockX, NEW_BLOCK_GAP_PX, overlappingTableBlocks, overlappingTableBlocksNotice } = mod;
@@ -3192,7 +3192,10 @@ test("#52 M-11 noticeFor: purged を実行時のお知らせへ配線してい�
 
 // ================================================================ issue #108
 // 中間データ削除の事前確認: purge --preview の応答を parsePurgePreview で
-// 画面用の形へ変換し、purgeGate で「進めてよいか」を決める
+// 画面用の形へ変換し、purgeGate で「進めてよいか」を決める。
+// 本対応 (b): core が許可リスト方式になり、ツール以外のファイル
+// （other_items）は削除を止める理由ではなく「残して進める」対象になった
+// （止めるのは safe_root:false と preview 失敗の2つだけ）
 const previewLine = (over = {}) => JSON.stringify({
   event: "purge_preview", path: "C:\\wd", output_dir: "C:\\out",
   tool_items: 12, other_items: 0, other_examples: [], safe_root: true,
@@ -3226,20 +3229,17 @@ test("#108 purgeGate: プレビュー未取得は preview_failed", () => {
   assert.equal(g2.allowed, false);
   assert.equal(g2.reason, "preview_failed");
 });
-test("#108 purgeGate: safe_root:false は unsafe_root（other_items の判定より先に見る）", () => {
+test("#108 purgeGate: safe_root:false は unsafe_root（other_items が非0でも先に見る）", () => {
   const g = purgeGate(parsePurgePreview(
     previewLine({ safe_root: false, unsafe_reason: "drive_root", other_items: 3 })));
   assert.equal(g.allowed, false);
   assert.equal(g.reason, "unsafe_root");
   assert.ok(g.detail.includes("ドライブ"), g.detail);
 });
-test("#108 purgeGate: other_items > 0 は other_items（例を含む）", () => {
+test("#108 (b) purgeGate: other_items > 0 でも safe_root:true なら allowed（止めない・残して進める）", () => {
   const g = purgeGate(parsePurgePreview(
     previewLine({ other_items: 2, other_examples: ["原本.pdf", "メモ.txt"] })));
-  assert.equal(g.allowed, false);
-  assert.equal(g.reason, "other_items");
-  assert.equal(g.otherItems, 2);
-  assert.deepEqual(g.examples, ["原本.pdf", "メモ.txt"]);
+  assert.deepEqual(g, { allowed: true });
 });
 test("#108 purgeGate: 安全な置き場・対象外ファイル0件なら allowed", () => {
   const g = purgeGate(parsePurgePreview(previewLine()));
@@ -3264,35 +3264,93 @@ test("#108 purgeBlockedNotice: preview_failed は確認できなかった旨を�
   const t = purgeBlockedNotice({ allowed: false, reason: "preview_failed" });
   assert.ok(t.includes("確認できませんでした"), t);
 });
-test("#108 purgeBlockedNotice: unsafe_root は理由を括弧書きで含める", () => {
+// M-5（レビュー）: preview_failed は --preview 非対応の旧コア・設定不正・
+// workdir 不在では何度押しても同じ結果になるため、再試行だけでなく
+// 設定画面の該当項目と、それでも直らない場合の相談先まで導く
+test("#108 M-5 purgeBlockedNotice: preview_failed は再試行に加えて設定画面の確認・管理者への相談も導く", () => {
+  const t = purgeBlockedNotice({ allowed: false, reason: "preview_failed" });
+  assert.ok(t.includes("もう一度お試しください"), t);
+  assert.ok(t.includes("中間データの保存先"), t);
+  assert.ok(t.includes("管理者に相談"), t);
+});
+test("#108 purgeBlockedNotice: unsafe_root は理由を括弧書きで含め、設定画面の呼称（中間データの保存先）を使う（レビュー L-6）", () => {
   const t = purgeBlockedNotice({ allowed: false, reason: "unsafe_root", detail: "ドライブの直下が指定されています" });
   assert.ok(t.includes("ドライブの直下が指定されています"), t);
   assert.ok(t.includes("削除は行いません"), t);
+  assert.ok(t.includes("中間データの保存先"), t);
 });
-test("#108 purgeBlockedNotice: other_items は件数・例・次のアクションを伝える", () => {
-  const t = purgeBlockedNotice({ allowed: false, reason: "other_items",
-    otherItems: 3, examples: ["原本.pdf"] });
+
+// ------------------------------------------------------------- issue #108 (b)
+// purgeKeptNotice: explain 段（削除の1段目）で「対象外ファイルは消さずに
+// 残す」旨を伝える。purgeGate とは独立に、purgePreview の内容から直接呼ぶ
+test("#108 (b) purgeKeptNotice: other_items > 0 は件数・例・次のアクションを伝える", () => {
+  const t = purgeKeptNotice(3, ["原本.pdf"]);
   assert.ok(t.includes("3 件"), t);
   assert.ok(t.includes("原本.pdf"), t);
-  assert.ok(t.includes("削除を止めました"), t);
-  assert.ok(t.includes("別の場所へ移してから"), t);
+  assert.ok(t.includes("残るものはこのツールでは消しません"), t);
+  assert.ok(t.includes("手で削除してください"), t);
+  assert.ok(!t.includes("削除を止めました"), "もう止めるとは言わない: " + t);
 });
-test("#108 purgeBlockedNotice: other_items で例が0件でも件数だけは伝える（括弧書きは省く）", () => {
-  const t = purgeBlockedNotice({ allowed: false, reason: "other_items", otherItems: 1, examples: [] });
+test("#108 (b) purgeKeptNotice: 例が0件でも件数だけは伝える（括弧書きは省く）", () => {
+  const t = purgeKeptNotice(1, []);
   assert.ok(t.includes("1 件"), t);
   assert.ok(!t.includes("（例:"), t);
 });
-test("#108 purgeRefusedNotice: purge_refused（other_items）は purgeBlockedNotice と同じ文言", () => {
-  const t = purgeRefusedNotice({ event: "purge_refused", reason: "other_items",
-    other_items: 2, other_examples: ["原本.pdf"], path: "C:\\wd" });
-  assert.ok(t.includes("2 件"), t);
-  assert.ok(t.includes("原本.pdf"), t);
-  assert.ok(t.includes("削除を止めました"), t);
+test("#108 (b) purgeKeptNotice: 0件・マイナスは null（0件表示はノイズになるので出さない）", () => {
+  assert.equal(purgeKeptNotice(0, []), null);
+  assert.equal(purgeKeptNotice(-1, []), null);
 });
-test("#108 purgeRefusedNotice: purge_refused（unsafe_root）は詳細コードを持たないため汎用文言", () => {
+
+// ------------------------------------------------------------- issue #108 (b) / M-1
+// purgeRefusedNotice: unsafe_root の拒否だけが残る（other_items は拒否理由で
+// はなくなった）。M-1（レビュー差し戻し）: core（cli.py:1368-1369）は
+// purge_refused に unsafe_reason を purge_preview と同じ理由コードで載せて
+// いる。「詳細コードを持たない」という以前の実装・コメントは誤りだったため、
+// unsafeRootNotice を再利用してプレビューと同じ粒度で伝える
+test("#108 M-1 purgeRefusedNotice: unsafe_reason があれば purgeBlockedNotice の unsafe_root と同じ粒度で伝える", () => {
+  const t = purgeRefusedNotice({ event: "purge_refused", reason: "unsafe_root",
+    unsafe_reason: "drive_root", path: "C:\\" });
+  assert.equal(t, purgeBlockedNotice({ allowed: false, reason: "unsafe_root",
+    detail: unsafeRootNotice("drive_root") }));
+  assert.ok(t.includes(UNSAFE_REASON_JA.drive_root), t);
+});
+test("#108 M-1 purgeRefusedNotice: unsafe_reason の全コードを UNSAFE_REASON_JA と同じ言葉で伝える", () => {
+  for (const code of ["drive_root", "unc", "dot", "empty", "profile_root", "reparse_point"]) {
+    const t = purgeRefusedNotice({ event: "purge_refused", reason: "unsafe_root", unsafe_reason: code });
+    assert.ok(t.includes(UNSAFE_REASON_JA[code]), `${code}: ${t}`);
+  }
+});
+test("#108 purgeRefusedNotice: unsafe_reason が無い（旧コア）ときだけ汎用文へフォールバックする（存在しない理由コードを捏造しない）", () => {
   const t = purgeRefusedNotice({ event: "purge_refused", reason: "unsafe_root", path: "C:\\" });
   assert.ok(t.includes("削除を止めました"), t);
+  assert.ok(t.includes("中間データの保存先"), t);
   assert.ok(!t.includes("undefined"), t);
+});
+test("#108 (b) purgeRefusedNotice: 旧コアの reason:\"other_items\"（unsafe_reason 無し）も同じ汎用文言にフォールバック（対象外ファイルの例は語らない）", () => {
+  const t = purgeRefusedNotice({ event: "purge_refused", reason: "other_items",
+    other_items: 2, other_examples: ["原本.pdf"], path: "C:\\wd" });
+  assert.equal(t, purgeRefusedNotice({ event: "purge_refused", reason: "unsafe_root" }));
+  assert.ok(!t.includes("原本.pdf"), "存在しない対象外ファイルの例を語らない: " + t);
+});
+
+// ------------------------------------------------------------- issue #108 (b)
+// purgeNotice: purged イベントに kept／kept_examples が乗ったら「ツール以外の
+// ファイルは残した」旨を1行足す
+test("#108 (b) purgeNotice: kept > 0 は「残しています」の1行を足す", () => {
+  const t = purgeNotice({ event: "purged", path: "C:\\wd", cred_kept: true,
+    removed: 12, failed: 0, kept: 2, kept_examples: ["原本.pdf", "メモ.txt"] });
+  assert.ok(t.includes("2 件残しています"), t);
+  assert.ok(t.includes("原本.pdf"), t);
+  assert.ok(t.includes("手で削除してください"), t);
+});
+test("#108 (b) purgeNotice: kept が 0 なら「残しています」の1行は出さない（0件表示はノイズ）", () => {
+  const t = purgeNotice({ event: "purged", cred_kept: true, removed: 12, failed: 0,
+    kept: 0, kept_examples: [] });
+  assert.ok(!t.includes("ツールが作ったものではない"), t);
+});
+test("#108 (b) purgeNotice: kept キー自体が無い（旧コア）なら従来どおり触れない", () => {
+  const t = purgeNotice({ event: "purged", cred_kept: true, removed: 12, failed: 0 });
+  assert.ok(!t.includes("ツールが作ったものではない"), t);
 });
 
 // ================================================================ issue #52 M-10
@@ -3365,15 +3423,38 @@ test("#53 L-17 truncatedFailureNotice: 溢れた件数だけを注記する", ()
 // ================================================================ issue #118
 // interruptOutcome: kill_core の成否を見てから中断フラグを立てるかどうかを
 // 決める。以前は成否を見ずに常にフラグを立てており、kill が失敗しても
-// 「中断済み」扱いになって完了時のエラー表示が抑止されていた
-test("#118 interruptOutcome: kill 成功なら interrupted:true・通知なし", () => {
-  assert.deepEqual(interruptOutcome(true), { interrupted: true, notice: null });
+// 「中断済み」扱いになって完了時のエラー表示が抑止されていた。
+// H-1（レビュー差し戻し）: 二度押し・処理終了直前の押下で kill_core が
+// 「既に終了」（lib.rs の「実行中の処理がありません」）を返すケースは、
+// 一般の失敗と区別して無通知にする——これを一般の失敗と同じ扱いにすると、
+// 正常終了した run の画面に「中断できませんでした」が残り続ける事故になる
+test("#118 interruptOutcome: kill 成功（killError:null）なら interrupted:true・通知なし", () => {
+  assert.deepEqual(interruptOutcome(null), { interrupted: true, notice: null });
 });
-test("#118 interruptOutcome: kill 失敗なら interrupted:false・処理続行中の旨を通知する", () => {
-  const r = interruptOutcome(false);
+test("#118 H-1 interruptOutcome: 「既に終了」（二度押し・自然終了直前の押下）は interrupted:false・通知なし", () => {
+  const r = interruptOutcome("実行中の処理がありません");
+  assert.deepEqual(r, { interrupted: false, notice: null });
+});
+test("#118 H-1 interruptOutcome: 「既に終了」以外の失敗は interrupted:false・処理続行中の旨を通知する", () => {
+  const r = interruptOutcome("停止できませんでした");
   assert.equal(r.interrupted, false);
   assert.ok(r.notice.includes("中断できませんでした"), r.notice);
   assert.ok(r.notice.includes("処理は続いています"), r.notice);
+});
+test("#118 H-1 interruptOutcome: 「既に終了」の文言はラップされていても含んでいれば無通知（Tauri の reject 形をそのまま渡す想定）", () => {
+  const r = interruptOutcome("Error: 実行中の処理がありません");
+  assert.deepEqual(r, { interrupted: false, notice: null });
+});
+
+// ------------------------------------------------------------- issue #118 H-1
+// nextInterruptedFlag: 一度立った true を降格させない（二度押しの2回目や
+// 「既に終了」の interrupted:false で、1回目の成功を消さない）
+test("#118 H-1 nextInterruptedFlag: 二度押しの2回目が「既に終了」でも1回目の成功（true）を降格させない", () => {
+  assert.equal(nextInterruptedFlag(true, { interrupted: false }), true);
+});
+test("#118 H-1 nextInterruptedFlag: まだ true になっていなければ outcome をそのまま反映する", () => {
+  assert.equal(nextInterruptedFlag(false, { interrupted: true }), true);
+  assert.equal(nextInterruptedFlag(false, { interrupted: false }), false);
 });
 
 // ================================================================ issue #52 M-12 / Q-MJ
@@ -4347,6 +4428,16 @@ test("#109 (b) 配線: Snap 型が suggestions/candSelected を持ち、restoreS
   assert.ok(src.includes("candidatesFromDetectFrames(ev, o.epoch)"),
     "detectFrames が世代付きで候補 id を採番していない");
 });
+test("#109 (b) 配線（レビュー M-4）: 手動再生成（runDetectFrames）が bumpFrameEpoch で世代を進める", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const m = /const runDetectFrames = \(\) => \{([\s\S]*?)\n  \};/.exec(src);
+  assert.ok(m, "runDetectFrames の本体が見つからない");
+  assert.ok(m[1].includes("const epoch = bumpFrameEpoch();"),
+    "runDetectFrames が bumpFrameEpoch を呼んでいない（世代タグが再生成をまたいで"
+    + "衝突する——issue の手順『生成→採用→再生成→Undo』を世代 id だけでは防げない）");
+  assert.ok(m[1].includes("manual: true, seq: loadSeqRef.current, epoch,"),
+    "runDetectFrames が bumpFrameEpoch の戻り値を detectFrames の epoch に渡していない");
+});
 
 // ================================================================ issue #114
 // 行数の確定（changeTableBlocks）は兄弟操作（toggleCell 等）と同じく
@@ -4504,14 +4595,34 @@ test("#110 配線: CellGrid は React.memo で切り出され、位置索引/出
     "toggleColumnCells が安定化されていない（memo が hover のたびに破られる）");
 });
 
-test("#110 配線: キャンバスの候補描画は一覧と同じ表示範囲（candShown）に絞る", () => {
+test("#110 配線（レビュー L-4）: toggleCellRef/toggleColumnCellsRef への代入はレンダー本体ではなく useLayoutEffect で行う", () => {
+  // ファイルが CRLF のため、複数行にまたがる照合は \n 埋め込みではなく
+  // 正規表現の \s で行末を吸収する（他の複数行チェックと同じ手法）
   const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
-  assert.ok(src.includes("const visibleCands = cands.slice(0, candShown);"),
-    "draw() が候補描画を candShown で絞っていない");
-  assert.ok(src.includes("for (let i = 0; i < visibleCands.length; i++) {"),
-    "描画ループが visibleCands を使っていない（全候補を毎フレーム描いたまま）");
+  assert.ok(!/toggleCellRef\.current = toggleCell;\s*const stableToggleCell/.test(src),
+    "toggleCellRef への代入がレンダー本体に残っている（useLayoutEffect 化前の形）");
+  assert.ok(/useLayoutEffect\(\(\) => \{\s*toggleCellRef\.current = toggleCell;\s*toggleColumnCellsRef\.current = toggleColumnCells;\s*\}\);/
+    .test(src),
+    "toggleCellRef/toggleColumnCellsRef の代入が useLayoutEffect の中に無い");
+});
+
+test("#110/#112 配線（レビュー M-2 差し戻し対応）: キャンバスは候補の枠線を全件描き、隅マーカー・ラベルだけ candShown に絞る", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  // 枠線（strokeRect ハロー→色線）は cands 全件のループで描く——一括採用の
+  // 対象（全件）と見えている枠を一致させる。visibleCands のような別配列で
+  // 先に絞ってしまうと、一覧・キャンバスどちらにも出ない候補が確定してしまう
+  assert.ok(src.includes("for (let i = 0; i < cands.length; i++) {"),
+    "候補の描画ループが cands 全件を回っていない（一括採用の対象と食い違う）");
+  assert.ok(src.includes("if (i >= candShown) continue;"),
+    "隅マーカー・ラベルを candShown で絞る分岐が無い");
+  // 絞る分岐は、枠線 2 本（ハロー＋色線）の strokeRect のあと・隅マーカーの
+  // 前に置く（枠線は絞らず、重い部分（マーカー・ラベル）だけ絞るため）
+  const contIdx = src.indexOf("if (i >= candShown) continue;");
+  const beforeCont = src.slice(Math.max(0, contIdx - 400), contIdx);
+  assert.ok((beforeCont.match(/ctx\.strokeRect\(r\.x, r\.y, r\.w, r\.h\);/g) || []).length >= 2,
+    "continue より前に枠線2本（ハロー・色線）の描画が無い（枠線まで絞ってしまっている）");
   // draw() の useCallback 依存配列に candShown が入っていないと、
-  // 「もっと見る」で候補を増やしても新しく見えた分がキャンバスに反映されない
+  // 「もっと見る」で候補を増やしても新しく見えた分の番号がキャンバスに反映されない
   assert.ok(src.includes("formatFaces, formatOverride, cands, candShown]);"),
     "draw() の依存配列に candShown が無い");
 });
@@ -4692,13 +4803,54 @@ test("#127 (3) 配線: remapCellsOffOnBlocksChange に添字対応の申し送�
     "将来ブロック操作を足すときの指針が書かれていない");
 });
 
-test("#127 (4) 配線: restoreSnap（Undo/Redo 共通）が droppedCellsRef を 0 に戻す", () => {
+test("#127 (4) 配線（レビュー M-3 差し戻しで訂正）: droppedCells は Snap で運び、restoreSnap は snap.droppedCells を採用する", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  // 一律 0 リセットだと「行数を減らす→Undo→Redo」で実際にはまた指定が落ちて
+  // いるのにカウンタが 0 のままになる（過小案内）。Snap 自体に値を持たせ、
+  // 復元時はその Snap が表す時点の値をそのまま採用する
+  assert.ok(/type Snap = \{[^}]*droppedCells: number/s.test(src),
+    "Snap 型に droppedCells が無い");
+  const m = /const restoreSnap = \(snap: Snap\) => \{([\s\S]*?)\n  \};/.exec(src);
+  assert.ok(m, "restoreSnap の本体が見つからない");
+  assert.ok(m[1].includes("droppedCellsRef.current = snap.droppedCells ?? 0;"),
+    "restoreSnap が Snap の droppedCells を採用していない（一律 0 に戻すと"
+    + "Undo→Redo で「実際には取り消されている」のに 0 のままになる）");
+  assert.ok(!m[1].includes("droppedCellsRef.current = 0;\n"),
+    "restoreSnap に一律 0 リセットの名残が残っている");
+});
+test("#127 (4) 配線: changeTableBlocks は増分を先に計算し、pushHistoryNow の Snap に「積んだ後」の累計を渡す", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const m = /const changeTableBlocks = \(t: Table, nextBlocks: Block\[\]\) => \{([\s\S]*?)\n  \};/.exec(src);
+  assert.ok(m, "changeTableBlocks の本体が見つからない");
+  const body = m[1];
+  const calcAt = body.indexOf("const nextDropped = droppedCellsRef.current + Math.max(0, r.dropped);");
+  const pushAt = body.indexOf("droppedCells: nextDropped });");
+  const refAt = body.indexOf("droppedCellsRef.current = nextDropped;");
+  assert.ok(calcAt >= 0, "nextDropped の計算が見つからない");
+  assert.ok(pushAt >= 0, "pushHistoryNow が nextDropped を渡していない");
+  assert.ok(refAt >= 0, "droppedCellsRef の更新が見つからない");
+  assert.ok(calcAt < pushAt && pushAt < refAt,
+    "順序が nextDropped 計算 → pushHistoryNow → ref 更新になっていない"
+    + "（この1コマの Snap に古い累計が焼き付く）");
+});
+
+// ================================================================ issue #117
+// レビュー H-2（差し戻し）: 「選択中の升」（selCell）は Snap の対象外
+// （sel と同じ「選択は履歴に含めない」方針）のまま tables だけ丸ごと
+// 入れ替わるため、列削除→Undo で colIndex が繰り上がったままになり、
+// パネルと「出力する」の効き先が別の列にずれていた
+test("#117 H-2 配線: restoreSnap が selCell を setSel と一緒に解除する（rowNo 側=changeTableBlocks と対称）", () => {
   const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
   const m = /const restoreSnap = \(snap: Snap\) => \{([\s\S]*?)\n  \};/.exec(src);
   assert.ok(m, "restoreSnap の本体が見つからない");
-  assert.ok(m[1].includes("droppedCellsRef.current = 0;"),
-    "restoreSnap が droppedCellsRef をリセットしていない"
-    + "（行数を減らした直後の Undo で「N件取り消しました」が残ったままになる）");
+  assert.ok(m[1].includes("setSel(null);"), "restoreSnap が setSel(null) を呼んでいない");
+  assert.ok(m[1].includes("setSelCell(null);"),
+    "restoreSnap が setSelCell(null) を呼んでいない（列削除で colIndex が繰り上がった"
+    + "状態のまま Undo すると、パネルの『出力する』の効き先が別の列にずれる）");
+  const selAt = m[1].indexOf("setSel(null);");
+  const selCellAt = m[1].indexOf("setSelCell(null);");
+  assert.ok(selAt >= 0 && selCellAt >= 0 && selCellAt > selAt,
+    "setSelCell(null) が setSel(null) の近くに無い");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

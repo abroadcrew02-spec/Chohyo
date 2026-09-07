@@ -1,11 +1,19 @@
-"""issue #108: purge --preview／--yes の安全確認（応急 (a)）。
+"""issue #108: purge --preview／--yes の安全確認（応急 (a) → 許可リスト方式
+PM決定 (b)・2026-09-07）。
 
 対象:
 - `config.is_unsafe_workdir_root`（ドライブ直下・UNC・`.`/`..`・空・
   ユーザープロファイル直下の判定・ファイルシステムに触れない）
 - `cli.cmd_purge` の `--preview`（削除しない・件数と絶対パスだけ出す）
-- `cli.cmd_purge` の `--yes`（unsafe_root／other_items のいずれかがあれば
-  削除せず rc=2 で拒否する）
+- `cli.cmd_purge` の `--yes`:
+  - `unsafe_root`（ドライブ直下・UNC・`.`/`..`・ユーザープロファイル直下・
+    reparse point）なら削除せず rc=2 で拒否する（これは変更なし）
+  - workdir 直下のうち、このツールが作ったと分かるもの（許可リスト・
+    `_is_tool_workdir_entry`）**だけ**を削除し、それ以外は種類を問わず
+    残す。以前（応急 (a)）は「認識できないものが1件でもあれば purge
+    全体を拒否」だったが、PM決定 (b) で「認識できるものだけ消し、
+    残りは件数・例を報告する」方式へ変更した。rc は 0（`--include-output`
+    の `output_kept` と同じ流儀）
 
 いずれのテストも、拒否されるケースでは実ファイル削除が起きないことを
 テストの前提にしている（`C:\\` や UNC のような実在パスに触れるテストは、
@@ -141,30 +149,43 @@ def test_preview_on_missing_workdir_is_zero(tmp_path, capsys):
     assert ev["safe_root"] is True
 
 
-# ========== cli.cmd_purge --yes: other_items 拒否 ==========
+# ========== cli.cmd_purge --yes: 許可リスト方式（PM決定 (b)・2026-09-07） ==========
 
-def test_yes_refuses_when_other_items_present(tmp_path, capsys):
-    """workdir 直下に未知のファイル（原本想定）が1件でもあれば削除しない。"""
-    wd = tmp_path / "wd"; wd.mkdir()
+def test_yes_keeps_unrecognized_items_and_still_deletes_known_ones(tmp_path, capsys):
+    """workdir 直下に未知のファイル（原本想定）があっても purge 自体は拒否
+    しない——認識できる中間データだけ消し、未知のものは残して報告する
+    （PM決定 (b)。issue #108 の起票シナリオそのもの: victim/{cred.dpapi,
+    mydocs/note.txt, 大事な原本.pdf, intermediate.sqlite}）。
+    """
+    wd = tmp_path / "victim"; wd.mkdir()
     (wd / "intermediate.sqlite").write_text("x", encoding="utf-8")
+    mydocs = wd / "mydocs"; mydocs.mkdir()
+    (mydocs / "note.txt").write_text("x", encoding="utf-8")
     original = wd / "大事な原本.pdf"
     original.write_text("original", encoding="utf-8")
+    cred = wd / cred_store.blob_name()
+    cred.write_bytes(b"dummy")
     cfg = _cfg_file(tmp_path, wd)
 
-    assert _run(cfg, "--yes") == 2
+    assert _run(cfg, "--yes") == 0
 
-    # 何も消えない（原本はもちろん、中間データも）
-    assert (wd / "intermediate.sqlite").exists()
+    # 中間データだけ消え、原本・利用者フォルダ・資格情報は残る
+    assert not (wd / "intermediate.sqlite").exists()
     assert original.exists()
+    assert mydocs.exists() and (mydocs / "note.txt").exists()
+    assert cred.exists()
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purge_refused")
-    assert ev["reason"] == "other_items"
-    assert ev["other_items"] == 1
-    assert ev["other_examples"] == ["大事な原本.pdf"]
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["cred_kept"] is True
+    assert ev["removed"] == 1 and ev["failed"] == 0
+    assert ev["kept"] == 2                      # mydocs + 大事な原本.pdf
+    assert sorted(ev["kept_examples"]) == sorted(["mydocs", "大事な原本.pdf"])
+    assert "purge_refused" not in {e["event"] for e in _events(capsys)}
 
 
 def test_yes_proceeds_when_only_tool_items_present(tmp_path, capsys):
-    """従来の正常削除: workdir 直下がすべて既知の中間データなら削除する。"""
+    """従来の正常削除: workdir 直下がすべて既知の中間データなら削除する。
+    kept は 0 でも常にキーが出る。"""
     wd = tmp_path / "wd"; wd.mkdir()
     (wd / "intermediate.sqlite").write_text("x", encoding="utf-8")
     (wd / "pages").mkdir()
@@ -177,6 +198,7 @@ def test_yes_proceeds_when_only_tool_items_present(tmp_path, capsys):
 
     ev = next(e for e in _events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 2
+    assert ev["kept"] == 0 and ev["kept_examples"] == []
     # path は絶対パスで出る（issue #108）
     from pathlib import Path
     assert Path(ev["path"]).is_absolute()
@@ -219,3 +241,102 @@ def test_yes_refuses_profile_root_workdir(tmp_path, capsys, monkeypatch):
     assert _run(cfg, "--yes") == 2
     ev = next(e for e in _events(capsys) if e["event"] == "purge_refused")
     assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "profile_root"
+
+
+# ========== "logs" フォルダの判定（issue #108 レビュー指摘・2026-09-07） ==========
+#
+# cfg.log_dir の既定は workdir の兄弟パスであり、既定運用では workdir 直下に
+# "logs" は作られない。無条件で名前一致にすると、利用者が workdir 直下へ
+# 自分の用途で "logs" フォルダを作った場合に誤って削除してしまう。
+
+def test_logs_kept_when_log_dir_is_sibling_of_workdir(tmp_path, capsys):
+    """既定構成（log_dir が workdir の兄弟パス）では、workdir 直下の
+    "logs" フォルダはツール由来と判定せず、--yes でも残す。
+    """
+    wd = tmp_path / "wd"; wd.mkdir()
+    (wd / "intermediate.sqlite").write_text("x", encoding="utf-8")
+    user_logs = wd / "logs"; user_logs.mkdir()
+    (user_logs / "my_notes.log").write_text("x", encoding="utf-8")
+    # log_dir は workdir の兄弟（GUI 既定と同じ並び）——workdir 配下ではない
+    cfg = _cfg_file(tmp_path, wd, log_dir=str(tmp_path / "logs"))
+
+    assert _run(cfg, "--yes") == 0
+    assert not (wd / "intermediate.sqlite").exists()
+    assert user_logs.exists() and (user_logs / "my_notes.log").exists()
+
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["kept"] == 1 and ev["kept_examples"] == ["logs"]
+
+
+def test_logs_deleted_when_log_dir_is_inside_workdir(tmp_path):
+    """cfg.log_dir が実際に <workdir>/logs を指しているときだけ、
+    その "logs" フォルダをツール由来として削除する。
+
+    `cli._scan_workdir_entries`/`_purge_workdir` を直接呼ぶ——`cli.main`
+    経由（`--yes` 実行）だと、同一プロセス内で `_load_config_and_init_log`
+    が `log_dir=<workdir>/logs` に対して `logging_safe.init()` を呼び、
+    このテストプロセス自身が app.log/error.log を開いたまま削除を試みる
+    ことになり、Windows のファイル共有ロックで `failed` になる
+    （purge の判定ロジックとは無関係な、ログ初期化とファイル削除が同一
+    プロセス・同一実行内で競合するテスト環境側の制約）。ここでは分類・
+    削除の対象決定ロジックだけを直接確認する。
+    """
+    from chouhyo_ocr.config import Config
+
+    wd = tmp_path / "wd"; wd.mkdir()
+    (wd / "intermediate.sqlite").write_text("x", encoding="utf-8")
+    tool_logs = wd / "logs"; tool_logs.mkdir()
+    (tool_logs / "app.log").write_text("x", encoding="utf-8")
+    (tool_logs / "error.log").write_text("x", encoding="utf-8")
+    cfg = Config(workdir=str(wd), output_dir=str(tmp_path / "out"),
+                log_dir=str(wd / "logs"))
+
+    tool_items, other_items, other_examples = cli._scan_workdir_entries(wd, cfg)
+    assert tool_items == 2 and other_items == 0 and other_examples == []
+
+    cred_kept, removed, failed = cli._purge_workdir(wd, cfg)
+    # removed はファイル単位（intermediate.sqlite + logs/app.log + logs/error.log）
+    assert failed == 0 and removed == 3
+    assert not (wd / "intermediate.sqlite").exists()
+    assert not tool_logs.exists()          # 中身が空になったのでフォルダごと消える
+
+
+def test_logs_dir_with_unrecognized_file_is_partially_kept(tmp_path):
+    """log_dir が <workdir>/logs でも、拡張子が .log でないファイルは
+    直下1階層の判定で残り、フォルダ自体も空にならないので残る。
+    """
+    from chouhyo_ocr.config import Config
+
+    wd = tmp_path / "wd"; wd.mkdir()
+    tool_logs = wd / "logs"; tool_logs.mkdir()
+    (tool_logs / "app.log").write_text("x", encoding="utf-8")
+    (tool_logs / "memo.txt").write_text("x", encoding="utf-8")
+    cfg = Config(workdir=str(wd), output_dir=str(tmp_path / "out"),
+                log_dir=str(wd / "logs"))
+
+    tool_items, other_items, other_examples = cli._scan_workdir_entries(wd, cfg)
+    assert tool_items == 1 and other_items == 1
+    assert other_examples == ["logs/memo.txt"]
+
+    cred_kept, removed, failed = cli._purge_workdir(wd, cfg)
+    assert failed == 0 and removed == 1
+    assert not (tool_logs / "app.log").exists()
+    assert (tool_logs / "memo.txt").exists()
+    assert tool_logs.exists()              # 中身が残っているのでフォルダは残る
+
+
+# ========== USERPROFILE 欠落時の警告（issue #108 レビュー指摘・2026-09-07） ==========
+
+def test_userprofile_missing_logs_warning(tmp_path, monkeypatch):
+    """%USERPROFILE% が未設定のとき、判定は False に倒れるが無音にはせず
+    app.log へ1行残す（値＝環境変数の中身は無いので出しようがない）。
+    """
+    from chouhyo_ocr import logging_safe
+
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    logging_safe.init(str(tmp_path / "logs"))
+
+    assert is_unsafe_workdir_root(str(tmp_path / "wd")) is None  # 判定自体は通る
+
+    log_text = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "userprofile_missing" in log_text
