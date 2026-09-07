@@ -998,6 +998,13 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         from .render_out import scan_risky_prefixes
         risky = scan_risky_prefixes(derive_columns(template), rows)
         progress({"event": "summary", "pages": summary.pages, "rows": summary.rows,
+                  # issue #119: pages/rows は workdir 累計（store 全体）で、今回の
+                  # run が処理した分だけを見たい判定（様式不一致の完了案内選択等）
+                  # には使えない。cli.cmd_run の終了コード判定（#53 L-9）と同じ
+                  # 今回分の2値をそのまま出す——GUI 側の比較式を今回分同士に
+                  # 揃えられる（累計と今回分を混ぜない）
+                  "processed_pages": summary.processed_pages,
+                  "processed_failed": summary.processed_failed,
                   # コーディネーター指示 2026-09-02: 既に done で再利用（未送信）
                   # だったページ数。api_calls が入力枚数より少ない理由をここで読める
                   "reused_pages": summary.reused_pages,

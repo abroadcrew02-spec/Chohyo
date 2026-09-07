@@ -972,3 +972,81 @@ def test_ac_h45_no_detach_when_body_is_too_short_or_uneven():
     uneven = detect_frames(_heading_table([200, 320, 400, 500, 580]), dpi=300)
     assert not any(s.heading_excluded for s in uneven.suggestions)
     assert sorted(s.rows for s in uneven.suggestions) == [2, 2]
+
+
+# ---------------------------------------------------------------------------
+# issue #111: 見出し行の切り離しが同署名の表 2 つで不発・チェーン長 3 で誤発
+# ---------------------------------------------------------------------------
+
+def test_ac_h46_two_same_signature_tables_each_detach_own_heading():
+    """列境界が同じ表がページに 2 つあっても、それぞれ独立して見出しを
+    切り離す（issue #111 (a)）。
+
+    以前はチェーンが署名の一致だけで束ねられ、2 つの表の行が 1 本の
+    チェーンに混ざっていた——本文の等ピッチ判定が表と表の間の大きな
+    ジャンプ（本ケースでは 380px、直前行高 80px の 3 倍＝240px を超える）
+    で空振りし、見出し切り離しが 1 件も効かなかった。
+
+    各表はチェーン長 3（見出し＋本文 2 行）——issue #111 (b) の「gap が
+    1 本しかなく等ピッチ検査が恒偽になる」退化ケースを、縦の連続性チェック
+    （直前行高の 3 倍を超えたら別チェーン）が正しく処理できることも
+    合わせて確認する。
+    """
+    img = Image.new("L", (900, 950), 255)
+    draw = ImageDraw.Draw(img)
+    xs = [100, 350, 550, 750]
+
+    def _grid(ys):
+        for y in ys:
+            draw.line((xs[0], y, xs[-1], y), fill=0, width=2)
+        for x in xs:
+            draw.line((x, ys[0], x, ys[-1]), fill=0, width=2)
+
+    # 表1: 見出し(20-140, h=120) + 本文2行(140-220, 220-300, 各 h=80)
+    table1_ys = [20, 140, 220, 300]
+    # 表2: 表1 の最終行（y1=220, h=80）から 380px 離れる（380 > 80*3=240）。
+    # 見出し(600-720, h=120) + 本文2行(720-800, 800-880, 各 h=80)
+    table2_ys = [600, 720, 800, 880]
+    _grid(table1_ys)
+    _grid(table2_ys)
+
+    result = detect_frames(np.asarray(img) < 128, dpi=300)
+    assert result.stats["heading_detached"] == 2
+
+    assert len(result.suggestions) == 2
+    by_origin = {s.origin_y: s for s in result.suggestions}
+    assert set(by_origin) == {140, 720}          # 見出し（y=20/600）を含まない
+    for s in by_origin.values():
+        assert s.rows == 2
+        assert s.heading_excluded is True
+
+
+def test_ac_h47_distant_row_with_same_signature_is_not_treated_as_body():
+    """見出し＋本文1行の後ろに、離れた場所にある無関係な同署名の1行が
+    あっても、それを「本文2行目」とみなして見出しを誤って切り離さない
+    （issue #111 (b) の再現条件）。
+
+    以前はチェーン長 3（見出し＋"本文2行"）になると `gaps` が1本しか
+    無いために等ピッチ検査が常に真になり、440px 離れた無関係行でも
+    本文2行目として受理していた。縦の連続性チェックにより、この無関係
+    行はそもそも見出し＋本文1行のチェーンに合流しなくなる。
+    """
+    img = Image.new("L", (900, 650), 255)
+    draw = ImageDraw.Draw(img)
+    xs = [100, 350, 550, 750]
+
+    def _grid(ys):
+        for y in ys:
+            draw.line((xs[0], y, xs[-1], y), fill=0, width=2)
+        for x in xs:
+            draw.line((x, ys[0], x, ys[-1]), fill=0, width=2)
+
+    # 見出し候補(0-60, h=60) + 本文1行(60-100, h=40)
+    _grid([0, 60, 100])
+    # 無関係な1行（本文1行目の y1=60 から 440px 離れる。行高 40 の 3 倍
+    # ＝120px を大きく超える）
+    _grid([500, 540])
+
+    result = detect_frames(np.asarray(img) < 128, dpi=300)
+    assert result.stats["heading_detached"] == 0
+    assert not any(s.heading_excluded for s in result.suggestions)

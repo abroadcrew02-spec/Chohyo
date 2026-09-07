@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from . import cred_store, logging_safe as log
-from .config import Config, ConfigError, load_config
+from .config import Config, ConfigError, is_unsafe_workdir_root, load_config
 from .pipeline_errors import OperationRefused
 from .paths import app_root
 
@@ -1253,27 +1253,141 @@ def _purge_workdir(wd: Path) -> tuple[bool, int, int]:
     return kept_cred, removed, failed
 
 
+
+def _abs_path_str(p: Path) -> str:
+    """表示・イベント用に絶対パス文字列にする（issue #108）。
+
+    symlink は辿らない——canonicalize すると Windows で `\\\\?\\` verbatim
+    プレフィックスが付き表記が変わる（reparse point の判定自体は別の
+    `_is_reparse_point` が行う）。ここは cwd 基準で連結するだけ。
+    """
+    return str(p if p.is_absolute() else Path.cwd() / p)
+
+
+# workdir 直下エントリの分類（issue #108・応急 (a)）。ここでの分類は purge
+# 本体（_purge_workdir・keep-list 方式＝cred.dpapi 以外は種類を問わず削除）を
+# 変えるものではなく、削除前に「見えている」ことを保証する安全確認専用——
+# tool_items に入らないものが1件でもあれば --yes は削除せず拒否する
+# （fail-closed）。新しい種類の中間データを追加したらここにも名前を足す
+_TOOL_WORKDIR_DIR_NAMES = frozenset({
+    "pages", "aligned", "editor_pages", "detect_frames_pages", "responses",
+    "debug", "logs",
+})
+_TOOL_WORKDIR_FILE_NAMES = frozenset({
+    "intermediate.sqlite", "intermediate.sqlite-wal", "intermediate.sqlite-shm",
+    ".run.lock",
+})
+
+
+def _is_tool_workdir_entry(p: Path) -> bool:
+    """workdir 直下の1エントリが、このツールが作ったものと分かる名前か。
+
+    判定は名前だけで中身は見ない（reparse point 越しの中身検査を避ける）。
+    ※ snap-diff（診断コマンド）は SQLite を一時ディレクトリへ複製するだけで
+    workdir 配下には何も書かない（08 §6.3）ため、"snap*" 名は対象に含めない
+    ——実際に作られない名前を許可リストに入れると、その名前の利用者ファイルを
+    誤って「ツール由来」と判定してしまう。
+    """
+    name = p.name
+    if p.is_dir():
+        return name in _TOOL_WORKDIR_DIR_NAMES
+    return name in _TOOL_WORKDIR_FILE_NAMES or name.endswith(".tmp")
+
+
+def _scan_workdir_entries(wd: Path) -> tuple[int, int, list[str]]:
+    """workdir 直下を走査し (tool_items, other_items, other_examples) を返す
+    （issue #108）。cred.dpapi（cred_store.blob_name()）は名前が一致すれば
+    reparse point かどうかに関わらずどちらにも数えない——資格情報として
+    残せるかどうかの判定は `_purge_workdir` 側に委ね、ここは削除前の可視化
+    専用。存在しない workdir は (0, 0, []) を返す。
+    """
+    if not wd.is_dir():
+        return 0, 0, []
+    blob = cred_store.blob_name()
+    tool_items = other_items = 0
+    other_examples: list[str] = []
+    for p in sorted(wd.iterdir()):
+        if p.name == blob:
+            continue
+        if _is_tool_workdir_entry(p):
+            tool_items += 1
+        else:
+            other_items += 1
+            if len(other_examples) < 5:
+                other_examples.append(p.name)
+    return tool_items, other_items, other_examples
+
+
+def _unsafe_workdir_reason(wd: Path, raw: str) -> str | None:
+    """purge の削除対象として workdir が安全かを判定する（issue #108）。
+
+    None なら安全。文字列＋プロファイル直下の判定（`config.is_unsafe_workdir_root`・
+    ファイルシステムに触れない）を先に見て、それでも安全な形のときだけ
+    reparse point（#83 由来の既存検査）を実体アクセスで確認する——UNC
+    のような到達できないパスに対して `is_symlink()` 等のファイルシステム
+    アクセスを不用意に発生させないため、順序をこの向きに固定する。
+    """
+    reason = is_unsafe_workdir_root(raw)
+    if reason is not None:
+        return reason
+    if _is_reparse_point(wd):
+        return "reparse_point"
+    return None
+
+
 def cmd_purge(args) -> int:
     cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9）
+    wd = Path(cfg.workdir)
+    wd_abs = _abs_path_str(wd)
+
+    if args.preview:
+        # --preview は --yes と同時指定されても削除しない（優先・issue #108）
+        tool_items, other_items, other_examples = _scan_workdir_entries(wd)
+        reason = _unsafe_workdir_reason(wd, cfg.workdir)
+        _progress({"event": "purge_preview", "path": wd_abs,
+                   "output_dir": _abs_path_str(Path(cfg.output_dir)),
+                   "tool_items": tool_items, "other_items": other_items,
+                   "other_examples": other_examples,
+                   "safe_root": reason is None, "unsafe_reason": reason})
+        return 0
+
     if not args.yes:
         print("中間データ削除には --yes が必要（要件 §6.3: 削除は明示操作のみ）",
               file=sys.stderr)
         return 1
-    wd = Path(cfg.workdir)
-    # M-2 と同じ規律（paths.py の user_templates_dir()）。wd.iterdir() は
-    # reparse point 越しにリンク先を列挙してしまうため、削除前にここで弾く
-    # （fail-closed）——列挙してから個別に弾く方式だと、iterdir 自体が
-    # 意図しないリンク先の中身を返す時点で手遅れになる
-    if _is_reparse_point(wd):
-        print(f"workdir が symlink またはジャンクションになっているため削除しない"
-              f"（{wd}）。config.json の workdir 設定を確認してから再実行する。",
+
+    # workdir は設定画面の自由入力で、config.json も手編集や別プロセスから
+    # 書けるため、書き込み時の検証だけでは守れない（issue #108）。ドライブ
+    # 直下・UNC・`.`/`..`・ユーザープロファイル直下・reparse point（symlink・
+    # ジャンクション）のいずれかなら削除せず拒否する
+    reason = _unsafe_workdir_reason(wd, cfg.workdir)
+    if reason is not None:
+        print(f"workdir の場所が安全でないため削除しない（{wd_abs}）。"
+              "config.json の workdir 設定を確認してから再実行する。",
               file=sys.stderr)
-        return 1
+        _progress({"event": "purge_refused", "reason": "unsafe_root",
+                   "unsafe_reason": reason, "path": wd_abs})
+        return 2
+
+    # workdir 直下に、このツールが作ったと分からないものが1件でもあれば
+    # 削除しない——原本や大事なファイルが同居していても誤って巻き込まない
+    # ための最終防御（issue #108）
+    tool_items, other_items, other_examples = _scan_workdir_entries(wd)
+    if other_items > 0:
+        print(f"workdir 直下にこのツールが作ったと分からないものが "
+              f"{other_items} 件あるため削除しない（{wd_abs}）。原本や大事な"
+              "ファイルが紛れていないか確認してから再実行する。",
+              file=sys.stderr)
+        _progress({"event": "purge_refused", "reason": "other_items",
+                   "other_items": other_items, "other_examples": other_examples,
+                   "path": wd_abs})
+        return 2
+
     cred_kept, wd_removed, wd_failed = _purge_workdir(wd)
-    # cred.dpapi の中身やそのファイル自身のパスは出さない。既存の "path" は
-    # workdir のルートで元々出ていたもの（cfg.workdir・利用者が設定した値）。
-    # 資格情報側で新たに足すのは残せたかどうかの真偽値と削除件数のみ（S-MC）
-    event = {"event": "purged", "path": str(wd), "cred_kept": cred_kept,
+    # cred.dpapi の中身は出さない。"path" は絶対パス（issue #108）——
+    # workdir のルート自体は利用者が設定した値であり記入値ではないため出す。
+    # 資格情報側で足すのは残せたかどうかの真偽値と削除件数のみ（S-MC）
+    event = {"event": "purged", "path": wd_abs, "cred_kept": cred_kept,
               "removed": wd_removed, "failed": wd_failed}
     # --include-output 側（削除 N 件／対象外として残したファイル N 件）と
     # 同じ形で、workdir 側も人が読む1行を必ず出す（AZKi 指摘: 消し損ねが
@@ -1305,9 +1419,9 @@ def cmd_purge(args) -> int:
         log.info("purge_output_done", count=removed, failed=failed, kept=kept)
         event.update({"output_dir": str(out_dir), "output_removed": removed,
                       "output_kept": kept, "output_failed": failed})
-        # 標準出力の JSON Lines（§7.3）は GUI 用だが、purge は GUI 境界で禁止
-        # されている（lib.rs の check_args_v2）CLI 専用コマンドなので、人が読む
-        # 1行を併記する
+        # 標準出力の JSON Lines（§7.3）は GUI 用だが、purge は GUI からも
+        # 呼べる（#52 M-11・lib.rs の ALLOWED_SUBCOMMANDS）ため、CLI で
+        # 直接叩いたときにも状況が分かるよう人が読む1行を併記する
         print(f"削除 {removed} 件／対象外として残したファイル {kept} 件")
         if failed:
             print(f"削除できないファイルが {failed} 件ある（Excel などで開かれて"
@@ -1446,6 +1560,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="出力先の生成物（output_<日時>.xlsx / .csv / "
                         "_columns.txt と、その .bak・.tmp）も削除する。"
                         "フォルダ自体と、この命名に一致しないファイルは残す")
+    p.add_argument("--preview", action="store_true",
+                   help="何も削除せず、削除対象の場所と件数だけを出す"
+                        "（--yes と同時指定時は --preview を優先・issue #108）")
     p.set_defaults(fn=cmd_purge)
 
     args = ap.parse_args(argv)

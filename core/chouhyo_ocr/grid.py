@@ -158,6 +158,14 @@ HEADING_HEIGHT_RATIO = 0.20
 切り離す（20% ちょうどでは切り離さない・08 §4.2.2）。実素材（請求書等）で
 較正した値ではなく、合成データで境界の閉じ方だけを固定してある。"""
 
+HEADING_CHAIN_MAX_GAP_RATIO = 3.0
+"""無次元。`_detach_heading_rows` が署名チェーンを束ねる際、直前行との
+間隔がその行の高さの何倍までなら「同じ表の続き」とみなすかの上限
+（issue #111 (a)(b)）。これを超えたら新しいチェーン（＝別の表）として
+扱う——同じ列境界を持つ表がページに複数あっても、遠く離れた行まで
+1 本のチェーンに混ざらないようにする。行高そのままの実素材較正値では
+ない（HEADING_HEIGHT_RATIO と同じ扱い）。"""
+
 
 @dataclass(frozen=True)
 class TableSuggestion:
@@ -201,7 +209,7 @@ class FrameCandidates:
     suggestions: tuple[TableSuggestion, ...]
     excluded: tuple[dict, ...]   # [{"reason": str, "count": int}]
     stats: dict                 # {"lines_h", "lines_v", "rects", "rails_h", "rails_v",
-                                #  "components", "cells", "suggestions"}
+                                #  "components", "cells", "suggestions", "heading_detached"}
     zero_reason: str | None     # None | "no_lines" | "no_rect" | "all_filtered" | "too_many_lines"
 
 
@@ -414,6 +422,19 @@ def _detach_heading_rows(row_infos: list[dict], tol: float, pitch_tol: float
     先頭を外すと 1 行目が孤児になるため、run 構築の**前**に候補集合から抜く
     （08 §4.2.2・設計 D-4）。
 
+    チェーンは署名（列境界）の一致だけでなく縦の連続性でも区切る
+    （issue #111 (a)）——直前行との間隔が `HEADING_CHAIN_MAX_GAP_RATIO` 倍
+    （直前行の高さ基準）を超えたら別チェーンにする。これが無いと、同じ
+    列境界を持つ表がページに複数あるとき（表面・裏面が同じ画像に載る等）、
+    全ての行が1本のチェーンに混ざり、本文の等ピッチ判定が表と表の間の
+    大きなジャンプで空振りして見出し切り離しが1件も効かなくなる。
+
+    この縦の連続性チェックは、チェーン長 3（見出し＋本文2行）で `gaps` が
+    1本しかなく等ピッチ検査が恒偽になる問題（issue #111 (b)）も併せて塞ぐ
+    ——本文2行目を束ねる時点で直前行（本文1行目）の高さ基準の上限を
+    超えていれば、その時点でチェーンに入らない。以降の等ピッチ検査が
+    「1本しかない gap」を見る場面自体が、既にこの上限を通過した値になる。
+
     切り離した行は升候補としては残る（升候補は本関数より前に確定済みで、
     ここで絞るのは run の入力だけ）。
 
@@ -423,9 +444,16 @@ def _detach_heading_rows(row_infos: list[dict], tol: float, pitch_tol: float
     chains: list[list[dict]] = []
     for ri in row_infos:                     # row_infos は y 昇順で渡ってくる
         for ch in chains:
-            if _same_signature(ch[0]["signature"], ri["signature"], tol) and ri["y1"] > ch[-1]["y1"]:
-                ch.append(ri)
-                break
+            last = ch[-1]
+            if not _same_signature(ch[0]["signature"], ri["signature"], tol):
+                continue
+            if ri["y1"] <= last["y1"]:
+                continue
+            last_height = last["y2"] - last["y1"]
+            if ri["y1"] - last["y1"] > HEADING_CHAIN_MAX_GAP_RATIO * max(last_height, 1):
+                continue                     # 直前行から離れすぎ＝別の表
+            ch.append(ri)
+            break
         else:
             chains.append([ri])
 
@@ -485,7 +513,7 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
     h_segs, v_segs = _segments.detect_segments(work, dpi)
     stats = {"lines_h": len(h_segs), "lines_v": len(v_segs), "rects": 0,
              "rails_h": 0, "rails_v": 0, "components": 0,
-             "cells": 0, "suggestions": 0}
+             "cells": 0, "suggestions": 0, "heading_detached": 0}
     if not h_segs and not v_segs:
         return FrameCandidates((), (), (), stats, "no_lines")
 
@@ -597,6 +625,10 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
     # 見出し行の切り離しは run 構築の**前**（設計 D-4）。外した行は升候補
     # として残る（cells は上で確定済みで、ここで絞るのは run の入力だけ）
     row_infos, _detached, body_heads = _detach_heading_rows(row_infos, tol, pitch_tol)
+    # 切り離した行の事実は、その行が run（提案）を作れたかどうかに関わらず
+    # 常に出す（issue #111 (c)）。`heading_excluded` は run が成立した提案
+    # にしか付かないため、run が成立しなかった場合はこれが唯一の手がかりになる
+    stats["heading_detached"] = len(_detached)
 
     # H-2: run を単一系列（runs[-1] とだけ比較）ではなく、x 範囲ごとに
     # 複数系列を並行して保持する——family/detail のように複数の表が

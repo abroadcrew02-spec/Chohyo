@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
@@ -186,6 +187,63 @@ def _validate(cfg: Config) -> Config:
         cfg = replace(cfg, last_template="shipped",
                       last_template_fallback_reason="invalid_format")
     return cfg
+
+
+def _is_profile_root(p: Path) -> bool:
+    """絶対パス p がユーザープロファイル直下そのものか（issue #108）。
+
+    `%USERPROFILE%` 自身、または直下の Documents/Desktop/Downloads の
+    いずれかとの完全一致だけを見る。サブフォルダは対象にしない——
+    「作業用に切った専用フォルダ」まで拒否すると過検知になるため、
+    典型的に原本と同居しやすい場所（プロファイル直下そのもの）に絞る。
+    """
+    home = os.environ.get("USERPROFILE")
+    if not home or not home.strip():
+        return False
+    base = Path(home)
+    targets = (base, base / "Documents", base / "Desktop", base / "Downloads")
+    norm = os.path.normcase(os.path.normpath(str(p)))
+    return any(norm == os.path.normcase(os.path.normpath(str(t))) for t in targets)
+
+
+def is_unsafe_workdir_root(raw: str) -> str | None:
+    """workdir に使ってはいけないパスの形か判定する（issue #108）。
+
+    安全なら None、危険なら理由コードを返す：
+    "empty"（空・空白のみ）／"unc"（UNC・verbatim UNC）／
+    "drive_root"（ドライブ直下）／"dot"（`.`・`..` を含む）／
+    "profile_root"（ユーザープロファイル直下そのもの）。
+
+    Rust 側 `lib.rs:388 is_safe_root`（GUI の読み取り専用ルート判定）と
+    判定方針を揃える（ドライブ直下・UNC・`.`/`..`・空を拒否）が、purge は
+    不可逆な削除のため一段厳しく、ユーザープロファイル直下も拒否に加える。
+    reparse point（symlink・ジャンクション）の判定はここでは行わない——
+    実体のある Path に対する `os.path.isjunction` 等の実アクセスが要るため、
+    呼び出し側（cli.cmd_purge）が別途行う。
+    """
+    if not raw or not raw.strip():
+        return "empty"
+    s = raw.strip()
+    # UNC（\\server\share）・verbatim UNC（\\?\UNC\server\share）。
+    # verbatim ローカル（\\?\C:\...）はプレフィックスを剥がして以降を
+    # 通常のローカルパスとして扱う（Rust 側の VerbatimUNC 別枠判定と同じ理由）
+    if s.startswith("\\\\?\\UNC\\") or (s.startswith("\\\\") and not s.startswith("\\\\?\\")):
+        return "unc"
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    drive, tail = os.path.splitdrive(s)
+    segments = [seg for seg in re.split(r"[\\/]+", tail) if seg not in ("", ".")]
+    if any(seg == ".." for seg in segments):
+        return "dot"
+    if not segments:
+        # ドライブ直下（"C:\" "C:"）、またはドライブなしの "." のみ
+        return "drive_root" if drive else "dot"
+    abs_path = Path(raw)
+    if not abs_path.is_absolute():
+        abs_path = Path.cwd() / abs_path
+    if _is_profile_root(abs_path):
+        return "profile_root"
+    return None
 
 
 def load_config(path: str | Path | None = None) -> Config:

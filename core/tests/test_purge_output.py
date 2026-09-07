@@ -215,9 +215,13 @@ def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
     """読み取り専用ファイルは chmod で書き込み許可を復元して削除する
     （いろは/AZKi 指摘）。ロックではなく読み取り専用属性だけの場合は
     chmod で解除できるため、failed=0（削除できた側）に固定する。
+
+    ファイル名は中間データの命名（WAL ファイル）に揃える——issue #108 の
+    other_items 拒否（このツールが作ったと分からない名前が1件でもあれば
+    削除しない）に引っかからないようにするため。
     """
     cfg, _out, wd = _setup(tmp_path)
-    ro = wd / "readonly.dat"
+    ro = wd / "intermediate.sqlite-wal"
     ro.write_text("x", encoding="utf-8")
     ro.chmod(stat.S_IREAD)
     try:
@@ -231,7 +235,7 @@ def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
     events, raw = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["failed"] == 0
-    assert ev["removed"] == 2  # readonly.dat + intermediate.sqlite
+    assert ev["removed"] == 2  # intermediate.sqlite-wal + intermediate.sqlite
     assert "中間データ 2 件を削除した" in raw
 
 
@@ -239,13 +243,17 @@ def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys)
     """workdir 配下のジャンクションはリンク自体だけ外し、リンク先の中身は残す
     （いろは/AZKi 指摘）。rmtree をリンクへ渡すとリンク先ごと消えるので、
     ここで「リンク先が無事」であることを固定する。
+
+    リンク名は中間データが実際に使うディレクトリ名（"aligned"）に揃える——
+    issue #108 の other_items 拒否（このツールが作ったと分からない名前が
+    1件でもあれば削除しない）に引っかからないようにするため。
     """
     cfg, _out, wd = _setup(tmp_path)
     real_dir = tmp_path / "outside_target"
     real_dir.mkdir()
     (real_dir / "should_survive.txt").write_text("x", encoding="utf-8")
 
-    link = wd / "linked"
+    link = wd / "aligned"
     result = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link), str(real_dir)],
         capture_output=True, text=True, errors="replace")
@@ -263,11 +271,12 @@ def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys)
     events, _raw = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["failed"] == 0
-    assert ev["removed"] == 2  # linked（リンク自体）+ intermediate.sqlite
+    assert ev["removed"] == 2  # aligned（リンク自体）+ intermediate.sqlite
 
 
-def test_purge_refuses_when_workdir_itself_is_a_junction(tmp_path):
-    """workdir 自体が reparse point の場合は何も消さず rc=1（いろは/AZKi 指摘）。
+def test_purge_refuses_when_workdir_itself_is_a_junction(tmp_path, capsys):
+    """workdir 自体が reparse point の場合は何も消さず rc=2（いろは/AZKi 指摘・
+    issue #108 で unsafe_root の1種として purge_refused イベントに統合）。
 
     wd.iterdir() は reparse point 越しにリンク先を列挙してしまう
     （えーちゃん実測・junction_probe.py）ため、削除前にここで弾く。
@@ -292,9 +301,13 @@ def test_purge_refuses_when_workdir_itself_is_a_junction(tmp_path):
                                "log_dir": str(tmp_path / "logs")}),
                    encoding="utf-8")
 
-    assert _purge(cfg, "--yes") == 1
+    assert _purge(cfg, "--yes") == 2
     assert (real_dir / "keep_me.sqlite").exists()             # リンク先は無傷
     assert wd_link.is_dir()                                    # リンク自体も残る（拒否のみ）
+
+    events, _raw = _events(capsys)
+    ev = next(e for e in events if e["event"] == "purge_refused")
+    assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "reparse_point"
 
 
 def test_purge_does_not_keep_a_symlink_named_cred_dpapi(tmp_path, capsys):

@@ -290,6 +290,33 @@ def test_run_summary_event_reports_fallback_counts(tmp_path):
     assert page_ev["fallback_used"] == 2
 
 
+def test_run_summary_event_reports_processed_counts(tmp_path):
+    """issue #119: summary イベントに今回分の処理件数（processed_pages・
+    processed_failed）が載ること。
+
+    既存の `pages`／`rows` は workdir 累計（store 全体）で、cli.cmd_run の
+    終了コード判定（#53 L-9）は `Summary.processed_pages`／`processed_failed`
+    だけを見ている。この2値がサマリの累計値と混ざらず、イベントとしても
+    そのまま読めることを固定する。
+    """
+    input_dir = tmp_path / "input"; input_dir.mkdir()
+    shutil.copy(PAGE_PNG, input_dir / "sample-1.png")
+    replay_dir = tmp_path / "responses"; replay_dir.mkdir()
+    shutil.copy(RESP, replay_dir / "sample-1_p0001.json")
+    cfg = Config(unclear_threshold=0.85,
+                output_dir=str(tmp_path / "out"), workdir=str(tmp_path / "wd"),
+                log_dir=str(tmp_path / "logs"))
+    events = []
+    summary = run(input_dir, TPL, cfg, ReplayClient(replay_dir), events.append)
+    summary_ev = next(e for e in events if e.get("event") == "summary")
+    assert "processed_pages" in summary_ev and "processed_failed" in summary_ev
+    # 既存キーはそのまま残る（削らない・改名しない）
+    assert "pages" in summary_ev and "rows" in summary_ev
+    # 値は Summary（cli.cmd_run の終了コード判定と同じもの）と一致する
+    assert summary_ev["processed_pages"] == summary.processed_pages == 1
+    assert summary_ev["processed_failed"] == summary.processed_failed == 0
+
+
 def test_second_run_reports_reused_pages_without_api_calls(tmp_path):
     """コーディネーター指示（2026-09-02）: 実機の通し確認で見つかった詰まり所。
 

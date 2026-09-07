@@ -18,6 +18,14 @@ api_budget の月次カウンタ（`api_usage.json`）と cred_store の暗号�
 環境変数の名前に `_FOR_TESTS` が付いているのは、本番で設定する項目ではない
 ことを名前自体で示すため（M-6 の指摘: 用途の分からない環境変数が上限回避の
 経路になっていた）。
+
+issue #120: `_FOR_TESTS` の2変数は、本番コードでは `CHOUHYO_TEST_MODE=1` が
+併せて設定されていないと無視される（同一 Windows ユーザーが環境変数1つで
+月次上限の強制停止や資格情報の置き場を差し替えられる経路を塞ぐため）。
+このフィクスチャがセッション中ずっと `CHOUHYO_TEST_MODE=1` も設定するので、
+個々のテストが独自に `CHOUHYO_USAGE_DIR_FOR_TESTS`／
+`CHOUHYO_CRED_DIR_FOR_TESTS` を上書きする場合もこのゲート自体は開いたまま
+になる（各テストが `CHOUHYO_TEST_MODE` を自前で設定し直す必要はない）。
 """
 from __future__ import annotations
 
@@ -27,5 +35,6 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_local_app_state(tmp_path_factory, monkeypatch):
     base = tmp_path_factory.mktemp("localappstate")
+    monkeypatch.setenv("CHOUHYO_TEST_MODE", "1")
     monkeypatch.setenv("CHOUHYO_USAGE_DIR_FOR_TESTS", str(base / "usage"))
     monkeypatch.setenv("CHOUHYO_CRED_DIR_FOR_TESTS", str(base / "cred"))

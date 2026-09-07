@@ -180,9 +180,21 @@ def store_dir() -> Path:
 
     `CHOUHYO_CRED_DIR_FOR_TESTS` は**テスト専用**（本番では設定しない）。
     テストが実行環境の本物の %LOCALAPPDATA% へ blob を書き込まないための
-    差し替え口で、運用上の設定項目ではない。
+    差し替え口で、運用上の設定項目ではない。明示のテストモード
+    （`CHOUHYO_TEST_MODE=1`）が設定されているときだけ読む（issue #120・
+    api_budget.usage_path() と同じ判断）——これが無いと、同じ Windows
+    ユーザーが環境変数1つで DPAPI blob の書き込み先・読み込み先を
+    意図しない場所へ誘導できてしまう。テストモードが有効なときは起動
+    ログへ1行残す（パスの値自体は出さない）。
     """
-    base = os.environ.get(_ENV_TEST_DIR) or os.environ.get("LOCALAPPDATA")
+    base = None
+    if os.environ.get("CHOUHYO_TEST_MODE") == "1":
+        override = os.environ.get(_ENV_TEST_DIR)
+        if override:
+            log.warn("cred_dir_test_override")  # 値（パス）は出さない
+            base = override
+    if not base:
+        base = os.environ.get("LOCALAPPDATA")
     if not base:
         base = str(Path.home() / ".chouhyo_ocr")
     return Path(base) / "ChouhyoOCR"

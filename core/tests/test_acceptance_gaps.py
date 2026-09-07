@@ -135,7 +135,10 @@ def test_tr_g4_xlsx_csv_extract_columns_identical(tmp_path):
 
 def test_tr_g5_purge_requires_yes(tmp_path):
     cfg_file = tmp_path / "config.json"
-    wd = tmp_path / "wd"; wd.mkdir(); (wd / "x.txt").write_text("x")
+    # ファイル名は中間データの命名に揃える——issue #108 の other_items 拒否
+    # （このツールが作ったと分からない名前が1件でもあれば削除しない）に
+    # 引っかからないようにするため（このテストの主眼は --yes の要否）
+    wd = tmp_path / "wd"; wd.mkdir(); (wd / "intermediate.sqlite").write_text("x")
     cfg_file.write_text(json.dumps({"workdir": str(wd),
                                     "log_dir": str(tmp_path / "logs")}),
                         encoding="utf-8")
@@ -143,14 +146,16 @@ def test_tr_g5_purge_requires_yes(tmp_path):
             "--config", str(cfg_file), "purge"]
     r1 = subprocess.run(base, cwd=app_root() / "core", capture_output=True,
                         text=True, encoding="utf-8", timeout=60)
-    assert r1.returncode == 1 and wd.exists() and (wd / "x.txt").exists()  # 拒否・消えない
+    # 拒否・消えない
+    assert r1.returncode == 1 and wd.exists() and (wd / "intermediate.sqlite").exists()
     r2 = subprocess.run(base + ["--yes"], cwd=app_root() / "core",
                         capture_output=True, text=True, encoding="utf-8",
                         timeout=60)
     # 明示時は中身が消える（要件 §6.3）。workdir 自体は keep-list 方式（#83）
     # では cred.dpapi を残す余地のために残る——ここには cred.dpapi が無いので
     # 空フォルダとして残る
-    assert r2.returncode == 0 and wd.exists() and not (wd / "x.txt").exists()
+    assert (r2.returncode == 0 and wd.exists()
+            and not (wd / "intermediate.sqlite").exists())
 
 
 def test_tr_g6_verify_fails_without_credentials(tmp_path):

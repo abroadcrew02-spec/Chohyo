@@ -65,6 +65,13 @@ def usage_path() -> Path:
 
     カウンタの場所は運用では**変えられない**。作業フォルダを複数使っても、
     config.json を差し替えても、同じ Windows ユーザーなら同じファイルを数える。
+    これは名前が示す意図であって、以前は実装が伴っていなかった——
+    `CHOUHYO_USAGE_DIR_FOR_TESTS` は明示のテストモード
+    （`CHOUHYO_TEST_MODE=1`）が設定されているときだけ読む（issue #120）。
+    テストモードでないのに環境変数だけ立てても無視され、通常どおり
+    %LOCALAPPDATA% を数える——同一 Windows ユーザーが環境変数1つで
+    月次上限の強制停止を無効化できてしまう経路を塞ぐ。テストモードが
+    有効なときは起動ログへ1行残す（パスの値自体は出さない）。
 
     **ファイルを消せば 0 に戻る**——これは仕様として残す（M-6 の①）。守ろうと
     しているのは「暴走で気づかないうちに課金される」ことであって、利用者自身が
@@ -73,8 +80,14 @@ def usage_path() -> Path:
     （M-6 本文も HMAC 等は過剰と結論している）。実際の請求は GCP の課金
     ダッシュボードが正本で、このカウンタは歯止めであって請求書ではない。
     """
-    base = (os.environ.get("CHOUHYO_USAGE_DIR_FOR_TESTS")
-            or os.environ.get("LOCALAPPDATA"))
+    base = None
+    if os.environ.get("CHOUHYO_TEST_MODE") == "1":
+        override = os.environ.get("CHOUHYO_USAGE_DIR_FOR_TESTS")
+        if override:
+            log.warn("usage_dir_test_override")  # 値（パス）は出さない
+            base = override
+    if not base:
+        base = os.environ.get("LOCALAPPDATA")
     if not base:
         base = str(Path.home() / ".chouhyo_ocr")
     return Path(base) / "ChouhyoOCR" / "api_usage.json"
