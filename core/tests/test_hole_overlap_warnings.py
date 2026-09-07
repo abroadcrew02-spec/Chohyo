@@ -1,6 +1,6 @@
 """穴（切り抜き）どうしの重なり警告 W-4 のテスト（issue #66 第2弾・段6）。
 
-背景（05 の F-12・ぼたん Phase 2 レビュー B の経路B）: mapping の空間インデックス
+背景（05 の F-12・設計担当 Phase 2 レビュー B の経路B）: mapping の空間インデックス
 （mapping._bucket_cells）は「領域→参照先→穴」の3層 first-hit で、層をまたぐ
 優先順位は配列順と無関係だが、**穴（extra_rects を持つ単発欄の切り抜き穴・
 template.hole_bbox）どうしの重なりだけは、load_template の欄矩形の重なり拒否

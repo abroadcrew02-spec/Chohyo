@@ -183,8 +183,8 @@ def _load(template_path: str | Path) -> tuple[Template, dict, str]:
     template = load_template(template_path)
     raw = json.loads(Path(template_path).read_text(encoding="utf-8"))
     # load_template 成功直後・validate_v1 より前に出す（2026-09-02 #77 追補・
-    # マリン指摘）。W-1〜W-4 の cell_idx・face_idx は load_template 内部
-    # （validate_v1 より前）で既に発火しているため、ここより後で
+    # レビュー担当指摘）。W-1〜W-4 の cell_idx・face_idx は load_template 内部
+    # （validate_v1 より前）で既に発火しているため、こリサーチ担当後で
     # template_loaded を出すと validate_v1 が TemplateError で落ちたときに
     # 「cell_idx はあるが template_hash が無い」状態が残る（不変条件A・
     # Q-S1・FR-F50・08_frame_detection_design.md §1.4）。3経路（run／render／
@@ -218,7 +218,7 @@ def _warn_risky(risky: list[tuple[str, str]], columns: list[str]) -> None:
 
 def _record_format_result(store: Store, page_id: str, pv) -> None:
     """様式判定結果を中間データへ記録し、同じ内容を1行ログへも残す
-    （FR-F12・AC-F13・08 §2.5.3・2026-09-02 マリン指摘 H-1）。
+    （FR-F12・AC-F13・08 §2.5.3・2026-09-02 レビュー担当指摘 H-1）。
 
     永続化は store.set_format_result（DB のみ）に任せ、ここでログ出力の
     責務を足す——4つの呼び出し点（PageSizeMismatch／AlignError／再利用時の
@@ -915,7 +915,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     snap_by_face=snap_by_face)
             except Exception as e:  # noqa: BLE001
                 store.set_state(pid, "failed")
-                # M-2（2026-09-02 マリン指摘）: 送信後3コードにも専用理由コードを
+                # M-2（2026-09-02 レビュー担当指摘）: 送信後3コードにも専用理由コードを
                 # 配線する（FR-F09「pipeline.py の4箇所が共用」の全箇所を分離）
                 store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH,
                                  reason="map_failed")
@@ -937,7 +937,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             mismatch = (page_total == 0 or total == 0
                         or other / total > render_rows.FORMAT_MISMATCH_RATIO)
             if mismatch:
-                # M-2（2026-09-02 マリン指摘）: 送信後3コードにも専用理由コードを
+                # M-2（2026-09-02 レビュー担当指摘）: 送信後3コードにも専用理由コードを
                 # 配線する（FR-F09「pipeline.py の4箇所が共用」の全箇所を分離）
                 store.set_status(pid, render_rows.STATUS_FORMAT_MISMATCH,
                                  reason="outside_ratio")
@@ -986,7 +986,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # ロック内から呼ぶので内側（ロックを取らない側）を使う——render() を
         # 呼ぶと自分が持っているロックに弾かれる
         # render_seconds は P-H1（全件再レンダー累積）の可視化用実測値
-        # （えーちゃん指示 2026-09-02・GUI 側の閾値超バナーが使う）
+        # （コーディネーター指示 2026-09-02・GUI 側の閾値超バナーが使う）
         _render_t0 = time.perf_counter()
         xlsx, csvp, rows = _render_locked(template_path, cfg, None, progress)
         render_seconds = round(time.perf_counter() - _render_t0, 1)
@@ -1038,7 +1038,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                   "snap_excluded_pages": summary.snap_excluded_pages,
                   # P-H1 可視化（累積コストの目安）。total_done_pages は今回処理分
                   # ではなく store に蓄積された state=='done' の累積件数
-                  # （えーちゃん指示 2026-09-02）
+                  # （コーディネーター指示 2026-09-02）
                   "total_done_pages": store.done_page_count(),
                   "render_seconds": render_seconds,
                   "xlsx": str(xlsx), "csv": str(csvp)})
@@ -1322,7 +1322,7 @@ def _remap_locked(template_path: str | Path, cfg: Config,
                   "fallback_discarded_excluded_field": fb_discarded_excl_total,
                   "carve_hole_excluded_field": carve_hole_excl_total,
                   "conflict_excluded_field": conflict_excl_total,
-                  # P-H1 可視化（run の summary と同じキー・えーちゃん指示
+                  # P-H1 可視化（run の summary と同じキー・コーディネーター指示
                   # 2026-09-02）。remap は render を呼ばないため render_seconds は
                   # 持たない——実測できない値を捏造しない（ルール2）
                   "total_done_pages": store.done_page_count()})

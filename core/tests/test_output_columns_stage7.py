@@ -1,6 +1,6 @@
 """出力列制御 MVP（issue #66）第2弾: 列の並べ替えの core 受入テスト。
 
-QA裏取り実測（scratchpad/qa_reorder_probe.py・2026-09-01・トワ「全通過確認済み」）
+QA裏取り実測（scratchpad/qa_reorder_probe.py・2026-09-01・QA 担当「全通過確認済み」）
 を正式な pytest テストへ移植したもの。手順は実測スクリプトと同一（出荷テンプレを
 tmp へ複製 → 配列順だけ入替 → derive_columns / render / remap で観測）。
 

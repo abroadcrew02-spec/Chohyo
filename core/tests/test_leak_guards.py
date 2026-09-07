@@ -60,7 +60,7 @@ def test_cli_top_level_handler_hides_exception_message(tmp_path):
     assert "存在しない入力フォルダ" not in err_log
     # run_start は入力パス（path=）のみを残す——テンプレートファイル名は
     # 出さない（Q-S1・FR-F50・2026-09-02）。**run_start 自身の行にハッシュは
-    # 乗らない**（2026-09-02 マリン指摘・旧コメントの誤り訂正）: cmd_run の
+    # 乗らない**（2026-09-02 レビュー担当指摘・旧コメントの誤り訂正）: cmd_run の
     # 時点ではまだテンプレートを読んでおらずハッシュが分からないため、算出
     # できた直後（pipeline._load）に template_loaded が別行としてハッシュを
     # 残す（issue #59 H-7 の追跡目的は run_start ではなく template_loaded で
@@ -230,7 +230,7 @@ def test_invariant_a_holds_per_command_in_isolation(tmp_path):
     4経路それぞれが**単独で**（他経路のログに頼らず）template_loaded を
     自前で出し、その経路が書いた cell_idx を復号できることを検証する。
 
-    2026-09-02（マリン指摘）: 以前は4経路の app.log を1本にまとめて
+    2026-09-02（レビュー担当指摘）: 以前は4経路の app.log を1本にまとめて
     「template_loaded が合計4行以上」を見ていたが、これでは経路ごとの
     自己完結性——verify だけを単独実行したときに、その回の app.log だけで
     cell_idx を復号できるか——を検証できていなかった（4経路のうち1つでも
@@ -292,7 +292,7 @@ def test_invariant_a_holds_per_command_in_isolation(tmp_path):
     expand_log = _log_text("expand")
     assert expand_log.count("template_loaded") >= 1
 
-    # H-1（マリン指摘・2026-09-03）: detect-frames は不変条件Aを満たす
+    # H-1（レビュー担当指摘・2026-09-03）: detect-frames は不変条件Aを満たす
     # 6本目の経路。以前は template_loaded を出しておらず、この経路単独の
     # app.log からは cell_idx（将来 detect-frames が匿名識別子を出す場合）
     # を復号できない穴があった
@@ -359,7 +359,7 @@ def _logging_safe_output_function_names() -> set[str]:
     （info/warn/error）。
 
     ハードコードした固定タプルだと、新しい出力関数が増えたときに静的検査が
-    追随しない（2026-09-02 マリン指摘）。`init`／`error_trace`／`_fmt` は
+    追随しない（2026-09-02 レビュー担当指摘）。`init`／`error_trace`／`_fmt` は
     シグネチャが違う（`**fields` を持たない、または非公開）ため自然と除外
     される。
     """
@@ -388,7 +388,7 @@ def test_static_check_all_logged_keys_are_allow_listed():
     イベント名しか記録されていなかった（2026-09-02 実測・issue #77・
     08_frame_detection_design.md §1.1）。この検査はその再発を機械的に止める。
 
-    2026-09-02（マリン指摘・#77 追補）の拡張3点:
+    2026-09-02（レビュー担当指摘・#77 追補）の拡張3点:
     - `from .logging_safe import warn` のような直接名 import（`log.warn(...)`
       ではなく `warn(...)` の裸呼び出し）も検出対象にする
     - `**kwargs` 展開はキー名を静的に追えないため、スキップではなく**違反**

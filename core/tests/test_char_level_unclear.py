@@ -189,7 +189,7 @@ def test_no_extras_matches_legacy_behavior(template):
 
 # ---------- H-2（レビュー差し戻し・2026-08-31）: 直列化丸めによる below 全False ----------
 #
-# マリンの数値実証: unclear_reason はセルの未丸め conf（cell.conf・REAL 列）を
+# レビュー担当の数値実証: unclear_reason はセルの未丸め conf（cell.conf・REAL 列）を
 # 見るが、below は pipeline._serialize_char_confs が .3f で直列化した文字列を
 # _parse_char_confs で読み戻した「丸め後」の値を見る。conf=0.8496・閾値0.85
 # のとき、unclear_reason は「閾値未満」と判定するのに、直列化後は "0.850" に

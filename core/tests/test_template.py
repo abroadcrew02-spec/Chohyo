@@ -113,7 +113,7 @@ def test_reject_schema_violation(tmp_path, raw):
         load_template(write(tmp_path, raw))
 
 
-# ---------- Q-MA: render_dpi != BASE_DPI での choice 欄を拒否（らでん逆張り
+# ---------- Q-MA: render_dpi != BASE_DPI での choice 欄を拒否（批判役の指摘
 # 採用・2026-09-02: 当初案の警告(W-5)から拒否へ格上げ） ----------
 
 def test_reject_choice_field_at_non_base_dpi(tmp_path, raw):

@@ -552,7 +552,7 @@ def test_last_template_fallback_logs_warning_without_name(tmp_path):
     （Q-S1・FR-F50 の方針を踏襲）。値そのものに顧客名を想起させる文字列が
     入っていても、ログにはイベント名以外の情報を一切載せない。
 
-    M-1（2026-09-02 マリン指摘）: フォールバック警告は `load_config()` 単体
+    M-1（2026-09-02 レビュー担当指摘）: フォールバック警告は `load_config()` 単体
     では出ない——`_validate()` は理由を `Config.last_template_fallback_reason`
     に積むだけで、実際に `log.warn()` するのは `cli._load_config_and_init_log`
     （`log.init` 直後の1回のみ）。本番の呼び出し順（load_config → log.init →
@@ -755,7 +755,7 @@ def test_two_choice_can_reach_undecided():
 
 
 def test_date_cells_exclude_printed_labels():
-    """生年月日欄が印字ラベル「年」「月」「日」を巻き込まない（おかゆ指摘）。
+    """生年月日欄が印字ラベル「年」「月」「日」を巻き込まない（テスト担当の提案）。
 
     実測（修正前）: person_生年月日_日 が p0001 で "20日"、p0002 で "月20日"。
     矩形の幅較正が印字ラベルを避けきれず、日付列に非数値が混入していた。

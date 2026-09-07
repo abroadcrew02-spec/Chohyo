@@ -60,7 +60,7 @@ def user_templates_dir() -> Path:
     未設定時のフォールバック（`project_root()/templates_user`）は
     **frozen でない（開発・CLI 単体運用）ときだけ**許可する。frozen
     （配布・GUI 起動）なのに未設定なら `ConfigError` で明示的に失敗する
-    （2026-09-02 AZKi 指摘 M-6）——frozen 環境は本来 Rust が必ずこの環境変数を
+    （2026-09-02 セキュリティレビューの指摘 M-6）——frozen 環境は本来 Rust が必ずこの環境変数を
     設定して core を起動するため、未設定は「Rust 側で `user_templates_dir(app)`
     の解決に失敗したのに、環境変数を付けずに core を起動してしまった」異常
     事態のサイン。ここで黙って `project_root()/templates_user`
@@ -79,7 +79,7 @@ def user_templates_dir() -> Path:
     p = Path(raw)
     if not p.is_absolute():
         raise ConfigError(f"CHOUHYO_USER_DIR は絶対パスにする（現在: {raw!r}）")
-    # M-2（2026-09-02 マリン指摘）: is_symlink() だけでは Windows のジャンクション
+    # M-2（2026-09-02 レビュー担当指摘）: is_symlink() だけでは Windows のジャンクション
     # （IO_REPARSE_TAG_MOUNT_POINT）を検出できない場合がある——is_symlink() が
     # 見ているのは IO_REPARSE_TAG_SYMLINK のみ。os.path.isjunction()（Python
     # 3.13+）と両方を通す

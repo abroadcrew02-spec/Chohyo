@@ -597,7 +597,7 @@ def detect_frames(binary: "np.ndarray", dpi: int = BASE_DPI,
     # 同じ (y1, y2) を持つ原子セルを集めたあと、x 方向の隙間（> tol）で
     # 分割する——水平罫線を共有する左右2ブロックが同じ行として1つに
     # 融合し、間の隙間が「幽霊列」として columns に混入するのを防ぐ
-    # （H-2・マリン指摘）。左右ブロックはこれで別々の行セグメントになる。
+    # （H-2・レビュー担当指摘）。左右ブロックはこれで別々の行セグメントになる。
     # 入力は「升候補として残ったセル」だけ（面またぎのセルは除いてある）
     surviving = [r for r in kept if r in cell_index_of]
     rows_by_bounds: dict[tuple[float, float], list[tuple[float, float, float, float, float]]] = {}

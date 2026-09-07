@@ -210,7 +210,7 @@ def shift_response_vertices(resp_json: dict, region: Rect | tuple[int, int, int,
 # （06_second_form_findings.md §0.2-2・07要件 v0.4 変更点2）。実運用では
 # `templates_user/` に置く想定——ただし現状このディレクトリはリポジトリに
 # 存在せず、.gitignore の `*.json` ルールの副作用で偶然無視されているだけ
-# だった（AZKi M-6）。本 fixture はテスト実行時にだけ
+# だった（セキュリティ担当 M-6）。本 fixture はテスト実行時にだけ
 # `templates_user/formB-v1.json`（testdata/formB/formB-v1.json の複製）を
 # 作り、テスト終了後に削除する。
 def copy_template_to_user_dir(repo_root: Path | None = None) -> Path:

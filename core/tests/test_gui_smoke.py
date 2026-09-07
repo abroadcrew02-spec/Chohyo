@@ -152,14 +152,14 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # pick_image が何を返すか（issue #71 (a') 以降は固定の疑似画像パス）に
     # 依存しない。画像を開いた状態の検証は
     # test_editor_format_mismatch_hides_frames_until_override 側で行う。
-    # 出力列タブは id 指定で開く（マリンレビュー LOW: 出力しない欄があると
+    # 出力列タブは id 指定で開く（レビュー LOW: 出力しない欄があると
     # バッジ「⊘N」が名前に付き get_by_role(name=...) が壊れうるため）
     page.locator("#edittab-output").click()
     before = page.locator("#edittabpanel .panel-outrow").count()
     assert before > 0, "デモテンプレートの欄・表が出力列タブに出ていない"
 
     # ツールボタンは select 以外、画像が無い間 disabled になる
-    # （マリンレビュー H-1・押しても無反応にしない）
+    # （レビュー H-1・押しても無反応にしない）
     for tool in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
         expect(page.get_by_role("button", name=tool)).to_be_disabled()
     expect(page.get_by_role("button", name="選択", exact=True)).to_be_enabled()
@@ -188,7 +188,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     expect(status.filter(
         has_text="テンプレート（demo）を読み込み済み・欄 1・表 1")).to_be_visible()
 
-    # マリンレビュー M-4→コーディネータ指摘3: 特定の帯（想定パン/ズーム前提）
+    # レビュー M-4→コーディネータ指摘3: 特定の帯（想定パン/ズーム前提）
     # だけを見ると帯がずれた場合に偽 PASS するため、キャンバス全体を粗い格子
     # （40px刻み）で走査し、表裏分割線の色（#ff5577）が1件も無いことを見る。
     # getImageData は1回で全体を取得し、格子の判定は JS 側で行う
@@ -216,7 +216,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
     # H-1 再現手順: 出力列タブから欄を選んでも「領域を追加」「別の欄と結合」
     # （どちらもキャンバス操作の待ち受けを立てるボタン）は画像が無い間は
     # disabled で押せない。押せてしまうと、後で画像を開いた直後の最初の
-    # ドラッグが無言で追加領域／結合になってしまう（マリンレビュー H-1）
+    # ドラッグが無言で追加領域／結合になってしまう（レビュー H-1）
     page.get_by_role("button", name="person_氏名", exact=True).click()
     expect(page.get_by_text("選択中の欄")).to_be_visible()
     # 画像が無いのに押せてしまうと、後で画像を開いた直後の最初のドラッグが
@@ -436,8 +436,8 @@ def test_editor_save_as_user_template_confirms_overwrite(page):
 
 
 def test_editor_restores_last_template_notice_after_reload(page):
-    # issue #72 (t)・スバル差し戻し1: read_default_template は
-    # config.last_template を解決して返す（gui/src-tauri/src/lib.rs・あくあ
+    # issue #72 (t)・設計レビュー差し戻し1: read_default_template は
+    # config.last_template を解決して返す（gui/src-tauri/src/lib.rs・API 実装担当
     # 実装）。これまでは「出荷」「前回使った利用者テンプレート」のどちらが
     # 復元されたかが画面から分からなかった——restoredTemplateNotice
     # （Editor.tsx）が last_template を読んで「前回のテンプレート（<id>）を
@@ -493,7 +493,7 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
     # issue #73 (b)・設計08 §4: ページ全体からの枠候補一括生成。生成→一覧に
     # 表示→一括採用（overlaps_existing の候補は対象外）→確定枠（出力列一覧）
     # に増える→Undo で直前の状態に戻ることを確認する。
-    # Orchestrator決定（おかゆ実機検証後）: 枠候補パネルは編集領域上部の
+    # Orchestrator決定（テスト担当実機検証後）: 枠候補パネルは編集領域上部の
     # 全幅カードから .panel-wrap の第3タブ「枠候補」へ移した。生成した瞬間に
     # 自動でこのタブへ切り替わる（候補が残っている間は自動で戻らない）ため、
     # 出力列一覧を数える箇所では明示的に #edittab-output へ切り替える。
@@ -556,7 +556,7 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
 
 
 def test_editor_size_mismatch_new_template_generate_accept_save(page):
-    # ころね（user_advocate）の初見ユーザー目線レビュー Must: 用紙サイズ／
+    # user_advocateの初見ユーザー目線レビュー Must: 用紙サイズ／
     # 向き不一致（expandAlignNotice の reason==="size"・赤帯）では、様式不一致
     # （罫線判定・黄帯）の時にしか出なかった「この紙用に新しいテンプレートを
     # 作る」ボタンが出ていなかった。README はこのボタンを唯一の復旧導線として
@@ -992,7 +992,7 @@ def test_editor_cell_grid_toggles_one_cell_and_undo(page):
     # 切り替えは押した時点で1コマ積むので Ctrl+Z 1手で戻る。
     _open_editor_with_demo_template(page)
 
-    # 閉じたままでも「何升のうち何升が出力されないか」が読める（かなた §3.1）
+    # 閉じたままでも「何升のうち何升が出力されないか」が読める（デザインレビュー §3.1）
     expect(page.get_by_text("family（3行 × 3列 = 9升・すべて出力する）")).to_be_visible()
     expect(page.locator("#edittab-output .badge")).to_have_count(0)
 
@@ -1074,7 +1074,7 @@ def test_editor_suggestion_card_merge_into_table_and_undo(page):
     cand_top = page.locator(".cand-list .panel-outrow").first.bounding_box()["y"]
     assert suggest_top < cand_top, "まとめ提案は升候補より上に置く"
 
-    # ボタンの読み上げ名は行×列入りになった（ラミィ Should: 提案が複数出ても
+    # ボタンの読み上げ名は行×列入りになった（a11y 担当 Should: 提案が複数出ても
     # 「表にまとめる」が並ばず一意に選べる）。見えている文字は変えていない
     page.get_by_role("button", name="3行×1列の提案を表にまとめる", exact=True).click()
     # AC-H36: 結果文に「Ctrl+Z で戻せます」を添える

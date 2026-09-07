@@ -36,7 +36,7 @@ def test_shipped_matches_formb_mismatches_and_bad_candidates_are_excluded(
     """出荷（sample-1 と同寸）が match・formB（別様式）が mismatch・
     不正 JSON が excluded になり、他候補の照合を止めない（FR-F28）。
     存在しない候補パスも `not_found` として除外され、同様に続行する
-    （2026-09-02 マリン提案）。
+    （2026-09-02 レビュー担当提案）。
     """
     # 実運用では Rust が create_dir_all してから core へ env を渡す
     # （08 §3.1.3）ので、ここでも先にディレクトリを作ってから
@@ -65,7 +65,7 @@ def test_shipped_matches_formb_mismatches_and_bad_candidates_are_excluded(
     assert by_name["chouhyo-v1"]["kind"] == "shipped"
     assert by_name["chouhyo-v1"]["verdict"] == "match"
     assert 0.0 <= by_name["chouhyo-v1"]["score"] <= 1.0
-    # M-5（2026-09-02 マリン指摘）: fields は単発欄数のみ（table_id 付きの
+    # M-5（2026-09-02 レビュー担当指摘）: fields は単発欄数のみ（table_id 付きの
     # 表由来セルを含まない）。出荷テンプレートの raw JSON を独立に数えた
     # 値（14）と一致することを固定する——物理セル数（220 列相当）ではない
     raw_shipped = json.loads(TPL.read_text(encoding="utf-8"))
@@ -81,12 +81,12 @@ def test_shipped_matches_formb_mismatches_and_bad_candidates_are_excluded(
     assert by_name["帳票B"]["verdict"] == "mismatch"
 
     # results[].name に区切り文字が無い（絶対パスの断片が漏れていないこと・
-    # 2026-09-02 マリン提案）
+    # 2026-09-02 レビュー担当提案）
     for r in ev["results"]:
         assert "/" not in r["name"] and "\\" not in r["name"]
 
     excluded_names = {e["name"]: e["reason"] for e in ev["excluded"]}
-    # M-4（2026-09-02 マリン指摘）: 語彙を Rust 側と統一
+    # M-4（2026-09-02 レビュー担当指摘）: 語彙を Rust 側と統一
     # （invalid_json → parse・p.stat() の OSError → not_found）
     assert excluded_names["壊れたテンプレ"] == "parse"
     assert excluded_names["存在しない"] == "not_found"
@@ -96,7 +96,7 @@ def test_shipped_matches_formb_mismatches_and_bad_candidates_are_excluded(
     # よい対象。ログ側の秘匿は test_leak_guards.py 側が担保する）
     assert ev["truncated"] is False
     assert isinstance(ev["elapsed_ms"], int) and ev["elapsed_ms"] >= 0
-    # M-3（2026-09-02 マリン指摘）: budget_elapsed_ms は候補ループのみの
+    # M-3（2026-09-02 レビュー担当指摘）: budget_elapsed_ms は候補ループのみの
     # 時間で、展開・画像読み込みを含む elapsed_ms 以下になる
     assert isinstance(ev["budget_elapsed_ms"], int) and ev["budget_elapsed_ms"] >= 0
     assert ev["budget_elapsed_ms"] <= ev["elapsed_ms"]
@@ -182,7 +182,7 @@ def test_time_budget_truncates_remaining_candidates(tmp_path, capsys, monkeypatc
 def test_partial_success_then_time_budget_truncates_rest(tmp_path, capsys, monkeypatch):
     """一部の候補（1件目・出荷）だけ通ったところで時間予算を使い切ると、
     それまでの results は保持したまま残り（2件目以降）だけを
-    truncated:true・reason:"limit" で打ち切る（2026-09-02 マリン提案）。
+    truncated:true・reason:"limit" で打ち切る（2026-09-02 レビュー担当提案）。
     予算チェックは「次の1件を始める前」（08 §3.3.3）なので、1件目は
     必ず最後まで処理される。
     """
@@ -213,7 +213,7 @@ def test_partial_success_then_time_budget_truncates_rest(tmp_path, capsys, monke
 
 
 def test_input_not_found_returns_fixed_error_code(tmp_path, capsys):
-    """M-6（2026-09-02 マリン指摘）: 存在しない --input は機械可読な固定コード
+    """M-6（2026-09-02 レビュー担当指摘）: 存在しない --input は機械可読な固定コード
     input_not_found を返す（type(e).__name__ や例外メッセージではない）。
     """
     cfg_path = _cfg(tmp_path)

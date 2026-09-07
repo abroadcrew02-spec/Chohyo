@@ -347,7 +347,7 @@ export function saveDiffNote(loaded: CountSnapshot, current: CountSnapshot): {
   return { text, decreasedLabels };
 }
 
-/// promote（staged→本番パスへの確定）が失敗したときの表示文言（マリン最終
+/// promote（staged→本番パスへの確定）が失敗したときの表示文言（レビュー担当最終
 /// レビュー H-1）。verify は既に OK を返している段階なので「保存していません」
 /// と言うと嘘になる——それどころか lib.rs の promote_staged は確定の rename
 /// が失敗すると .bak からの巻き戻しを試みるため、本番パスの状態は「無傷」
@@ -1124,7 +1124,7 @@ export function countOutputDisabled(
   return b.fields + b.cells;
 }
 
-/// 升チェックの表示名（AC-3.19 の a11y 側・かなた §6.1）。
+/// 升チェックの表示名（AC-3.19 の a11y 側・デザインレビュー §6.1）。
 /// **表の名前を必ず含める**——PM の AC は「3行目 備考」だが、表が 10 件ある紙
 /// では `3行目 備考` が 10 個できて一意にならない。表名を足せば表内でも表を
 /// またいでも重複しない。この名前を outputCheckboxLabel に渡すと
@@ -1150,7 +1150,7 @@ export function columnBulkToggleLabel(
     : `この列 ${rows}升 をまとめて出力する`;
 }
 
-/// 列一括トグル・列ヘッダチェックの accessible name（かなた §6.1）。
+/// 列一括トグル・列ヘッダチェックの accessible name（デザインレビュー §6.1）。
 /// 現在値を必ず含める（SC 4.1.3・切り替えで文言が変わる）。
 export function columnBulkToggleAriaLabel(
   tableId: string, columnName: string, rows: number,
@@ -1162,7 +1162,7 @@ export function columnBulkToggleAriaLabel(
     + `まとめて切り替える（現在: ${cur}）`;
 }
 
-/// 升グリッドの直下 1 行（FR-3.3・かなた §3.3）。升に触れている間だけ
+/// 升グリッドの直下 1 行（FR-3.3・デザインレビュー §3.3）。升に触れている間だけ
 /// 列番号を出す。並べ替え直後は番号を出さない（誤った番号を出さない・FR-0.1）。
 export function cellGridNote(input: {
   hover: { tableId: string; rowNo: number; columnName: string } | null;
@@ -1511,7 +1511,7 @@ export function visibleExcls(
 }
 
 /// sel が指す要素が、様式不一致で隠れている面（hidden）に属していないかを
-/// 判定する（issue #71 (a')・スバル差し戻し1）。canvas 側は hitAll が
+/// 判定する（issue #71 (a')・設計レビュー差し戻し1）。canvas 側は hitAll が
 /// visibleFields 等でフィルタ済みなので隠れた要素を選べないが、出力列タブの
 /// 一覧（outputListPanel）は独立した選択経路を持っていたため、そこで選んだ
 /// sel が漏れて nudge／削除に渡っていた。**ガードをこの1関数に集約**し、
@@ -1606,7 +1606,7 @@ export function buildTemplateJson(input: {
   // を1件以上要求する（D-25・template.py の load_template・#86 で欄アンカーへ拡張）。片面にしか内容が無い紙（例:
   // 横長1面の画像から新規作成したテンプレート）では、もう一方の面が
   // fields/tables/exclusions すべて空のまま残り、その空面にテーブルが
-  // 無いという理由だけで保存が拒否されていた（ころね UX Must の実機検証で
+  // 無いという理由だけで保存が拒否されていた（UX 代弁担当 UX Must の実機検証で
   // 発覚）。空面は書き出さない——ただし両面とも空なら front だけを残す
   // （schema の faces minItems:1 を満たすため）。droppedCount は面 filter
   // 前の front/back（要素の割り当てそのもの）から計算しており、ここで
@@ -1901,7 +1901,7 @@ export function unclearPopulationNote(
     + `（出力しない ${parts.join("・")}）`;
 }
 
-/// expand-page が返す位置合わせ失敗の理由（ぺこら担当・core 側で追加中）。
+/// expand-page が返す位置合わせ失敗の理由（実装担当担当・core 側で追加中）。
 /// 欠落時は旧コア互換で "align" 扱いにフォールバックする。
 /// "size"（N-2）: PageSizeMismatch（Q-H1・寸法/向き不一致）。従来は
 /// AlignError の基底クラス経由で "align" に潰れており、run では様式不一致で
@@ -1915,7 +1915,7 @@ export type ExpandAlignReason = "template" | "align" | "size" | "image" | "other
 export type ExpandVerdict = "match" | "mismatch" | "undecidable";
 
 /// PDF/画像を開いた直後の位置合わせ・様式判定結果から、案内文言を出し分ける
-/// （5巡目レビュー・いろは指摘＋issue #71 (a') で verdict/level を追加）。
+/// （5巡目レビュー・セキュリティ表層レビュー担当指摘＋issue #71 (a') で verdict/level を追加）。
 /// 優先順は 07 FR-F07: template（テンプレ破損） > size（寸法不一致） >
 /// mismatch（様式不一致） > undecidable（判定不能） > match（一致）。
 /// 赤帯（isError・level="error"）は template と size のみ。mismatch は
@@ -1956,7 +1956,7 @@ export function expandAlignNotice(
   if (verdict === "undecidable") {
     // AC-F11: 灰色 12px の主メッセージ（.msg）ではなく黄帯（warnbox）へ出す。
     // 一致と同じ見た目・同じ場所に案内が出ると「合っている」と読めてしまう
-    // （まつり実測・2026-09-03）。先頭の「※判定できませんでした:」は色に
+    // （統合テスト担当実測・2026-09-03）。先頭の「※判定できませんでした:」は色に
     // 頼らない手掛かり——帯の色が見えない環境でも先頭語で区別が付く。
     // 枠は消さないので、続く行動の指示（枠を動かさない）はそのまま残す
     return {
@@ -1996,7 +1996,7 @@ export function expandAlignNotice(
 /// スクリーンリーダー向けの DOM 表示（msg）の両方から呼ぶので、行ごとの
 /// テキストと結合済みテキストの両方を返す。
 /// 欄・表がどちらも0のとき（自動読み込み失敗・loadTemplate 前）は「読み込み
-/// 済み」と嘘をつかず、未読込であることを案内する（マリンレビュー M-2）
+/// 済み」と嘘をつかず、未読込であることを案内する（レビュー M-2）
 export function noImageNotice(
   templateId: string, fieldCount: number, tableCount: number):
   { line1: string; line2: string; text: string } {
@@ -2008,14 +2008,14 @@ export function noImageNotice(
   }
   // 「出荷」を付けると、自動読み込みされた出荷テンプレでなく利用者自身の
   // JSON（loadTemplate 経由）を開いた場合にも「出荷テンプレート」と表示され
-  // 誤解を招く（マリンレビュー M-1）ため、由来を問わない中立な言い方にする
+  // 誤解を招く（レビュー M-1）ため、由来を問わない中立な言い方にする
   const line1 = `テンプレート（${templateId}）を読み込み済み・欄 ${fieldCount}・表 ${tableCount}`;
   return { line1, line2, text: `${line1}。${line2}` };
 }
 
-/// 起動時の自動読み込み案内（issue #72 (t)・スバル差し戻し1）。
+/// 起動時の自動読み込み案内（issue #72 (t)・設計レビュー差し戻し1）。
 /// read_default_template は config.last_template を解決して返す
-/// （gui/src-tauri/src/lib.rs・あくあ実装）ため、Editor 起動時に「出荷」と
+/// （gui/src-tauri/src/lib.rs・実装）ため、Editor 起動時に「出荷」と
 /// 「前回使った利用者テンプレート」のどちらが復元されたかが画面から
 /// 分からなかった。判定は template_id の値ではなく last_template 自体で行う
 /// ——デモモードの疑似出荷テンプレートは template_id が "demo" 等の任意値に
@@ -2151,7 +2151,7 @@ export function unappliedTemplateBarText(): string {
 }
 
 /// テンプレートの適用／候補での作り直しで .msg（role="status"）へ出す文
-/// （ラミィ a11y レビュー Should-1・2026-09-04）。
+/// （a11y 担当 a11y レビュー Should-1・2026-09-04）。
 ///
 /// これらの操作は適用中バー／未適用バー（同じく role="status"）を必ず同時に
 /// 更新する。同じ瞬間に .msg も書き換えると、寸法不一致の黄帯と合わせて
@@ -2180,7 +2180,7 @@ export function useTemplateButtonName(name: string, kind: "shipped" | "user"): s
 
 /// テンプレート切替時（照合パネルの「開く」・利用者テンプレート一覧から
 /// 開く・取り込み）、表示中の画像の寸法とテンプレートの image 寸法が
-/// 食い違っていたら黄帯へ出す注意（issue #72 (t)・スバル差し戻し2）。
+/// 食い違っていたら黄帯へ出す注意（issue #72 (t)・設計レビュー差し戻し2）。
 /// 保存時の寸法不一致確認（saveConfirmWarnings の "image-size"）と同じ
 /// 要点（テンプレの寸法と画像の寸法が違う）を、こちらはブロックせず
 /// 情報として伝えるだけの文言にする。imgSize が無い（画像未表示）・
@@ -2211,14 +2211,14 @@ export function formatOverrideBannerText(): string {
 /// パン（ドラッグ移動）とホイールズームは表示位置の調整に過ぎず誤操作の
 /// 実害が無いため画像の有無に関わらず許可するが、その判定は呼び出し側
 /// （onDown）の分岐順（パン判定がこの関数の呼び出しより前）で担保する——
-/// ここでは tool を問わず画像の有無だけを見る（マリンレビュー H-1: 以前は
+/// ここでは tool を問わず画像の有無だけを見る（レビュー H-1: 以前は
 /// "pan" という仮のツール名をここへ渡す小細工をしていたが、渡し忘れる経路
 /// （待ち受け状態が残ったまま次のクリックへ進む等）があり見通しが悪かった）
 export function canvasInteractionAllowed(hasImage: boolean, _tool: string): boolean {
   return hasImage;
 }
 
-/// 「この紙用に新しいテンプレートを作る」ボタンを出すかどうか（ころね UX
+/// 「この紙用に新しいテンプレートを作る」ボタンを出すかどうか（UX 代弁担当 UX
 /// レビュー Must）。従来は様式不一致の黄帯（hasFormatMismatch）でしか
 /// 出ておらず、寸法／向き不一致の赤帯（expandAlignNotice の
 /// reason==="size"）では出なかった。README はこのボタンを唯一の復旧導線
@@ -2266,7 +2266,7 @@ export type ExcludedEntry = { name: string; reason: string };
 const MATCH_NOTICE =
   "この判定は罫線の位置関係だけを見ており、中身の同一性は保証しません。";
 
-// issue #72 (t)・ころね（user_advocate）の初見ユーザー予測レビュー: 利用者
+// issue #72 (t)・user_advocateの初見ユーザー予測レビュー: 利用者
 // テンプレートの名前入力（window.prompt）が命名規則を示さないまま送信し、
 // Rust の検証エラーで初めて拒否理由を知る作りだった（07 §7.4・
 // validate_user_template_name の許可リスト方式）。規則を先に見せておく
@@ -2305,11 +2305,11 @@ export function rankCandidates(cands: Candidate[], truncated: boolean):
     showScore: true, notice: MATCH_NOTICE };
 }
 
-// マリン（reviewer）core レビュー分・issue #72 (t): excluded[].reason の
+// レビュー担当（reviewer）core レビュー分・issue #72 (t): excluded[].reason の
 // 日本語化。list_user_templates（Rust・gui/src-tauri/src/user_templates.rs）
 // と match_templates（core/chouhyo_ocr/cli.py）の両方が出す理由コードを
 // まとめて1箇所で訳す——訳が2箇所に散ると片方だけ直し忘れるため。
-// core の "invalid_json" は "parse" へ統一される予定（マリン指摘）だが、
+// core の "invalid_json" は "parse" へ統一される予定（レビュー担当指摘）だが、
 // 移行中の互換のため両方を同じ訳へ倒す。未知のコードは生値をそのまま返す
 // （存在しない訳を捏造しない）
 const EXCLUDED_REASON_JA: Record<string, string> = {
@@ -2326,7 +2326,7 @@ export function excludedReasonJa(reason: string): string {
   return EXCLUDED_REASON_JA[reason] ?? reason;
 }
 
-// マリン core レビュー分: match_templates が ok:false を返したとき（core の
+// レビュー担当 core レビュー分: match_templates が ok:false を返したとき（core の
 // error は固定コード input_not_found／expand_failed／input_unreadable／
 // internal へ変更予定）に見せる理由。未知のコード・空は生値かフォール
 // バック文言を返す（存在しない訳を捏造しない）
@@ -2348,7 +2348,7 @@ export function matchErrorJa(code: string | undefined | null): string {
 /// 形と揃える。
 ///
 /// **splitY >= height（無関係な紙・片面の画像）は面を1つ（表面・全面）だけ
-/// 返す**（Orchestrator決定・ころね UX Must の実機検証で発覚した保存拒否の
+/// 返す**（Orchestrator決定・UX 代弁担当 UX Must の実機検証で発覚した保存拒否の
 /// 根本対応）。実コアは面ごとに位置合わせのアンカー（tables、無ければ
 /// fields の枠線・#86）を1件以上要求する（D-25・template.py の load_template）ため、中身の入りようが
 /// 無い裏面を機械的に作ると「裏面にテーブルが無い」という理由だけで保存が
@@ -2387,7 +2387,7 @@ export function emptyTemplateFor(width: number, height: number, splitY: number):
 /// (b)（ページ全体からの枠候補生成）は今回未実装のため、hasCandidates は
 /// 現状常に false——将来 (b) が入ったときの分岐だけ先に用意しておく。
 export function newTemplateNotice(hasCandidates: boolean): string {
-  // splitY を画像の高さに倒すため（emptyTemplateFor 参照・ころね UX Must
+  // splitY を画像の高さに倒すため（emptyTemplateFor 参照・UX 代弁担当 UX Must
   // 対応）、新規テンプレートは常に表面1面から始まる。表裏のある紙の案内は
   // 両方の分岐に付ける——ツール名は実際のボタンラベル「表裏の境界」に揃える
   const splitHint = "表裏のある紙は「表裏の境界」ツールで面を分けてください。";
@@ -2440,7 +2440,7 @@ export function acceptSelectedLabel(
   return `選んだ候補を採用（${n} 件）`;
 }
 
-/// 提案カードのボタンの読み上げ名（ラミィ Should）。提案が複数出ると
+/// 提案カードのボタンの読み上げ名（a11y 担当 Should）。提案が複数出ると
 /// 「表にまとめる」だけのボタンが同じ数だけ並び、読み上げでは区別できない。
 /// カード本文と同じ 行×列 を名前に入れて一意にする。
 export function suggestionButtonAriaLabel(
@@ -2453,10 +2453,10 @@ export function suggestionButtonAriaLabel(
 
 /// 個別採用で重なりがある候補に出す確認文言（§4.5.2-3: carve で自動的に
 /// 切り抜かず、人に決めさせる）。
-/// スバル（reviewer_architecture）差し戻し Must-2: 「保存時の重なり検証で
+/// 設計レビュー担当（reviewer_architecture）差し戻し Must-2: 「保存時の重なり検証で
 /// 拒否される」は誤り——実態は saveTemplateInner の resolveOverlaps が
 /// 既存枠を無言で切り抜く（拒否ではなく改変）。文言を実態に合わせる。
-/// スバル再レビューの懸念: 保存時の挙動は 2 種類ある。欄どうしの重なりは
+/// 設計レビュー担当再レビューの懸念: 保存時の挙動は 2 種類ある。欄どうしの重なりは
 /// resolveOverlaps が切り抜く（無言の改変）。表が絡む重なりは resolveOverlaps
 /// の対象外で、core の同一面セル重なり検査（issue #24）が保存自体を拒否する。
 /// 候補の種別だけでは相手（欄か表か）を決められないため、両方を明記する。
@@ -2466,7 +2466,7 @@ export function candidateOverlapWarning(): string {
     + "表が絡む重なりは保存時の検証で拒否されます。それでも採用しますか？";
 }
 
-/// 採用後、保存するまで消えない注意（スバル差し戻し Must-2 後半）。
+/// 採用後、保存するまで消えない注意（設計レビュー差し戻し Must-2 後半）。
 /// 候補パネル上部に置く——保存を終えるまで「既存の枠が変わる予定がある」
 /// ことを利用者が忘れないようにする。
 export function overlapAcceptedNotice(): string {
@@ -2509,7 +2509,7 @@ export function uiConfirmSpec(kind: UiConfirmKind): UiConfirmSpec {
            confirmVariant: "plain" };
 }
 
-/// GUI 側での重なり再判定（issue #73 (b)・スバル差し戻し Must-1）。
+/// GUI 側での重なり再判定（issue #73 (b)・設計レビュー差し戻し Must-1）。
 ///
 /// 起動時復元（read_default_template）・(t) の openMatchedTemplate／
 /// createTemplateForThisImage／利用者テンプレート読込のいずれも tplPath を
@@ -2585,7 +2585,7 @@ export function candidateResultApplies(
   return started.seq === now.seq && started.epoch === now.epoch;
 }
 
-/// 候補チェックボックスの aria-label（ラミィ／accessibility 差し戻し
+/// 候補チェックボックスの aria-label（a11y 担当／accessibility 差し戻し
 /// Should）。可視情報（種別・id・面ヒント・重なり）と同じ内容にする——
 /// disabled の理由が title だけに留まらないようにする（スクリーンリーダー
 /// 利用者にも「なぜ選べないか」が伝わる）。
@@ -2596,7 +2596,7 @@ export function candidateAriaLabel(cand: Cand): string {
   return `${kindJa}候補 ${cand.id}${face}${overlap} を選択`;
 }
 
-/// detect-frames の excluded[]（マリン core レビュー由来・契約は
+/// detect-frames の excluded[]（レビュー担当 core レビュー由来・契約は
 /// Orchestrator 確定・{"reason":..., "count":N} の配列）を日本語の内訳へ。
 /// count<=0 の項目は数えない（黙って0件を混ぜない）。全体が空/該当なしは
 /// null——呼び出し側は何も表示しない。未知の reason はコードをそのまま
@@ -2622,7 +2622,7 @@ export function excludedSummaryJa(
 /// template_applied:false・template_skip_reason:"size_mismatch" を返し、
 /// 面割当・重なり判定をしない（face_id は "page" 固定・overlaps_existing
 /// は常に false——GUI 側の candidateOverlapsExisting による再判定は
-/// このときも変わらず行う）。マリン core レビュー由来・契約は Orchestrator
+/// このときも変わらず行う）。レビュー担当 core レビュー由来・契約は Orchestrator
 /// 確定。templateApplied が false 以外（true・undefined＝旧コア/未指定）は
 /// null——呼び出し側は何も表示しない。
 export function templateSkipReasonNotice(
@@ -2749,7 +2749,7 @@ export function autoDetectFailureNotice(err: unknown): string {
     + "画像は表示しています。ツールバーの「ページ全体から枠候補を生成」でやり直せます。";
 }
 
-/// 枠候補タブへ自動切替するかどうか（ラミィ／accessibility 3回目確認・
+/// 枠候補タブへ自動切替するかどうか（a11y 担当／accessibility 3回目確認・
 /// Must）。旧実装は「0件→N件」の遷移だけを見ていたため、候補が既にある
 /// 状態で再生成（テンプレ切替後の再実行など）すると切り替わらず、
 /// candidatesPanel() が呼ばれないまま framesMsg／overlapAcceptNotice が
@@ -2817,7 +2817,7 @@ export function candidatesFromDetectFrames(ev: {
 // 欄として採用できる候補」に化ける。新旧の組み合わせはどちらも安全に劣化する
 //（旧コア＋新 GUI＝提案 0 件／新コア＋旧 GUI＝suggestions を無視）。
 
-/// 一覧に一度に出す候補の数（かなた §4.5: ページングにせず「もっと見る」で
+/// 一覧に一度に出す候補の数（デザインレビュー §4.5: ページングにせず「もっと見る」で
 /// 50 件ずつ伸ばす。何ページ目に何があったかを覚えさせない）
 export const CAND_PAGE_SIZE = 50;
 
@@ -2867,7 +2867,7 @@ export function suggestionsFromDetectFrames(
   return out;
 }
 
-/// 提案カードの本文（かなた §4.3）。`heading_excluded` が真のときだけ
+/// 提案カードの本文（デザインレビュー §4.3）。`heading_excluded` が真のときだけ
 /// 「見出し行は含めていません」を出す——偽は「見出しを見つけて含めた」では
 /// なく「見出しらしい行が無かった（または判定条件に届かなかった）」であり、
 /// core は前者と後者を区別できない。区別できないことを断言しない（AC-3.42）。
@@ -2883,7 +2883,7 @@ export function suggestionCardText(s: Suggestion): { main: string; heading: stri
   };
 }
 
-/// 候補パネルの見出し（かなた §4.3）。両方の件数を出し、0 のほうは書かない。
+/// 候補パネルの見出し（デザインレビュー §4.3）。両方の件数を出し、0 のほうは書かない。
 export function candidatePanelHeading(cellCount: number, suggestionCount: number): string {
   const parts: string[] = [];
   if (cellCount > 0) parts.push(`升 ${cellCount} 件`);
@@ -2951,7 +2951,7 @@ export function pruneSuggestionsForCands(suggestions: Suggestion[], cands: Cand[
   return suggestions.filter((s) => s.cellIds.some((id) => ids.has(id)));
 }
 
-/// 提案を操作した結果の 1 行（かなた §4.3）。Undo で戻せることを必ず添える
+/// 提案を操作した結果の 1 行（デザインレビュー §4.3）。Undo で戻せることを必ず添える
 /// ——一括で数十件が動く操作なので、取り消せる事実が押す前提になる。
 export function suggestionAdoptMessage(
   kind: "table" | "cells" | "dismiss", s: Suggestion,
@@ -3224,7 +3224,7 @@ export default function Editor(
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
-  // 画像が読み込まれているか（2026-09-02 ユーザー指摘・マリンレビュー H-1）。
+  // 画像が読み込まれているか（2026-09-02 ユーザー指摘・レビュー H-1）。
   // JSX（disabled/title 等）と onDown のガードは、値を変えると必ず再レンダー
   // させたいので state（imgSize）から導く。draw() だけは rAF から都度呼ばれる
   // 命令的な描画関数で、im.onload の直後（setImgSize 反映前）にも正しく
@@ -3253,7 +3253,7 @@ export default function Editor(
   const [msg, setMsg] = useState("画像とテンプレートを読み込んで開始してください");
   const [errMsg, setErrMsg] = useState("");
   // errMsg（赤帯）が寸法/向き不一致（expandAlignNotice の reason==="size"）
-  // 由来かどうかを覚えておく状態（ころね UX 指摘）。赤帯には従来
+  // 由来かどうかを覚えておく状態（UX 代弁担当 UX 指摘）。赤帯には従来
   // 「テンプレ破損」「寸法不一致」の2種類が混在しており文言だけでは
   // 判別できないため、loadImage が判定した reason をそのまま保持する。
   // errMsg を上書きする他の失敗経路（画像読込失敗等）でも undefined に
@@ -3307,7 +3307,7 @@ export default function Editor(
   // 升候補で足りる。「表にまとめる」を Undo すると升候補と確定枠は戻るが提案
   // カードは戻らない（再生成で戻る）。この非対称は設計 R-11 に記載済み
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  // 升候補一覧に出している件数（かなた §4.5: 50 件ずつ「もっと見る」で伸ばす。
+  // 升候補一覧に出している件数（デザインレビュー §4.5: 50 件ずつ「もっと見る」で伸ばす。
   // ページングにしない＝何ページ目に何があったかを覚えさせない）
   const [candShown, setCandShown] = useState(CAND_PAGE_SIZE);
   // 候補パネルのチェック状態（id→選択中）。既定値は candidateDefaultChecked
@@ -3347,7 +3347,7 @@ export default function Editor(
   const [framesMsg, setFramesMsg] = useState("");
   // 表候補を採用後に列名を一括で置き換える接頭辞（既定 field・FR-F24）
   const [candPrefix, setCandPrefix] = useState("field");
-  // スバル差し戻し Must-2: 重なりのある候補を個別採用したら、保存するまで
+  // 設計レビュー差し戻し Must-2: 重なりのある候補を個別採用したら、保存するまで
   // 消えない注意を候補パネル上部に残す（保存時に既存枠が切り抜かれる予定が
   // あることを利用者が忘れないため）
   const [overlapAcceptNotice, setOverlapAcceptNotice] = useState("");
@@ -3375,7 +3375,7 @@ export default function Editor(
   const [loadedOrder, setLoadedOrder] = useState<OutputOrderSnapshot | null>(null);
   // 右パネルのタブ（issue #66 段3・FR-1.7・C-1）。「選択中」欄の詳細か
   // 「出力列」一覧かを切り替える
-  // issue #73 (b)・Orchestrator決定（おかゆ実機検証後）: 枠候補パネルを
+  // issue #73 (b)・Orchestrator決定（テスト担当実機検証後）: 枠候補パネルを
   // 編集領域上部の全幅カードから、右側 .panel-wrap の第3タブへ移した
   // （候補一覧がキャンバスを 0px まで潰す問題の根治・レイアウトの土台を
   // 変える）。他タブと同じ role="tab"/aria-selected/aria-controls 規約に揃える
@@ -3385,7 +3385,7 @@ export default function Editor(
   useEffect(() => {
     if (panelTab !== "candidates") lastNonCandTab.current = panelTab;
   }, [panelTab]);
-  // ラミィ差し戻し（3回目・Must）: 「タブへ切り替える」判断は生成完了の
+  // a11y 担当差し戻し（3回目・Must）: 「タブへ切り替える」判断は生成完了の
   // ハンドラ（runDetectFrames）から shouldSwitchToCandidatesTab で直接
   // 行う（0→N限定をやめ、生成のたびに切り替える）。ここで残すのは
   // 「候補が尽きたら直前のタブへ戻す」（一括除去・全採用・テンプレ切替）
@@ -3459,7 +3459,7 @@ export default function Editor(
   // 立つ。Snap には入れない——選択は履歴の対象外（sel と同じ扱い）
   const [selCell, setSelCell] =
     useState<{ uid: string; rowNo: number; colIndex: number } | null>(null);
-  // 表の選択が別のものへ移ったら升の選択は落とす（かなた §1.5）。表を
+  // 表の選択が別のものへ移ったら升の選択は落とす（デザインレビュー §1.5）。表を
   // 選んでいない状態で「選択中の升」だけが残ると、どの表の升か分からない
   useEffect(() => {
     if (!sel || sel.type !== "table") { setSelCell(null); return; }
@@ -3469,7 +3469,7 @@ export default function Editor(
   // 同時に描かない（最大 1600 升 × N 列の DOM を作らないため）
   const [expandedTableUid, setExpandedTableUid] = useState<string | null>(null);
   // 升グリッドの直下 1 行に出す列番号の注記（FR-3.3）。升にふれている間だけ
-  // 差し替える。ライブ領域にはしない（増やさない・かなた §6.3）
+  // 差し替える。ライブ領域にはしない（増やさない・デザインレビュー §6.3）
   const [cellHoverNote, setCellHoverNote] = useState<string | null>(null);
   // 総行数 100 超の表で、いま何行まで描いているか（D-7）。表 uid ごと
   const [gridRowLimit, setGridRowLimit] = useState<Record<string, number>>({});
@@ -3832,7 +3832,7 @@ export default function Editor(
       let rowBase = 0;
       // ⊘が1つも描けない縮尺（全体表示 zoom 0.094 では連なりの高さが 24px を
       // 割る）ではハッチだけが手掛かりになる。そのときだけ表ラベルに
-      // 「⊘12」を添える（かなた §1.4 Should・可読性の上乗せ）
+      // 「⊘12」を添える（デザインレビュー §1.4 Should・可読性の上乗せ）
       let badgeDrawn = false;
       for (const b of t.blocks) {
         const bh = t.row_pitch * (b.rows - 1) + t.row_height;
@@ -3866,7 +3866,7 @@ export default function Editor(
           ctx.strokeRect(b.x + c.x_offset, b.y, c.width, bh);
           ctx.lineWidth = 2 * px;
         }
-        // 出力しない升（issue #66 段9・FR-3.7・かなた §1.3 の実測）。
+        // 出力しない升（issue #66 段9・FR-3.7・デザインレビュー §1.3 の実測）。
         // ハッチは **升ごと**（升の境界で斜線が途切れ、どこで升が切れているか
         // が読める）。⊘は「縦に連続する出力しない升のまとまり」ごとに1つだけ
         // ——升ごとに描くと zoom 0.35 で可視領域に⊘が 65 個並び、紙の内容が
@@ -3921,7 +3921,7 @@ export default function Editor(
               t.blocks[0].x, t.blocks[0].y - 8 * px, totalW - 4 * px, null);
       }
     }
-    // issue #73 (b)・FR-F18・AC-F22・ラミィ（accessibility）差し戻し Must-A:
+    // issue #73 (b)・FR-F18・AC-F22・a11y 担当（accessibility）差し戻し Must-A:
     // 枠候補は破線＋隅マーカー＋番号ラベルで確定枠と区別する（色だけに
     // 依存しない）。候補色（#4fc3f7/#7ce38b/#ff9f43）は白背景に対し単体では
     // 約1.6〜2.0:1 しかなく WCAG 1.4.11（非テキスト3:1）・1.4.3 未達だった
@@ -4068,7 +4068,7 @@ export default function Editor(
       const raw = await invoke<string>("match_templates", { input, names });
       const parsed = JSON.parse(raw) as { ok?: boolean; error?: string; truncated?: boolean;
         results?: Candidate[]; excluded?: ExcludedEntry[] };
-      // マリン core レビュー分: ok:false（core が入力を開けなかった等・
+      // レビュー担当 core レビュー分: ok:false（core が入力を開けなかった等・
       // event:"match_templates" の失敗応答）を空パネルのまま握り潰さない。
       // error は固定コード（input_not_found／expand_failed／input_unreadable／
       // internal・core 側で統一予定）を想定し、未知値は生のコードを見せる
@@ -4114,7 +4114,7 @@ export default function Editor(
     let note = "";
     // テンプレ破損・様式不一致由来の帯は setErrMsg("")／setFormatWarnMsg("")
     // が im.onload で無条件に呼ばれた後に上書きされないよう変数で持ち回り、
-    // onload 側で反映する（いろは5巡目指摘・issue #71 (a') で黄帯を追加）
+    // onload 側で反映する（セキュリティ表層レビュー担当5巡目指摘・issue #71 (a') で黄帯を追加）
     let alignErr = "";
     let alignWarn = "";
     let alignReason: ExpandAlignReason | undefined;
@@ -4152,7 +4152,7 @@ export default function Editor(
       // 位置合わせ済みの画像なら、テンプレートの枠が最初から記入欄の上に
       // 乗る。合わせられなかった紙・様式が違う紙は、原因（reason）・
       // 様式判定（verdict）に応じて案内を出し分ける
-      // （いろは5巡目指摘＋issue #71 (a')。expandAlignNotice 参照）
+      // （セキュリティ表層レビュー担当5巡目指摘＋issue #71 (a')。expandAlignNotice 参照）
       const pageNote = ev.pages > 1 ? `PDF の 1/${ev.pages} ページ目・` : "";
       const align = expandAlignNotice(
         ev.aligned, ev.reason, pageNote, ev.verdict, meta.current.template_id);
@@ -4222,7 +4222,7 @@ export default function Editor(
       { fieldCount: number; tableCount: number; cellsOffDropNotice: string | null } => {
     meta.current = {
       // 空文字の template_id（壊れたテンプレJSON等）を拾い漏らさないよう
-      // ?? ではなく || にする（マリンレビュー LOW）
+      // ?? ではなく || にする（レビュー LOW）
       template_id: t.template_id || "chouhyo-v1",
       render_dpi: t.render_dpi ?? 300,
       image: t.image ?? null,
@@ -4275,7 +4275,7 @@ export default function Editor(
     }
     setFields(fs); setTables(ts); setExcls(es);
     // back 面が無いテンプレート（buildTemplateJson が片面のみ書き出した
-    // ものを含む・ころね UX Must 対応）は splitY を画像の高さへ倒し、
+    // ものを含む・UX 代弁担当 UX Must 対応）は splitY を画像の高さへ倒し、
     // 全体を表面として扱う——旧実装の固定 1880 だと、裏面を持たない
     // 小さい/横長の画像で splitY が画像高さを超え、次に保存するときにまた
     // 高さ0の裏面を書き出そうとしてしまう（emptyTemplateFor と同じ理由）
@@ -4346,7 +4346,7 @@ export default function Editor(
         const { fieldCount, tableCount, cellsOffDropNotice: dropNotice } = toEditorState(parsed);
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
-        // last_template（issue #72 (t)・スバル差し戻し1）: read_default_template
+        // last_template（issue #72 (t)・設計レビュー差し戻し1）: read_default_template
         // は config.last_template を解決して返すため、「出荷」と「前回使った
         // 利用者テンプレート」のどちらが復元されたかを画面へ明示する。
         // last_template 自体が取れなければ従来どおり（noImageNotice 相当）
@@ -4399,7 +4399,7 @@ export default function Editor(
     setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
     // 前のファイルの検証エラー・警告を現在の状態と誤読させない（レビュー N-5）
     setErrMsg(""); setWarnMsg("");
-    // スバル差し戻し Should-1: テンプレートが入れ替わったら枠候補も破棄する
+    // 設計レビュー差し戻し Should-1: テンプレートが入れ替わったら枠候補も破棄する
     // （overlaps フラグは切り替え前のテンプレート基準のまま残ってしまうため）
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
     setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
@@ -4412,7 +4412,7 @@ export default function Editor(
     // カードだけが居残る
     setTplDecision(null);
     // 画像がまだ無ければ、DOM 案内をキャンバスの文字（draw()）と同じ内容に
-    // 揃える（マリンレビュー M-1）。以前は常に「テンプレート読込: <path>」
+    // 揃える（レビュー M-1）。以前は常に「テンプレート読込: <path>」
     // 固定で、利用者自身の JSON を開いても canvas 側の「出荷テンプレート」
     // 文言と食い違っていた。画像が既にあればそちらの経路は使わず、
     // どのファイルを読み込んだかが分かる従来の文言を維持する
@@ -4496,11 +4496,11 @@ export default function Editor(
       // 基準の mismatch/undecidable）は意味を持たない。ここでは画像の
       // 再照合まではしない（開き直すと loadImage が再評価する・§3.5.2 注記）。
       // 代わりに、表示中の画像とこのテンプレートの寸法だけは即座に比較して
-      // 案内する（issue #72 (t)・スバル差し戻し2・ブロックはしない）
+      // 案内する（issue #72 (t)・設計レビュー差し戻し2・ブロックはしない）
       setErrMsg(""); setLastAlignReason(undefined);
       setFormatWarnMsg(templateSwitchImageSizeNotice(imgSize, parsed.image) ?? "");
     }
-    // スバル差し戻し Should-1: テンプレート切替では枠候補を破棄する
+    // 設計レビュー差し戻し Should-1: テンプレート切替では枠候補を破棄する
     // （重なりフラグが旧テンプレ基準で残るため）
     setCands([]); setCandSelected({}); setFramesMsg(""); setOverlapAcceptNotice("");
     setSuggestions([]); setCandShown(CAND_PAGE_SIZE);
@@ -4726,7 +4726,7 @@ export default function Editor(
       setErrMsg(`取り込みに失敗しました: ${res.error}`);
       return;
     }
-    // issue #72 (t)・スバル差し戻し2: 取り込みは編集中のテンプレートを
+    // issue #72 (t)・設計レビュー差し戻し2: 取り込みは編集中のテンプレートを
     // 差し替えない（保存するだけ）が、表示中の画像があれば寸法差だけは
     // 情報として伝える（ブロックしない・既存の formatWarnMsg 黄帯を再利用）
     const sizeNotice = templateSwitchImageSizeNotice(imgSize, parsed.image);
@@ -4735,7 +4735,7 @@ export default function Editor(
   };
 
   // 不一致時の導線（FR-F30/F31・設計08 §3.6）。
-  // Orchestrator決定（ころね UX Must の実機検証後）: 継承した splitY では
+  // Orchestrator決定（UX 代弁担当 UX Must の実機検証後）: 継承した splitY では
   // なく H を渡す——この紙は今開いている画像とは無関係（別の縦長テンプレを
   // 編集していたときの splitY を引き継ぐ理由が無い）ため、常に表面1面から
   // 始める（emptyTemplateFor の splitY>=height 分岐）。表裏のある紙は
@@ -4753,7 +4753,7 @@ export default function Editor(
     // 直前のテンプレートに対する様式判定はもう意味を持たない（新しい
     // テンプレートは常に「一致」の定義そのものになる）
     setFormatFaces([]); setFormatWarnMsg(""); setFormatOverride(false);
-    // スバル差し戻し Should-1: 新しいテンプレートは常に空（fields/tables
+    // 設計レビュー差し戻し Should-1: 新しいテンプレートは常に空（fields/tables
     // ゼロ）になるため、直前の枠候補が持つ overlaps フラグは無意味になる
     // （何とも重ならないので全部 false になるはず）。安全側に倒して破棄する
     // ——画像は変わっていないので、必要なら「ページ全体から枠候補を生成」を
@@ -5006,7 +5006,7 @@ export default function Editor(
 
     // 保存物をコアで検証（§8-14: エディタの JSON をコアがそのまま読めること）。
     // verify・promote・表示組み立てをそれぞれ別の try に分ける
-    // （マリン最終レビュー H-1）。以前は3つとも同じ try 内にあり、
+    // （レビュー H-1）。以前は3つとも同じ try 内にあり、
     // promote 成功後の表示組み立てで例外が起きても catch が discard_staged
     // を呼んで「保存していません」と表示していた——verify は通り、
     // 場合によっては promote も終わって本番パスへ確定済みなのに、
@@ -5070,7 +5070,7 @@ export default function Editor(
     // （promote_staged）は確定の rename に失敗すると .bak からの巻き戻しを
     // 試み、戻せたかどうかを Err 文言に載せて返す。discard_staged は
     // 絶対に呼ばない（rename 失敗時に残る唯一の新内容＝staged を
-    // 消してしまうため・マリン最終レビュー H-1）
+    // 消してしまうため・レビュー H-1）
     try {
       await invoke("promote_template", { path: p });
     } catch (e) {
@@ -5080,13 +5080,13 @@ export default function Editor(
     }
 
     // 確定は完了した＝保存済み。ここから先は表示の組み立てだけなので、
-    // 例外が起きても「保存していません」と嘘をつかない（マリン最終
+    // 例外が起きても「保存していません」と嘘をつかない（レビュー担当最終
     // レビュー H-1 (c)）。状態の更新（保存成功の事実）は表示の try の外で
     // 先に確定させる
     setTplPath(p);
     setLoadedExcls(currentExclSnapshot);
     markDirty(false);
-    // スバル差し戻し Must-2: 保存が完了したので「保存時に既存の枠が
+    // 設計レビュー差し戻し Must-2: 保存が完了したので「保存時に既存の枠が
     // 調整されます」の注意はもう不要
     setOverlapAcceptNotice("");
     // issue #65-7: 保存に成功したら赤帯は必ず消す。赤帯は「保存していません」
@@ -5102,7 +5102,7 @@ export default function Editor(
     try {
       // 欄数と列数の対応を常に見せる（差分は「分割＋管理6列」だけ、が
       // 一目で分かるように・ユーザー指摘 2026-08-31）。除外数は verify が
-      // 数えたもの（シオン担当・T4 追加予定）を優先し、無ければ保存物側の
+      // 数えたもの（バックエンド実装担当担当・T4 追加予定）を優先し、無ければ保存物側の
       // 数で代える
       // tpl.columns の欠落防御（issue #65-1 穴B）。旧コア・応答破損で列数が
       // 数値以外になっても、以下の差分表示（saveDiffNote）・母集団注記
@@ -5163,7 +5163,7 @@ export default function Editor(
         + (popNote ? ` ／ ${popNote}` : "")
         + (orderNote ? ` ／ ${orderNote}` : ""));
       // コアの verify 警告（W-1/W-2 等・設計書 U-09）。保存自体は成功して
-      // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。あくあ側が
+      // いるので errbox（赤帯）ではなく warnbox（黄系）に出す。API 実装担当側が
       // 未実装でもフィールド欠落時は安全に無視する（`tpl.warnings ?? []`）。
       // 件数のみ出す（レビュー M-2）——毎回同じ十数件の定型文がそのまま
       // 出ると、本当に注意すべき変化が埋もれて信号にならない。詳細は
@@ -5278,7 +5278,7 @@ export default function Editor(
       .then(() => null).catch((e) => String(e));
     setTplPath(null);
     markDirty(false);
-    // スバル差し戻し Must-2: 保存が完了したので注意を消す
+    // 設計レビュー差し戻し Must-2: 保存が完了したので注意を消す
     setOverlapAcceptNotice("");
     setMsg(carveNote + `利用者テンプレートとして保存しました: ${name}`
       + (configErr ? ` ／ 実行タブの既定への反映は失敗しました: ${configErr}` : ""));
@@ -5372,7 +5372,7 @@ export default function Editor(
       if (o.templatePath) args.push("--template", o.templatePath);
       const out = await invoke<string>("run_core_capture", { args });
       // 生成中に次の紙を開いた（seq）か、確定枠が差し替わった（epoch）なら
-      // この結果は捨てる（R-3・レビュー H-1）。ここより下は setCands・
+      // この結果は捨てる（R-3・レビュー H-1）。こリサーチ担当下は setCands・
       // setCandSelected・setPanelTab・setFramesMsg のいずれも「今の画面」に
       // 対する書き込みになるため、判定は1か所・この位置で行う
       if (!candidateResultApplies({ seq: o.seq, epoch },
@@ -5391,7 +5391,7 @@ export default function Editor(
         }
         return none;
       }
-      // スバル差し戻し Must-1: tplPath が null の経路（起動時復元・(t) の
+      // 設計レビュー差し戻し Must-1: tplPath が null の経路（起動時復元・(t) の
       // テンプレート切替）では --template を渡せず、core の
       // overlaps_existing が全候補 false 固定になる。GUI 側でも現在の
       // fields/tables に対して独立に重なりを再判定し、どちらか一方でも
@@ -5423,7 +5423,7 @@ export default function Editor(
       setSuggestions(newSuggestions);
       setCandShown(CAND_PAGE_SIZE);
       if (eff.markDirty) markDirty(true);
-      // ラミィ差し戻し（3回目・Must）: 生成完了のたびに枠候補タブへ切り替える
+      // a11y 担当差し戻し（3回目・Must）: 生成完了のたびに枠候補タブへ切り替える
       // （候補が既にある状態での再生成でも切り替わるようにする。候補0件の
       // ときは切り替えない——結果文は常時ライブ領域（sr-only）が伝える）。
       // 第1引数は意図的に使われない（shouldSwitchToCandidatesTab の void prevLen）
@@ -5434,7 +5434,7 @@ export default function Editor(
       const stats = ev.stats ?? {};
       const statsText = `線 横${stats.lines_h ?? 0}・縦${stats.lines_v ?? 0}`
         + `／矩形 ${stats.rects ?? 0}`;
-      // マリン core レビュー由来: 候補にしなかった枠の内訳（excluded[]）と、
+      // レビュー担当 core レビュー由来: 候補にしなかった枠の内訳（excluded[]）と、
       // --template 指定時に寸法不一致でテンプレートが適用されなかった旨
       // （template_applied/template_skip_reason）を追記する
       const excludedNote = excludedSummaryJa(ev.excluded);
@@ -5553,7 +5553,7 @@ export default function Editor(
     const nextCands = cands.filter((c) => c.id !== cand.id);
     setCands(nextCands);
     setSuggestions((ss) => pruneSuggestionsForCands(ss, nextCands));
-    // スバル差し戻し Must-2: 重なりを承知で採用した場合、保存するまで
+    // 設計レビュー差し戻し Must-2: 重なりを承知で採用した場合、保存するまで
     // 消えない注意を候補パネル上部に残す（既存枠が保存時に切り抜かれる）
     if (cand.overlaps) setOverlapAcceptNotice(overlapAcceptedNotice());
     markDirty(true);
@@ -5708,7 +5708,7 @@ export default function Editor(
 
   // selHiddenByFormat（モジュール直下・純関数）の薄いラッパー。現在の
   // state を閉じ込めるだけで判定ロジックは持たない（1箇所に集約・
-  // 純関数化して gui-logic でテストできるようにした・スバル差し戻し1）
+  // 純関数化して gui-logic でテストできるようにした・設計レビュー差し戻し1）
   const selIsHiddenByFormat = (): boolean =>
     selHiddenByFormat(sel, fields, tables, excls,
       hiddenFaces(formatFaces, formatOverride), splitY, imgSize?.h ?? 0);
@@ -5755,11 +5755,11 @@ export default function Editor(
       return;
     }
     // issue #73 (b)・設計08 §4.5.4: 枠候補の生成中はキャンバス操作を無効化
-    // する（パン・ズームは許可——上の isPan 分岐がここより先にあるため
+    // する（パン・ズームは許可——上の isPan 分岐がこリサーチ担当先にあるため
     // 影響を受けない）
     if (framesGenerating) return;
     // 画像が無い間はキャンバス上の枠操作を無効化する（2026-09-02 ユーザー
-    // 指摘・マリンレビュー H-1）。パン判定は上で確定済みなのでここでは
+    // 指摘・レビュー H-1）。パン判定は上で確定済みなのでここでは
     // 画像の有無だけを見る。抜けるときに待ち受け状態（領域を追加・別の欄と
     // 結合・参照先の枠を描く）を必ず畳む——畳まずに return すると、この後
     // 画像を開いた直後の最初のドラッグが無言で追加領域／参照先枠になる
@@ -5819,7 +5819,7 @@ export default function Editor(
       // 普通のクリックは従来どおり最前面（ドラッグ移動の起点を変えない）
       const h = e.ctrlKey ? nextOverlapPick(hitAll(p), sel) : hit(p);
       setSel(h);
-      // 升の2段クリック（FR-3.7・かなた §1.5）: 1回目は表を選ぶ（既存操作の
+      // 升の2段クリック（FR-3.7・デザインレビュー §1.5）: 1回目は表を選ぶ（既存操作の
       // 入口をそのまま残す）。**既にその表を選んでいる状態**でのクリックだけが
       // 升の選択になる。行間・列間の隙間は cellAtPoint が null を返すので、
       // そこは「表の選択のみ」に落ちる
@@ -6121,7 +6121,7 @@ export default function Editor(
     // 実行タブ表示中などはここで即 return（issue #69 Q-H3）。ref は毎レンダー
     // 再代入されるため、この時点の `active` は常に最新——追加の ref は不要
     if (!active) return;
-    // スバル差し戻し Should-2: 枠候補の生成中はキーボード操作（Delete・矢印
+    // 設計レビュー差し戻し Should-2: 枠候補の生成中はキーボード操作（Delete・矢印
     // nudge 等）も無効にする（マウス操作は onDown 側で既に framesGenerating
     // を見て無効化済み・§4.5.4「生成中はキャンバスの枠操作を無効化」と揃える）
     if (framesGenerating) return;
@@ -6157,7 +6157,7 @@ export default function Editor(
       case "zoom-out": zoomBy(1 / 1.15); break;
       case "escape":
         // 升を選んでいるときは **升の選択だけ** 外し、表の選択は残す
-        // （かなた §1.5・2段クリックの逆順で戻す）
+        // （デザインレビュー §1.5・2段クリックの逆順で戻す）
         if (selCell) { setSelCell(null); break; }
         setSel(null); setPending(null); setFbTarget(null);
         setExTarget(null); setMergeTarget(null); drag.current = null;
@@ -6166,7 +6166,7 @@ export default function Editor(
       case "nudge":
         // 画像なしでは枠が見えない（draw() が案内文言だけを描く）ため、
         // 矢印キーで見えないまま座標だけ動いて dirty になるのを防ぐ
-        // （マリンレビュー M-3）。削除は一覧からの操作として引き続き許可する
+        // （レビュー M-3）。削除は一覧からの操作として引き続き許可する
         if (hasImage) nudge(ka.action.dx, ka.action.dy);
         break;
     }
@@ -6251,7 +6251,7 @@ export default function Editor(
   };
   /// 列の一括トグル（AC-3.21）。遷移は toggleColumnOutput が持つ。
   /// 一度に行数ぶんの升が変わるので、結果は既存の sr-only 領域へ流す
-  /// （ライブ領域を増やさない・かなた §6.3）
+  /// （ライブ領域を増やさない・デザインレビュー §6.3）
   const toggleColumnCells = (t: Table, columnIndex: number) => {
     const c = t.columns[columnIndex];
     if (!c) return;
@@ -6586,7 +6586,7 @@ export default function Editor(
                 この欄の値として読み順でつながります{f.extras?.length
                   ? `（現在 ${f.extras.length + 1} 領域）` : ""}</p>
               {/* 押しても待ち受け状態が空振りするだけにしないよう、画像が
-                  無い間は無効化する（マリンレビュー H-1）。押せたとしても
+                  無い間は無効化する（レビュー H-1）。押せたとしても
                   onDown 側のガードで次のドラッグは弾かれるが、そもそも
                   押せないほうが「なぜ効かないのか」を迷わせない */}
               <button disabled={!hasImage}
@@ -6635,7 +6635,7 @@ export default function Editor(
             onClick={() => {
             // 参照先を選択中でも「この欄を削除」は欄ごと消す（部位に依らない）。
             // removeSel を経由しないため、隠れた面のガードもここで直接効かせる
-            // （issue #71 (a')・スバル差し戻し1）
+            // （issue #71 (a')・設計レビュー差し戻し1）
             if (selIsHiddenByFormat()) return;
             setFields((fs) => fs.filter((v) => v.uid !== f.uid));
             setSel(null); markDirty(true); }}>この欄を削除</button>
@@ -6656,7 +6656,7 @@ export default function Editor(
     }
     const t = tables.find((x) => x.uid === sel.uid);
     if (!t) return null;
-    // 「選択中の升」セクション（issue #66 段9・FR-3.7・かなた §2.3）。
+    // 「選択中の升」セクション（issue #66 段9・FR-3.7・デザインレビュー §2.3）。
     // 升を選んでいないときはセクションごと出さない（空の器を残さない）。
     // 行の一括ボタンは置かない——行単位は後回しの決定を、UI に存在しない形で
     // 担保する（面をまたぐ並べ替えボタンを作らないのと同じ手）
@@ -6872,7 +6872,7 @@ export default function Editor(
                 j === i ? { ...v, normalize: e.target.value || undefined } : v) })}>
               <option value="">正規化なし</option><option value="amount">金額</option>
             </select>
-            {/* 列単位の正面入口はここに残す（かなた §2.4）。差分は1つだけ:
+            {/* 列単位の正面入口はここに残す（デザインレビュー §2.4）。差分は1つだけ:
                 列の一部の升だけ出力しないときはチェックを中間状態
                 （indeterminate）にする。aria-checked="mixed" は使わない
                 ——ネイティブの indeterminate を立てれば支援技術は "mixed" と
@@ -6926,7 +6926,7 @@ export default function Editor(
   // [↑][↓] は同じ面（表面/裏面）の欄どうしでしか動かない——面をまたぐ隣接ボタンは
   // そもそも存在しない（AC-2.2・UI に存在しない構造で担保）
   const outputListPanel = () => {
-    // issue #71 (a')・スバル差し戻し1: 出力列タブは canvas の hitAll とは別の
+    // issue #71 (a')・設計レビュー差し戻し1: 出力列タブは canvas の hitAll とは別の
     // 選択経路を持っており、様式不一致で隠れている面の欄・表もクリックで
     // 選べてしまっていた（→矢印キーで動かせる／削除できる漏れ）。同じ
     // hiddenFaces を面単位で見て、隠れている面の行は選択不可＋グレー表示にする
@@ -6976,12 +6976,12 @@ export default function Editor(
           {faceHidden && hiddenBadge}
         </div>);
     };
-    // 升グリッド（issue #66 段9・FR-3.3・かなた §3.2 の実測）。
+    // 升グリッド（issue #66 段9・FR-3.3・デザインレビュー §3.2 の実測）。
     // 展開は1表だけ（expandedTableUid）——スキーマ上の最大は 1600 行 × N 列で、
     // 全表を同時に描くと1万個規模のチェックボックスになる。
     // ネイティブ <table> ＋ <th scope> で組み、role="grid" と矢印キー移動は
     // 入れない（矢印はキャンバスで「選択中の枠を1px動かす」に使っており、
-    // 同じ画面で意味を2つ持たせない・かなた §6.2）
+    // 同じ画面で意味を2つ持たせない・デザインレビュー §6.2）
     const cellGrid = (t: Table) => {
       const rows = tableTotalRows(t);
       if (t.columns.length === 0) {
@@ -7031,7 +7031,7 @@ export default function Editor(
           <span className="reorder-btns" title="表は面のいちばん後ろに出力されます" />
           <span className="colpos" title="表は面のいちばん後ろに出力されます">表</span>
           {/* 閉じたままでも「出力しない升の数」が読めるようにする
-              （かなた §3.1: 開かなくても状態が分かる） */}
+              （デザインレビュー §3.1: 開かなくても状態が分かる） */}
           <span className="name">{t.table_id}（{rows}行 × {t.columns.length}列 = {total}升・
             {off > 0 ? `出力しない ${off}` : "すべて出力する"}）</span>
           {faceHidden && hiddenBadge}
@@ -7079,7 +7079,7 @@ export default function Editor(
       </div>);
   };
 
-  // issue #73 (b)・Orchestrator決定（おかゆ実機検証後）: 枠候補パネルを
+  // issue #73 (b)・Orchestrator決定（テスト担当実機検証後）: 枠候補パネルを
   // .panel-wrap の第3タブへ。上部（結果行・一括操作・接頭辞）は
   // flex-shrink:0 で固定し、一覧だけを flex:1・overflow-y:auto にする——
   // #edittabpanel 自体が既に flex column（App.css）なので、この関数が
@@ -7101,11 +7101,11 @@ export default function Editor(
           title 属性で全文を保つ（DOM/ARIA には全文が残るため aria-live の
           読み上げは変わらない・視覚的な省略のみ） */}
       <div style={{ flexShrink: 0, padding: "10px 18px 6px" }}>
-        {/* 見出しには升候補と提案の **両方の件数** を出す（かなた §4.3）。
+        {/* 見出しには升候補と提案の **両方の件数** を出す（デザインレビュー §4.3）。
             0 のほうは書かない */}
         <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>
           {candidatePanelHeading(cands.length, suggestions.length)}</h3>
-        {/* ラミィ差し戻し（3回目・Must）: overlapAcceptNotice の可視表示は
+        {/* a11y 担当差し戻し（3回目・Must）: overlapAcceptNotice の可視表示は
             タブ非依存の常時表示エリア（errMsg と同じ場所）へ移した——タブを
             離れても見えなくならないようにするため。ここには残さない。
             framesMsg の role="status"/aria-live は sr-only 側の1箇所に
@@ -7115,7 +7115,7 @@ export default function Editor(
             style={{ margin: "0 0 6px", display: "-webkit-box", WebkitBoxOrient: "vertical",
               WebkitLineClamp: 2, overflow: "hidden" }}>{framesMsg}</p>
         )}
-        {/* ころね（user_advocate）UX レビュー 推奨2: 既存の他候補と重ならない
+        {/* user_advocateUX レビュー 推奨2: 既存の他候補と重ならない
             候補は candidateDefaultChecked により最初からチェック済みになる
             （§4.5.2）。挙動自体は変えず、その事実を一言添えるだけ——1件しか
             出なかった生成でチェック済みの理由が分からない、という指摘への
@@ -7163,7 +7163,7 @@ export default function Editor(
             </button>
           </div>
         )}
-        {/* ころね（user_advocate）UX レビュー 推奨1: 無効理由を title だけに
+        {/* user_advocateUX レビュー 推奨1: 無効理由を title だけに
             置くとホバーしないと分からない。ボタン直下に常時表示の注記も
             添える（title は維持——スクリーンリーダー以外での即時確認用） */}
         {cands.length > 0 && recentCandTableUids.length === 0 && (
@@ -7172,13 +7172,13 @@ export default function Editor(
           </p>
         )}
       </div>
-      {/* 一覧本体だけがスクロールする（おかゆ実機検証で発覚した canvas 0px
+      {/* 一覧本体だけがスクロールする（テスト担当実機検証で発覚した canvas 0px
           化の根治——このタブに移したことで固定の max-height clamp は
           不要になった。パネルの高さいっぱいを使う）。
           issue #87 項目3: 見た目の指定は App.css の .cand-list へ移した
           （行の高さを詰めて、可視領域に入る候補の数を増やすため） */}
       <div className="cand-list">
-        {/* まとめ提案は **升候補より上**（かなた §4.2）。提案は「読んで一度だけ
+        {/* まとめ提案は **升候補より上**（デザインレビュー §4.2）。提案は「読んで一度だけ
             決める」少数、升候補は「1件ずつ触る」多数（数十〜数百件）。提案を
             下に置くと 148 件のスクロールの底に埋まり、そもそも読まれない。
             提案にチェックボックスは置かない——「選んだ候補を採用」の対象に
@@ -7255,7 +7255,7 @@ export default function Editor(
               onClick={() => removeOneCandidate(c.id)}>除去</button>
           </div>
         ))}
-        {/* ページングにしない（かなた §4.5）。「何ページ目に何があったか」を
+        {/* ページングにしない（デザインレビュー §4.5）。「何ページ目に何があったか」を
             覚えさせず、上から順に見る動作を切らない */}
         {cands.length > candShown && (
           <button className="btn" type="button"
@@ -7304,7 +7304,7 @@ export default function Editor(
           // select（一覧・パネルからの操作の起点）は画像なしでも押せるが、
           // それ以外はキャンバス上に枠を描く／操作するツールなので、押せても
           // 何も起きない状態を見せないよう画像が無い間は無効化する
-          // （マリンレビュー H-1・onDown 側のガードと二重で塞ぐ）
+          // （レビュー H-1・onDown 側のガードと二重で塞ぐ）
           const need = (t !== "select" && !hasImage) || framesGenerating;
           return (
             <button key={t} className={tool === t ? "btn active" : "btn"}
@@ -7326,7 +7326,7 @@ export default function Editor(
           title={!hasImage ? "帳票の画像か PDF を開くと使えます" : undefined}>
           {framesGenerating ? "枠候補を生成中…" : "ページ全体から枠候補を生成"}
         </button>
-        {/* ラミィ差し戻し（3回目・Must・WCAG 4.1.3）: 生成結果（framesMsg）と
+        {/* a11y 担当差し戻し（3回目・Must・WCAG 4.1.3）: 生成結果（framesMsg）と
             重なり採用の注意（overlapAcceptNotice）は、候補タブ（#edittabpanel
             が candidatesPanel() を描いているときだけ存在する）に閉じ込めず、
             タブに依存しない常時マウントのライブ領域でも読み上げる。
@@ -7335,7 +7335,7 @@ export default function Editor(
         <span className="sr-only" role="status" aria-live="polite">
           {framesMsg}
         </span>
-        {/* issue #67・ラミィ（accessibility）再判定 Must・WCAG 4.1.3:
+        {/* issue #67・a11y 担当（accessibility）再判定 Must・WCAG 4.1.3:
             出力列タブの [↑][↓] は行の 600ms フラッシュ（視覚のみ）でしか
             結果を返していなかった。フォーカスを動かさない操作なので、
             結果は状態メッセージとして読み上げる必要がある。framesMsg とは
@@ -7350,7 +7350,7 @@ export default function Editor(
         <span className="msg" role="status" aria-live="polite">
           {okBanner ? "" : msg}{dirtyState ? "（未保存）" : ""}</span>
       </div>
-      {/* ころね（user_advocate）UX レビュー Must: 寸法／向き不一致
+      {/* user_advocateUX レビュー Must: 寸法／向き不一致
           （expandAlignNotice の reason==="size"）の赤帯にも、様式不一致の
           黄帯と同じ「この紙用に新しいテンプレートを作る」導線を出す。
           README がこのボタンを唯一の復旧導線として案内しているため、
@@ -7376,7 +7376,7 @@ export default function Editor(
           )}
         </div>
       )}
-      {/* スバル差し戻し Must-2・ラミィ差し戻し（3回目・Must）: 重なりを
+      {/* 設計レビュー差し戻し Must-2・a11y 担当差し戻し（3回目・Must）: 重なりを
           承知で採用した候補があれば、保存するまで消えない注意をタブに
           依存しない常時表示エリアに出す（候補タブを離れても見える） */}
       {overlapAcceptNotice && (
@@ -7388,7 +7388,7 @@ export default function Editor(
           style={{ margin: "8px 18px", display: "flex",
           alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <span>{formatBannerText}</span>
-          {/* ころね（user_advocate）の初見ユーザー予測レビュー: 2つのボタンが
+          {/* user_advocateの初見ユーザー予測レビュー: 2つのボタンが
               何をする操作か区別しにくかった（どちらも似た見た目・似た文言）。
               ラベルを「操作」→「結果」の形にし、各1行で効果と使いどころを
               添える（FR-F05・FR-F30/F31） */}
@@ -7639,7 +7639,7 @@ export default function Editor(
               {confirmModal.warnings.map((w) => <li key={w.key}>{w.text}</li>)}
             </ul>
             <div style={{ display: "flex", gap: 10 }}>
-              {/* issue #67・ラミィ再判定 Must: busy 中は両方 disabled になる
+              {/* issue #67・a11y 担当再判定 Must: busy 中は両方 disabled になる
                   のに、ラベルも title も変わらず「押し漏れたのか処理中なのか」
                   が分からなかった。実行側のラベルで進行中を示し、押せない理由は
                   title、機械可読な状態は aria-busy で伝える */}

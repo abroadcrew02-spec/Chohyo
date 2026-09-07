@@ -47,7 +47,7 @@ class PageVerdict:
     score: float
     faces: tuple[FaceVerdict, ...]
     # verdict/reason/score/detected/expected の5値は**必ず同一の代表面**
-    # から取る（2026-09-02 マリン指摘 M-5）。代表面は verdict 優先順
+    # から取る（2026-09-02 レビュー担当指摘 M-5）。代表面は verdict 優先順
     # （mismatch > undecidable > match）で最も悪い面、同順位なら
     # スコア最小の面（未計測 -1.0 は他に計測値があれば除く・M-4 と同じ
     # 扱い）。skipped は対象外。全面が対象外なら score=-1.0・
@@ -79,7 +79,7 @@ def classify(est: ShiftEstimate) -> tuple[Verdict, str]:
     if est.reason == "ambiguous":
         return "mismatch", "ambiguous"
     if est.reason == "few_lines":
-        # M-4（2026-09-02 マリン指摘）: 両軸とも期待線が0本（tables を持たない
+        # M-4（2026-09-02 レビュー担当指摘）: 両軸とも期待線が0本（tables を持たない
         # 面）では「検出十分/乏しい」を判定する母数そのものが無い。sparse_h/
         # sparse_v は exp_*_uniq>0 の条件があるためどちらも False になり、
         # 下まで素通りして誤って「不一致」に倒れてしまう——判定材料が無い
@@ -108,7 +108,7 @@ def fold(faces: Sequence[FaceVerdict]) -> PageVerdict:
     `skipped` はありえない（1面目で必ず評価が走る）が、防御的に判定不能で
     返す。
 
-    M-5（2026-09-02 マリン指摘・実証: front score=0.95/detected=20/
+    M-5（2026-09-02 レビュー担当指摘・実証: front score=0.95/detected=20/
     expected=16・back score=0.88/detected=24/expected=26 で
     fold→score=0.88・detected=20・expected=16 という取り違えが発生して
     いた）: **代表面を1つに決め、verdict/reason/score/detected/expected の

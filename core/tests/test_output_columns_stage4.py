@@ -1,12 +1,12 @@
 """出力列制御 MVP（issue #66）段4 の core 側。
 
-1. debug-images での対象外欄の見分け（FR-1.9 Should・ぼたん S-9）。
+1. debug-images での対象外欄の見分け（FR-1.9 Should・設計担当 S-9）。
    debug-images は template.cells 全件を描く（対象外欄も読み取りは継続するので
    描かれ続けるのが正しい・record 側は変えない）。本段は「見分けが付く」ことだけを
    追加する: 枠・ラベルを専用色 COL_EXCLUDED で塗り分ける。GUI の canvas 表現
    （ハッチ）は模倣しない（debug 画像は開発者向けのため識別できれば十分）。
 2. verify の template チェックへ `output_disabled_cells` を追加（FR-1.9・
-   フブキ実測: RunScreen の差分計算 cells+6-columns は subfields 展開で破綻する
+   フロント実装担当実測: RunScreen の差分計算 cells+6-columns は subfields 展開で破綻する
    ため、欄数はここで直接数えて渡す）。
 """
 import json
@@ -135,7 +135,7 @@ def test_write_debug_images_unaffected_for_unmodified_template(tmp_path):
     assert img.getpixel((phone.x + ox, phone.y + oy)) != debug_images.COL_EXCLUDED
 
 
-# ========== 2. verify の output_disabled_cells（FR-1.9・フブキ実測） ==========
+# ========== 2. verify の output_disabled_cells（FR-1.9・フロント実装担当実測） ==========
 
 def _cfg(tmp_path):
     p = tmp_path / "config.json"
@@ -159,7 +159,7 @@ def test_verify_output_disabled_cells_counts_physical_cells_not_output_columns(t
     ①無改変テンプレートは0 ②単発欄を1つ対象外にすると1
     ③subfields（年/月/日=3出力列）を持つ表の列を対象外にしても、
     対象外にした「欄」自体は1つなので output_disabled_cells は1のまま
-    （3ではない）——フブキが実測した GUI 側の破綻（cells+6-columns が
+    （3ではない）——フロント実装担当が実測した GUI 側の破綻（cells+6-columns が
     subfields 展開で負値になる）を core 側の直接カウントで避ける。
     """
     ev0 = _verify_template_event(tmp_path, capsys, TPL)

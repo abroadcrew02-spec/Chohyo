@@ -43,7 +43,7 @@ async function mockRun(): Promise<{ code: number; run_id: string }> {
     api_calls: total - 1, unclear_cells: 247, overflow: 0, risky_cells: 2,
     // issue #65-3 S2: 実行時のお知らせに乗る新カウンタをデモモードでも確認
     // できるようにする（参照先の採用/破棄・対象外欄由来の内訳・主と参照先の
-    // 食い違い（マリンレビュー S-3）の各セグメントを1回のデモ実行で確認できる
+    // 食い違い（レビュー S-3）の各セグメントを1回のデモ実行で確認できる
     // 組み合わせ。carve_hole は0のままにして「非0のときだけ表示」の分岐も
     // デモから確認できるようにする）
     fallback_used: 2, fallback_discarded: 1, carve_hole: 0,
@@ -198,11 +198,11 @@ const DEMO_TEMPLATE = {
 // （read_file_b64 が返す）に DEMO_TEMPLATE を重ねて開く。expand-page の
 // 疑似応答で mismatch/match/undecidable の3値すべてを core なしで手動確認
 // できるよう、pick_image を呼ぶたび（＝「帳票を開く」を押すたび）に
-// mismatch → match → undecidable の順で巡回する（スバル差し戻し4・任意）。
+// mismatch → match → undecidable の順で巡回する（設計レビュー差し戻し4・任意）。
 // **1回目は必ず mismatch**——Playwright スモーク
 // （core/tests/test_gui_smoke.py の test_editor_format_mismatch_*）は
 // 「帳票を開く」を1回しか押さないため、この順序に依存している。
-// size-mismatch.png（ころね UX レビュー Must の検証用）は末尾に足した
+// size-mismatch.png（UX レビュー Must の検証用）は末尾に足した
 // 4番目——既存3件の巡回順（インデックス0〜2）をずらすと上記の「1回目は
 // 必ず mismatch」に依存する既存テストが壊れるため、新規分は必ず末尾に足す
 const DEMO_FORMAT_FACE = (verdict: string, reason: string, score: number, detected: number, expected: number) =>
@@ -249,7 +249,7 @@ let demoImagePickCount = 0;
 // 描かれる（実コアの位置合わせ済み画像と同じ座標系の扱い）
 const DEMO_MISMATCH_IMAGE_B64 =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
-// ころね（user_advocate）UX レビュー Must の検証用: createTemplateForThisImage
+// user_advocateUX レビュー Must の検証用: createTemplateForThisImage
 // は開いている画像の実寸（im.naturalWidth/Height＝imgSize）でテンプレートを
 // 組み立てる。上の1x1画像のままだと新規テンプレートも1x1になり、
 // detect-frames の疑似候補（page 座標で最大 x:950・y:2100 付近）が軒並み
@@ -266,7 +266,7 @@ const DEMO_SIZE_MISMATCH_IMAGE_B64 =
 // 「壊れたテンプレ」は excluded 配列側に理由付きで返す（一覧に出る・FR-F28）。
 // save_user_template で新規保存されたテンプレートもこの配列に足していく
 // （実ファイルには一切触れない・mockStaged と同じ流儀）
-// issue #72 (t)・マリン core レビュー分: 「欄N・表M」の定義は単発欄数
+// issue #72 (t)・レビュー担当 core レビュー分: 「欄N・表M」の定義は単発欄数
 // （fields[]・表の列は数えない）と表の個体数（tables[]）に統一する
 // （core 側も合わせる予定）。デモの「帳票B」は DEMO_TEMPLATE と同じ
 // faces（front: 単発欄1件「person_氏名」＋表1件「family」／back: 空）なので
@@ -283,7 +283,7 @@ const DEMO_USER_EXCLUDED: DemoExcluded[] = [
 const demoUserTemplateContent = new Map<string, string>(
   [["帳票B", JSON.stringify({ ...DEMO_TEMPLATE, template_id: "帳票B" })]]);
 
-// issue #72 (t)・スバル差し戻し1: config.json の疑似永続化。実物の Rust/Python
+// issue #72 (t)・設計レビュー差し戻し1: config.json の疑似永続化。実物の Rust/Python
 // は config.json（ファイル）に書くため、Editor 再マウント（＝アプリ再起動）を
 // またいで last_template が残る。デモモードのブラウザはページ再読み込みで
 // JS モジュールの状態が丸ごと初期化されるため、`localStorage` を使って
@@ -330,7 +330,7 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
     case "pick_json": return "C:\\デモ\\template.json";
     case "read_text": return JSON.stringify(DEMO_TEMPLATE);
     // read_default_template は config.last_template を解決して返す
-    // （実物: gui/src-tauri/src/lib.rs・あくあ実装）。"user:<名前>" が
+    // （実物: gui/src-tauri/src/lib.rs・実装）。"user:<名前>" が
     // demoUserTemplateContent に無ければ出荷（DEMO_TEMPLATE）へフォールバック
     // する（AC-F60 と同じ「例外を投げず安全側へ倒す」方針をデモにも揃える）。
     // 任意引数 template（2026-09-04）が渡されたときは config を見ない——
@@ -384,7 +384,7 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
       return JSON.stringify({
         event: "match_templates", ok: true, elapsed_ms: 120, truncated: false,
         results: [
-          // fields は単発欄数（表の列は数えない・マリン core レビュー分）。
+          // fields は単発欄数（表の列は数えない・レビュー担当 core レビュー分）。
           // 出荷テンプレは家族・明細の2表に加えて氏名・生年月日等の単発欄が
           // ある想定の代表値（実際の出荷テンプレの正確な件数はここでは検証
           // 対象ではない・デモの代表形）
@@ -396,7 +396,7 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
             verdict: "match", reason: "", score: 0.97, detected: 18, expected: 16 },
         ],
         // core の除外理由は "invalid_json" → "parse" へ統一される予定
-        // （マリン core レビュー分）。デモは統一後の値に揃える
+        // （レビュー担当 core レビュー分）。デモは統一後の値に揃える
         excluded: [{ name: "壊れたテンプレ", reason: "parse" }],
       });
     }
@@ -500,7 +500,7 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
               rect: { x: 100, y: 1950, w: 850, h: 150 },
               residual_px: 0.6, overlaps_existing: false },
           ],
-          // マリン core レビュー由来: excluded は {reason,count} の配列
+          // レビュー担当 core レビュー由来: excluded は {reason,count} の配列
           // （複数理由・count>0 のみ意味を持つ）。template_applied は
           // --template 指定時の適用可否（デモは常に寸法一致想定で true）。
           // template_skip_reason は寸法不一致でスキップしたときだけ文字列が

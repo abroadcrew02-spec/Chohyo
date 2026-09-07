@@ -22,7 +22,7 @@ def test_no_env_var_falls_back_to_project_root_when_not_frozen(monkeypatch):
 
 
 def test_no_env_var_raises_config_error_when_frozen(monkeypatch):
-    """M-6（2026-09-02 AZKi 指摘）: frozen（配布・GUI 起動）なのに
+    """M-6（2026-09-02 セキュリティレビューの指摘）: frozen（配布・GUI 起動）なのに
     CHOUHYO_USER_DIR が未設定なら、黙って project_root()/templates_user へ
     倒れず ConfigError で明示的に失敗する。
 
@@ -108,7 +108,7 @@ def test_symlink_dir_env_var_raises_config_error(monkeypatch, tmp_path):
 
 
 def test_junction_dir_env_var_raises_config_error(monkeypatch, tmp_path):
-    """M-2（2026-09-02 マリン指摘）: Windows のジャンクション（`mklink /J`）は
+    """M-2（2026-09-02 レビュー担当指摘）: Windows のジャンクション（`mklink /J`）は
     `Path.is_symlink()` だけでは検出できない場合がある——`is_symlink()` が
     見ているのは `IO_REPARSE_TAG_SYMLINK` のみで、ジャンクションが使う
     `IO_REPARSE_TAG_MOUNT_POINT` を見ない。`os.path.isjunction()`
@@ -135,7 +135,7 @@ def test_junction_dir_env_var_raises_config_error(monkeypatch, tmp_path):
 
 
 def test_dotdot_in_env_var_is_normalized(monkeypatch, tmp_path):
-    """LOW（M-2 と同時・2026-09-02 マリン指摘）: `..` を含むパスは
+    """LOW（M-2 と同時・2026-09-02 レビュー担当指摘）: `..` を含むパスは
     `Path.resolve()` で正規化してから返す——生の文字列のまま返すと、
     受け取った側が素朴な文字列比較で範囲を判定した場合に `..` で
     範囲外へ抜けられる余地が残る。

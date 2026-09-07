@@ -30,7 +30,7 @@ def _progress(event: dict) -> None:
 
 def _load_config_and_init_log(config_path) -> Config:
     """load_config + log.init を1箇所にまとめる（issue #72 (t)・M-1・
-    2026-09-02 マリン指摘）。
+    2026-09-02 レビュー担当指摘）。
 
     本番の呼び出し順は「load_config → log.init」——Config._validate は
     last_template・last_applied_template のフォールバックが起きても例外を
@@ -248,7 +248,7 @@ def cmd_verify(args) -> int:
         # 列構成の唯一の正を verify 応答に置き、GUI 側での再導出（F-10 の
         # 原因だった二重実装）を無くすための入り口。220件規模の文字列配列だが
         # verify は対話操作でしか呼ばれず、頻度・サイズとも問題にならない
-        # issue #66 段4（フブキ実測）: GUI 側の差分計算（cells+6-columns）は
+        # issue #66 段4（フロント実装担当実測）: GUI 側の差分計算（cells+6-columns）は
         # subfields 展開で破綻する（cells=194・columns=220 のとき -20 になる）。
         # 「N 欄を出力しません」（FR-1.9）に使う N は欄数（物理セル数）であり
         # 列数ではないため、output_cells() を経由してここで直接数える
@@ -442,7 +442,7 @@ def cmd_expand_page(args) -> int:
         page_path = out.resolve()
         aligned = True
         # 成功側の verdict（全面 match のはず・08 §2.6 の例）。
-        # M-3（2026-09-02 マリン指摘）: from_faces 自体を内側 try で囲む。
+        # M-3（2026-09-02 レビュー担当指摘）: from_faces 自体を内側 try で囲む。
         # aligned=True 確定後にここで例外が起きると、囲わない場合は下の
         # except 節（例: 汎用 Exception → fail_reason="other"）に落ちて
         # 「aligned:true なのに reason も乗る」という既存契約違反の応答に
@@ -474,7 +474,7 @@ def cmd_expand_page(args) -> int:
     # 編集画面には "align" ではなく専用の reason を返して案内を分ける
     except PageSizeMismatch:
         fail_reason = "size"
-        # LOW（2026-09-02 マリン指摘）: size 用の PageVerdict を直接組んで
+        # LOW（2026-09-02 レビュー担当指摘）: size 用の PageVerdict を直接組んで
         # 唯一の整形関数（_expand_page_verdict_fields）へ通す——辞書リテラルを
         # 個別に持つと、_expand_page_verdict_fields 側のキー構成を変えたときに
         # ここだけ追随し忘れる二重定義になる（pipeline.py の同種構成と統一）
@@ -567,7 +567,7 @@ def cmd_match_templates(args) -> int:
     `template_hash` と序数のみ。stdout の JSON Lines は秘匿対象外（07 §0.6）
     なので表示名（ファイル名の stem）をそのまま返す。
 
-    `ok:false` の `error` は機械可読な固定コードのみ（2026-09-02 マリン
+    `ok:false` の `error` は機械可読な固定コードのみ（2026-09-02 レビュー担当
     指摘 M-6）——`type(e).__name__` や例外メッセージは出さない（パスや
     帳票の値が乗りうるため・issue #2 と同じ方針）:
     `input_not_found` / `expand_failed` / `input_unreadable` / `internal`。
@@ -590,7 +590,7 @@ def cmd_match_templates(args) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     src = Path(args.input)
 
-    # LOW（マリン提案）: expand() へ投げる前に存在と --page 範囲を確認する
+    # LOW（レビュー担当提案）: expand() へ投げる前に存在と --page 範囲を確認する
     # （cmd_expand_page と同じ流儀）。expand() 自身も範囲外を IngestError で
     # 弾くが、ここで先に確認すると「無いファイル」「範囲外ページ」を
     # expand_failed の1コードへ素直に収められる
@@ -631,7 +631,7 @@ def cmd_match_templates(args) -> int:
             # 幾何をキーに持ち回るので、判定結果は1件ずつ check_page を呼んだ
             # ときと同一。ctx はこのコマンドの寿命で捨てる
             ctx = format_check.PageContext(img)
-            # M-3（2026-09-02 マリン指摘）: 予算の起点を画像の読み込み完了後
+            # M-3（2026-09-02 レビュー担当指摘）: 予算の起点を画像の読み込み完了後
             # （候補ループ直前）に移す——展開（PDF ラスタライズ）にかかる時間は
             # 候補照合そのものではないため、予算から除く。elapsed_ms は
             # コマンド全体、budget_elapsed_ms は候補ループだけを別に返す
@@ -650,7 +650,7 @@ def cmd_match_templates(args) -> int:
                 try:
                     st = p.stat()
                 except OSError as e:
-                    # M-4（マリン指摘）: 語彙を Rust 側と統一（not_found）
+                    # M-4（レビュー担当指摘）: 語彙を Rust 側と統一（not_found）
                     excluded.append({"name": name, "reason": "not_found"})
                     log.warn("match_template_excluded", error_code=type(e).__name__)
                     continue
@@ -677,7 +677,7 @@ def cmd_match_templates(args) -> int:
                              error_code=type(e).__name__)
                     continue
                 except Exception as e:  # noqa: BLE001
-                    # M-7（マリン指摘）: TemplateError 以外（想定外）は
+                    # M-7（レビュー担当指摘）: TemplateError 以外（想定外）は
                     # error+トレースを残す（row_build_failed と同型。
                     # error_trace は format_tb のみ・例外メッセージ本文は
                     # 値を含みうるため渡さない）
@@ -703,14 +703,14 @@ def cmd_match_templates(args) -> int:
                                     "".join(traceback.format_tb(e.__traceback__)))
                     continue
 
-                # M-5（マリン指摘）: fields は単発欄数のみ（table_id が付いた
+                # M-5（レビュー担当指摘）: fields は単発欄数のみ（table_id が付いた
                 # 表由来のセルを含まない・Rust の一覧（faces[].fields の要素数）
                 # と揃える）。物理セル数（len(template.cells)）は返さない
                 fields = sum(1 for c in template.cells if c.table_id is None)
                 tables = len({c.table_id for c in template.cells if c.table_id is not None})
                 updated_at = datetime.fromtimestamp(
                     st.st_mtime).astimezone().isoformat(timespec="seconds")
-                # LOW（マリン提案）: 成功時のログを1行残す（診断用・名前は出さない）
+                # LOW（レビュー担当提案）: 成功時のログを1行残す（診断用・名前は出さない）
                 log.info("template_matched", template_hash=tpl_hash,
                          verdict=pv.verdict, score=pv.score)
                 results.append({
@@ -782,7 +782,7 @@ def cmd_debug_images(args) -> int:
     # debug-images も pipeline._load を経由しないため template_loaded を
     # 自前で出す（cmd_verify と同じ理由・不変条件A・Q-S1・FR-F50・
     # 08_frame_detection_design.md §1.4）。validate_v1 より前に出す
-    # （2026-09-02 #77 追補・マリン指摘）——後ろだと validate_v1 が
+    # （2026-09-02 #77 追補・レビュー担当指摘）——後ろだと validate_v1 が
     # TemplateError で落ちたときに「cell_idx はあるが template_hash が無い」
     # 状態が残る
     log.info("template_loaded", template_hash=_tpl_hash(raw))
@@ -1186,7 +1186,7 @@ def _remove_workdir_entry(p: Path) -> None:
     """
     if _is_reparse_point(p):
         # lstat（リンク自体を見る・辿らない）でリンクの型を判定する
-        # （AZKi 指摘）。p.is_dir() はリンク先を辿って判定するため、リンク先
+        # （セキュリティレビューの指摘）。p.is_dir() はリンク先を辿って判定するため、リンク先
         # が壊れている（dangling）ジャンクションでは判定できない・誤判定
         # しうる。os.lstat().st_mode ならリンク自体の属性を見るので、
         # リンク先の生死に関わらず正しく rmdir/unlink を選べる
@@ -1228,7 +1228,7 @@ def _purge_workdir(wd: Path, cfg: Config) -> tuple[bool, int, int]:
 
     cred.dpapi は従来どおり温存する。ただし cred.dpapi という名前の
     reparse point（symlink・ジャンクション）は資格情報の実体ではなく
-    偽装されうるため、許可リストとは無関係に削除する（#83 いろは指摘
+    偽装されうるため、許可リストとは無関係に削除する（#83 セキュリティ表層レビュー担当指摘
     由来のセキュリティ上のカーブアウト・reparse point 判定を名前一致より
     先に見る）。
 
@@ -1567,7 +1567,7 @@ def cmd_purge(args) -> int:
               "removed": wd_removed, "failed": wd_failed,
               "kept": wd_kept, "kept_examples": wd_kept_examples}
     # --include-output 側（削除 N 件／対象外として残したファイル N 件）と
-    # 同じ形で、workdir 側も人が読む1行を必ず出す（AZKi 指摘: 消し損ねが
+    # 同じ形で、workdir 側も人が読む1行を必ず出す（セキュリティレビューの指摘: 消し損ねが
     # あっても「purged」とだけ出て気づかれない事故を防ぐ）。kept は0でも
     # 常に出す——「認識できないものは無かった」ことも同じ1行で分かる
     cred_note = "資格情報は残した" if cred_kept else "資格情報は無かった"

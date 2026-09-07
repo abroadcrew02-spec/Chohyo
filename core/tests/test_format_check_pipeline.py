@@ -96,7 +96,7 @@ def test_ac_f12_mixed_batch_does_not_stop_and_counts_pre_send(tmp_path):
 @needs_replay
 def test_ac_f13_all_pages_including_matches_are_recorded(tmp_path):
     """AC-F13: 一致したページの分も、全ページのスコア・理由コード・
-    検出/期待本数が中間データ**とログ**へ残る（H-1・2026-09-02 マリン指摘:
+    検出/期待本数が中間データ**とログ**へ残る（H-1・2026-09-02 レビュー担当指摘:
     FR-F12/AC-F13 のログ側が未実装だった。08 §2.5.3 の format_verdict 行を
     _record_format_result 経由で出す）。
     """
@@ -130,7 +130,7 @@ def test_ac_f13_all_pages_including_matches_are_recorded(tmp_path):
     assert any("verdict=match" in line and "detected=" in line
                and "expected=" in line and "score=" in line for line in fv_lines)
 
-    # M-5（2026-09-02 マリン指摘）: ログ行の score/detected/expected が
+    # M-5（2026-09-02 レビュー担当指摘）: ログ行の score/detected/expected が
     # 「同一の代表面」由来であることを実データで固定する。修正前は
     # verdict 優先順で選ぶ代表面と score 最小の面が別々に計算されており、
     # 同順位の面が複数あると食い違いうる（synthetic な再現は
@@ -196,7 +196,7 @@ def test_ac_f14_exception_in_judge_does_not_masquerade_as_format_mismatch(tmp_pa
 
 
 def test_m2_status_reason_does_not_leak_across_status_changes(tmp_path):
-    """M-2（2026-09-02 マリン指摘）: Store.set_status は reason を明示しない
+    """M-2（2026-09-02 レビュー担当指摘）: Store.set_status は reason を明示しない
     限り status_reason を空へ戻す——古い理由コードが後続の status 変更へ
     残留しない構造になっている。
 

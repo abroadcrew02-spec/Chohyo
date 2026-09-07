@@ -95,7 +95,7 @@ def test_classify_unknown_reason_is_undecidable_safe_side():
 
 
 def test_classify_few_lines_with_no_tables_on_either_axis_is_undecidable():
-    """M-4（2026-09-02 マリン指摘）: 両軸とも期待線が0本（tables を持たない
+    """M-4（2026-09-02 レビュー担当指摘）: 両軸とも期待線が0本（tables を持たない
     面）は「検出十分/乏しい」を判定する母数が無い。sparse_h/sparse_v は
     exp_*_uniq>0 の条件のためどちらも False になり、直さないと素通りして
     誤って「不一致」（mismatch, lines）に倒れてしまう。
@@ -156,7 +156,7 @@ def test_fold_all_match_is_match():
 
 
 def test_fold_score_detected_expected_come_from_the_same_representative_face():
-    """M-5（2026-09-02 マリン指摘・実証ケースの再現）: 修正前は verdict
+    """M-5（2026-09-02 レビュー担当指摘・実証ケースの再現）: 修正前は verdict
     優先順で選ぶ代表面（worst）と、score の最小値を取る面が別々に計算
     されており、同順位の面が複数あると score だけ別の面から来て
     detected/expected と食い違っていた（実証: front score=0.95・
@@ -179,7 +179,7 @@ def test_fold_score_detected_expected_come_from_the_same_representative_face():
 
 
 def test_fold_excludes_unmeasured_score_from_minimum():
-    """M-4（2026-09-02 マリン指摘）: score=-1.0（未計測）の面は最小値の
+    """M-4（2026-09-02 レビュー担当指摘）: score=-1.0（未計測）の面は最小値の
     母集団から除く。混ぜると「算出できなかった」が実際の最悪スコアより
     小さい数値として勝ってしまい、欠測とワースト値の意味を取り違える。
     """

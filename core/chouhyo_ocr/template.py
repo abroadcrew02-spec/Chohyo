@@ -594,7 +594,7 @@ def _exclusion_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> lis
         if not exclusions:
             continue
         face_idx = face_idx_by_id[c.face_id]
-        # issue #66 段2（トワ・ぼたん S-8）: 対象の欄が output: false なら、
+        # issue #66 段2（QA 担当・設計担当 S-8）: 対象の欄が output: false なら、
         # W-1/W-2 の全文言に印を付ける。無改変テンプレート（全欄 output=True）
         # では tag は常に空文字列なので、既存の件数固定テストは影響を受けない
         tag = "（出力対象外）" if not c.output else ""
@@ -658,7 +658,7 @@ GAP_MIN_PX = 1  # 0px（接触）は死角ではない。1px 以上を隙間と�
 
 
 def _adjacent_gap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str]:
-    # issue #66 段2（FR-1.2・トワ・ぼたん S-8）: 隙間の当事者どちらかが
+    # issue #66 段2（FR-1.2・QA 担当・設計担当 S-8）: 隙間の当事者どちらかが
     # output: false なら「（出力対象外）」を付す（欄単位の属性なので field_id
     # で引く。参照先の枠・追加領域も同じ欄の output に従う）
     output_by_id = {c.field_id: c.output for c in cells}
@@ -721,7 +721,7 @@ def _adjacent_gap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str
     return warnings
 
 
-# 穴どうしの重なり検出（W-4・issue #66 第2弾・05 F-12・ぼたん Phase 2 レビュー B
+# 穴どうしの重なり検出（W-4・issue #66 第2弾・05 F-12・設計担当 Phase 2 レビュー B
 # 経路B・2026-09-01）。mapping の空間インデックス（_bucket_cells）は
 # 「領域→参照先→穴」の3層 first-hit で、層をまたぐ優先順位は配列順と無関係
 # だが、**穴（extra_rects を持つ単発欄の切り抜き穴・hole_bbox）どうしの重なり
@@ -765,7 +765,7 @@ def _hole_overlap_warnings(faces: list[Face], cells: list[CellSpec]) -> list[str
 
 
 # テンプレート JSON Schema のプロセス内キャッシュ（issue #72 (t)・M-3・
-# 2026-09-02 マリン指摘）。match-templates が候補テンプレートごとに
+# 2026-09-02 レビュー担当指摘）。match-templates が候補テンプレートごとに
 # load_template を呼ぶため、毎回スキーマファイルを読み直すと（実測 83ms/件）
 # NFR-F09（合計3.0秒）を圧迫する。キーはファイルパス＋mtime——スキーマ
 # ファイル自体が更新されたら（開発中の編集等）取り直す。プロセス内で
@@ -921,7 +921,7 @@ def load_template(path: str | Path) -> Template:
         dup = sorted({i for i in ids if ids.count(i) > 1})
         raise TemplateError(f"field_id が重複している: {dup[:5]}")
 
-    # Q-MA（らでん逆張り採用・2026-09-02: 警告ではなく拒否へ格上げ）。
+    # Q-MA（批判役の指摘採用・2026-09-02: 警告ではなく拒否へ格上げ）。
     # era の帯定数（era.BAND_PAD/BAND_PAD_IN）は300dpiの実測較正値で、向きまで
     # 較正済み（D-31）。render_dpi != BASE_DPI へ機械的にスケールすると元号
     # 丸印の判定が狂う——警告に留めると気づかず出荷して誤判定が実害化しうる

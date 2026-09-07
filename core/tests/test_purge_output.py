@@ -119,7 +119,7 @@ def test_subdirectory_is_left_alone(tmp_path, capsys):
 def test_without_include_output_keeps_outputs(tmp_path, capsys):
     """既定（--include-output なし）は出力に一切触れない。
 
-    workdir 側の削除件数は人が読む1行として必ず出る（AZKi 指摘・
+    workdir 側の削除件数は人が読む1行として必ず出る（セキュリティレビューの指摘・
     --include-output と同じ規律）ため、「削除」という語自体は出力側に
     触れていなくても raw に現れる。ここで見るのは output 固有のキー・
     文言が無いことだけに絞る。
@@ -216,7 +216,7 @@ def test_purge_without_credentials_still_removes_intermediate_data(tmp_path, cap
     assert ev["cred_kept"] is False
 def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
     """読み取り専用ファイルは chmod で書き込み許可を復元して削除する
-    （いろは/AZKi 指摘）。ロックではなく読み取り専用属性だけの場合は
+    （セキュリティ表層レビュー担当/セキュリティレビューの指摘）。ロックではなく読み取り専用属性だけの場合は
     chmod で解除できるため、failed=0（削除できた側）に固定する。
 
     ファイル名は中間データの命名（WAL ファイル）に揃える——issue #108 の
@@ -244,7 +244,7 @@ def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
 
 def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys):
     """workdir 配下のジャンクションはリンク自体だけ外し、リンク先の中身は残す
-    （いろは/AZKi 指摘）。rmtree をリンクへ渡すとリンク先ごと消えるので、
+    （セキュリティ表層レビュー担当/セキュリティレビューの指摘）。rmtree をリンクへ渡すとリンク先ごと消えるので、
     ここで「リンク先が無事」であることを固定する。
 
     リンク名は中間データが実際に使うディレクトリ名（"aligned"）に揃える——
@@ -278,11 +278,11 @@ def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys)
 
 
 def test_purge_refuses_when_workdir_itself_is_a_junction(tmp_path, capsys):
-    """workdir 自体が reparse point の場合は何も消さず rc=2（いろは/AZKi 指摘・
+    """workdir 自体が reparse point の場合は何も消さず rc=2（セキュリティ表層レビュー担当/セキュリティレビューの指摘・
     issue #108 で unsafe_root の1種として purge_refused イベントに統合）。
 
     wd.iterdir() は reparse point 越しにリンク先を列挙してしまう
-    （えーちゃん実測・junction_probe.py）ため、削除前にここで弾く。
+    （コーディネーター実測・junction_probe.py）ため、削除前にここで弾く。
     ミューテーション: cmd_purge の reparse point 検査を外すと、このテストは
     「リンク先の中身が消えている」側で赤くなる。
     """
@@ -316,7 +316,7 @@ def test_purge_refuses_when_workdir_itself_is_a_junction(tmp_path, capsys):
 def test_purge_does_not_keep_a_symlink_named_cred_dpapi(tmp_path, capsys):
     """cred.dpapi という名前でも symlink なら資格情報として残さない
     （実体ではなく偽装されうるため信用しない・reparse point 判定を
-    名前一致より先に見る・いろは指摘 (e)）。
+    名前一致より先に見る・セキュリティ表層レビュー担当指摘 (e)）。
 
     ファイル symlink の作成には Windows で管理者権限または開発者モードが
     要ることがある——作れない環境では意味のある検証にならないため skip する

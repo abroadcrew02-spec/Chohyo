@@ -62,7 +62,7 @@ class Config:
     # いずれかのみ——**_validate はこのキーだけ例外を投げない特例**
     # （下記 _validate 参照・AC-F60）
     last_template: str = "shipped"
-    # issue #72 (t)・M-1（2026-09-02 マリン指摘）。last_template を
+    # issue #72 (t)・M-1（2026-09-02 レビュー担当指摘）。last_template を
     # フォールバックしたときの理由コード（空文字列 = フォールバックなし）。
     # 本番の呼び出し順（load_config → log.init）では、_validate の時点で
     # まだ logging_safe が初期化されておらず直接 warn しても消えるため、

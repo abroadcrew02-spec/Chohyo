@@ -124,7 +124,7 @@ def test_ac_1_5_w1_w3_counts_unchanged_and_w3_gets_marker_when_one_field_exclude
 
 
 def test_w1_w2_get_marker_when_the_field_is_excluded(tmp_path):
-    """コーディネーター指示（トワ・ぼたん S-8）: W-1/W-2 にも同じ印を付ける
+    """コーディネーター指示（QA 担当・設計担当 S-8）: W-1/W-2 にも同じ印を付ける
     （要件書 05 の FR-1.2 表は W-3 のみ明記だが、対象の欄が output:false なら
     W-1/W-2 も同様に読み手へ伝えるべきという指示に沿って拡張する）。
     """

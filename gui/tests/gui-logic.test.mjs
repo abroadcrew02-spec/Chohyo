@@ -264,7 +264,7 @@ test("#60 rename_fallback が「実行時のお知らせ」になる（課金に
 // ---------------------------------------------------------------- issue #65-3 S2
 // counterNotice: run/remap の完了サマリに乗る新カウンタ（fallback_used/
 // fallback_discarded/carve_hole/conflict_excluded_field）の「実行時のお知らせ」
-// 1行化。マリンレビュー S-3（conflict の区別漏れ）・S-4（carve_hole が〓に
+// 1行化。レビュー S-3（conflict の区別漏れ）・S-4（carve_hole が〓に
 // 触れていない）・N-7（「参照先から採用/破棄」の主語を明確化）を反映した文言
 test("S2-1 counterNotice: 非0カウンタから対象外欄由来の内訳・〓の結果・食い違いを含む通知が作られる", () => {
   const t = counterNotice({
@@ -843,7 +843,7 @@ test("exclusionChangeNotice: 4件以上の座標変化は「ほかN件」に集�
     "3件表示＋『ほか2件』の集約になっているはず: " + notice);
 });
 
-// ---------------------------------------------------------------- いろは5巡目指摘
+// ---------------------------------------------------------------- セキュリティ表層レビュー担当5巡目指摘
 // expand-page の aligned:false 案内を reason で出し分ける
 test("expandAlignNotice: aligned:true は従来どおりの成功文言", () => {
   const r = expandAlignNotice(true, undefined, "");
@@ -896,7 +896,7 @@ test("expandAlignNotice: verdict=mismatch は黄帯・上書き案内つき・�
   assert.equal(r.isError, false, "黄帯は errMsg（赤帯）に出してはいけない");
   assert.ok(r.text.includes("chouhyo-v1"), r.text);
   assert.ok(r.text.includes("様式が合いません"), r.text);
-  // ころね（user_advocate）の初見ユーザー予測レビュー: 案内文が指す先の
+  // user_advocateの初見ユーザー予測レビュー: 案内文が指す先の
   // ボタン名を新ラベル「判定を無視して枠を表示する」に揃える（旧ラベル
   // 「それでもこのテンプレートで開く」だとボタンと文言が食い違っていた）
   assert.ok(r.text.includes("判定を無視して枠を表示する"), r.text);
@@ -973,7 +973,7 @@ test("visibleFields: hidden が空集合なら配列をそのまま返す（一�
   assert.equal(visibleFields(fields, new Set(), SPLIT_Y, IMG_H), fields);
 });
 
-// selHiddenByFormat（issue #71 (a')・スバル差し戻し2）: 出力列タブの一覧経由で
+// selHiddenByFormat（issue #71 (a')・設計レビュー差し戻し2）: 出力列タブの一覧経由で
 // 選ばれた sel が、隠れている面（不一致）に属していないかを判定する純関数。
 // nudge／削除の入口・出力列タブの選択不可表示の両方がこの1関数を通る
 test("selHiddenByFormat: 隠れた面（front）の欄を選んでいれば true", () => {
@@ -1009,7 +1009,7 @@ test("selHiddenByFormat: 選択中の uid が存在しない（既に削除済�
     false);
 });
 
-// ---------------------------------------------------------------- マリン最終レビュー H-1
+// ---------------------------------------------------------------- レビュー H-1
 test("promoteFailureNotice: staged の在り処を必ず案内し、rustError の詳細をそのまま伝える", () => {
   const n = promoteFailureNotice("C:\\app\\templates\\chouhyo-v1.json",
     "保存の確定に失敗しました（アクセスが拒否されました）。直前の内容へ戻しました（壊れていません）。"
@@ -1461,7 +1461,7 @@ test("unclearPopulationNote: 要確認セル数の母集団が縮小したとき
   assert.ok(!note.includes("を除く"), "因果表現（を除く）を使わない");
 });
 
-// ---------------------------------------------------------------- issue #66 段4（FR-1.9・かなたS-5）
+// ---------------------------------------------------------------- issue #66 段4（FR-1.9・デザインレビュー S-5）
 test("outputDisabledNotice: N=0・フィールド欠落（旧コア互換）は非表示", () => {
   assert.equal(outputDisabledNotice(0), null, "対象外0件は表示しない");
   assert.equal(outputDisabledNotice(undefined), null, "旧コア（フィールド欠落）は非表示に倒す");
@@ -1677,7 +1677,7 @@ test("Q-H2 buildTemplateJson: clamp 済み入力なら droppedCount=0 で全要�
     template.faces[0].exclusions.length + template.faces[1].exclusions.length, excls.length);
 });
 
-// buildTemplateJson: 空面は書き出さない（Orchestrator決定・2回目のころね
+// buildTemplateJson: 空面は書き出さない（Orchestrator決定・2回目のUX 代弁担当
 // 実機検証で発覚した保存拒否の根本対応）。実コアは面ごとに位置合わせの
 // アンカー（tables、無ければ fields の枠線・#86）を要求する（D-25）ため、fields/tables/exclusions が全て空の面をそのまま
 // 書き出すと「そのアンカーが無い」という理由だけで保存が拒否されていた。
@@ -1891,7 +1891,7 @@ test("#123 parseVerify: cred_error が無ければ credError は undefined（旧
 
 // ---------------------------------------------------------------- issue P-H1
 // accumulationNotice: 中間データの累積が1,000頁を超えたら purge を促す
-// （レビュー7巡目 Wave 0・らでん逆張り採用分）。total_done_pages・
+// （レビュー7巡目 Wave 0・批判役の指摘採用分）。total_done_pages・
 // render_seconds は枠D が並行で追加中のキーのため、欠落を防御的に扱う
 test("accumulationNotice: 1,000頁以上・render_seconds ありは件数と秒数を含む", () => {
   const t = accumulationNotice({ total_done_pages: 1500, render_seconds: 12.3 });
@@ -2031,7 +2031,7 @@ test("#119 completionNotice: rows===0 の分岐は「保持している中間デ
   assert.ok(t.includes("5 ページ"), t);
 });
 
-// reasonCodeNotice（issue #71 (a')・設計08 §2.4.3・スバル差し戻し1で
+// reasonCodeNotice（issue #71 (a')・設計08 §2.4.3・設計レビュー差し戻し1で
 // frame_edge を「位置合わせ失敗」グループへ訂正し frame_check_failed を追加）
 // reason_code → 平易な言葉
 test("reasonCodeNotice: frame_size/frame_lines/frame_ambiguous（様式不一致・送信前）は同じ言葉になる", () => {
@@ -2081,7 +2081,7 @@ test("reasonCodeNotice: 未知コード・未提供は null（存在しない説
   assert.equal(reasonCodeNotice("unknown_code"), null);
 });
 // REASON_CODE_JA のキー集合が 08 §2.4.3 の理由コード表と完全一致することを
-// 機械的に固定する（スバル差し戻し1「表のキー集合と一致を assert」）。
+// 機械的に固定する（設計レビュー差し戻し1「表のキー集合と一致を assert」）。
 // issue #80 で row_build_bug を足して 10 → 11 コード
 const FRAME_REASON_CODES_08 = [
   "frame_size", "frame_lines", "frame_ambiguous",
@@ -2102,7 +2102,7 @@ test("noImageNotice: template_id・欄数・表数が反映され、text は lin
   assert.ok(n.line1.includes("chouhyo-v1"), n.line1);
   assert.ok(n.line1.includes("12"), n.line1);
   assert.ok(n.line1.includes("3"), n.line1);
-  // マリンレビュー M-1: 自動読み込みされた出荷テンプレか loadTemplate 経由の
+  // レビュー M-1: 自動読み込みされた出荷テンプレか loadTemplate 経由の
   // 利用者自身の JSON かを区別しない中立な文言にする（「出荷」を含めない）
   assert.ok(!n.line1.includes("出荷"), n.line1);
   assert.ok(n.line2.includes("画像") || n.line2.includes("PDF"), n.line2);
@@ -2207,7 +2207,7 @@ test("emptyTemplateFor: 画像の実寸・現在の表裏境界で2面・欄/表
 });
 
 // splitY >= height（無関係な紙・片面の画像）は面を1つ（表面・全面）だけ
-// 返す（Orchestrator決定・2回目のころね実機検証で判明: 実コアは面ごとに
+// 返す（Orchestrator決定・2回目のUX 代弁担当実機検証で判明: 実コアは面ごとに
 // tables 1件以上を要求するため（D-25）、中身の入りようが無い裏面を機械的に
 // 作ると「裏面にテーブルが無い」という理由だけで保存が拒否されていた）
 test("emptyTemplateFor: splitY が画像の高さ以上なら面を1つ（表面・全面）だけ返す", () => {
@@ -2223,7 +2223,7 @@ test("emptyTemplateFor: splitY がちょうど画像の高さでも面を1つだ
   assert.equal(t.faces.length, 1);
   assert.equal(t.faces[0].source.rect.h, 500);
 });
-// splitY のクランプは高さ0ではなく高さ1px以上を保つ（ころね UX Must の
+// splitY のクランプは高さ0ではなく高さ1px以上を保つ（UX 代弁担当 UX Must の
 // 実機検証で発見: 高さ0の面は schema/template.schema.json の rect.h
 // minimum:1 に反し、保存時に実コアのスキーマ検証で拒否されていた——旧
 // テスト名の「負にならない」は満たしていたが「1px以上」までは検査して
@@ -2248,7 +2248,7 @@ test("newTemplateNotice: 候補ありの分岐は候補確認を案内する（�
 });
 
 // ---------------------------------------------------------------- issue #72 (t)
-// restoredTemplateNotice（スバル差し戻し1）: read_default_template が
+// restoredTemplateNotice（設計レビュー差し戻し1）: read_default_template が
 // config.last_template を解決して返すため、起動時にどちらが復元されたかを
 // last_template の値（"user:<名前>" かどうか）だけで判定する。
 // template_id の値には依存しない（デモの疑似出荷は id が任意になるため）
@@ -2275,7 +2275,7 @@ test("restoredTemplateNotice: 欄・表がどちらも0なら（前回の表示�
 });
 
 // ---------------------------------------------------------------- issue #72 (t)
-// templateSwitchImageSizeNotice（スバル差し戻し2）: テンプレート切替時、
+// templateSwitchImageSizeNotice（設計レビュー差し戻し2）: テンプレート切替時、
 // 表示中の画像とテンプレートの image 寸法が食い違っていたら黄帯で伝える
 // （ブロックはしない）
 test("templateSwitchImageSizeNotice: 寸法が食い違えば理由付きの注意を返す", () => {
@@ -2292,13 +2292,13 @@ test("templateSwitchImageSizeNotice: 画像未表示・テンプレの image 未
   assert.equal(templateSwitchImageSizeNotice({ w: 100, h: 100 }, null), null);
   assert.equal(templateSwitchImageSizeNotice({ w: 100, h: 100 }, undefined), null);
 });
-test("rankCandidates: truncated の注記は『候補が多い・時間切れ』の文言になる（マリン core レビュー分）", () => {
+test("rankCandidates: truncated の注記は『候補が多い・時間切れ』の文言になる（レビュー担当 core レビュー分）", () => {
   const r = rankCandidates([cand("A", "shipped", "match", 0.9)], true);
   assert.ok(r.notice.includes("候補が多い・時間切れ"), r.notice);
 });
 
 // ---------------------------------------------------------------- issue #72 (t)
-// excludedReasonJa / matchErrorJa（マリン core レビュー分）: 除外理由・
+// excludedReasonJa / matchErrorJa（レビュー担当 core レビュー分）: 除外理由・
 // 照合失敗理由の日本語化。core・Rust の理由コードは複数箇所（list_user_
 // templates と match_templates）から出るため、訳語を1関数に集約する
 test("excludedReasonJa: 既知コードを日本語へ訳す（list_user_templates・match_templates 双方の値）", () => {
@@ -2514,20 +2514,20 @@ test("zeroReasonNotice: null/undefined は null・未知コードはコードを
   assert.ok(zeroReasonNotice("future_code").includes("future_code"));
 });
 
-test("candidateOverlapWarning: 実態（切り抜かれる）に合わせた文言になる（スバル差し戻し Must-2）", () => {
+test("candidateOverlapWarning: 実態（切り抜かれる）に合わせた文言になる（設計レビュー差し戻し Must-2）", () => {
   // 旧文言「保存時の重なり検証で拒否されることがあります」は誤り——実態は
   // saveTemplateInner の resolveOverlaps が既存枠を無言で切り抜く（拒否ではない）
   const t = candidateOverlapWarning();
   assert.ok(t.includes("重な"), t);
   assert.ok(t.includes("採用"), t);
   assert.ok(t.includes("切り抜かれ"), t);
-  // スバル再レビューの懸念: 表が絡む重なりは切り抜きではなく保存拒否になる
+  // 設計レビュー担当再レビューの懸念: 表が絡む重なりは切り抜きではなく保存拒否になる
   // （core の同一面セル重なり検査・issue #24）。両方の挙動を明記する
   assert.ok(t.includes("表が絡む"), t);
   assert.ok(t.includes("拒否"), t);
 });
 
-test("overlapAcceptedNotice: 保存時に既存枠が調整される旨を含む（スバル差し戻し Must-2・保存まで残す注意）", () => {
+test("overlapAcceptedNotice: 保存時に既存枠が調整される旨を含む（設計レビュー差し戻し Must-2・保存まで残す注意）", () => {
   const t = overlapAcceptedNotice();
   assert.ok(t.includes("採用"), t);
   assert.ok(t.includes("切り抜"), t);
@@ -2535,7 +2535,7 @@ test("overlapAcceptedNotice: 保存時に既存枠が調整される旨を含む
 });
 
 // ---------------------------------------------------------------- issue #73 (b)
-// candidateOverlapsExisting（スバル差し戻し Must-1）: tplPath が null で
+// candidateOverlapsExisting（設計レビュー差し戻し Must-1）: tplPath が null で
 // --template を渡せない経路でも、GUI 側で独立に重なりを再判定できることを
 // 保証する。field との交差／table block との交差／接するだけ（面積0）は
 // 非重なり、を確認する
@@ -2590,7 +2590,7 @@ test("runDetectFrames 相当（overlaps の OR）: candidatesFromDetectFrames �
 });
 
 // ---------------------------------------------------------------- issue #73 (b)
-// candidateAriaLabel（ラミィ／accessibility 差し戻し Should）: チェック
+// candidateAriaLabel（a11y 担当／accessibility 差し戻し Should）: チェック
 // ボックスの aria-label は可視情報（種別・id・面ヒント・重なり）と同じ
 test("candidateAriaLabel: 種別・id・面ヒント・重なりを可視表示と同じ内容で組み立てる", () => {
   const table = { id: "c1", kind: "table", rect: { x: 0, y: 0, w: 1, h: 1 },
@@ -2604,7 +2604,7 @@ test("candidateAriaLabel: 種別・id・面ヒント・重なりを可視表示�
 });
 
 // ---------------------------------------------------------------- issue #73 (b)
-// excludedSummaryJa（マリン core レビュー由来）: detect-frames の
+// excludedSummaryJa（レビュー担当 core レビュー由来）: detect-frames の
 // excluded[] を日本語の内訳へ。count<=0 は数えない・未知コードは捏造しない
 test("excludedSummaryJa: count>0 の reason だけを日本語で列挙する", () => {
   const t = excludedSummaryJa([
@@ -2625,7 +2625,7 @@ test("excludedSummaryJa: 空・undefined・全件count0 は null（表示しな�
 });
 
 // ---------------------------------------------------------------- issue #73 (b)
-// templateSkipReasonNotice（マリン core レビュー由来）: --template 指定時に
+// templateSkipReasonNotice（レビュー担当 core レビュー由来）: --template 指定時に
 // 寸法不一致でテンプレートが適用されなかった旨を伝える
 test("templateSkipReasonNotice: template_applied:false かつ size_mismatch は面割当/重なり判定をしていない旨を伝える", () => {
   const t = templateSkipReasonNotice(false, "size_mismatch");
@@ -2646,7 +2646,7 @@ test("templateSkipReasonNotice: 未知の skip_reason でも捏造せず文言�
 });
 
 // ---------------------------------------------------------------- issue #73 (b)
-// shouldSwitchToCandidatesTab（ラミィ／accessibility 3回目確認・Must）:
+// shouldSwitchToCandidatesTab（a11y 担当／accessibility 3回目確認・Must）:
 // 「0件→N件」限定をやめ、生成完了のたびに（候補が既にある状態からの
 // 再生成でも）切り替える。候補0件（zero_reason あり）のときだけ切り替えない
 test("shouldSwitchToCandidatesTab: 生成完了で候補が1件以上あれば常に切り替える（prevLenの値によらない）", () => {
@@ -2664,7 +2664,7 @@ test("shouldSwitchToCandidatesTab: nextLen=0 かつ zero_reason 無し（防御�
   assert.equal(shouldSwitchToCandidatesTab(0, 0, undefined), false);
 });
 
-// newTemplateActionAvailable（ころね／user_advocate UX レビュー Must）:
+// newTemplateActionAvailable（user_advocate UX レビュー Must）:
 // 従来は様式不一致の黄帯（hasFormatMismatch）でしか「この紙用に新しい
 // テンプレートを作る」ボタンが出ず、寸法／向き不一致の赤帯（reason==="size"）
 // では出なかった。README が唯一の復旧導線として案内しているボタンなので、
@@ -2691,7 +2691,7 @@ test("newTemplateActionAvailable: 不一致要因が無ければ無効", () => {
 });
 
 // ---------------------------------------------------------------- issue #72 (t)
-// startDisabledReason（ころね／user_advocate の初見ユーザー予測レビュー）:
+// startDisabledReason（user_advocate の初見ユーザー予測レビュー）:
 // 「読み取りを開始」が無効な理由をボタン直下へ1行出す
 const VERIFY_BASE = { template: true, poppler: true, cred: "dpapi", storage: true,
   budgetUsed: 0, budgetCap: 900, parsed: true };
@@ -2867,7 +2867,7 @@ test("beginRun: 実行前（current=null・retired 空）でも壊れない", ()
 
 
 // ================================================================ issue #67
-// ラミィ（accessibility）再判定 5件。canvas 描画そのものは検査できないため、
+// a11y 担当（accessibility）再判定 5件。canvas 描画そのものは検査できないため、
 // 描画が参照する定数・文言・判定を純関数として固定する
 
 // 1. ハッチ不透明度（Should）
@@ -3806,7 +3806,7 @@ test("初回読み込みフローの文言: 由来・状態・次の一手が読
   assert.match(useTemplateButtonName("chouhyo-v1", "shipped"), /出荷/);
 });
 
-// ラミィ a11y レビュー Should-1（2026-09-04・WCAG 4.1.3）。テンプレ適用と
+// a11y 担当 a11y レビュー Should-1（2026-09-04・WCAG 4.1.3）。テンプレ適用と
 // 候補での作り直しは適用中バー／未適用バー（role="status"）を必ず同時に
 // 更新するため、.msg 側は空にして読み上げを1本へ集約する。実測では
 // .msg・寸法不一致の黄帯・バーの3領域が同時に非空だった。
