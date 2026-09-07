@@ -23,14 +23,14 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } from "./RunScreen.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeRefusedNotice } from "./RunScreen.tsx";\n' +
       // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
       // 衝突しやすいので独立した1行にする
       'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n' +
       // 初回読み込みフロー（候補先行・2026-09-04）。ここも独立した1行にする
       'export { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } from "./Editor.tsx";\n' +
       // 升（表の1マス）単位の出力制御・まとめ提案（issue #66 段9・#73 (b)）
-      'export { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel } from "./Editor.tsx";\n',
+      'export { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel, pruneSuggestionsForCands, duplicateColumnNames, duplicateColumnNamesNotice, remapSelCellOnColumnDelete, remapSelCellOnColumnMove, buildCellColumnPositionIndex, countCellsOffByColumn, cellsOffDropSummary, mergeCellsOffDropSummaries, cellsOffDropNotice, nextBlockX, NEW_BLOCK_GAP_PX, overlappingTableBlocks, overlappingTableBlocksNotice } from "./Editor.tsx";\n',
     resolveDir: srcDir,
     sourcefile: "entry.ts",
     loader: "ts",
@@ -51,10 +51,10 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeRefusedNotice } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
 const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
-const { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel } = mod;
+const { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel, pruneSuggestionsForCands, duplicateColumnNames, duplicateColumnNamesNotice, remapSelCellOnColumnDelete, remapSelCellOnColumnMove, buildCellColumnPositionIndex, countCellsOffByColumn, cellsOffDropSummary, mergeCellsOffDropSummaries, cellsOffDropNotice, nextBlockX, NEW_BLOCK_GAP_PX, overlappingTableBlocks, overlappingTableBlocksNotice } = mod;
 
 let failed = 0;
 let passed = 0;
@@ -1858,6 +1858,37 @@ test("credNotice: cred が env でも env_present でもなければ null（miss
   assert.equal(credNotice("missing", undefined), null);
 });
 
+// ---------------------------------------------------------------- issue #123
+// missingCredentialsNotice: cred_error==="broken" のときだけ「未設定」ではなく
+// 「壊れているので取り込み直す」案内に切り替える
+test("#123 missingCredentialsNotice: credError 未指定・missing 単独なら従来どおり「未設定」", () => {
+  const t = missingCredentialsNotice(undefined);
+  assert.ok(t.includes("認証キーが未設定です"), t);
+  assert.ok(t.includes("認証キーを選択"), t);
+});
+test("#123 missingCredentialsNotice: credError===\"broken\" は取り込み直しを促す具体的な文言になる", () => {
+  const t = missingCredentialsNotice("broken");
+  assert.ok(t.includes("読めません"), t);
+  assert.ok(t.includes("別の Windows"), t);
+  assert.ok(t.includes("選び直して取り込み直してください"), t);
+  assert.ok(!t.includes("未設定です"), "「未設定」の文言は出さない（実際には設定済みで壊れているだけ）: " + t);
+});
+test("#123 missingCredentialsNotice: broken 以外の未知の理由コードは従来どおり「未設定」（存在しない説明を捏造しない）", () => {
+  assert.equal(missingCredentialsNotice("unknown_reason"), missingCredentialsNotice(undefined));
+});
+test("#123 parseVerify: cred_error===\"broken\" を Verify.credError へ拾う", () => {
+  const line = JSON.stringify({ event: "verify", check: "credentials", ok: false,
+    state: "missing", env_present: false, cred_error: "broken" });
+  const v = parseVerify(line);
+  assert.equal(v.cred, "missing");
+  assert.equal(v.credError, "broken");
+});
+test("#123 parseVerify: cred_error が無ければ credError は undefined（旧コア）", () => {
+  const line = JSON.stringify({ event: "verify", check: "credentials", ok: false, state: "missing" });
+  assert.equal(parseVerify(line).credError, undefined);
+});
+// startDisabledReason 版の broken ケースは VERIFY_BASE 定義後（#52 M-12 節の近く）に置く
+
 // ---------------------------------------------------------------- issue P-H1
 // accumulationNotice: 中間データの累積が1,000頁を超えたら purge を促す
 // （レビュー7巡目 Wave 0・らでん逆張り採用分）。total_done_pages・
@@ -1958,6 +1989,46 @@ test("completionNotice: pre_send が一部のみ（rows と不一致）なら従
 test("completionNotice: format_mismatch_pre_send が無い（旧コア）なら従来分岐のまま", () => {
   const t = completionNotice(sum({ rows: 3, format_mismatch: 3 }), 1);
   assert.ok(t.includes("すべてのページが様式不一致でした"), t);
+});
+
+// ------------------------------------------------------------- issue #119
+// completionNotice: 様式不一致の分母を workdir 累計（rows）ではなく今回の
+// run が処理したページ数（processed_pages）にする。過去に成功実績がある
+// workdir（累計 rows が大きい）で新しいバッチが全滅しても、rows と比べたの
+// では一致せず具体的な案内に落ちなかった
+test("#119 completionNotice: 累計 rows が大きくても、今回のバッチが送信前全滅なら processed_pages で判定してテンプレの選び直しへ誘導", () => {
+  const t = completionNotice(sum({ rows: 500, pages: 500,
+    format_mismatch: 2, format_mismatch_pre_send: 2,
+    processed_pages: 2, processed_failed: 2 }), 1);
+  assert.ok(!t.includes("中断"), t);
+  assert.ok(!t.includes("用紙サイズ"), t);
+  assert.ok(t.includes("テンプレートを選び直す"), t);
+});
+test("#119 completionNotice: 累計 rows が大きくても、今回のバッチが送信後全滅なら processed_pages で判定して用紙サイズ確認へ誘導", () => {
+  const t = completionNotice(sum({ rows: 500, pages: 500,
+    format_mismatch: 2, format_mismatch_pre_send: 0,
+    processed_pages: 2, processed_failed: 2 }), 1);
+  assert.ok(!t.includes("中断"), t);
+  assert.ok(t.includes("すべてのページが様式不一致でした"), t);
+  assert.ok(t.includes("用紙サイズ"), t);
+});
+test("#119 completionNotice: processed_pages が無い（旧コア）なら従来どおり rows で比較する（累計に埋もれて汎用文になる）", () => {
+  const t = completionNotice(sum({ rows: 500, pages: 500,
+    format_mismatch: 2, format_mismatch_pre_send: 2 }), 1);
+  assert.ok(t.includes("読み取れたページがありませんでした"), t);
+  assert.ok(!t.includes("テンプレートを選び直す"), t);
+});
+test("#119 completionNotice: processed_pages===0（今回は何も処理していない）なら denom>0 の分岐に入らない", () => {
+  const t = completionNotice(sum({ rows: 500, pages: 500,
+    format_mismatch: 0, format_mismatch_pre_send: 0,
+    processed_pages: 0, processed_failed: 0 }), 1);
+  assert.ok(!t.includes("テンプレートを選び直す"), t);
+  assert.ok(!t.includes("すべてのページが様式不一致でした"), t);
+});
+test("#119 completionNotice: rows===0 の分岐は「保持している中間データ」であって今回0件処理とは言わない", () => {
+  const t = completionNotice(sum({ rows: 0, pages: 5, format_mismatch: 0, format_mismatch_pre_send: 0 }), 1);
+  assert.ok(t.includes("保持している中間データ"), t);
+  assert.ok(t.includes("5 ページ"), t);
 });
 
 // reasonCodeNotice（issue #71 (a')・設計08 §2.4.3・スバル差し戻し1で
@@ -2644,6 +2715,13 @@ test("startDisabledReason: 認証キー未設定・送信上限到達・保存�
 test("startDisabledReason: すべて問題なければ null", () => {
   assert.equal(startDisabledReason("C:\\demo", VERIFY_BASE), null);
 });
+// issue #123: 壊れた鍵（cred_error==="broken"）は「未設定」ではなく取り込み
+// 直しの案内にする
+test("#123 startDisabledReason: cred===\"missing\" かつ credError===\"broken\" は取り込み直しの案内", () => {
+  const t = startDisabledReason("C:\\demo", { ...VERIFY_BASE, cred: "missing", credError: "broken" });
+  assert.ok(t.includes("選び直して取り込み直してください"), t);
+  assert.ok(!t.includes("未設定です"), t);
+});
 
 // ---------------------------------------------------------------- issue #72 (t)
 // parseLastTemplate / formatLastTemplate / resolveSelectedTemplate
@@ -3079,10 +3157,18 @@ test("#52 M-11 purgeNotice: 削除件数と「認証キーは残した」を出�
   assert.ok(t.includes("認証キーは残しています"), t);
   assert.ok(!t.includes("削除できませんでした"), "失敗0件のときは失敗の話をしない");
 });
-test("#52 M-11 purgeNotice: 絶対パスは画面へ出さない（07 §7.3）", () => {
+// issue #108: 以前は「絶対パスは画面へ出さない」（07 §7.3）方針で path を
+// 意図的に省いていたが、#108 で「どこを消したか」を確認画面に出す方針へ
+// 転換したため、結果通知も path を含める向きに変わった
+test("#108 purgeNotice: 削除対象のパスを先頭に出す", () => {
   const t = purgeNotice({ event: "purged", path: "C:\\wd", output_dir: "C:\\out",
     cred_kept: true, removed: 1, failed: 0, output_removed: 1, output_kept: 0,
     output_failed: 0 });
+  assert.ok(t.startsWith("C:\\wd の中間データを 1 件削除しました"), t);
+});
+test("#108 purgeNotice: path が無い（旧コア）ときは従来どおりパスに触れない", () => {
+  const t = purgeNotice({ event: "purged", cred_kept: true, removed: 1, failed: 0 });
+  assert.ok(t.startsWith("中間データを 1 件削除しました"), t);
   assert.ok(!t.includes("C:\\"), t);
 });
 test("#52 M-11 purgeNotice: 削除できなかった件数を必ず出す（消し損ねを黙らせない）", () => {
@@ -3102,6 +3188,111 @@ test("#52 M-11 purgeNotice: --include-output のときだけ出力ファイル�
 test("#52 M-11 noticeFor: purged を実行時のお知らせへ配線している", () => {
   const t = noticeFor({ event: "purged", cred_kept: true, removed: 4, failed: 0 });
   assert.ok(t !== null && t.includes("中間データを 4 件削除しました"), t);
+});
+
+// ================================================================ issue #108
+// 中間データ削除の事前確認: purge --preview の応答を parsePurgePreview で
+// 画面用の形へ変換し、purgeGate で「進めてよいか」を決める
+const previewLine = (over = {}) => JSON.stringify({
+  event: "purge_preview", path: "C:\\wd", output_dir: "C:\\out",
+  tool_items: 12, other_items: 0, other_examples: [], safe_root: true,
+  unsafe_reason: null, ...over,
+});
+test("#108 parsePurgePreview: 実測どおりのキーを読み取る", () => {
+  const p = parsePurgePreview(previewLine({ tool_items: 7 }));
+  assert.equal(p.parsed, true);
+  assert.equal(p.path, "C:\\wd");
+  assert.equal(p.outputDir, "C:\\out");
+  assert.equal(p.toolItems, 7);
+  assert.equal(p.otherItems, 0);
+  assert.deepEqual(p.otherExamples, []);
+  assert.equal(p.safeRoot, true);
+  assert.equal(p.unsafeReason, null);
+});
+test("#108 parsePurgePreview: event:\"purge_preview\" 行が1つも無ければ parsed:false（fail-closed）", () => {
+  const p = parsePurgePreview("not json\n");
+  assert.equal(p.parsed, false);
+  assert.equal(p.safeRoot, false, "確認できないときは安全側に倒さない（false）");
+  assert.equal(p.rawFirstLine, "not json");
+});
+test("#108 parsePurgePreview: safe_root が欠落・不正な型なら false へ倒す（fail-closed）", () => {
+  assert.equal(parsePurgePreview(previewLine({ safe_root: undefined })).safeRoot, false);
+  assert.equal(parsePurgePreview(previewLine({ safe_root: "true" })).safeRoot, false);
+});
+test("#108 purgeGate: プレビュー未取得は preview_failed", () => {
+  const g = purgeGate(null);
+  assert.deepEqual(g, { allowed: false, reason: "preview_failed" });
+  const g2 = purgeGate(parsePurgePreview("not json\n"));
+  assert.equal(g2.allowed, false);
+  assert.equal(g2.reason, "preview_failed");
+});
+test("#108 purgeGate: safe_root:false は unsafe_root（other_items の判定より先に見る）", () => {
+  const g = purgeGate(parsePurgePreview(
+    previewLine({ safe_root: false, unsafe_reason: "drive_root", other_items: 3 })));
+  assert.equal(g.allowed, false);
+  assert.equal(g.reason, "unsafe_root");
+  assert.ok(g.detail.includes("ドライブ"), g.detail);
+});
+test("#108 purgeGate: other_items > 0 は other_items（例を含む）", () => {
+  const g = purgeGate(parsePurgePreview(
+    previewLine({ other_items: 2, other_examples: ["原本.pdf", "メモ.txt"] })));
+  assert.equal(g.allowed, false);
+  assert.equal(g.reason, "other_items");
+  assert.equal(g.otherItems, 2);
+  assert.deepEqual(g.examples, ["原本.pdf", "メモ.txt"]);
+});
+test("#108 purgeGate: 安全な置き場・対象外ファイル0件なら allowed", () => {
+  const g = purgeGate(parsePurgePreview(previewLine()));
+  assert.deepEqual(g, { allowed: true });
+});
+test("#108 UNSAFE_REASON_JA / unsafeRootNotice: core の理由コードを平易な言葉にする", () => {
+  for (const code of ["drive_root", "unc", "dot", "empty", "profile_root", "reparse_point"]) {
+    assert.ok(typeof UNSAFE_REASON_JA[code] === "string" && UNSAFE_REASON_JA[code].length > 0, code);
+    assert.equal(unsafeRootNotice(code), UNSAFE_REASON_JA[code]);
+  }
+  assert.equal(unsafeRootNotice(null), null);
+  assert.equal(unsafeRootNotice(undefined), null);
+});
+test("#108 unsafeRootNotice: 対応表に無いコードは実在しない説明を捏造せず理由コードを添える", () => {
+  const t = unsafeRootNotice("mystery_code");
+  assert.ok(t !== null && t.includes("mystery_code"), t);
+});
+test("#108 purgeBlockedNotice: allowed のときは null", () => {
+  assert.equal(purgeBlockedNotice({ allowed: true }), null);
+});
+test("#108 purgeBlockedNotice: preview_failed は確認できなかった旨を伝える", () => {
+  const t = purgeBlockedNotice({ allowed: false, reason: "preview_failed" });
+  assert.ok(t.includes("確認できませんでした"), t);
+});
+test("#108 purgeBlockedNotice: unsafe_root は理由を括弧書きで含める", () => {
+  const t = purgeBlockedNotice({ allowed: false, reason: "unsafe_root", detail: "ドライブの直下が指定されています" });
+  assert.ok(t.includes("ドライブの直下が指定されています"), t);
+  assert.ok(t.includes("削除は行いません"), t);
+});
+test("#108 purgeBlockedNotice: other_items は件数・例・次のアクションを伝える", () => {
+  const t = purgeBlockedNotice({ allowed: false, reason: "other_items",
+    otherItems: 3, examples: ["原本.pdf"] });
+  assert.ok(t.includes("3 件"), t);
+  assert.ok(t.includes("原本.pdf"), t);
+  assert.ok(t.includes("削除を止めました"), t);
+  assert.ok(t.includes("別の場所へ移してから"), t);
+});
+test("#108 purgeBlockedNotice: other_items で例が0件でも件数だけは伝える（括弧書きは省く）", () => {
+  const t = purgeBlockedNotice({ allowed: false, reason: "other_items", otherItems: 1, examples: [] });
+  assert.ok(t.includes("1 件"), t);
+  assert.ok(!t.includes("（例:"), t);
+});
+test("#108 purgeRefusedNotice: purge_refused（other_items）は purgeBlockedNotice と同じ文言", () => {
+  const t = purgeRefusedNotice({ event: "purge_refused", reason: "other_items",
+    other_items: 2, other_examples: ["原本.pdf"], path: "C:\\wd" });
+  assert.ok(t.includes("2 件"), t);
+  assert.ok(t.includes("原本.pdf"), t);
+  assert.ok(t.includes("削除を止めました"), t);
+});
+test("#108 purgeRefusedNotice: purge_refused（unsafe_root）は詳細コードを持たないため汎用文言", () => {
+  const t = purgeRefusedNotice({ event: "purge_refused", reason: "unsafe_root", path: "C:\\" });
+  assert.ok(t.includes("削除を止めました"), t);
+  assert.ok(!t.includes("undefined"), t);
 });
 
 // ================================================================ issue #52 M-10
@@ -3169,6 +3360,20 @@ test("#53 L-17 truncatedFailureNotice: 溢れた件数だけを注記する", ()
   const t = truncatedFailureNotice(1200, 400);
   assert.ok(t.includes("他 800 件"), t);
   assert.ok(t.includes("400 件まで"), t);
+});
+
+// ================================================================ issue #118
+// interruptOutcome: kill_core の成否を見てから中断フラグを立てるかどうかを
+// 決める。以前は成否を見ずに常にフラグを立てており、kill が失敗しても
+// 「中断済み」扱いになって完了時のエラー表示が抑止されていた
+test("#118 interruptOutcome: kill 成功なら interrupted:true・通知なし", () => {
+  assert.deepEqual(interruptOutcome(true), { interrupted: true, notice: null });
+});
+test("#118 interruptOutcome: kill 失敗なら interrupted:false・処理続行中の旨を通知する", () => {
+  const r = interruptOutcome(false);
+  assert.equal(r.interrupted, false);
+  assert.ok(r.notice.includes("中断できませんでした"), r.notice);
+  assert.ok(r.notice.includes("処理は続いています"), r.notice);
 });
 
 // ================================================================ issue #52 M-12 / Q-MJ
@@ -4068,6 +4273,432 @@ test("AC-H36 suggestionAdoptMessage: 結果文に Ctrl+Z で戻せることを�
 
 test("AC-H35 CAND_PAGE_SIZE: 升候補は 50 件ずつ伸ばす（ページングにしない）", () => {
   assert.equal(CAND_PAGE_SIZE, 50);
+});
+
+// ================================================================ issue #109
+// 提案カードのライフサイクル。(a) 参照する升候補が cands に無い提案は
+// 「表にまとめる」で何も作らない（mode:cells と対称）。cands だけが変わる
+// 操作（一括採用・個別採用・全除去）のあとは pruneSuggestionsForCands で
+// 提案そのものを落とす。(b) は Snap/candidatesFromDetectFrames の世代分離
+// （コンポーネント配線・純関数の両方をここで固定する）
+test("#109 (a) adoptSuggestionResult mode:table: 参照升が cands に1件も無ければ何も作らない（mode:cells と対称）", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  const [s] = suggestionsFromDetectFrames(ev, cands);
+  const mk = (() => { let n = 0; return () => `u${++n}`; })();
+  // 4升すべてが既に候補から消えている（個別採用等で消費済みの状況を模す）
+  const base = { fields: [], tables: [], cands: [], suggestions: [s] };
+  const rTable = adoptSuggestionResult(base, s, "table", mk);
+  assert.equal(rTable.acceptedCount, 0, "修正前は定数1で必ず表を作っていた");
+  assert.equal(rTable.tables.length, 0, "空の表を作らない");
+  assert.equal(rTable.fields.length, 0);
+  const rCells = adoptSuggestionResult(base, s, "cells", mk);
+  assert.equal(rCells.acceptedCount, 0, "mode:cells は既存どおり0件");
+  // 1升だけでも残っていれば採用できる（0件だけが「何もしない」の境界）
+  const base1 = { fields: [], tables: [], cands: [cands[0]], suggestions: [s] };
+  const rTable1 = adoptSuggestionResult(base1, s, "table", mk);
+  assert.equal(rTable1.acceptedCount, 1);
+  assert.equal(rTable1.tables.length, 1);
+  assert.deepEqual(rTable1.cands, [], "残っていた1升も表に取り込まれて消える");
+});
+
+test("#109 (a) pruneSuggestionsForCands: 参照升が0件の提案だけを落とす（1件でも残れば残す）", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  const [s] = suggestionsFromDetectFrames(ev, cands);
+  // 4升のうち1升だけ残る → 提案はまだ生きている
+  assert.deepEqual(pruneSuggestionsForCands([s], [cands[0]]), [s]);
+  // 0升 → 提案は落ちる
+  assert.deepEqual(pruneSuggestionsForCands([s], []), []);
+  // 無関係な候補が残っていても、この提案の cellIds と重ならなければ落ちる
+  const unrelated = { id: "cX", kind: "field", rect: { x: 0, y: 0, w: 1, h: 1 },
+                       faceHint: null, residual: 0, overlaps: false };
+  assert.deepEqual(pruneSuggestionsForCands([s], [unrelated]), []);
+});
+
+test("#109 (b) candidatesFromDetectFrames: epoch 省略時は従来どおり無印（既存呼び出しの互換）", () => {
+  const ev = detectEv();
+  const cands = candidatesFromDetectFrames(ev);
+  assert.deepEqual(cands.map((c) => c.id), ["c0", "c1", "c2", "c3"]);
+});
+test("#109 (b) candidatesFromDetectFrames: epoch を渡すと id の頭に世代を刻む・世代が違えば衝突しない", () => {
+  const ev = detectEv();
+  const gen0 = candidatesFromDetectFrames(ev, 0);
+  const gen1 = candidatesFromDetectFrames(ev, 1);
+  assert.deepEqual(gen0.map((c) => c.id), ["e0_c0", "e0_c1", "e0_c2", "e0_c3"]);
+  assert.deepEqual(gen1.map((c) => c.id), ["e1_c0", "e1_c1", "e1_c2", "e1_c3"]);
+  // 同じ添字（core 側の並び）でも世代が違えば id 空間が重ならない
+  const gen0Ids = new Set(gen0.map((c) => c.id));
+  assert.ok(gen1.every((c) => !gen0Ids.has(c.id)),
+    "Undo で古い世代の cands が復元されても、別世代の提案の cellIds が誤って一致しない");
+});
+
+// issue #109 (b) の配線（Snap への suggestions/candSelected 追加・restoreSnap
+// での復元・epoch を渡した候補生成呼び出し）はコンポーネント内クロージャで
+// 直接は呼べないため、ソース上の配線をピン留めする（#67-5 と同じ手法）
+test("#109 (b) 配線: Snap 型が suggestions/candSelected を持ち、restoreSnap が両方を復元する", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(/type Snap = \{[^}]*suggestions: Suggestion\[\][^}]*candSelected: Record<string, boolean>/s
+    .test(src), "Snap 型に suggestions/candSelected が無い");
+  assert.ok(src.includes("setSuggestions(snap.suggestions ?? []);"),
+    "restoreSnap が suggestions を復元していない");
+  assert.ok(src.includes("setCandSelected(snap.candSelected ?? {});"),
+    "restoreSnap が candSelected を復元していない");
+  assert.ok(src.includes("candidatesFromDetectFrames(ev, o.epoch)"),
+    "detectFrames が世代付きで候補 id を採番していない");
+});
+
+// ================================================================ issue #114
+// 行数の確定（changeTableBlocks）は兄弟操作（toggleCell 等）と同じく
+// 「押した瞬間から Ctrl+Z 1手で戻せる」規律を pushHistoryNow で守る必要がある
+// ——閉じたクロージャなので、呼び出し順序はソース上でピン留めする
+test("#114 配線: changeTableBlocks は setTables の前に pushHistoryNow を呼ぶ（400ms 静止に任せない）", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const m = /const changeTableBlocks = \(t: Table, nextBlocks: Block\[\]\) => \{([\s\S]*?)\n  \};/
+    .exec(src);
+  assert.ok(m, "changeTableBlocks の本体が見つからない");
+  const body = m[1];
+  const pushAt = body.indexOf("pushHistoryNow(");
+  const setAt = body.indexOf("setTables(nextTables);");
+  assert.ok(pushAt >= 0 && setAt >= 0, "pushHistoryNow / setTables が見つからない");
+  assert.ok(pushAt < setAt, "pushHistoryNow は setTables より前で呼ぶ（後だと400ms窓に穴が残る）");
+});
+
+// ================================================================ issue #115
+// 同じ表の中の列名重複。commitColumnName は確定を止め、
+// remapCellsOffOnColumnRename は防御として融合させない。
+// duplicateColumnNames(Notice) は保存前確認向けの独立検査
+test("#115 duplicateColumnNames: 同じ表の中の重複列名だけを拾う（表をまたいだ同名は対象外）", () => {
+  const a = tbl({ uid: "t1", table_id: "detail",
+    columns: [{ name: "金額", x_offset: 0, width: 10, kind: "text", subfields: "", marks: [] },
+              { name: "金額", x_offset: 10, width: 10, kind: "text", subfields: "", marks: [] },
+              { name: "品名", x_offset: 20, width: 10, kind: "text", subfields: "", marks: [] }] });
+  const b = tbl({ uid: "t2", table_id: "family",
+    columns: [{ name: "金額", x_offset: 0, width: 10, kind: "text", subfields: "", marks: [] }] });
+  assert.deepEqual(duplicateColumnNames([a, b]), [{ tableId: "detail", name: "金額" }]);
+  assert.deepEqual(duplicateColumnNames([b]), [], "表をまたいだ同名は重複ではない");
+});
+test("#115 duplicateColumnNamesNotice: 重複が無ければ null・あれば表名と列名を含む", () => {
+  const clean = tbl();
+  assert.equal(duplicateColumnNamesNotice([clean]), null);
+  const dup = tbl({ table_id: "detail",
+    columns: [{ name: "金額", x_offset: 0, width: 10, kind: "text", subfields: "", marks: [] },
+              { name: "金額", x_offset: 10, width: 10, kind: "text", subfields: "", marks: [] }] });
+  const notice = duplicateColumnNamesNotice([dup]);
+  assert.ok(notice.includes("detail: 金額"), notice);
+  assert.ok(notice.includes("重複"), notice);
+});
+test("#115 remapCellsOffOnColumnRename: 改名先が既に別の列の名前なら融合させず現状維持（防御）", () => {
+  const t = tbl({ cellsOff: new Set(["1:品名", "2:金額"]) });
+  // index 0（品名）を既存の別列名「金額」へ改名しようとするケース
+  assert.deepEqual([...remapCellsOffOnColumnRename(t, 0, "金額")].sort(),
+    ["1:品名", "2:金額"], "同名の別列があるときは融合せず現状のまま返す");
+});
+test("#115 配線: commitColumnName は重複名では確定しない（前の名前に戻す旨のメッセージを持つ）", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes('setMsg("列名が重複しています（前の名前に戻しました）");'),
+    "commitColumnName の重複ガードのメッセージが見つからない");
+  assert.ok(src.includes("duplicateColumnNamesNotice(tables)"),
+    "保存前確認が duplicateColumnNamesNotice を呼んでいない");
+});
+
+// ================================================================ issue #117
+// 「選択中の升」（selCell）は列を配列位置（colIndex）で参照している。
+// rowNo 側（changeTableBlocks）の無効化と対称に、列の削除・並べ替えで
+// colIndex を付け替える／解除する
+test("#117 remapSelCellOnColumnDelete: 削除された列を選んでいたら解除、手前の列なら添字を繰り上げる", () => {
+  const sel = { uid: "t1", rowNo: 3, colIndex: 2 };
+  // 別の表は影響を受けない
+  assert.deepEqual(remapSelCellOnColumnDelete(sel, "other", 0), sel);
+  // null はそのまま null
+  assert.equal(remapSelCellOnColumnDelete(null, "t1", 0), null);
+  // 削除された列そのものを選んでいた → 選択解除
+  assert.equal(remapSelCellOnColumnDelete(sel, "t1", 2), null);
+  // 手前の列が消えた → 1つ繰り上げる
+  assert.deepEqual(remapSelCellOnColumnDelete(sel, "t1", 0), { uid: "t1", rowNo: 3, colIndex: 1 });
+  // 後ろの列が消えても影響しない
+  assert.deepEqual(remapSelCellOnColumnDelete(sel, "t1", 3), sel);
+});
+test("#117 remapSelCellOnColumnMove: 入れ替わった2添字のどちらかを選んでいれば付け替える", () => {
+  const sel = { uid: "t1", rowNo: 1, colIndex: 2 };
+  assert.deepEqual(remapSelCellOnColumnMove(sel, "other", 2, 1), sel, "別の表は影響を受けない");
+  assert.deepEqual(remapSelCellOnColumnMove(sel, "t1", 2, 1), { uid: "t1", rowNo: 1, colIndex: 1 });
+  assert.deepEqual(remapSelCellOnColumnMove(sel, "t1", 1, 2), { uid: "t1", rowNo: 1, colIndex: 1 },
+    "選択中の列が移動先側（otherIndex）でも付け替わる");
+  assert.deepEqual(remapSelCellOnColumnMove(sel, "t1", 0, 4), sel, "無関係な入れ替えは影響しない");
+});
+test("#117 配線: moveTableColumn / removeTableColumn（列の×）が selCell を追従させる", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes("setSelCell((c) => remapSelCellOnColumnMove(c, tableUid, index, newIndex));"),
+    "moveTableColumn が remapSelCellOnColumnMove を呼んでいない");
+  assert.ok(src.includes("setSelCell((c) => remapSelCellOnColumnDelete(c, t.uid, index));"),
+    "removeTableColumn が remapSelCellOnColumnDelete を呼んでいない");
+});
+
+// ================================================================ issue #110
+// 升グリッド（行×列）の計算コストを O(rows×列数×columnNames) から
+// O(columnNames) の1回走査へ落とす索引・集計 Map。cellColumnPosition /
+// countColumnCellsOff と **同じ結果**になることを、複数の表構成で
+// 全升ぶん突き合わせて確認する（差分テスト・元の関数は AC-3.32 等で
+// 別途テスト済みなので、ここでは「新旧が一致するか」だけを見る）
+function assertPositionIndexMatches(columnNames, tableId, columns, rows) {
+  const idx = buildCellColumnPositionIndex(columnNames, tableId, columns.map((c) => c.name));
+  for (let r = 1; r <= rows; r++) {
+    for (const c of columns) {
+      const expected = cellColumnPosition(
+        columnNames, tableId, r, c.name, columns.map((v) => v.name));
+      const actual = idx.get(cellKey(r, c.name)) ?? null;
+      assert.deepEqual(actual, expected,
+        `${tableId} row=${r} col=${c.name}: index=${JSON.stringify(actual)} `
+        + `expected=${JSON.stringify(expected)}`);
+    }
+  }
+}
+
+test("#110 buildCellColumnPositionIndex: AC-3.32 の列名（subfields 展開・別表混在）で cellColumnPosition と一致する", () => {
+  const names = ["管理", "detail_01_品名", "detail_01_金額", "detail_100_品名",
+                 "family_01_生年月日_年", "family_01_生年月日_月"];
+  assertPositionIndexMatches(names, "detail", [{ name: "品名" }, { name: "金額" }], 100);
+  assertPositionIndexMatches(names, "family", [{ name: "生年月日" }], 1);
+});
+
+test("#110 buildCellColumnPositionIndex: 3段のカスケード接頭辞（品名/品名_税/品名_税_込）でも最長一致で一致する", () => {
+  const names = [
+    "detail_01_品名", "detail_01_品名_税_込_1", "detail_01_品名_税_込_2",
+    "detail_02_品名_税_1", "detail_02_品名",
+  ];
+  const cols = [{ name: "品名" }, { name: "品名_税" }, { name: "品名_税_込" }];
+  assertPositionIndexMatches(names, "detail", cols, 2);
+});
+
+test("#110 buildCellColumnPositionIndex: columnNames が null・列が0件なら空の索引", () => {
+  assert.equal(buildCellColumnPositionIndex(null, "detail", ["品名"]).size, 0);
+  assert.equal(buildCellColumnPositionIndex(["detail_01_品名"], "detail", []).size, 0);
+});
+
+test("#110 countCellsOffByColumn: 列ごとの集計が countColumnCellsOff の1列ずつの結果と一致する（行範囲外は数えない）", () => {
+  const t = tbl({ cellsOff: new Set(["1:品名", "2:金額", "5:品名", "99:品名"]) });
+  const map = countCellsOffByColumn(t);
+  for (const c of t.columns) {
+    assert.equal(map.get(c.name) ?? 0, countColumnCellsOff(t, c), `列 ${c.name}`);
+  }
+  // 行の範囲外（tbl() の既定は3行なので 5・99 は範囲外）は数えない
+  assert.equal(countColumnCellsOff(t, t.columns[0]), 1, "品名は1行目だけが範囲内");
+});
+
+test("#110 配線: CellGrid は React.memo で切り出され、位置索引/出力数は useMemo で作る", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes("const CellGrid = memo(function CellGrid(props: CellGridProps)"),
+    "CellGrid が React.memo で定義されていない");
+  assert.ok(src.includes("const cellPositionIndex = useMemo("),
+    "cellPositionIndex が useMemo で作られていない");
+  assert.ok(src.includes("const columnOutputCounts = useMemo("),
+    "columnOutputCounts が useMemo で作られていない");
+  assert.ok(src.includes("<CellGrid table={t} limit={limit}"),
+    "cellGrid() が <CellGrid> を描画していない");
+  // hover 用コールバックは ref 越しの安定した参照で渡す（そうしないと
+  // hover のたびに props の参照が変わり、React.memo が意味を失う）
+  assert.ok(src.includes("const stableToggleCell = useCallback("),
+    "toggleCell が安定化されていない（memo が hover のたびに破られる）");
+  assert.ok(src.includes("const stableToggleColumnCells = useCallback("),
+    "toggleColumnCells が安定化されていない（memo が hover のたびに破られる）");
+});
+
+test("#110 配線: キャンバスの候補描画は一覧と同じ表示範囲（candShown）に絞る", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes("const visibleCands = cands.slice(0, candShown);"),
+    "draw() が候補描画を candShown で絞っていない");
+  assert.ok(src.includes("for (let i = 0; i < visibleCands.length; i++) {"),
+    "描画ループが visibleCands を使っていない（全候補を毎フレーム描いたまま）");
+  // draw() の useCallback 依存配列に candShown が入っていないと、
+  // 「もっと見る」で候補を増やしても新しく見えた分がキャンバスに反映されない
+  assert.ok(src.includes("formatFaces, formatOverride, cands, candShown]);"),
+    "draw() の依存配列に candShown が無い");
+});
+
+// ================================================================ issue #112
+// 候補生成中（framesGenerating）は候補パネルの各行「採用」「除去」・
+// 提案カードの3ボタン・一括操作（選んだ候補を採用／すべて除去）も
+// ツールバーと同じく無効化する
+test("#112 配線: 候補パネルの操作ボタンはすべて framesGenerating で無効化される", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const lines = src.split("\n");
+  // 各ボタンの onClick を含む行から、直前の <button 開始タグまで遡り、
+  // その開始タグ〜onClick 行の範囲だけを見る（隣のボタンの disabled を
+  // 誤って拾わないよう、このボタン自身の属性だけに絞る）
+  const buttons = [
+    "onClick={acceptSelectedCandidates}",
+    "onClick={clearAllCandidates}",
+    'onClick={() => { void adoptSuggestion(s, "table"); }}',
+    'onClick={() => { void adoptSuggestion(s, "cells"); }}',
+    "onClick={() => removeSuggestion(s)}",
+    "onClick={() => { void acceptOneCandidate(c); }}",
+    "onClick={() => removeOneCandidate(c.id)}",
+  ];
+  for (const needle of buttons) {
+    const i = lines.findIndex((l) => l.includes(needle));
+    assert.ok(i >= 0, `候補パネルの操作が見つからない: ${needle}`);
+    let start = i;
+    while (start > 0 && !lines[start].includes("<button")) start--;
+    assert.ok(lines[start].includes("<button"), `${needle} の開始タグが見つからない`);
+    let end = i;
+    while (end < lines.length - 1 && !lines[end].includes("</button>")) end++;
+    assert.ok(lines[end].includes("</button>"), `${needle} の終了タグが見つからない`);
+    const span = lines.slice(start, end + 1).join("\n");
+    assert.ok(span.includes("disabled={framesGenerating}"),
+      `${needle} のボタンに disabled={framesGenerating} が無い:\n${span}`);
+  }
+});
+
+// ================================================================ issue #113
+// (1) output_disabled_cells の読み込みで捨てたエントリの件数・内訳を可視化
+// する。cellsOffFromJson と同じ判定基準であることを差分テストで確認する
+test("#113 (1) cellsOffDropSummary: cellsOffFromJson と同じ判定基準で kept が一致する", () => {
+  const cols = tbl().columns;   // 品名・金額
+  const raw = [{ row_no: 1, column: "金額" }, { row_no: 9, column: "金額" },
+               { row_no: 2, column: "無い列" }, { row_no: 0, column: "品名" },
+               { row_no: 3, column: "品名" }, "こわれた"];
+  const kept = cellsOffFromJson(raw, cols, 3);
+  const summary = cellsOffDropSummary(raw, cols, 3);
+  assert.equal(summary.kept, kept.size);
+  assert.equal(summary.total, raw.length);
+  assert.equal(summary.dropped, raw.length - kept.size);
+  assert.deepEqual(summary.invalidColumns, ["無い列"]);
+  // 範囲外: row_no=9（総行数3を超える）・row_no=0（1未満）・"こわれた"（row_no無し）の3件
+  assert.equal(summary.outOfRangeCount, 3);
+  assert.equal(summary.duplicateCount, 0);
+});
+test("#113 (1) cellsOffDropSummary: 有効な升の重複は duplicateCount に数える", () => {
+  const cols = tbl().columns;
+  const raw = [{ row_no: 1, column: "品名" }, { row_no: 1, column: "品名" },
+               { row_no: 1, column: "品名" }];
+  const summary = cellsOffDropSummary(raw, cols, 3);
+  assert.equal(summary.kept, 1);
+  assert.equal(summary.duplicateCount, 2);
+  assert.equal(summary.dropped, 2);
+});
+test("#113 (1) cellsOffDropSummary/cellsOffFromJson: 捨てるものが無ければ dropped は0", () => {
+  const cols = tbl().columns;
+  const raw = [{ row_no: 1, column: "品名" }, { row_no: 2, column: "金額" }];
+  const summary = cellsOffDropSummary(raw, cols, 3);
+  assert.equal(summary.dropped, 0);
+  assert.equal(cellsOffDropNotice(summary), null);
+});
+test("#113 (1) cellsOffDropNotice: 件数と内訳（列名・行番号範囲外・重複）を含む", () => {
+  const summary = { total: 5, kept: 1, dropped: 4,
+    invalidColumns: ["無い列"], outOfRangeCount: 2, duplicateCount: 1 };
+  const notice = cellsOffDropNotice(summary);
+  assert.ok(notice.includes("4件"), notice);
+  assert.ok(notice.includes("実在しない列 無い列"), notice);
+  assert.ok(notice.includes("行番号が範囲外 2件"), notice);
+  assert.ok(notice.includes("重複 1件"), notice);
+});
+test("#113 (1) mergeCellsOffDropSummaries: 複数表ぶんを合算し、列名は重複除去する", () => {
+  const a = { total: 3, kept: 1, dropped: 2, invalidColumns: ["X"], outOfRangeCount: 1, duplicateCount: 0 };
+  const b = { total: 2, kept: 2, dropped: 0, invalidColumns: ["X"], outOfRangeCount: 0, duplicateCount: 0 };
+  const c = { total: 1, kept: 0, dropped: 1, invalidColumns: ["Y"], outOfRangeCount: 0, duplicateCount: 1 };
+  const merged = mergeCellsOffDropSummaries([a, b, c]);
+  assert.equal(merged.total, 6);
+  assert.equal(merged.dropped, 3);
+  assert.deepEqual(merged.invalidColumns, ["X", "Y"], "同じ列名は1回だけ");
+  assert.equal(merged.outOfRangeCount, 1);
+  assert.equal(merged.duplicateCount, 1);
+});
+test("#113 (1) 配線: toEditorState が読み込み時 setMsg に notice を重ね、保存前確認にも loadDroppedCells を渡す", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes("cellsOffDroppedAtLoadRef.current = cellsOffDrop.dropped;"),
+    "toEditorState が読み込み時の捨てた件数を ref に残していない");
+  assert.ok(src.includes("cellsOffDropNotice: cellsOffDropNotice(cellsOffDrop)"),
+    "toEditorState の戻り値に notice が無い");
+  assert.ok(src.includes("loadDroppedCells: cellsOffDroppedAtLoadRef.current"),
+    "保存前確認が loadDroppedCells を渡していない");
+});
+
+// (2) schema の上限（行数200・ブロック8）を GUI 側でも守る
+test("#113 (2) 配線: 行数入力に max=200・ブロック追加ボタンは8枚で無効化・commitBlockRows は200超を捨てる", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes('<input type="number" min={1} max={200} step={1}'),
+    "行数入力に max=200 が無い");
+  assert.ok(src.includes("if (n > 200) {"), "commitBlockRows が200超を検査していない");
+  assert.ok(src.includes('setMsg("行数は1ブロックあたり200行までです（前の行数に戻しました）");'),
+    "200超を捨てた理由のメッセージが無い");
+  assert.ok(src.includes("disabled={t.blocks.length >= 8}"),
+    "ブロック追加ボタンが8枚で無効化されていない");
+});
+
+// ================================================================ issue #116
+// 「右ブロックを追加（複製）」の x を「既存ブロックの x + 列の総幅 + 余白」に
+test("#116 nextBlockX: 出荷テンプレ相当（総幅1053px）で固定+1020より右へ、余白ぶん離れて重ならない", () => {
+  const blocks = [{ x: 100 }];
+  // detail 相当: 5列で合計 1053px 分（x_offset+width の最大が1053）
+  const columns = [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 853 }];
+  const x = nextBlockX(blocks, columns);
+  assert.equal(x, 100 + 1053 + NEW_BLOCK_GAP_PX);
+  assert.ok(x > 100 + 1020, "旧実装の固定+1020より右（＝重ならない側）に出る");
+});
+test("#116 nextBlockX: 列が無ければ余白ぶんだけ右へ（列0幅の防御）", () => {
+  assert.equal(nextBlockX([{ x: 50 }], []), 50 + NEW_BLOCK_GAP_PX);
+});
+test("#116 overlappingTableBlocks: 出荷テンプレ detail 相当（1053px幅・+1020固定）は重なりを検出する", () => {
+  const t = { table_id: "detail", row_pitch: 62, row_height: 56,
+    blocks: [{ x: 100, y: 800, rows: 5 }, { x: 100 + 1020, y: 800, rows: 5 }],
+    columns: [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 853 }] };
+  assert.deepEqual(overlappingTableBlocks([t]), ["detail"]);
+  // nextBlockX を使った位置なら重ならない
+  const fixed = { ...t, blocks: [t.blocks[0],
+    { ...t.blocks[1], x: nextBlockX([t.blocks[0]], t.columns) }] };
+  assert.deepEqual(overlappingTableBlocks([fixed]), []);
+});
+test("#116 overlappingTableBlocksNotice: 重なりが無ければ null・あれば表名を含む", () => {
+  assert.equal(overlappingTableBlocksNotice([]), null);
+  const notice = overlappingTableBlocksNotice(["detail"]);
+  assert.ok(notice.includes("detail"), notice);
+  assert.ok(notice.includes("重なって"), notice);
+});
+test("#116 配線: 右ブロック追加ボタンが nextBlockX を使い、保存前確認が overlappingTableBlocksNotice を渡す", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes("x: nextBlockX(t.blocks, t.columns) }])}>"),
+    "右ブロック追加が nextBlockX を使っていない（固定 +1020 のまま？）");
+  assert.ok(src.includes(
+    "overlappingBlocksNotice: overlappingTableBlocksNotice(overlappingTableBlocks(tables)) });"),
+    "保存前確認が overlappingTableBlocksNotice を渡していない");
+});
+
+// ================================================================ issue #127
+// 将来の地雷5件のうち、フロント担当の3件（(2) write_config の失敗を可視化・
+// (3) ブロック添字対応の申し送りコメント・(4) droppedCells の累計を Undo で
+// 巻き戻す）をソース上でピン留めする
+test("#127 (2) 配線: write_config の失敗を3箇所とも .catch(() => {}) で握りつぶさず、エラーを拾って setMsg/notice に渡す", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  // 修正前の握りつぶしパターンが3箇所とも残っていないこと
+  assert.ok(!src.includes('.catch(() => {});\n      // Should-1'),
+    "applyTemplateByName の write_config が握りつぶしのまま");
+  const occurrences = (src.match(/\.then\(\(\) => null\)\.catch\(\(e\) => String\(e\)\)/g) || []).length;
+  assert.equal(occurrences, 3,
+    `write_config のエラーを拾う箇所が3箇所のはず（実際 ${occurrences}）`);
+  assert.ok(src.includes("次回起動時の記憶を保存できませんでした"),
+    "手動テンプレート適用時の失敗案内が無い");
+  assert.ok(src.includes("壊れた記憶を消せませんでした"),
+    "自動適用の自己修復失敗の案内が無い");
+  assert.ok(src.includes("実行タブの既定への反映は失敗しました"),
+    "利用者テンプレート保存時の失敗案内が無い");
+});
+
+test("#127 (3) 配線: remapCellsOffOnBlocksChange に添字対応の申し送りコメントがある", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  assert.ok(src.includes("issue #127 (3)（将来の地雷・TECH-DEBT）"),
+    "remapCellsOffOnBlocksChange に issue #127 (3) の申し送りが無い");
+  assert.ok(src.includes("ブロック id ベースの対応付けへ書き換えること"),
+    "将来ブロック操作を足すときの指針が書かれていない");
+});
+
+test("#127 (4) 配線: restoreSnap（Undo/Redo 共通）が droppedCellsRef を 0 に戻す", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const m = /const restoreSnap = \(snap: Snap\) => \{([\s\S]*?)\n  \};/.exec(src);
+  assert.ok(m, "restoreSnap の本体が見つからない");
+  assert.ok(m[1].includes("droppedCellsRef.current = 0;"),
+    "restoreSnap が droppedCellsRef をリセットしていない"
+    + "（行数を減らした直後の Undo で「N件取り消しました」が残ったままになる）");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

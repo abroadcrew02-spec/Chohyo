@@ -3,7 +3,7 @@
 // 枠候補の生成（罫線検出・等分割）はコアの detect-grid を呼ぶ（§6.9）。
 // 座標はすべて「ページ座標」で編集し、保存時に表裏の面ローカルへ変換する。
 import { invoke } from "./bridge";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Mark = { value: string; rect: Rect };
@@ -41,7 +41,12 @@ type Tool = "select" | "field" | "excl" | "table" | "split";
 // issue #73 (b): cands（枠候補）は Snap に含める（生成・採用・除去も
 // Undo の対象にする・FR-F21）が、確定枠（fields/tables/excls）とは別配列
 // のまま——保存対象（buildTemplateJson）には一切含めない
-type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number; cands: Cand[] };
+// issue #109 (b): suggestions（表の提案）・candSelected（候補のチェック状態）
+// も cands と同じ理由で Snap に含める。cands だけを戻すと、提案の cellIds が
+// 別世代の cands を指したまま残り、Undo 後に別の矩形を指す（提案は cands と
+// 常にペアで捕獲・復元しないと整合が壊れる）
+type Snap = { fields: Field[]; tables: Table[]; excls: Excl[]; splitY: number; cands: Cand[];
+              suggestions: Suggestion[]; candSelected: Record<string, boolean> };
 
 let seq = 0;
 const uid = () => `u${++seq}`;
@@ -588,6 +593,22 @@ export function countColumnCellsOff(
   return off;
 }
 
+/// countColumnCellsOff を表1つぶんまとめて数える（issue #110）。
+/// countColumnCellsOff は呼ばれるたび cellsOff（Set 全体）を線形走査するため、
+/// 列数ぶん呼ぶと O(列数 × cellsOff件数) になる——升グリッドの列ヘッダは列数
+/// ぶん呼ぶので、cellsOff を1回だけ走査して列名ごとに集計する
+export function countCellsOffByColumn(
+  t: { blocks: { rows: number }[]; cellsOff?: Set<string> }): Map<string, number> {
+  const rows = tableTotalRows(t);
+  const map = new Map<string, number>();
+  for (const key of t.cellsOff ?? []) {
+    const p = parseCellKey(key);
+    if (!p || p.rowNo < 1 || p.rowNo > rows) continue;
+    map.set(p.column, (map.get(p.column) ?? 0) + 1);
+  }
+  return map;
+}
+
 /// 列ヘッダ・列一括ボタンのトグル（FR-3.6）。遷移は
 ///   all        → 列 off（cellsOff は触らない）
 ///   mixed      → 列 off（同上。中間からは「外す」方向へ倒す＝押すたび向きが変わらない）
@@ -683,6 +704,75 @@ export function cellsOffFromJson(
   return out;
 }
 
+/// output_disabled_cells の読み込みで捨てたエントリの内訳（issue #113 (1)）。
+/// cellsOffFromJson と **同じ判定基準**（行番号の範囲・列の実在）で「何が」
+/// 「何件」捨てられたかを数える。core の _validate_disabled_cells が拒否する
+/// 入力（実在しない列・範囲外の row_no・重複）を GUI は黙って直しているが、
+/// 直した事実と件数は利用者に見せる——直した後に保存すると、その升は
+/// 「出力する」に戻ってしまうため。
+export type CellsOffDropSummary = {
+  total: number; kept: number; dropped: number;
+  /// 実在しない列名（出現順・重複除去）
+  invalidColumns: string[];
+  /// 行番号が整数でない／範囲外だった件数
+  outOfRangeCount: number;
+  /// 列・行とも有効だが同じ升を指すエントリが2件目以降だった件数
+  duplicateCount: number;
+};
+export function cellsOffDropSummary(
+  raw: unknown, columns: { name: string }[], totalRows: number): CellsOffDropSummary {
+  const entries = Array.isArray(raw) ? raw as any[] : [];
+  const names = new Set(columns.map((c) => c.name));
+  const kept = new Set<string>();
+  const invalidColumns: string[] = [];
+  const seenInvalidColumns = new Set<string>();
+  let outOfRangeCount = 0;
+  let duplicateCount = 0;
+  for (const e of entries) {
+    const rowNo = e?.row_no;
+    const column = e?.column;
+    if (!Number.isInteger(rowNo) || rowNo < 1 || rowNo > totalRows) { outOfRangeCount++; continue; }
+    if (typeof column !== "string" || !names.has(column)) {
+      if (typeof column === "string" && !seenInvalidColumns.has(column)) {
+        seenInvalidColumns.add(column); invalidColumns.push(column);
+      }
+      continue;
+    }
+    const key = cellKey(rowNo, column);
+    if (kept.has(key)) { duplicateCount++; continue; }
+    kept.add(key);
+  }
+  return { total: entries.length, kept: kept.size, dropped: entries.length - kept.size,
+           invalidColumns, outOfRangeCount, duplicateCount };
+}
+
+/// 複数の表ぶんの CellsOffDropSummary を1つにまとめる（issue #113 (1)）。
+/// テンプレート1枚の読み込みは表が複数ありうるので、表ごとの結果を
+/// 合算してから1つのメッセージにする。
+export function mergeCellsOffDropSummaries(list: CellsOffDropSummary[]): CellsOffDropSummary {
+  const invalidColumns: string[] = [];
+  const seen = new Set<string>();
+  let total = 0, kept = 0, dropped = 0, outOfRangeCount = 0, duplicateCount = 0;
+  for (const s of list) {
+    total += s.total; kept += s.kept; dropped += s.dropped;
+    outOfRangeCount += s.outOfRangeCount; duplicateCount += s.duplicateCount;
+    for (const c of s.invalidColumns) if (!seen.has(c)) { seen.add(c); invalidColumns.push(c); }
+  }
+  return { total, kept, dropped, invalidColumns, outOfRangeCount, duplicateCount };
+}
+
+/// 読み込み時のメッセージ・保存前確認に出す文言（issue #113 (1)）。
+/// 捨てたエントリが無ければ null。
+export function cellsOffDropNotice(summary: CellsOffDropSummary): string | null {
+  if (summary.dropped <= 0) return null;
+  const parts: string[] = [];
+  if (summary.invalidColumns.length) parts.push(`実在しない列 ${summary.invalidColumns.join("・")}`);
+  if (summary.outOfRangeCount > 0) parts.push(`行番号が範囲外 ${summary.outOfRangeCount}件`);
+  if (summary.duplicateCount > 0) parts.push(`重複 ${summary.duplicateCount}件`);
+  return `升の「出力しない」指定のうち ${summary.dropped}件を読み込めませんでした`
+    + (parts.length ? `（${parts.join("・")}）` : "") + "。該当の升は保存すると出力されます。";
+}
+
 /// ⊘バッジを描く単位（FR-3.7）。1 列の中で「出力しない升が縦に連続する
 /// まとまり」を行番号の閉区間で返す。列が off なら各ブロック 1 本（現状の
 /// 列単位表示と同じ絵になる）。**ブロックを跨ぐ連なりは分割する**——通し
@@ -767,9 +857,46 @@ export function cellColumnPosition(
   return idxs.length ? { first: idxs[0], last: idxs[idxs.length - 1] } : null;
 }
 
+/// cellColumnPosition を1表ぶんまとめて解決する索引（issue #110）。升グリッド
+/// は表1つの行×列すべてに対してこの位置を求めるため、cellColumnPosition を
+/// 升の数だけ呼ぶと「columnNames 全体の線形走査」を升の数だけ繰り返すことに
+/// なる（1600行×14列なら 22,400 回）。columnNames を1回だけ走査し、各エント
+/// リの所有列を決めてからまとめて Map に積む——判定規則（tail の所有者は
+/// 「完全一致」または「tail.startsWith(name + "_") で最長一致する列名」）は
+/// cellColumnPosition の siblings 判定と同値（差分テストで確認済み）。
+export function buildCellColumnPositionIndex(
+  columnNames: string[] | null, tableId: string, columnOrder: string[],
+): Map<string, { first: number; last: number }> {
+  const map = new Map<string, { first: number; last: number }>();
+  if (!columnNames || columnOrder.length === 0) return map;
+  const prefix = `${tableId}_`;
+  // 長い列名ほど「より具体的な一致」として優先する
+  // （cellColumnPosition の longer 判定と同じ考え方）
+  const byLenDesc = [...columnOrder].sort((a, b) => b.length - a.length);
+  columnNames.forEach((full, i) => {
+    if (!full.startsWith(prefix)) return;
+    const m = /^(\d+)_(.*)$/.exec(full.slice(prefix.length));
+    if (!m) return;
+    const rowNo = Number(m[1]);
+    const tail = m[2];
+    const owner = byLenDesc.find((name) => tail === name || tail.startsWith(name + "_"));
+    if (owner === undefined) return;
+    const key = cellKey(rowNo, owner);
+    const cur = map.get(key);
+    map.set(key, cur ? { first: cur.first, last: i + 1 } : { first: i + 1, last: i + 1 });
+  });
+  return map;
+}
+
 /// 列名を変えたときの追従（FR-3.5）。旧名のキーを新名へ張り替える。
 /// 列の **並べ替え**（moveTableColumnOrder）はキーが列名なので追従不要——
 /// 添字参照にしなかった実利がここに出る。
+///
+/// issue #115: 呼び出し側（commitColumnName）は同名の他列があるときは確定
+/// しない前提だが、防御としてここでも同じ検査を持つ。改名先が既に別の列の
+/// 名前なら、升の指定は融合させず現状維持で返す——`row_no:列名` キーは同名の
+/// 2列で共有されてしまうため、ここで無条件に張り替えると片方の指定がもう
+/// 片方へ黙って混ざる（件数が減って見える）。
 export function remapCellsOffOnColumnRename(
   t: { columns: { name: string }[]; cellsOff?: Set<string> },
   index: number, newName: string, oldName?: string): Set<string> {
@@ -777,6 +904,9 @@ export function remapCellsOffOnColumnRename(
   // parseCellKey が解けないキーで、作った瞬間にその升の指定が捨てられる
   // ——列名を打ち直しただけで升の指定が消える経路だった（レビュー H-3）
   if (newName === "") return new Set(t.cellsOff ?? []);
+  if (t.columns.some((c, j) => j !== index && c.name === newName)) {
+    return new Set(t.cellsOff ?? []);
+  }
   // 旧名は既定では現在の列名。編集を始めた時点の名前が分かる呼び出し側
   // （commitColumnName）は、そちらを渡して確定 1 回で張り替える
   const old = oldName ?? t.columns[index]?.name;
@@ -787,6 +917,70 @@ export function remapCellsOffOnColumnRename(
     next.add(old !== undefined && p.column === old ? cellKey(p.rowNo, newName) : key);
   }
   return next;
+}
+
+/// 同じ表の中で列名が重複している列を洗い出す（issue #115）。
+/// commitColumnName は確定時にこれと同じ検査で改名を止めるが、直接編集した
+/// JSON を読み込んだ場合など「一度も改名していないのに重複している」経路も
+/// あるため、保存前確認では独立に検査する。升の出力指定（cellsOff）は
+/// `row_no:列名` で持つため、同名の列は指定を共有してしまう。
+export function duplicateColumnNames(
+  tables: { table_id: string; columns: { name: string }[] }[],
+): { tableId: string; name: string }[] {
+  const out: { tableId: string; name: string }[] = [];
+  for (const t of tables) {
+    const seen = new Set<string>();
+    const dup = new Set<string>();
+    for (const c of t.columns) {
+      if (!c.name) continue;
+      if (seen.has(c.name)) dup.add(c.name); else seen.add(c.name);
+    }
+    for (const name of dup) out.push({ tableId: t.table_id, name });
+  }
+  return out;
+}
+
+/// 保存前確認に出す文言（issue #115）。重複が無ければ null。
+export function duplicateColumnNamesNotice(
+  tables: { table_id: string; columns: { name: string }[] }[]): string | null {
+  const dups = duplicateColumnNames(tables);
+  if (dups.length === 0) return null;
+  const parts = dups.map((d) => `${d.tableId}: ${d.name}`);
+  return `同じ表の中で列名が重複しています（${parts.join("・")}）。`
+    + "升の指定が別の列と共有され、保存すると core が拒否します。列名を直してください。";
+}
+
+/// 表のブロック同士の矩形の重なりを検出する（issue #116）。core の同一面
+/// セル重なり検査は升どうしの重なりを見るが、blocks 自体の矩形が重なって
+/// いても保存は通り抜けうる——resolveOverlaps は fields だけが対象、
+/// _hole_overlap_warnings は穴を持つセルだけが対象で、どちらも表の
+/// ブロック同士は見ない。高さの求め方は candidateOverlapsExisting と同じ
+/// （row_pitch × (rows-1) + row_height）。同じ表の中のブロックどうしだけを
+/// 見る（表をまたぐ重なりは別の懸念で、ここでは扱わない）。
+export function overlappingTableBlocks(
+  tables: { table_id: string; row_pitch: number; row_height: number;
+            blocks: { x: number; y: number; rows: number }[];
+            columns: { x_offset: number; width: number }[] }[],
+): string[] {
+  const out: string[] = [];
+  for (const t of tables) {
+    const totalW = t.columns.length ? Math.max(...t.columns.map((c) => c.x_offset + c.width)) : 0;
+    const rects = t.blocks.map((b) =>
+      ({ x: b.x, y: b.y, w: totalW, h: t.row_pitch * Math.max(0, b.rows - 1) + t.row_height }));
+    for (let i = 0; i < rects.length && !out.includes(t.table_id); i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        if (_rectsTouch(rects[i], rects[j])) { out.push(t.table_id); break; }
+      }
+    }
+  }
+  return out;
+}
+
+/// 保存前確認に出す文言（issue #116）。重なりが無ければ null。
+export function overlappingTableBlocksNotice(tableIds: string[]): string | null {
+  if (tableIds.length === 0) return null;
+  return `表のブロック同士が重なっています（${tableIds.join("・")}）。`
+    + "重なった帯の読み取りが両方の升に入る可能性があります。ブロックの位置を確認してください。";
 }
 
 /// 列を消したときの追従（FR-3.5）。その列のキーを落とす。
@@ -802,12 +996,61 @@ export function remapCellsOffOnColumnDelete(
   return next;
 }
 
+/// 「選択中の升」の型（コンポーネント内の selCell と同じ形。トップレベルの
+/// 型では持たないためここでは構造で受ける）。
+type SelCell = { uid: string; rowNo: number; colIndex: number } | null;
+
+/// 列の削除で「選択中の升」の列参照（colIndex）を追従させる（issue #117）。
+/// rowNo 側の無効化（changeTableBlocks）と対称——添字参照のままなので、
+/// 削除しなければ何もしない。対象の表でなければ何もしない。削除された列
+/// そのものを選んでいたら選択を解除し、それより手前の列が減った分だけ
+/// colIndex を繰り上げる。
+export function remapSelCellOnColumnDelete(
+  selCell: SelCell, tableUid: string, deletedIndex: number): SelCell {
+  if (!selCell || selCell.uid !== tableUid) return selCell;
+  if (selCell.colIndex === deletedIndex) return null;
+  if (selCell.colIndex > deletedIndex) return { ...selCell, colIndex: selCell.colIndex - 1 };
+  return selCell;
+}
+
+/// 列の並べ替え（隣接入れ替え・moveTableColumnOrder）で「選択中の升」の
+/// colIndex を追従させる（issue #117）。index と otherIndex は入れ替わった
+/// 2つの添字（moveTableColumn の呼び出し側が計算する）。
+export function remapSelCellOnColumnMove(
+  selCell: SelCell, tableUid: string, index: number, otherIndex: number): SelCell {
+  if (!selCell || selCell.uid !== tableUid) return selCell;
+  if (selCell.colIndex === index) return { ...selCell, colIndex: otherIndex };
+  if (selCell.colIndex === otherIndex) return { ...selCell, colIndex: index };
+  return selCell;
+}
+
+/// 「右ブロックを追加（複製）」で新ブロックを置く x（issue #116）。x を
+/// 固定値 +1020 で置いていたため、列の総幅が 1020px を超える表（出荷
+/// テンプレの detail・1053px）では同じ y でブロック同士が重なっていた。
+/// 既存ブロックの x + 列の総幅 + 余白で置く——y・rows は呼び出し側が
+/// 複製元ブロックをそのまま展開する（この関数は x だけを決める）。
+export const NEW_BLOCK_GAP_PX = 20;
+export function nextBlockX(
+  blocks: { x: number }[], columns: { x_offset: number; width: number }[]): number {
+  const last = blocks[blocks.length - 1];
+  const totalW = columns.length ? Math.max(...columns.map((c) => c.x_offset + c.width)) : 0;
+  return (last?.x ?? 0) + totalW + NEW_BLOCK_GAP_PX;
+}
+
 /// ブロックの行数変更・ブロックの増減への追従（FR-3.5・R-1 の打ち手）。
 /// row_no は通し番号なので、第1ブロックの行数を減らすと第2ブロック以降の
 /// 指定が **黙って別の升へずれる**（core では範囲内の別の升を指すだけなので
 /// 拒否もされない）。旧 blocks で (ブロック番号, ブロック内行番号) へ分解し、
 /// 新 blocks で組み直すことでずれを構造的に潰す。写し直せない指定
 /// （消えたブロック・減った行）は落とし、件数を dropped で返す。
+///
+/// issue #127 (3)（将来の地雷・TECH-DEBT）: ここの「ブロック番号」は
+/// blocks 配列の**添字**であり、ブロックの安定 id ではない。今の UI は
+/// 行数変更と末尾追加（右ブロックを追加）しかしないので添字のままで壊れない
+/// が、中間ブロックの削除・並べ替えを足すと、消えた/動いた添字より後ろの
+/// ブロックの指定が別ブロックへ移る（プローブ確認済み: [2,2,2]→[2,2] で
+/// {1:a,3:a,5:a} → {1:a,3:a}）。ブロック操作を追加するときは、この関数を
+/// 添字ではなくブロック id ベースの対応付けへ書き換えること。
 export function remapCellsOffOnBlocksChange(
   t: { blocks: { rows: number }[]; cellsOff?: Set<string> },
   nextBlocks: { rows: number }[]): { cellsOff: Set<string>; dropped: number } {
@@ -1495,6 +1738,17 @@ export function saveConfirmWarnings(input: {
   /// 行数・ブロックの編集で範囲外になり取り消した升の指定の件数（FR-3.5）。
   /// 省略＝0（第2弾までの呼び出しをそのまま通す）
   droppedCells?: number;
+  /// 同じ表の中で重複している列名の案内（issue #115・duplicateColumnNamesNotice
+  /// が組み立てる）。省略/null＝重複なし
+  duplicateColumnsNotice?: string | null;
+  /// 読み込み時に output_disabled_cells から捨てたエントリの件数
+  /// （issue #113 (1)）。読み込み時の setMsg で既に見せているが、保存まで
+  /// 気づかない利用者もいるため保存前にも重ねて出す。droppedCells（編集で
+  /// 範囲外になった分）とは原因が違うので別の警告として出す
+  loadDroppedCells?: number;
+  /// 表のブロック同士の重なりの案内（issue #116・overlappingTableBlocksNotice
+  /// が組み立てる）。省略/null＝重なりなし
+  overlappingBlocksNotice?: string | null;
 }): SaveWarning[] {
   const warnings: SaveWarning[] = [];
   if (input.isShipped) {
@@ -1528,6 +1782,18 @@ export function saveConfirmWarnings(input: {
       text: `行数の変更で行の外に出た「出力しない升」の指定 ${input.droppedCells} 件を`
         + "取り消しました。該当の升は保存すると出力されます。"
         + "「出力列」タブの「升を見る」で付け直してください。" });
+  }
+  if (input.duplicateColumnsNotice) {
+    warnings.push({ key: "duplicate-columns", text: input.duplicateColumnsNotice });
+  }
+  if ((input.loadDroppedCells ?? 0) > 0) {
+    warnings.push({ key: "cells-off-load-dropped",
+      text: `読み込み時に「出力しない升」の指定 ${input.loadDroppedCells} 件を読み込めませんでした`
+        + "（実在しない列・行番号が範囲外・重複のいずれか）。"
+        + "該当の升は保存すると出力されます。" });
+  }
+  if (input.overlappingBlocksNotice) {
+    warnings.push({ key: "overlapping-blocks", text: input.overlappingBlocksNotice });
   }
   return warnings;
 }
@@ -2499,16 +2765,24 @@ export function shouldSwitchToCandidatesTab(
 /// 意味のある面ヒントとしては扱わない（§4.2.3: face_id が無いときは GUI が
 /// 自分の splitY で判定する）。壊れた/欠落したフィールドは防御的に既定値へ
 /// 倒す（未知の応答形で例外を投げて画面を止めない）。
+///
+/// `epoch`（省略可）は「枠の世代」（frameEpochRef の値）。渡すと id の頭に
+/// `e<epoch>_` を付ける——候補 id は core から来ない/配列添字から振り直す
+/// ため、世代をまたいで同じ id（"c0" 等）が再利用されうる（issue #109 (b)）。
+/// 別世代の提案（Suggestion.cellIds）が Undo/再生成後の cands を誤って
+/// 拾わないよう、世代が変われば id 空間ごと分ける。省略時は従来どおり無印
+/// （既存呼び出し・テストの互換を保つ）。
 export function candidatesFromDetectFrames(ev: {
   candidates?: unknown;
-}): Cand[] {
+}, epoch?: number): Cand[] {
   const raw = Array.isArray(ev?.candidates) ? ev.candidates as any[] : [];
+  const prefix = epoch === undefined ? "" : `e${epoch}_`;
   return raw.map((c: any, i: number): Cand => {
     const kind: "table" | "field" = c?.kind === "table" ? "table" : "field";
     const block = kind === "table" ? c?.blocks?.[0] : undefined;
     const faceId = typeof c?.face_id === "string" ? c.face_id : null;
     return {
-      id: typeof c?.id === "string" && c.id ? c.id : `c${i}`,
+      id: prefix + (typeof c?.id === "string" && c.id ? c.id : `c${i}`),
       kind,
       rect: { x: c?.rect?.x ?? 0, y: c?.rect?.y ?? 0, w: c?.rect?.w ?? 0, h: c?.rect?.h ?? 0 },
       faceHint: faceId && faceId !== "page" ? faceId : null,
@@ -2616,6 +2890,11 @@ export function candidatePanelHeading(cellCount: number, suggestionCount: number
 /// fields/tables は書き換えない・不変条件 8）で、採用した升だけを候補から
 /// 除き、提案そのものは消える。重なりのある升は applyCandidates の既存規則
 /// （overlaps は選択に関わらず対象外）がそのまま効く。
+///
+/// issue #109 (a): mode="table" は以前 acceptedCount を定数 1 で返しており、
+/// 提案が指す升候補が cands から既に消えていても（個別採用・すべて除去等で）
+/// 表を作ってしまっていた。mode="cells" と対称に、cands に残っている升が
+/// 1件も無ければ何も作らず acceptedCount:0 を返す
 export function adoptSuggestionResult(
   input: { fields: Field[]; tables: Table[]; cands: Cand[]; suggestions: Suggestion[] },
   s: Suggestion, mode: "table" | "cells", makeUid: () => string,
@@ -2629,13 +2908,19 @@ export function adoptSuggestionResult(
     return { fields: r.fields, tables: r.tables, cands: r.cands, suggestions,
              newTableUid: null, acceptedCount: r.acceptedCount };
   }
+  const candIds = new Set(input.cands.map((c) => c.id));
+  const remainingIds = s.cellIds.filter((id) => candIds.has(id));
+  if (remainingIds.length === 0) {
+    return { fields: input.fields, tables: input.tables, cands: input.cands, suggestions,
+             newTableUid: null, acceptedCount: 0 };
+  }
   const spec = tableSpecFromCandidate(
     { id: s.id, kind: "table", rect: s.rect, faceHint: s.faceHint,
       residual: s.residual, overlaps: s.overlaps, table: s.table },
     input.tables.map((t) => t.table_id));
   if (!spec) return null;
   const newTableUid = makeUid();
-  const ids = new Set(s.cellIds);
+  const ids = new Set(remainingIds);
   return {
     fields: input.fields,
     tables: [...input.tables, { uid: newTableUid, ...spec }],
@@ -2647,6 +2932,17 @@ export function adoptSuggestionResult(
 /// 「この提案を消す」（AC-3.28）。提案だけを消し、**升候補は残す**。
 export function dismissSuggestion(suggestions: Suggestion[], id: string): Suggestion[] {
   return suggestions.filter((s) => s.id !== id);
+}
+
+/// 参照する升候補が1件も cands に残っていない提案を落とす（issue #109 (a)）。
+/// 一括採用・個別採用・「候補をすべて除去」のように cands だけが変わる操作の
+/// あとに呼ぶ——提案は生成時点の cands から解決した cellIds で紐づいている
+/// ため、対応する升が cands から消えると提案は解決不能（表にまとめても中身が
+/// 空）になる。1件でも残っていれば提案は残す（remainingIds の再計算は
+/// adoptSuggestionResult 側で行う）。
+export function pruneSuggestionsForCands(suggestions: Suggestion[], cands: Cand[]): Suggestion[] {
+  const ids = new Set(cands.map((c) => c.id));
+  return suggestions.filter((s) => s.cellIds.some((id) => ids.has(id)));
 }
 
 /// 提案を操作した結果の 1 行（かなた §4.3）。Undo で戻せることを必ず添える
@@ -2839,6 +3135,83 @@ function wrapNoticeText(ctx: CanvasRenderingContext2D, text: string, maxWidth: n
   if (line) lines.push(line);
   return lines.length ? lines : [text];
 }
+
+// issue #110: 升グリッド（行×列のチェックボックス表）を React.memo の子
+// コンポーネントに切り出す。hover 用 state（hlCol・cellHoverNote）は
+// Editor 側に残る（hlCol はキャンバスの列ハイライトにも使うため引き剥がせ
+// ない）が、setter 自体は React が参照を保証して安定しているので、
+// props として渡しても hover のたびに CellGrid が再レンダーされることは
+// ない——CellGrid が再レンダーされるのは table・cellPositionIndex・
+// columnOutputCounts 等、実際にグリッドの中身が変わったときだけになる。
+// **Editor の内側で定義しないこと**（コンポーネント本体をレンダーのたびに
+// 作り直すと React が別コンポーネント扱いしてマウントし直し、memo が
+// 意味を失う）。
+type CellGridProps = {
+  table: Table;
+  limit: number;
+  orderChangedSinceLoad: boolean;
+  cellPositionIndex: Map<string, { first: number; last: number }>;
+  columnOutputCounts: Map<string, number>;
+  onToggleColumnCells: (t: Table, columnIndex: number) => void;
+  onToggleCell: (t: Table, rowNo: number, columnName: string) => void;
+  setHlCol: (v: number | null) => void;
+  setCellHoverNote: (v: string | null) => void;
+};
+const CellGrid = memo(function CellGrid(props: CellGridProps) {
+  const { table: t, limit, orderChangedSinceLoad, cellPositionIndex, columnOutputCounts,
+          onToggleColumnCells, onToggleCell, setHlCol, setCellHoverNote } = props;
+  const rows = tableTotalRows(t);
+  return (
+    <table className="cellgrid" aria-describedby={`cellgrid-note-${t.uid}`}>
+      <thead>
+        <tr>
+          <th scope="col">行</th>
+          {t.columns.map((c, ci) => {
+            const state = columnCellState(t, c);
+            const offCount = rows - (columnOutputCounts.get(c.name) ?? 0);
+            return (
+              <th scope="col" key={ci} className="colhead" title={c.name}>
+                <span className="colhead-name">{c.name || `列${ci + 1}`}</span>
+                <input type="checkbox" checked={state === "all"}
+                  ref={(el) => { if (el) el.indeterminate = state === "mixed"; }}
+                  aria-label={columnBulkToggleAriaLabel(t.table_id, c.name, rows, state, offCount)}
+                  onChange={() => onToggleColumnCells(t, ci)} />
+              </th>);
+          })}
+        </tr>
+      </thead>
+      <tbody>
+        {Array.from({ length: limit }, (_, i) => i + 1).map((rowNo) => (
+          <tr key={rowNo}>
+            <th scope="row">{rowNo}<span className="sr-only">行目</span></th>
+            {t.columns.map((c, ci) => {
+              const out = isCellOutput(t, rowNo, c);
+              const name = cellCheckboxDisplayName(
+                t.table_id, rowNo, c.name || `列${ci + 1}`);
+              const position = cellPositionIndex.get(cellKey(rowNo, c.name)) ?? null;
+              return (
+                <td key={ci} className={out ? undefined : "offcell"}
+                  onMouseEnter={() => { setHlCol(ci); setCellHoverNote(cellGridNote({
+                    hover: { tableId: t.table_id, rowNo, columnName: c.name },
+                    position, cellOutput: out, orderChanged: orderChangedSinceLoad })); }}
+                  onMouseLeave={() => { setHlCol(null); setCellHoverNote(null); }}>
+                  <input type="checkbox" checked={out} disabled={!isOutput(c)}
+                    title={isOutput(c) ? undefined
+                      : "この列は列ごと出力しない設定です（列を戻すと升の指定が効きます）"}
+                    aria-label={outputCheckboxLabel(name, out,
+                      orderChangedSinceLoad ? null : position)}
+                    onFocus={() => setCellHoverNote(cellGridNote({
+                      hover: { tableId: t.table_id, rowNo, columnName: c.name },
+                      position, cellOutput: out, orderChanged: orderChangedSinceLoad }))}
+                    onBlur={() => setCellHoverNote(null)}
+                    onChange={() => onToggleCell(t, rowNo, c.name)} />
+                </td>);
+            })}
+          </tr>))}
+      </tbody>
+    </table>
+  );
+});
 
 export default function Editor(
   { onDirty, active }: { onDirty: (d: boolean) => void; active: boolean }) {
@@ -3097,6 +3470,11 @@ export default function Editor(
   // 行数の編集で範囲外になり取り消した升の指定の累計（FR-3.5・AC-3.24）。
   // 保存前確認に 1 行出すためだけの数なので ref で持つ（描画に使わない）
   const droppedCellsRef = useRef(0);
+  // 読み込み時に output_disabled_cells から捨てたエントリの件数
+  // （issue #113 (1)）。droppedCellsRef と同じく保存前確認に出すためだけの
+  // 数。読み込み直後の setMsg では表示済みだが、保存まで気づかない利用者も
+  // いるため保存前にも重ねて出す
+  const cellsOffDroppedAtLoadRef = useRef(0);
   // 出力列タブの行 hover/focus で canvas の該当欄をハイライトする
   // （issue #66 段3・FR-1.8・C-1）。sel（選択）とは独立——一覧を眺めている
   // だけで選択状態を変えたくない
@@ -3545,8 +3923,15 @@ export default function Editor(
     // →色線の順で重ね描きし、ラベルは色を直書きせず不透明チップ＋白文字に
     // する。色分け（表／欄／重なり）はチップの縁色に残しつつ、識別は
     // 「?」（通常）／「!」（重なり）の記号でも行う（色だけに依存しない）
-    for (let i = 0; i < cands.length; i++) {
-      const c = cands[i];
+    //
+    // issue #110: 候補一覧は candShown（既定 50・「もっと見る」で伸びる）ぶん
+    // しか出さないのに、キャンバス側は全候補を毎フレーム描いていた（罫線の
+    // 細かい紙は数百〜千件になりうる）。一覧の表示範囲に揃えて描く候補数を
+    // 絞る——キャンバス上で候補を直接クリックする経路は無い（採用/除去は
+    // 一覧のボタンのみ）ため、描かない分による操作上の欠落は無い
+    const visibleCands = cands.slice(0, candShown);
+    for (let i = 0; i < visibleCands.length; i++) {
+      const c = visibleCands[i];
       const r = c.rect;
       const color = c.overlaps ? "#ff9f43" : c.kind === "table" ? "#7ce38b" : "#4fc3f7";
       ctx.setLineDash([6 * px, 4 * px]);
@@ -3621,7 +4006,7 @@ export default function Editor(
     }
     ctx.restore();
   }, [excls, fields, tables, pending, sel, selCell, splitY, zoom, pan, imgSize, hlCol, hlFieldUid,
-      formatFaces, formatOverride, cands]);
+      formatFaces, formatOverride, cands, candShown]);
 
   // draw() は全欄のラベルをループで measureText トリムするため、ドラッグ中の
   // mousemove のたびに毎回同期実行すると重い（issue #60 M-3・実測で back面
@@ -3824,7 +4209,8 @@ export default function Editor(
     void runMatchTemplates(imagePath);
   };
 
-  const toEditorState = (t: any): { fieldCount: number; tableCount: number } => {
+  const toEditorState = (t: any):
+      { fieldCount: number; tableCount: number; cellsOffDropNotice: string | null } => {
     meta.current = {
       // 空文字の template_id（壊れたテンプレJSON等）を拾い漏らさないよう
       // ?? ではなく || にする（マリンレビュー LOW）
@@ -3834,6 +4220,9 @@ export default function Editor(
       record: t.record ?? { pages: 1 },
     };
     const fs: Field[] = []; const ts: Table[] = []; const es: Excl[] = [];
+    // issue #113 (1): output_disabled_cells の読み込みで捨てたエントリの
+    // 内訳を表ごとに集めておき、ループを抜けたところで1つの文言にまとめる
+    const dropSummaries: CellsOffDropSummary[] = [];
     // 見つからなかったことを 0 で表すと、裏面の原点が本当に 0 のときと
     // 区別できない（レビュー LOW: falsy-zero）。null を番兵にする
     let sy: number | null = null;
@@ -3865,9 +4254,11 @@ export default function Editor(
         // 升単位の「出力しない」（issue #66 段9・FR-3.1）。実在しない行・列は
         // 落とす（core の _validate_disabled_cells が拒否する形を state へ入れない）。
         // 空のときは cellsOff 自体を持たせない＝往復でキーが増えない
-        const cellsOff = cellsOffFromJson(
-          tb.output_disabled_cells, columns,
-          blocks.reduce((s: number, b: any) => s + Math.max(0, b.rows | 0), 0));
+        const totalRows = blocks.reduce((s: number, b: any) => s + Math.max(0, b.rows | 0), 0);
+        const cellsOff = cellsOffFromJson(tb.output_disabled_cells, columns, totalRows);
+        // issue #113 (1): 捨てたエントリの件数・内訳を記録する（cellsOffFromJson
+        // と同じ判定基準——2関数の乖離を防ぐため差分テストで一致を確認済み）
+        dropSummaries.push(cellsOffDropSummary(tb.output_disabled_cells, columns, totalRows));
         ts.push({ uid: uid(), table_id: tb.table_id, row_pitch: tb.row_pitch,
                   row_height: tb.row_height, blocks, columns,
                   ...(cellsOff.size ? { cellsOff } : {}) });
@@ -3886,6 +4277,10 @@ export default function Editor(
     setLoadedOrder(outputOrderSnapshot(fs, ts));
     // 読み込み直後は「取り消した升の指定」は無い（FR-3.5・保存前確認の入力）
     droppedCellsRef.current = 0;
+    // issue #113 (1): この読み込みで捨てた output_disabled_cells の件数を
+    // 保存前確認でも参照できるよう ref に残す（droppedCellsRef と同じ流儀）
+    const cellsOffDrop = mergeCellsOffDropSummaries(dropSummaries);
+    cellsOffDroppedAtLoadRef.current = cellsOffDrop.dropped;
     setSelCell(null); setExpandedTableUid(null); setGridRowLimit({});
     // 欄数・金額列数の読み込み時基準（issue #59 H-9）は、この関数の呼び出し側
     // （auto-load useEffect・loadTemplate）が refreshLoadedCounts で verify
@@ -3894,7 +4289,8 @@ export default function Editor(
     // verify＝行展開後の全セル数）と母集団がずれる（issue #66 段0・F-10）。
     // 戻り値の fieldCount/tableCount はこの基準とは別物——画像なしキャンバスの
     // 案内表示専用の単純な件数であり、差分判定には使わない（2026-09-02）
-    return { fieldCount: fs.length, tableCount: ts.length };
+    return { fieldCount: fs.length, tableCount: ts.length,
+             cellsOffDropNotice: cellsOffDropNotice(cellsOffDrop) };
   };
 
   // 読み込み時点の欄数・金額列数・除外数の基準を verify 応答から取得する
@@ -3938,7 +4334,7 @@ export default function Editor(
         const text = await invoke<string>("read_default_template");
         const parsed = JSON.parse(text);
         if (!parsed || !Array.isArray(parsed.faces)) throw new Error("faces が無い");
-        const { fieldCount, tableCount } = toEditorState(parsed);
+        const { fieldCount, tableCount, cellsOffDropNotice: dropNotice } = toEditorState(parsed);
         resetHistory();   // 読み込み前の空状態へ Ctrl+Z で戻れると事故のもと
         markDirty(false);
         // last_template（issue #72 (t)・スバル差し戻し1）: read_default_template
@@ -3952,9 +4348,11 @@ export default function Editor(
         } catch { /* 取得できなくても「前回のテンプレート」表示を諦めるだけ */ }
         // 画像を開くまでキャンバスに枠を描かない（2026-09-02 ユーザー指摘）。
         // 案内はキャンバス内の文字（draw()）にも出すが、そちらはスクリーン
-        // リーダーに読めないため、同じ内容をこの msg（DOM）にも出す
+        // リーダーに読めないため、同じ内容をこの msg（DOM）にも出す。
+        // issue #113 (1): output_disabled_cells を捨てたときは同じ msg に重ねる
         setMsg(restoredTemplateNotice(
-          lastTemplate, meta.current.template_id, fieldCount, tableCount).text);
+          lastTemplate, meta.current.template_id, fieldCount, tableCount).text
+          + (dropNotice ? ` ／ ${dropNotice}` : ""));
         await refreshLoadedCounts(null);
       } catch (e) {
         // 配布物欠損・開発中の白紙スタート。無言のままだと、この白紙が
@@ -3987,7 +4385,7 @@ export default function Editor(
     }
     // H-1: 確定枠がここで入れ替わる。走行中の候補生成があれば結果を捨てる
     bumpFrameEpoch();
-    const { fieldCount, tableCount } = toEditorState(parsed);
+    const { fieldCount, tableCount, cellsOffDropNotice: dropNotice } = toEditorState(parsed);
     resetHistory();   // 別テンプレートをまたぐ Undo は誤操作のもと
     setTplPath(p);    // 保存ダイアログの既定をこのファイルにする（issue #56 T1-3）
     // 前のファイルの検証エラー・警告を現在の状態と誤読させない（レビュー N-5）
@@ -4009,8 +4407,11 @@ export default function Editor(
     // 固定で、利用者自身の JSON を開いても canvas 側の「出荷テンプレート」
     // 文言と食い違っていた。画像が既にあればそちらの経路は使わず、
     // どのファイルを読み込んだかが分かる従来の文言を維持する
+    // issue #113 (1): output_disabled_cells を捨てたときは、どの分岐でも
+    // 同じ notice を末尾に重ねる
+    const dropSuffix = dropNotice ? ` ／ ${dropNotice}` : "";
     if (imgRef.current) {
-      setMsg(`テンプレート読込: ${p}`);
+      setMsg(`テンプレート読込: ${p}` + dropSuffix);
     } else if (fieldCount === 0 && tableCount === 0) {
       // 欄0・表0は自動読み込み失敗時と同じ判定式だが、ここは「今まさに
       // 有効な JSON を p から読み込んだ」ことが分かっている経路——
@@ -4018,9 +4419,9 @@ export default function Editor(
       // 直前に選んだファイルが読み込めなかったかのように誤解される
       // （コーディネータ指摘5）。パスと件数を残した専用の文言にする
       setMsg(`テンプレート読込: ${p}（欄 ${fieldCount}・表 ${tableCount}）。`
-        + noImageNotice(meta.current.template_id, fieldCount, tableCount).line2);
+        + noImageNotice(meta.current.template_id, fieldCount, tableCount).line2 + dropSuffix);
     } else {
-      setMsg(noImageNotice(meta.current.template_id, fieldCount, tableCount).text);
+      setMsg(noImageNotice(meta.current.template_id, fieldCount, tableCount).text + dropSuffix);
     }
     await refreshLoadedCounts(p);
   };
@@ -4069,7 +4470,7 @@ export default function Editor(
     // テンプレートのものへ入れ替わる。世代を進めて、遅れて解決する候補が
     // 適用中のテンプレートの上へ復活しないようにする
     bumpFrameEpoch();
-    const { fieldCount, tableCount } = toEditorState(parsed);
+    const { fieldCount, tableCount, cellsOffDropNotice: dropNotice } = toEditorState(parsed);
     resetHistory();
     setTplPath(null);   // 絶対パスを持たないテンプレート（保存ダイアログの既定にしない）
     setWarnMsg("");
@@ -4101,13 +4502,22 @@ export default function Editor(
       // 記憶（last_applied_template）も同じ点でだけ書く——自動適用は記憶の
       // 復元にすぎず、既に同じ値が入っている（設計 §4.2）
       const memo = applyTemplateMemoryValue(target);
-      await invoke("write_config",
-        { patch: { last_template: memo, last_applied_template: memo } }).catch(() => {});
+      // issue #127 (2): 失敗を握りつぶすと、次回起動で「前回のテンプレート」
+      // が復元されないだけで理由が誰にも見えない。1行だけ可視化する
+      // （ここで止めない——設定の保存に失敗しても今回の適用自体は続けてよい）
+      const configErr = await invoke("write_config",
+        { patch: { last_template: memo, last_applied_template: memo } })
+        .then(() => null).catch((e) => String(e));
       // Should-1: 直後に setTplDecision で適用中バーが同じ内容
       // （appliedTemplateBarText）を出す。.msg にも書くとライブ領域が2つ
       // 同時に非空になるため、バーが描かれる場面では .msg を空にする
+      // issue #113 (1): 手動適用のときは output_disabled_cells を捨てた旨を
+      // 重ねる（自動適用は既存設計どおり msg を空にする経路なのでここでは
+      // 出さない——保存前確認（cellsOffDroppedAtLoadRef）が安全網になる）
       setMsg(templateDecisionMsg(hasImage,
-        `テンプレート読込: ${name}（欄 ${fieldCount}・表 ${tableCount}）`));
+        `テンプレート読込: ${name}（欄 ${fieldCount}・表 ${tableCount}）`
+        + (dropNotice ? ` ／ ${dropNotice}` : "")
+        + (configErr ? ` ／ 次回起動時の記憶を保存できませんでした: ${configErr}` : "")));
     }
     setTplDecision({ state: "applied", name, auto: opts.auto,
                      fields: fieldCount, tables: tableCount });
@@ -4132,16 +4542,20 @@ export default function Editor(
       if (o.seq !== loadSeqRef.current) return;   // 別の紙へ移った
       if (!ok) {
         // 記憶が指すテンプレートの実体が無い。黙って出荷へ倒さず、記憶を
-        // 捨てて（config の自己修復）候補パスへ進む（設計 §4.3・不変条件7）
-        await invoke("write_config", { patch: { last_applied_template: "" } })
-          .catch(() => {});
+        // 捨てて（config の自己修復）候補パスへ進む（設計 §4.3・不変条件7）。
+        // issue #127 (2): この書き込みが失敗すると、次回起動でも同じ壊れた
+        // 記憶を読んで自己修復を繰り返すだけになる——1行だけ可視化する
+        const configErr = await invoke("write_config", { patch: { last_applied_template: "" } })
+          .then(() => null).catch((e) => String(e));
         // レビュー M-1: ここから先は記憶なしで開いたのと同じ候補パスなので、
         // 上部の表示も同じにする。loadImage は view==="template" として
         // tplDecision を null にしたまま来る——1行足さないと、候補は出るのに
         // 決定カードも未適用バーも無い（テンプレートを選ぶ導線が消える）
         setTplDecision({ state: "deciding" });
-        return runCandidateFlow({ ...o, notice: staleAppliedMemoryNotice(
-          target.kind === "user" ? target.name : "出荷テンプレート") });
+        const staleNotice = staleAppliedMemoryNotice(
+          target.kind === "user" ? target.name : "出荷テンプレート");
+        return runCandidateFlow({ ...o, notice: staleNotice
+          + (configErr ? ` ／ 壊れた記憶を消せませんでした: ${configErr}` : "") });
       }
       // 様式判定の帯は「今適用しているテンプレート」に対してのみ出す。
       // 判定の根拠（expand-page へ注入された last_template）が別テンプレート
@@ -4529,7 +4943,8 @@ export default function Editor(
       // 差し替えるだけで履歴も dirty も動かしていなかったため、この後の検証で
       // 保存が止まると「切り抜きだけがメモリに残り、元に戻す手段が無い」
       // 状態になっていた。1コマ積んで Undo で戻せるようにする
-      pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands });
+      pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands,
+                       suggestions, candSelected });
       setFields(resolved.fields);
       setSel(null);
       markDirty(true);
@@ -4628,7 +5043,10 @@ export default function Editor(
     const columnDecrease = columnDecreaseFor(loadedCounts.columns, tpl.columns);
     const warnings = saveConfirmWarnings(
       { isShipped, imageSizeMismatch, exclusionNotice: exclNotice, columnDecrease,
-        droppedCells: droppedCellsRef.current });
+        droppedCells: droppedCellsRef.current,
+        duplicateColumnsNotice: duplicateColumnNamesNotice(tables),
+        loadDroppedCells: cellsOffDroppedAtLoadRef.current,
+        overlappingBlocksNotice: overlappingTableBlocksNotice(overlappingTableBlocks(tables)) });
     if (warnings.length) {
       const proceed = await askConfirm(warnings);
       if (!proceed) {
@@ -4719,6 +5137,9 @@ export default function Editor(
       const orderNote = orderChangeReportNote(orderChangedNow, tpl.cells ?? resolved.fields.length);
       setLoadedOrder(outputOrderSnapshot(resolved.fields, tables));
       droppedCellsRef.current = 0;   // 保存できたので取り消しの注意は持ち越さない
+      // issue #113 (1): 保存すると捨てたエントリを含まない状態が書き出される
+      // ので、同じ理由で持ち越さない
+      cellsOffDroppedAtLoadRef.current = 0;
       setMsg(carveNote + `保存＋コア検証 OK（`
         + (tpl.cells != null
            ? (columnsUnknown
@@ -4802,7 +5223,8 @@ export default function Editor(
     }
     if (resolved.carved.length) {
       // issue #65-8: ファイル保存側と同じく、自動切り抜きは履歴へ積む
-      pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands });
+      pushHistoryNow({ fields: resolved.fields, tables, excls, splitY, cands,
+                       suggestions, candSelected });
       setFields(resolved.fields);
       setSel(null);
       markDirty(true);
@@ -4840,12 +5262,17 @@ export default function Editor(
       setErrMsg(`保存していません: ${res.error}`);
       return;
     }
-    await invoke("write_config", { patch: { last_template: `user:${name}` } }).catch(() => {});
+    // issue #127 (2): 失敗を握りつぶすと、次回起動でこのテンプレートが
+    // 実行タブの既定にならないだけで理由が見えない。保存自体は完了して
+    // いるので処理は止めず、成功メッセージに1行だけ重ねる
+    const configErr = await invoke("write_config", { patch: { last_template: `user:${name}` } })
+      .then(() => null).catch((e) => String(e));
     setTplPath(null);
     markDirty(false);
     // スバル差し戻し Must-2: 保存が完了したので注意を消す
     setOverlapAcceptNotice("");
-    setMsg(carveNote + `利用者テンプレートとして保存しました: ${name}`);
+    setMsg(carveNote + `利用者テンプレートとして保存しました: ${name}`
+      + (configErr ? ` ／ 実行タブの既定への反映は失敗しました: ${configErr}` : ""));
   };
 
   // ---------- 枠候補の生成（detect-grid）----------
@@ -4960,7 +5387,7 @@ export default function Editor(
       // overlaps_existing が全候補 false 固定になる。GUI 側でも現在の
       // fields/tables に対して独立に重なりを再判定し、どちらか一方でも
       // 検出したら overlaps=true に確定する（安全網を二重化する）
-      const rawCands = candidatesFromDetectFrames(ev);
+      const rawCands = candidatesFromDetectFrames(ev, o.epoch);
       // 提案の cell_indexes は **同一応答の candidates[] の受け取り順** でしか
       // 意味を持たない（設計 D-3・不変条件 7）。フィルタや並べ替えより前、
       // 受信直後のここで id へ解決する——以後は id で持つので、採用・除去で
@@ -4980,7 +5407,8 @@ export default function Editor(
       // 設計08 §4.5.3）。生成前の状態（現在の cands 含む）を丸ごと退避する。
       // 自動生成は積まない（M-7）——利用者の編集ではないため
       if (eff.pushHistory) pushHistoryNow({ fields: o.fields, tables: o.tables, excls,
-                                            splitY: o.splitY, cands: newCands });
+                                            splitY: o.splitY, cands: newCands,
+                                            suggestions: newSuggestions, candSelected: defaults });
       setCands(newCands);
       setSuggestions(newSuggestions);
       setCandShown(CAND_PAGE_SIZE);
@@ -5055,14 +5483,19 @@ export default function Editor(
     const result = applyCandidates(fields, tables, cands, candSelected, uid);
     if (result.acceptedCount === 0) { setFramesMsg("選択した候補がありません（重なりのある候補は対象外です）"); return; }
     const newTableUids = result.tables.slice(beforeTablesLen).map((t) => t.uid);
+    // issue #109 (a): 採用で cands から消えた升だけを指していた提案は解決
+    // 不能になるので、ここで落とす（一括採用・個別採用・全除去のどれでも
+    // 起こりうる、cands だけを縮める操作すべてに共通の後処理）
+    const nextSuggestions = pruneSuggestionsForCands(suggestions, result.cands);
     // 升候補は 100 件超になりうる（実測: formC 180・sample-1 138）。一括採用は
     // 押した瞬間から Ctrl+Z 1手で戻せる必要があるので、400ms 静止の経路に
     // 任せずここで1コマ積む（設計 D-8・§4.0 Q3/Q4）
     pushHistoryNow({ fields: result.fields, tables: result.tables, excls, splitY,
-                     cands: result.cands });
+                     cands: result.cands, suggestions: nextSuggestions, candSelected });
     setFields(result.fields);
     setTables(result.tables);
     setCands(result.cands);
+    setSuggestions(nextSuggestions);
     setRecentCandTableUids((prev) => [...prev, ...newTableUids]);
     markDirty(true);
     setFramesMsg(`${result.acceptedCount} 件を採用しました（Ctrl+Z で戻せます）`);
@@ -5073,7 +5506,10 @@ export default function Editor(
   const clearAllCandidates = () => {
     const next = clearCandidates(cands, fields, tables);
     if (!next) return;
+    // issue #109 (a): cands を空にする以上、それを参照していた提案は
+    // 1件も解決できなくなる——すべて落とす
     setCands(next.cands);
+    setSuggestions((ss) => pruneSuggestionsForCands(ss, next.cands));
     setFramesMsg(next.notice);
   };
 
@@ -5091,7 +5527,10 @@ export default function Editor(
       setTables((ts) => [...ts, { uid: newUid, ...spec }]);
       setRecentCandTableUids((prev) => [...prev, newUid]);
     }
-    setCands((cs) => cs.filter((c) => c.id !== cand.id));
+    // issue #109 (a): この候補だけを参照していた提案は解決不能になるので落とす
+    const nextCands = cands.filter((c) => c.id !== cand.id);
+    setCands(nextCands);
+    setSuggestions((ss) => pruneSuggestionsForCands(ss, nextCands));
     // スバル差し戻し Must-2: 重なりを承知で採用した場合、保存するまで
     // 消えない注意を候補パネル上部に残す（既存枠が保存時に切り抜かれる）
     if (cand.overlaps) setOverlapAcceptNotice(overlapAcceptedNotice());
@@ -5099,7 +5538,10 @@ export default function Editor(
   };
 
   const removeOneCandidate = (id: string) => {
-    setCands((cs) => cs.filter((c) => c.id !== id));
+    const nextCands = cands.filter((c) => c.id !== id);
+    setCands(nextCands);
+    // issue #109 (a): 除去でも同じく、参照先が無くなった提案を落とす
+    setSuggestions((ss) => pruneSuggestionsForCands(ss, nextCands));
   };
 
   // ---- まとめ提案の3操作（issue #73 (b) 第2弾・AC-3.28）----
@@ -5108,7 +5550,18 @@ export default function Editor(
   // 確認モーダルは置かない——一括でも Ctrl+Z 1手で戻せるため（設計 D-8）。
   // 既存枠と重なる提案の「表にまとめる」だけは既存の確認をそのまま通す
   const adoptSuggestion = async (s: Suggestion, mode: "table" | "cells") => {
-    if (mode === "table" && s.overlaps
+    // issue #109 (a): s.overlaps は生成時点のテンプレートを基準にした値。
+    // 一括採用・個別採用でこの提案の生成後に fields/tables が動いていても
+    // 拾えていなかった。押下時点の確定枠で独立に再判定する
+    // （candidateOverlapsExisting は core の判定を介さない GUI 側の再判定・
+    // runDetectFrames と同じ考え方）
+    const overlapsNow = mode === "table"
+      ? (s.overlaps || candidateOverlapsExisting(
+          { id: s.id, kind: "table", rect: s.rect, faceHint: s.faceHint,
+            residual: s.residual, overlaps: s.overlaps, table: s.table },
+          fields, tables, splitY))
+      : s.overlaps;
+    if (mode === "table" && overlapsNow
         && !(await askUiConfirm("adopt-overlapping-candidate"))) return;
     const r = adoptSuggestionResult({ fields, tables, cands, suggestions }, s, mode, uid);
     if (!r) return;
@@ -5116,11 +5569,15 @@ export default function Editor(
       setFramesMsg("この提案の升は既に採用済みか、既存の枠と重なるため採用できません");
       return;
     }
-    pushHistoryNow({ fields: r.fields, tables: r.tables, excls, splitY, cands: r.cands });
+    // issue #109 (a): この提案の採用で消費された cands により、他の提案が
+    // 解決不能になっていないかも合わせて確認する
+    const nextSuggestions = pruneSuggestionsForCands(r.suggestions, r.cands);
+    pushHistoryNow({ fields: r.fields, tables: r.tables, excls, splitY, cands: r.cands,
+                     suggestions: nextSuggestions, candSelected });
     setFields(r.fields); setTables(r.tables); setCands(r.cands);
-    setSuggestions(r.suggestions);
+    setSuggestions(nextSuggestions);
     if (r.newTableUid) setRecentCandTableUids((prev) => [...prev, r.newTableUid!]);
-    if (mode === "table" && s.overlaps) setOverlapAcceptNotice(overlapAcceptedNotice());
+    if (mode === "table" && overlapsNow) setOverlapAcceptNotice(overlapAcceptedNotice());
     markDirty(true);
     const tableId = r.newTableUid
       ? r.tables.find((t) => t.uid === r.newTableUid)?.table_id : undefined;
@@ -5188,7 +5645,7 @@ export default function Editor(
         history.current.future = [];
       }
       const carvedFields = fields.map((f) => carved.get(f.uid) ?? f);
-      snapRef.current = { fields: carvedFields, tables, excls, splitY, cands };
+      snapRef.current = { fields: carvedFields, tables, excls, splitY, cands, suggestions, candSelected };
       setFields(carvedFields);
       // carve で extras が総入れ替えになった欄を選択中だと、part の添字が
       // 存在しない/別の領域を指すようになる（issue #60 M-4）。安全側へ倒し、
@@ -5547,16 +6004,19 @@ export default function Editor(
   };
 
   // 履歴: 編集状態が 400ms 静止したら1コマとして積む（ドラッグ1回=1コマ）。
-  // 復元直後の変化は積まない（restoring フラグ）
+  // 復元直後の変化は積まない（restoring フラグ）。issue #109 (b): suggestions・
+  // candSelected も cands と同じ理由で見る——cands だけ差分検知すると、提案
+  // だけを消した（removeSuggestion）操作が履歴に積まれず Undo で戻せない
   useEffect(() => {
     if (restoring.current) { restoring.current = false; return; }
     const t = setTimeout(() => {
-      const cur: Snap = { fields, tables, excls, splitY, cands };
+      const cur: Snap = { fields, tables, excls, splitY, cands, suggestions, candSelected };
       const prev = snapRef.current;
       if (prev === null) { snapRef.current = cur; return; }   // 基準の初期化
       if (prev.fields !== cur.fields || prev.tables !== cur.tables
           || prev.excls !== cur.excls || prev.splitY !== cur.splitY
-          || prev.cands !== cur.cands) {
+          || prev.cands !== cur.cands || prev.suggestions !== cur.suggestions
+          || prev.candSelected !== cur.candSelected) {
         history.current.past.push(prev);
         if (history.current.past.length > 100) history.current.past.shift();
         history.current.future = [];
@@ -5564,7 +6024,7 @@ export default function Editor(
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [fields, tables, excls, splitY, cands]);
+  }, [fields, tables, excls, splitY, cands, suggestions, candSelected]);
 
   const resetHistory = () => {
     history.current = { past: [], future: [] };
@@ -5576,7 +6036,7 @@ export default function Editor(
   // 防ぐ）ため、クリック時点で待たずに history へ積む。issue #73 (b) の
   // 候補生成も同じ理由で使う（設計08 §4.5.3「400ms静止の経路に頼らない」）
   const pushHistoryNow = (next: Snap) => {
-    const prev = snapRef.current ?? { fields, tables, excls, splitY, cands };
+    const prev = snapRef.current ?? { fields, tables, excls, splitY, cands, suggestions, candSelected };
     // コマの積み方（1回につき1コマ・上限100で最古から落とす）は pushHistory
     // に出してある（AC-F21 をテストで固定するため）
     history.current.past = pushHistory(history.current.past, prev);
@@ -5589,7 +6049,19 @@ export default function Editor(
     setFields(snap.fields); setTables(snap.tables);
     setExcls(snap.excls); setSplitY(snap.splitY);
     setCands(snap.cands ?? []);
+    // issue #109 (b): 提案・候補のチェック状態も Snap と一緒に戻す。旧い
+    // Snap（このフィールドを持たない）を復元する経路は無い前提だが、
+    // 防御的に省略時は空へ倒す
+    setSuggestions(snap.suggestions ?? []);
+    setCandSelected(snap.candSelected ?? {});
     setSel(null); setPending(null); markDirty(true);
+    // issue #127 (4): 「取り消しました N 件」の累計（droppedCellsRef）は
+    // 読み込み時・保存成功時にしか 0 に戻らず、Undo で減らなかった。行数を
+    // 減らして指定が落ちた直後に Ctrl+Z で戻しても、保存前確認には
+    // 「N 件を取り消しました」が残ったまま（実際には取り消されていない）
+    // だった——Undo/Redo のどちらでも、累計は「いまの state」を正しく
+    // 説明しなくなるため 0 に戻す（次に本当に行数を減らせば、また積み直る）
+    droppedCellsRef.current = 0;
   };
   const undoEdit = () => {
     const prev = history.current.past.pop();
@@ -5735,7 +6207,7 @@ export default function Editor(
   const toggleCell = (t: Table, rowNo: number, columnName: string) => {
     const next = tables.map((v) => v.uid === t.uid
       ? toggleCellOutput(v, rowNo, columnName) : v);
-    pushHistoryNow({ fields, tables: next, excls, splitY, cands });
+    pushHistoryNow({ fields, tables: next, excls, splitY, cands, suggestions, candSelected });
     setTables(next);
     markDirty(true);
   };
@@ -5746,7 +6218,7 @@ export default function Editor(
     const c = t.columns[columnIndex];
     if (!c) return;
     const next = tables.map((v) => v.uid === t.uid ? toggleColumnOutput(v, columnIndex) : v);
-    pushHistoryNow({ fields, tables: next, excls, splitY, cands });
+    pushHistoryNow({ fields, tables: next, excls, splitY, cands, suggestions, candSelected });
     setTables(next);
     markDirty(true);
     const rows = tableTotalRows(t);
@@ -5763,13 +6235,63 @@ export default function Editor(
         : state === "none" ? `${name} の ${rows}升 を出力しないにしました`
           : `${name} の列を戻しました（${rows}升 のうち ${off}升 は出力しないままです）`);
   };
+  // issue #110: toggleCell／toggleColumnCells は tables 等の最新値を読むため
+  // 素の関数のままだと毎レンダー新しい参照になる。CellGrid（React.memo）に
+  // props として渡すコールバックの参照が hover のたびに変わると memo が
+  // 効かなくなるため、ref 越しに「常に最新版を呼ぶだけの安定した関数」に
+  // 包む——依存配列を手で列挙する必要が無いぶん、書き漏れによる古い state
+  // 参照（stale closure）の事故も避けられる
+  const toggleCellRef = useRef(toggleCell);
+  toggleCellRef.current = toggleCell;
+  const stableToggleCell = useCallback(
+    (t: Table, rowNo: number, columnName: string) => toggleCellRef.current(t, rowNo, columnName),
+    []);
+  const toggleColumnCellsRef = useRef(toggleColumnCells);
+  toggleColumnCellsRef.current = toggleColumnCells;
+  const stableToggleColumnCells = useCallback(
+    (t: Table, columnIndex: number) => toggleColumnCellsRef.current(t, columnIndex), []);
+  // issue #110: 升グリッドが列位置・列ごとの出力升数を求めるための索引。
+  // 展開中の表（expandedTableUid）1つぶんだけを対象にし、columnNames か
+  // その表の構造が変わったときだけ作り直す——hover で hlCol/cellHoverNote が
+  // 変わっても再計算しない（CellGrid に渡す props の参照を安定させるため）
+  const expandedTableForGrid = tables.find((v) => v.uid === expandedTableUid) ?? null;
+  const cellPositionIndex = useMemo(
+    () => expandedTableForGrid
+      ? buildCellColumnPositionIndex(columnNames, expandedTableForGrid.table_id,
+                                      expandedTableForGrid.columns.map((c) => c.name))
+      : new Map<string, { first: number; last: number }>(),
+    [columnNames, expandedTableForGrid]);
+  const cellsOffByColumnForGrid = useMemo(
+    () => expandedTableForGrid ? countCellsOffByColumn(expandedTableForGrid) : new Map<string, number>(),
+    [expandedTableForGrid]);
+  const columnOutputCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!expandedTableForGrid) return map;
+    const rows = tableTotalRows(expandedTableForGrid);
+    for (const c of expandedTableForGrid.columns) {
+      map.set(c.name, isOutput(c) ? rows - (cellsOffByColumnForGrid.get(c.name) ?? 0) : 0);
+    }
+    return map;
+  }, [expandedTableForGrid, cellsOffByColumnForGrid]);
   /// ブロックの行数変更・ブロック増減（FR-3.5）。升の指定を
   /// (ブロック番号, ブロック内行番号) 基準で写し直し、**同じ patch で**
   /// 差し替える（2回に分けると Undo が2コマになる）。落ちた件数は保存前
   /// 確認へ積む（AC-3.24）
+  //
+  // issue #114: 兄弟操作（toggleCell・toggleColumnCells・moveTableColumn・
+  // 一括採用・adoptSuggestion・候補生成）は全部「押した瞬間から Ctrl+Z 1手で
+  // 戻せる」よう pushHistoryNow を明示的に呼ぶのに、ここだけ 400ms 静止の
+  // 履歴 effect 任せだった。行数の確定は一度に数十件の升指定を落としうる
+  // 最も破壊的な操作で、確定直後（400ms 以内）の反射的な Ctrl+Z が直前の
+  // 別編集ごと巻き込んで Redo でも戻せなくなっていた。next を先に計算し、
+  // 他の1クリック=1コマ系と同じ順序（pushHistoryNow → setTables）にする
   const changeTableBlocks = (t: Table, nextBlocks: Block[]) => {
     const r = remapCellsOffOnBlocksChange(t, nextBlocks);
-    updateTable(t.uid, { blocks: nextBlocks, cellsOff: r.cellsOff });
+    const nextTables = tables.map((v) => v.uid === t.uid
+      ? { ...v, blocks: nextBlocks, cellsOff: r.cellsOff } : v);
+    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands, suggestions, candSelected });
+    setTables(nextTables);
+    markDirty(true);
     if (r.dropped > 0) {
       droppedCellsRef.current += r.dropped;
       setMsg(`行の外に出た「出力しない升」の指定 ${r.dropped} 件を取り消しました`);
@@ -5792,6 +6314,13 @@ export default function Editor(
     if (cur === undefined) return;
     const n = Number(draft.value);
     if (draft.value.trim() === "" || !Number.isInteger(n) || n < 1 || n === cur) return;
+    // issue #113 (2): schema の rows 上限（1ブロックあたり 200・
+    // template.schema.json）を超える値は GUI が受け付けて描画し、保存時に
+    // jsonschema の生メッセージで落ちていた。ここで捨てて理由を出す
+    if (n > 200) {
+      setMsg("行数は1ブロックあたり200行までです（前の行数に戻しました）");
+      return;
+    }
     changeTableBlocks(t, t.blocks.map((v, j) => j === index ? { ...v, rows: n } : v));
   };
   /// 列名の確定（レビュー H-3）。列名を全部消して打ち直す間も打鍵ごとに
@@ -5807,10 +6336,26 @@ export default function Editor(
     const name = draft.value;
     if (name === "") { setMsg("列名は空にできません（前の名前に戻しました）"); return; }
     if (name === t.columns[index]?.name) return;
+    // issue #115: 同じ表の他の列と同名では確定しない（空名と同じ扱い）。
+    // 升の出力指定は `row_no:列名` で持つため、同名の2列は指定を共有して
+    // しまい、片方を触るともう片方にも黙って効いてしまう
+    if (t.columns.some((c, j) => j !== index && c.name === name)) {
+      setMsg("列名が重複しています（前の名前に戻しました）");
+      return;
+    }
     updateTable(t.uid, {
       columns: t.columns.map((v, j) => j === index ? { ...v, name } : v),
       cellsOff: remapCellsOffOnColumnRename(t, index, name, draft.from),
     });
+  };
+  /// 列の削除（issue #117）。「選択中の升」（selCell）は列を配列位置
+  /// （colIndex）で参照しているため、rowNo 側の無効化（changeTableBlocks）と
+  /// 対称に、削除で colIndex を付け替える／解除する
+  const removeTableColumn = (t: Table, index: number) => {
+    updateTable(t.uid,
+      { columns: t.columns.filter((_, j) => j !== index),
+        cellsOff: remapCellsOffOnColumnDelete(t, index) });
+    setSelCell((c) => remapSelCellOnColumnDelete(c, t.uid, index));
   };
   // 出力列タブの [↑][↓]（issue #66 段7・FR-2.1・付録A）。境界（面の先頭/末尾）
   // では moveFieldOutputOrder が null を返す——ボタン側も同じ判定で disabled に
@@ -5818,7 +6363,7 @@ export default function Editor(
   const moveField = (uid: string, dir: "up" | "down") => {
     const next = moveFieldOutputOrder(fields, uid, dir, splitY);
     if (!next) return;
-    pushHistoryNow({ fields: next, tables, excls, splitY, cands });
+    pushHistoryNow({ fields: next, tables, excls, splitY, cands, suggestions, candSelected });
     setFields(next);
     markDirty(true);
     flashRow(uid);
@@ -5849,10 +6394,14 @@ export default function Editor(
     const next = moveTableColumnOrder(t.columns, index, dir);
     if (!next) return;
     const nextTables = tables.map((x) => x.uid === tableUid ? { ...x, columns: next } : x);
-    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands });
+    pushHistoryNow({ fields, tables: nextTables, excls, splitY, cands, suggestions, candSelected });
     setTables(nextTables);
-    markDirty(true);
     const newIndex = dir === "up" ? index - 1 : index + 1;
+    // issue #117: 列の並べ替えは「選択中の升」の列参照（colIndex＝配列添字）
+    // を追従させない対称の穴だった。入れ替わった2つの添字（index/newIndex）
+    // のどちらかを選んでいたら、もう一方へ付け替える
+    setSelCell((c) => remapSelCellOnColumnMove(c, tableUid, index, newIndex));
+    markDirty(true);
     flashRow(`${tableUid}:${newIndex}`);
     setReorderMsg(reorderAnnouncement(
       next[newIndex].name || `列${newIndex + 1}`, newIndex + 1, next.length));
@@ -6145,12 +6694,15 @@ export default function Editor(
         <label>行の高さ <input type="number" step={1} value={t.row_height}
           onChange={(e) => updateTable(t.uid,
             { row_height: Math.max(1, Math.round(+e.target.value)) })} /></label>
-        {/* 行数は打鍵ごとに確定しない（レビュー H-2）。確定は onBlur と Enter */}
+        {/* 行数は打鍵ごとに確定しない（レビュー H-2）。確定は onBlur と Enter。
+            issue #113 (2): schema の上限（1ブロックあたり200行）を max で示す
+            ——実際の拒否は commitBlockRows 側（打鍵途中の中間値は捨てて確定
+            しない既存方針と揃える） */}
         {t.blocks.map((b, i) => {
           const key = `${t.uid}:${i}`;
           const draft = blockRowsDraft?.key === key ? blockRowsDraft.value : null;
           return (
-            <label key={i}>ブロック{i + 1} 行数 <input type="number" min={1} step={1}
+            <label key={i}>ブロック{i + 1} 行数 <input type="number" min={1} max={200} step={1}
               value={draft ?? String(b.rows)}
               onChange={(e) => setBlockRowsDraft({ key, value: e.target.value })}
               onKeyDown={(e) => {
@@ -6159,9 +6711,15 @@ export default function Editor(
               }}
               onBlur={() => commitBlockRows(t, i, key)} /></label>);
         })}
-        <button onClick={() => changeTableBlocks(t, [...t.blocks,
-          { ...t.blocks[t.blocks.length - 1],
-            x: t.blocks[t.blocks.length - 1].x + 1020 }])}>右ブロックを追加（複製）</button>
+        {/* issue #113 (2): schema の blocks 上限（8枚・template.schema.json）を
+            超えると保存時に生メッセージで拒否されていた。8枚に達したら無効化
+            する。issue #116: x は「既存ブロックの x + 列の総幅 + 余白」で
+            置く（固定 +1020 だと列の総幅がそれを超える表で重なっていた） */}
+        <button disabled={t.blocks.length >= 8}
+          title={t.blocks.length >= 8 ? "1つの表に置けるブロックは8枚までです" : undefined}
+          onClick={() => changeTableBlocks(t, [...t.blocks,
+            { ...t.blocks[t.blocks.length - 1], x: nextBlockX(t.blocks, t.columns) }])}>
+          右ブロックを追加（複製）</button>
         {selectedCellSection(t)}
         <h4>列</h4>
         {t.columns.length === 0 &&
@@ -6298,9 +6856,7 @@ export default function Editor(
             <span className="note" style={{ marginLeft: 2 }}>
               {tableColumnOrderNote(t.columns, i, isOutput(c))}
             </span>
-            <button onClick={() => updateTable(t.uid,
-              { columns: t.columns.filter((_, j) => j !== i),
-                cellsOff: remapCellsOffOnColumnDelete(t, i) })}>×</button>
+            <button onClick={() => removeTableColumn(t, i)}>×</button>
           </div>))}
         <button onClick={removeSel}>テーブル削除</button>
         {/* 操作を左右する一次情報なので通常 note（--faint）より濃い色で出す（レビュー N-1） */}
@@ -6397,58 +6953,10 @@ export default function Editor(
               作ってあったが誰からも参照されていなかった。升 1 つずつに
               aria-describedby を付けると全升で同じ文が読み上がるので、
               表へ入った 1 回だけ読ませる */}
-          <table className="cellgrid" aria-describedby={`cellgrid-note-${t.uid}`}>
-            <thead>
-              <tr>
-                <th scope="col">行</th>
-                {t.columns.map((c, ci) => {
-                  const state = columnCellState(t, c);
-                  return (
-                    <th scope="col" key={ci} className="colhead" title={c.name}>
-                      <span className="colhead-name">{c.name || `列${ci + 1}`}</span>
-                      <input type="checkbox" checked={state === "all"}
-                        ref={(el) => { if (el) el.indeterminate = state === "mixed"; }}
-                        aria-label={columnBulkToggleAriaLabel(t.table_id, c.name, rows, state,
-                          rows - countColumnOutputCells(t, c))}
-                        onChange={() => toggleColumnCells(t, ci)} />
-                    </th>);
-                })}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.from({ length: limit }, (_, i) => i + 1).map((rowNo) => (
-                <tr key={rowNo}>
-                  <th scope="row">{rowNo}<span className="sr-only">行目</span></th>
-                  {t.columns.map((c, ci) => {
-                    const out = isCellOutput(t, rowNo, c);
-                    const name = cellCheckboxDisplayName(
-                      t.table_id, rowNo, c.name || `列${ci + 1}`);
-                    return (
-                      <td key={ci} className={out ? undefined : "offcell"}
-                        onMouseEnter={() => { setHlCol(ci); setCellHoverNote(cellGridNote({
-                          hover: { tableId: t.table_id, rowNo, columnName: c.name },
-                          position: cellColumnPosition(columnNames, t.table_id, rowNo, c.name,
-                            t.columns.map((v) => v.name)),
-                          cellOutput: out, orderChanged: orderChangedSinceLoad })); }}
-                        onMouseLeave={() => { setHlCol(null); setCellHoverNote(null); }}>
-                        <input type="checkbox" checked={out} disabled={!isOutput(c)}
-                          title={isOutput(c) ? undefined
-                            : "この列は列ごと出力しない設定です（列を戻すと升の指定が効きます）"}
-                          aria-label={outputCheckboxLabel(name, out, orderChangedSinceLoad
-                            ? null : cellColumnPosition(columnNames, t.table_id, rowNo, c.name,
-                              t.columns.map((v) => v.name)))}
-                          onFocus={() => setCellHoverNote(cellGridNote({
-                            hover: { tableId: t.table_id, rowNo, columnName: c.name },
-                            position: cellColumnPosition(columnNames, t.table_id, rowNo, c.name,
-                            t.columns.map((v) => v.name)),
-                            cellOutput: out, orderChanged: orderChangedSinceLoad }))}
-                          onBlur={() => setCellHoverNote(null)}
-                          onChange={() => toggleCell(t, rowNo, c.name)} />
-                      </td>);
-                  })}
-                </tr>))}
-            </tbody>
-          </table>
+          <CellGrid table={t} limit={limit} orderChangedSinceLoad={orderChangedSinceLoad}
+            cellPositionIndex={cellPositionIndex} columnOutputCounts={columnOutputCounts}
+            onToggleColumnCells={stableToggleColumnCells} onToggleCell={stableToggleCell}
+            setHlCol={setHlCol} setCellHoverNote={setCellHoverNote} />
         </div>
         <p className="note" id={`cellgrid-note-${t.uid}`}>
           {cellHoverNote ?? "升にふれると列番号が出ます"}</p>
@@ -6569,10 +7077,20 @@ export default function Editor(
         )}
         {cands.length > 0 && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
-            <button className="btn" type="button" onClick={acceptSelectedCandidates}>
+            {/* issue #112: 生成中（最大3秒）は候補一覧が旧世代のまま表示され
+                続けるが、ツールバー・キーボード・キャンバスは framesGenerating
+                で無効化済みなのにパネルのボタンだけ押せた。生成完了で cands が
+                新世代へ丸ごと差し替わる直前に押すと、直前の採用と重なる新候補が
+                既定チェックのまま並びうる（overlaps は採用前の fields/tables
+                基準のまま）ため、生成中は他のツールと同じく操作できなくする */}
+            <button className="btn" type="button" onClick={acceptSelectedCandidates}
+              disabled={framesGenerating}
+              title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
               {acceptSelectedLabel(cands, candSelected)}
             </button>
-            <button className="btn" type="button" onClick={clearAllCandidates}>
+            <button className="btn" type="button" onClick={clearAllCandidates}
+              disabled={framesGenerating}
+              title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
               すべて除去
             </button>
           </div>
@@ -6628,15 +7146,20 @@ export default function Editor(
                   <p className="note">
                     既存の枠と重なります（升のまま採用はできます）</p>)}
                 {/* 提案が複数あっても読み上げで一意になるよう、行×列を
-                    名前に入れる（ラミィ Should）。見えている文字は変えない */}
+                    名前に入れる（ラミィ Should）。見えている文字は変えない。
+                    issue #112: 生成中は他のツールと同じく操作できなくする
+                    （disabled の理由は他の生成中ボタンと同じ title で統一） */}
                 <div className="cand-suggest-btns">
-                  <button className="btn outline" type="button"
+                  <button className="btn outline" type="button" disabled={framesGenerating}
+                    title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
                     aria-label={suggestionButtonAriaLabel(s, "table")}
                     onClick={() => { void adoptSuggestion(s, "table"); }}>表にまとめる</button>
-                  <button className="btn" type="button"
+                  <button className="btn" type="button" disabled={framesGenerating}
+                    title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
                     aria-label={suggestionButtonAriaLabel(s, "cells")}
                     onClick={() => { void adoptSuggestion(s, "cells"); }}>升のまま採用</button>
-                  <button className="btn" type="button"
+                  <button className="btn" type="button" disabled={framesGenerating}
+                    title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
                     aria-label={suggestionButtonAriaLabel(s, "remove")}
                     onClick={() => removeSuggestion(s)}>この提案を消す</button>
                 </div>
@@ -6672,9 +7195,12 @@ export default function Editor(
             {/* 「採用」は輪郭を強めた .btn.outline、「除去」は既定の .btn。
                 同じ見た目のボタンが隣り合うと押し間違いが起きる——採用は
                 枠が増える（Ctrl+Z で戻せる）、除去は候補が消える操作 */}
-            <button className="btn outline cand-accept" type="button"
+            {/* issue #112: 一括採用と同じ理由で生成中は無効化する */}
+            <button className="btn outline cand-accept" type="button" disabled={framesGenerating}
+              title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
               onClick={() => { void acceptOneCandidate(c); }}>採用</button>
-            <button className="btn cand-remove" type="button"
+            <button className="btn cand-remove" type="button" disabled={framesGenerating}
+              title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}
               onClick={() => removeOneCandidate(c.id)}>除去</button>
           </div>
         ))}

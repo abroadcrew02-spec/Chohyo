@@ -80,6 +80,34 @@ async function mockPurge(includeOutput: boolean): Promise<{ code: number; run_id
   return { code: 0, run_id: runId };
 }
 
+/** `purge --preview`（issue #108）の疑似応答。中間データ削除ボタンを押した
+ *  直後の事前確認画面（RunScreen.tsx の purgeGate）をブラウザ単体でも一通り
+ *  確認できるようにする。`removed:12` の mockPurge と揃えて `tool_items:12`
+ *  にし、既定は安全側（`safe_root:true`・`other_items:0`）を返す——止める側
+ *  の分岐は demo_purge_preview 設定で切り替える（下記）。 */
+function mockPurgePreview(): string {
+  const override = demoConfigRead().demo_purge_preview;
+  if (override === "other_items") {
+    return JSON.stringify({
+      event: "purge_preview", path: "C:\\デモ\\workdir", output_dir: "C:\\デモ\\output",
+      tool_items: 12, other_items: 2, other_examples: ["原本.pdf", "メモ.txt"],
+      safe_root: true, unsafe_reason: null,
+    });
+  }
+  if (override === "unsafe_root") {
+    return JSON.stringify({
+      event: "purge_preview", path: "C:\\", output_dir: "C:\\デモ\\output",
+      tool_items: 0, other_items: 0, other_examples: [],
+      safe_root: false, unsafe_reason: "drive_root",
+    });
+  }
+  return JSON.stringify({
+    event: "purge_preview", path: "C:\\デモ\\workdir", output_dir: "C:\\デモ\\output",
+    tool_items: 12, other_items: 0, other_examples: [],
+    safe_root: true, unsafe_reason: null,
+  });
+}
+
 // 管理6列＋代表形の抽出列（実列名ではない・issue #66 段3 QA申し送り）。
 // デモモードは列名の中身までは検証しないため、実際の出荷テンプレ
 // （templates/chouhyo-v1.json）を GUI 側で再導出する必要はない
@@ -411,12 +439,14 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
           });
         }
       }
-      // issue #73 (b)・設計08 §4.4: detect-frames の疑似応答。実測
-      // （core/chouhyo_ocr/cli.py:cmd_detect_frames・2026-09-03）の形に
-      // 合わせてある——候補に `id` は無い（GUI 側で振る）・`blocks[0]` は
-      // 平坦な {x,y,rows}（origin にネストしない）・face_id は
-      // --template 未指定時 "page"。固定で表1＋欄3（うち1件
-      // overlaps_existing）を返す
+      // issue #73 (b)・設計08 §4.4・issue #127 (1): detect-frames の疑似応答。
+      // 実測（core/chouhyo_ocr/cli.py:cmd_detect_frames・grid.py・2026-09-07
+      // 時点）の形に合わせてある——候補に `id` は無い（GUI 側で振る）・
+      // `blocks[0]` は平坦な {x,y,rows}（origin にネストしない）・face_id は
+      // --template 未指定時 "page"・`candidates[]` は **全件 `kind:"field"`
+      // 固定**（cli.py:1038。等ピッチの並びは `kind:"table"` ではなく別枠の
+      // `suggestions[]` で返る・設計 D-2）。固定で欄3（うち1件
+      // overlaps_existing 判定対象）＋提案1件を返す
       if (a[0] === "detect-frames") {
         // 「生成中」の画面を検証するための遅延フック（デモモード限定・
         // レビュー H-1／M-2 の受入確認用）。実コアの detect-frames は実測で
@@ -431,20 +461,16 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
         return JSON.stringify({
           event: "detect_frames", ok: true, elapsed_ms: 850,
           input_size: [2490, 3510],
-          stats: { lines_h: 8, lines_v: 6, rects: 10, rails_h: 8, rails_v: 6 },
+          // stats は実測（grid.py の _grid_atomic_cells）の3キー
+          // （components/cells/suggestions）を含む形に揃える（issue #127 (1)）。
+          // cells は candidates.length、suggestions は suggestions.length と
+          // 一致させる（升候補は提案に吸収されても candidates から落ちない・
+          // FR-F56）——rects/excluded の内訳との厳密な整合はデモの代表値の
+          // ため求めない（既存の非0チェックの経路を確認できれば足りる）
+          stats: { lines_h: 8, lines_v: 6, rects: 10, rails_h: 8, rails_v: 6,
+                   components: 12, cells: 3, suggestions: 1 },
           candidates: [
-            // 表候補の位置は DEMO_TEMPLATE の既存要素（person_氏名 x:400-1000,
-            // y:300-390／family x:200-820,y:600-890）と重ならない場所に置く
-            // ——候補パネルの「重なりのため対象外」表示は c2（下記・
-            // person_氏名 に重なる欄候補）の1件だけを検証対象にするため
-            { kind: "table", face_id: "page",
-              rect: { x: 100, y: 1000, w: 750, h: 400 },
-              blocks: [{ x: 100, y: 1000, rows: 5 }],
-              row_pitch: 80, row_height: 70,
-              columns: [{ x_offset: 0, width: 200 }, { x_offset: 200, width: 150 },
-                        { x_offset: 350, width: 400 }],
-              residual_px: 0.4, overlaps_existing: false },
-            // c2 は DEMO_TEMPLATE の person_氏名（x:400-1000・y:300-390）と
+            // c1 は DEMO_TEMPLATE の person_氏名（x:400-1000・y:300-390）と
             // 幾何的に重なる位置に置き、overlaps_existing は **false** で返す。
             // 実コアは --template を渡さない限り overlaps_existing を立てない
             // （編集画面はテンプレートの絶対パスを持たないので、実運用でも
@@ -464,13 +490,20 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
           ],
           // マリン core レビュー由来: excluded は {reason,count} の配列
           // （複数理由・count>0 のみ意味を持つ）。template_applied は
-          // --template 指定時の適用可否（デモは常に寸法一致想定で true）
+          // --template 指定時の適用可否（デモは常に寸法一致想定で true）。
+          // template_skip_reason は寸法不一致でスキップしたときだけ文字列が
+          // 入るキー（cli.py 実測）——デモは常に一致想定のため null 固定
+          // （issue #127 (1)）
           // issue #66 段9／#73 (b) 第2弾: 等ピッチの並びは candidates に混ぜず
           // トップレベル suggestions[] で返す（設計 D-2）。cell_indexes は
-          // **同じ応答の candidates[] の受け取り順** の添字（D-3）。ここでは
-          // 末尾3件（c2/c3/c4 相当の 1,2,3）を覆う 3行×1列 の提案を1件返し、
-          // heading_excluded:true で「見出し行は含めていません」の表示経路も
-          // 疑似応答だけで通せるようにする
+          // **同じ応答の candidates[] の受け取り順** の添字（D-3）。上の
+          // candidates は3件（c1/c2/c3）で、その全件を覆う3行×1列の提案を
+          // 1件返し、heading_excluded:true で「見出し行は含めていません」の
+          // 表示経路も疑似応答だけで通せるようにする（issue #127 (1): 旧デモは
+          // 4件目に `kind:"table"` の候補（表候補そのもの）を持ち、提案の
+          // cell_indexes はそれを除く末尾3件 [1,2,3] を指していた。table 候補を
+          // 実測どおり候補配列から外したことに伴い、cell_indexes も新しい
+          // 3件の配列に合わせて [0,1,2] へ振り直した）
           suggestions: [
             { kind: "table", face_id: "page",
               rect: { x: 100, y: 1950, w: 850, h: 450 },
@@ -478,11 +511,12 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
               row_pitch: 150, row_height: 150,
               columns: [{ x_offset: 0, width: 850 }],
               residual_px: 0.7, overlaps_existing: false,
-              cell_indexes: [1, 2, 3], heading_excluded: true },
+              cell_indexes: [0, 1, 2], heading_excluded: true },
           ],
           excluded: [{ reason: "page_outline", count: 1 }, { reason: "too_small", count: 2 },
                      { reason: "straddles_face", count: 0 }],
           template_applied: true,
+          template_skip_reason: null,
           zero_reason: null,
         });
       }
@@ -497,6 +531,11 @@ async function mockInvoke(cmd: string, args?: Record<string, unknown>): Promise<
         if (a.includes("--delete-source")) lines.push({ event: "credentials_source_deleted" });
         return lines.map((e) => JSON.stringify(e)).join("\n");
       }
+      // issue #108: 中間データ削除の事前確認（purgeGate）。ブラウザ単体でも
+      // 確認画面が動くようにする（既定は安全側。demo_purge_preview で
+      // "other_items"／"unsafe_root" に切り替えると、削除を止める側の分岐も
+      // core なしで確認できる）
+      if (a[0] === "purge" && a.includes("--preview")) return mockPurgePreview();
       return "{}";
     }
     case "kill_core": return null;

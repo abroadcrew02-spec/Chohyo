@@ -20,6 +20,15 @@ type Summary = {
   // 構造異常や枠外率など送信後の判定も含む総数のため、この値はその内数
   // （旧コアでは undefined）
   format_mismatch_pre_send?: number;
+  // issue #119: 今回の run が実際に処理したページ数／そのうち失敗として
+  // 確定した件数（cli.py の終了コード判定と同じ母集団・pipeline.py の
+  // Summary.processed_pages/processed_failed）。`pages`／`rows` は workdir の
+  // 累計（保持している中間データの量）のため、過去に成功実績がある workdir
+  // で今回のバッチが全滅しても pages/rows の方が大きく埋もれてしまう——
+  // completionNotice の様式不一致判定はこちらを分母にする（旧コアでは
+  // undefined・そのときは従来どおり rows にフォールバック）
+  processed_pages?: number;
+  processed_failed?: number;
   risky_cells?: number;  // CSV を Excel で直接開くと数式化しうるセル数（D-28）
   // 中間データの整列結果を再利用し送信しなかったページ数（issue #72 (t)・
   // 実機通し確認の指摘。core が summary へ追加中のキー・旧コアでは
@@ -47,7 +56,12 @@ type Verify = { template: boolean; poppler: boolean; cred: string; storage: bool
                 // 既定値を「現状」として画面に出してはいけない
                 parsed: boolean;
                 // parsed=false のときだけ設定する、再試行導線に添える生エラーの先頭行
-                rawFirstLine?: string };
+                rawFirstLine?: string;
+                // issue #123: 取り込み済みの認証キー（cred.dpapi）が壊れている
+                // （復号できない・別の Windows アカウントで取り込まれた等）ときだけ
+                // "broken" が入る（cli.py が state を "missing" へ畳みつつ添える理由
+                // キー）。それ以外（未設定・正常）は undefined
+                credError?: string };
 // reason_code は issue #71 (a') で追加された、様式不一致・位置合わせ失敗の
 // 内訳（旧コアでは undefined・page 進捗イベントに乗る）
 type Failure = { page_id: string; status: string; reason_code?: string };
@@ -173,7 +187,7 @@ export function reasonCodeNotice(reasonCode: string | undefined): string | null 
  *  conflict は n_fb>=2（参照先候補が複数）のときだけ立ち、常に fallback_discarded
  *  にも二重に計上される（総数カウンタを持たず対象外欄由来の内訳しか無い）。
  *  件数が別に増えるわけではなく「主と参照先が食い違った」という別の事実の
- *  可視化なので、破棄の内訳に混ぜず独立した句で足す（マリンレビュー S-3）。
+ *  可視化なので、破棄の内訳に混ぜず独立した句で足す（レビュー S-3）。
  *
  *  4項目とも0なら null——0件表示はノイズになるので出さない。
  *
@@ -275,16 +289,20 @@ export function accumulationNotice(ev: Record<string, any>): string | null {
  *  実測キー: `removed`（削除できた件数）・`failed`（削除できなかった件数）・
  *  `cred_kept`（認証キーを残したか）と、`--include-output` を付けたときだけ
  *  増える `output_removed`／`output_kept`（この命名に一致せず残したファイル）
- *  ／`output_failed`。**パス（`path`・`output_dir`）は画面に出さない**——
- *  件数だけで消し損ねの判断はできるうえ、絶対パスを webview 側の表示へ
- *  持ち出さない既存方針（07 §7.3）に揃える。
+ *  ／`output_failed`。
+ *
+ *  **`path` は画面に出す**（issue #108）。以前は「絶対パスを webview 側の
+ *  表示へ持ち出さない」方針（07 §7.3）で意図的に省いていたが、#108 で
+ *  「どこを消したか」を確認画面（プレビュー・二段確認）に出す方針へ転換した
+ *  ため、結果通知だけパスを隠すと整合しない。
  *
  *  「削除できなかった件数」を必ず出すのは、Excel で開いたままのファイルが
  *  あると黙って残るため——「削除しました」だけだと片付いたと誤解する。 */
 export function purgeNotice(ev: Record<string, any>): string {
   const n = (v: unknown) => (typeof v === "number" && v > 0 ? v : 0);
+  const path = typeof ev.path === "string" && ev.path ? ev.path : "";
   const parts: string[] = [];
-  parts.push(`中間データを ${n(ev.removed)} 件削除しました`
+  parts.push(`${path ? `${path} の` : ""}中間データを ${n(ev.removed)} 件削除しました`
     + (ev.cred_kept === true ? "（認証キーは残しています）" : "") + "。");
   if (n(ev.failed) > 0) {
     parts.push(`${n(ev.failed)} 件は削除できませんでした`
@@ -299,6 +317,133 @@ export function purgeNotice(ev: Record<string, any>): string {
     }
   }
   return parts.join("");
+}
+
+/* ------------------------------------------------------------------ *
+ * 中間データ削除の事前確認（issue #108）
+ * ------------------------------------------------------------------ */
+
+/** `is_safe_root`（Rust）・core 側に新設される同等の述語が返す理由コード
+ *  → 平易な言葉（issue #108）。core の実測に無い理由コードを追加しない
+ *  （ルール2: 捏造禁止）。 */
+export const UNSAFE_REASON_JA: Record<string, string> = {
+  drive_root: "ドライブの直下が指定されています",
+  unc: "ネットワーク上の共有フォルダ（UNC パス）が指定されています",
+  dot: "現在のフォルダがそのまま指定されています",
+  empty: "保存先が設定されていません",
+  profile_root: "ユーザーのフォルダの直下が指定されています",
+  reparse_point: "ジャンクションまたはシンボリックリンクが指定されています",
+};
+
+/** 理由コードを日本語へ。対応表に無い（core が返した理由コードが未知）
+ *  場合は、存在しない説明を捏造せずコードをそのまま添えた汎用文にする。
+ *  reason が無ければ null。 */
+export function unsafeRootNotice(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return UNSAFE_REASON_JA[reason] ?? `安全に削除できないと判定されました（理由コード: ${reason}）`;
+}
+
+/** `purge --preview` の1行（`event:"purge_preview"`）を画面用の形へ変換する
+ *  （issue #108）。`run_core_capture` の stdout に該当行が無い場合
+ *  （コア起動自体に失敗等）は `parsed:false`——呼び出し側はこれを
+ *  「確認できなかった」として fail-closed に扱う（削除ボタンを出さない）。
+ *
+ *  `safe_root` は明示的に `true` のときだけ安全とみなす。欠落・不正な型は
+ *  安全側（false）へ倒す——このプレビューは「消してよいか」の最後の砦なので、
+ *  core の応答形が1つズレただけで安全判定が緩む方向へは倒さない。 */
+export type PurgePreview = {
+  parsed: boolean;
+  path: string;
+  outputDir: string;
+  toolItems: number;
+  otherItems: number;
+  otherExamples: string[];
+  safeRoot: boolean;
+  unsafeReason: string | null;
+  rawFirstLine?: string;
+};
+
+export function parsePurgePreview(text: string): PurgePreview {
+  for (const line of text.split("\n")) {
+    try {
+      const e = JSON.parse(line);
+      if (e.event !== "purge_preview") continue;
+      return {
+        parsed: true,
+        path: typeof e.path === "string" ? e.path : "",
+        outputDir: typeof e.output_dir === "string" ? e.output_dir : "",
+        toolItems: typeof e.tool_items === "number" ? e.tool_items : 0,
+        otherItems: typeof e.other_items === "number" ? e.other_items : 0,
+        otherExamples: Array.isArray(e.other_examples) ? e.other_examples : [],
+        safeRoot: e.safe_root === true,
+        unsafeReason: typeof e.unsafe_reason === "string" ? e.unsafe_reason : null,
+      };
+    } catch { /* JSON 以外の行は無視 */ }
+  }
+  return { parsed: false, path: "", outputDir: "", toolItems: 0, otherItems: 0,
+    otherExamples: [], safeRoot: false, unsafeReason: null,
+    rawFirstLine: (text.split("\n")[0] ?? "").trim() };
+}
+
+/** プレビュー結果から「削除を進めてよいか」を決める（issue #108）。
+ *
+ *  優先順位: ①プレビュー自体が読めない（fail-closed）②安全な置き場でない
+ *  （`safe_root:false`）③ツール以外のファイルが1件でもある。①②③のどれかに
+ *  該当したら削除ボタンは出さない——explain/confirm の二段確認へは進めない。 */
+export type PurgeGate =
+  | { allowed: true }
+  | { allowed: false; reason: "preview_failed" }
+  | { allowed: false; reason: "unsafe_root"; detail: string }
+  | { allowed: false; reason: "other_items"; otherItems: number; examples: string[] };
+
+export function purgeGate(preview: PurgePreview | null): PurgeGate {
+  if (!preview || !preview.parsed) return { allowed: false, reason: "preview_failed" };
+  if (!preview.safeRoot) {
+    return { allowed: false, reason: "unsafe_root",
+      detail: unsafeRootNotice(preview.unsafeReason) ?? "安全な置き場か確認できませんでした" };
+  }
+  if (preview.otherItems > 0) {
+    return { allowed: false, reason: "other_items",
+      otherItems: preview.otherItems, examples: preview.otherExamples };
+  }
+  return { allowed: true };
+}
+
+/** 「このフォルダにはツールが作ったもの以外がある」の1文（issue #108）。
+ *  purgeGate（`other_items`）と purge_refused イベント（core 側の二重防御）の
+ *  両方から使う——利用者から見て言っていることが変わらないようにする。 */
+function otherItemsNotice(otherItems: number, examples: string[]): string {
+  const shown = examples.slice(0, 5);
+  const suffix = shown.length > 0 ? `（例: ${shown.join("、")}）` : "";
+  return `このフォルダにはツールが作ったもの以外のファイルが ${otherItems} 件あります${suffix}。`
+    + `削除を止めました。原本などを別の場所へ移してから、もう一度お試しください。`;
+}
+
+/** 削除を止めた理由を画面に出す1文（issue #108）。allowed のときは null。 */
+export function purgeBlockedNotice(gate: PurgeGate): string | null {
+  if (gate.allowed) return null;
+  if (gate.reason === "preview_failed") {
+    return "削除してよい場所か確認できませんでした。もう一度お試しください。";
+  }
+  if (gate.reason === "unsafe_root") {
+    return `削除先の確認で問題が見つかりました（${gate.detail}）。削除は行いません。`;
+  }
+  return otherItemsNotice(gate.otherItems, gate.examples);
+}
+
+/** `purge --yes` の実行時に core が二重防御として返す `event:"purge_refused"`
+ *  （issue #108・通常はプレビューの時点で止まるための保険）を画面の文言へ。
+ *
+ *  `reason` は "unsafe_root" | "other_items" の2値のみ（`purge_preview` の
+ *  `unsafe_reason` のような詳細コードは持たない）——プレビューと違って、
+ *  安全でない理由の内訳までは伝えられない。 */
+export function purgeRefusedNotice(ev: Record<string, any>): string {
+  if (ev.reason === "other_items") {
+    const otherItems = typeof ev.other_items === "number" ? ev.other_items : 0;
+    const examples = Array.isArray(ev.other_examples) ? ev.other_examples : [];
+    return otherItemsNotice(otherItems, examples);
+  }
+  return "削除先が安全でないと判定されたため、削除を止めました。設定の保存先を確認してください。";
 }
 
 /** 認証キー取り込み（`import-credentials --delete-source`）の stdout から
@@ -355,7 +500,14 @@ export function completionBannerTone(summary: Summary | null): "ok" | "warn" {
  *  向きの確認へ誘導する。
  *
  *  format_mismatch は枠D で追加されたキー。旧コアでは undefined になるので、
- *  その場合は一致判定が成立せず一般の文言へ落ちる（防御的に扱う）。 */
+ *  その場合は一致判定が成立せず一般の文言へ落ちる（防御的に扱う）。
+ *
+ *  issue #119: 様式不一致の分母は `summary.rows`（workdir 累計の出力行数）
+ *  ではなく `processed_pages`（今回の run が実際に処理したページ数）にする。
+ *  `pages`／`rows` は保持している中間データの量であって「今回」ではない
+ *  ため、過去に成功実績がある workdir（累計 rows が大きい）で新しいバッチが
+ *  全滅しても、rows と比べたのでは一致せず具体的な案内に落ちなかった。
+ *  `processed_pages` が無い（旧コア）ときだけ従来どおり rows にフォールバックする。 */
 export function completionNotice(summary: Summary | null, exitCode: number): string | null {
   if (exitCode === 0) return null;
   if (!summary) {
@@ -365,22 +517,27 @@ export function completionNotice(summary: Summary | null, exitCode: number): str
   }
   const mismatch = summary.format_mismatch ?? 0;
   const preSend = summary.format_mismatch_pre_send ?? 0;
-  // issue #71 (a'): 送信前に様式不一致で止まった件数が全ページと一致するなら、
-  // 「用紙サイズ・向きの確認」より具体的な出口（テンプレートを選び直す／
-  // この帳票のテンプレートを作る）へ誘導する。preSend===rows は
-  // mismatch===rows を含意する（preSend は mismatch の内数）ため、この分岐を
+  const processedPages = summary.processed_pages;
+  const denom = typeof processedPages === "number" ? processedPages : summary.rows;
+  // issue #71 (a'): 送信前に様式不一致で止まった件数が今回の処理ページ数と
+  // 一致するなら、「用紙サイズ・向きの確認」より具体的な出口（テンプレートを
+  // 選び直す／この帳票のテンプレートを作る）へ誘導する。preSend===denom は
+  // mismatch===denom を含意する（preSend は mismatch の内数）ため、この分岐を
   // 先に見る（設計08 §2.8）
-  if (summary.rows > 0 && preSend === summary.rows) {
+  if (denom > 0 && preSend === denom) {
     return "様式が一致しませんでした。テンプレートを選び直すか、この帳票の"
       + "テンプレートを作成してください（再実行しても同じ結果になります）。";
   }
-  if (summary.rows > 0 && mismatch === summary.rows) {
+  if (denom > 0 && mismatch === denom) {
     return "すべてのページが様式不一致でした。用紙サイズ・向きがテンプレートと"
       + "合っているか確認してください（再実行しても同じ結果になります）。";
   }
   if (summary.rows === 0) {
-    return `出力できる行がありませんでした（処理 ${summary.pages} ページ）。`
-      + `入力のファイルと、テンプレートが対象の帳票のものかを確認してください。`;
+    // rows は workdir 累計（保持している中間データの量）——「今回 0 件処理
+    // した」という意味ではないため、その前提で文言を書く（issue #119）
+    return `保持している中間データ（${summary.pages} ページ）から出力できる行が`
+      + `ありませんでした。入力のファイルと、テンプレートが対象の帳票のものかを`
+      + `確認してください。`;
   }
   return `読み取れたページがありませんでした（位置合わせ失敗 ${summary.align_failed} 件・`
     + `様式不一致 ${mismatch} 件）。原本の向き・スキャン品質と、テンプレートが`
@@ -504,6 +661,9 @@ export function parseVerify(text: string): Verify {
         v.cred = e.state ?? (e.ok ? "env" : "missing");
         // Wave 2（S-MB core側）で追加される env_present。無ければ undefined
         v.envPresent = typeof e.env_present === "boolean" ? e.env_present : undefined;
+        // issue #123: 壊れた認証キーの理由コード（"broken" のときだけ core が
+        // 添える）。それ以外は undefined
+        v.credError = typeof e.cred_error === "string" ? e.cred_error : undefined;
       }
       if (e.check === "local_storage") v.storage = !!e.ok;
       if (e.check === "api_budget") {
@@ -520,11 +680,36 @@ export function parseVerify(text: string): Verify {
  *  cred が "env"、または core が明示的に env_present（Wave 2 追加・dpapi と
  *  env が両方ある場合も env の存在を伝える独立キー）を返した場合に警告文を
  *  返す。それ以外は null。credentials_state の ok（実行可否）はここでは
- *  変えない——env でも実行は許可する設計（プラン確定）。 */
+ *  変えない——env でも実行は許可する設計（プラン確定）。
+ *
+ *  issue #123 との関係（意図的に据え置いた判断）: 壊れた認証キー
+ *  （`credError === "broken"`）はこの関数の対象にしていない。この文言は
+ *  下の「はじめの準備」カード（`verify.cred === "missing"` で常に表示）と
+ *  同じ warnbox の並びに出るため、ここも broken を拾うと同じ画面に
+ *  ほぼ同文の警告が2枚並ぶ（環境変数の平文警告とは違い、broken は cred が
+ *  必ず "missing" に畳まれるため常に「はじめの準備」カードと同時表示になる）。
+ *  broken の案内は startDisabledReason（ボタン直下の短文）と「はじめの準備」
+ *  カード本文の2箇所で十分に届くと判断し、この関数の対象は環境変数の
+ *  平文警告のまま変えていない。 */
 export function credNotice(cred: string, envPresent?: boolean): string | null {
   if (cred !== "env" && envPresent !== true) return null;
   return "認証キーが平文（環境変数 GOOGLE_APPLICATION_CREDENTIALS）で使われています。"
     + "取り込むと DPAPI で暗号化されます。";
+}
+
+/** 認証キーが「未設定」（`verify.cred === "missing"`）のときの案内文
+ *  （issue #123）。壊れている（`cred_error === "broken"`）ときだけ、
+ *  取り込み直しを促す具体的な文言に切り替える——core は
+ *  「壊れているか、別の Windows アカウントで取り込まれている」と理由付きで
+ *  返しているのに、以前の GUI はこの理由キーを読まず常に「未設定」の案内を
+ *  出していたため、壊れた鍵の利用者が同じ操作（新規に選ぶだけの手順）を
+ *  繰り返し、取り込み直しに気づけなかった。 */
+export function missingCredentialsNotice(credError?: string): string {
+  if (credError === "broken") {
+    return "取り込み済みの認証キーが読めません（壊れているか、別の Windows "
+      + "アカウントで取り込まれています）。認証キーを選び直して取り込み直してください";
+  }
+  return "認証キーが未設定です（下の「認証キーを選択」から設定してください）";
 }
 
 // ---------------------------------------------------------------- issue #72 (t)
@@ -579,7 +764,8 @@ export function startDisabledReason(inputDir: string, verify: Verify | null,
                                     storageAck = false): string | null {
   if (!inputDir || !verify) return null;
   if (!verify.parsed) return "検証が実行できていません（再試行してください）";
-  if (verify.cred === "missing") return "認証キーが未設定です（下の「認証キーを選択」から設定してください）";
+  // issue #123: 壊れた鍵（cred_error==="broken"）は「未設定」と別の文言にする
+  if (verify.cred === "missing") return missingCredentialsNotice(verify.credError);
   if (verify.budgetUsed >= verify.budgetCap) return "今月の送信上限に達しています";
   // issue #52 M-12／Q-MJ: 同期フォルダ判定は「広めに倒す」設計のため誤検知が
   // ありうる。ハードブロックのままだと、誤検知に当たった利用者はツールを
@@ -612,6 +798,19 @@ export function appendFailure<T>(list: T[], item: T): T[] {
 export function truncatedFailureNotice(total: number, shown: number): string | null {
   const rest = total - shown;
   return rest > 0 ? `他 ${rest} 件（一覧の表示は ${shown} 件までです）` : null;
+}
+
+/** 中断ボタンの結果（issue #118）。以前は `kill_core` を呼ぶ**前**に
+ *  `interruptedRef.current = true` を立て、失敗を `catch { 既に終了 }` で
+ *  握りつぶしていた——kill が「既に終了」以外の理由（権限・子プロセスの
+ *  分離など）で失敗すると、処理は続いているのに中断済み扱いになり、完了時の
+ *  `if (!interruptedRef.current) setError(...)` が抑止されて画面に何も
+ *  出なかった。`kill_core` の成否を見てから判定する——失敗時はフラグを
+ *  立てず、「処理は続いている」ことを利用者に伝える。 */
+export function interruptOutcome(killed: boolean): { interrupted: boolean; notice: string | null } {
+  return killed
+    ? { interrupted: true, notice: null }
+    : { interrupted: false, notice: "中断できませんでした（処理は続いています）" };
 }
 
 /* ------------------------------------------------------------------ *
@@ -768,6 +967,17 @@ export default function RunScreen(
   const [purgeStep, setPurgeStep] = useState<"explain" | "confirm" | null>(null);
   const [purgeIncludeOutput, setPurgeIncludeOutput] = useState(false);
   const [purging, setPurging] = useState(false);
+  // issue #108: ボタンを押した直後に `purge --preview` を確認する段。
+  // 結果（削除対象パス・件数）は explain/confirm の両方で使うため保持する。
+  // purgeBlocked は「止めた理由」——非 null の間は二段確認へ進めない
+  // （delete ボタン自体を出さない・fail-closed）
+  const [purgeChecking, setPurgeChecking] = useState(false);
+  const [purgePreview, setPurgePreview] = useState<PurgePreview | null>(null);
+  const [purgeBlocked, setPurgeBlocked] = useState<string | null>(null);
+  // purge --yes 実行中に core が二重防御で拒否した（issue #108・通常は
+  // プレビューの時点で止まる）ことを示すフラグ。runPurge の汎用エラーで
+  // 上書きしないために使う
+  const purgeRefusedRef = useRef(false);
   // 同期フォルダ警告の明示チェック（issue #52 M-12／Q-MJ）。**保存しない**
   // ——毎回チェックし直す（設定に残すと「一度通したら以後ずっと素通り」に
   // なり、警告の意味が消える）
@@ -832,17 +1042,53 @@ export default function RunScreen(
     }
   };
 
+  /** 「読み取ったデータを削除」を押した直後の事前確認（issue #108）。
+   *
+   *  `purge --preview` を実行し、結果に応じて①二段確認（explain）へ進む
+   *  ②止める（purgeBlocked に理由を出し、削除ボタンは出さない）のどちらかへ
+   *  分岐する。プレビュー自体が失敗した場合も②（fail-closed）——
+   *  「確認できないなら削除しない」で倒す。 */
+  const startPurgeCheck = async () => {
+    setPurgeChecking(true);
+    setPurgeBlocked(null);
+    setPurgePreview(null);
+    setError("");
+    let preview: PurgePreview;
+    try {
+      const out = await invoke<string>("run_core_capture", { args: ["purge", "--preview"] });
+      preview = parsePurgePreview(out);
+    } catch (e) {
+      preview = parsePurgePreview(String(e));
+    }
+    setPurgePreview(preview);
+    const gate = purgeGate(preview);
+    if (gate.allowed) {
+      setPurgeIncludeOutput(false);
+      setPurgeStep("explain");
+    } else {
+      setPurgeBlocked(purgeBlockedNotice(gate));
+    }
+    setPurgeChecking(false);
+  };
+
   /** 中間データの削除（issue #52 M-11・要件 §6.3「削除は明示操作のみ」）。
    *
    *  §6.3 を満たしているのは「利用者がボタンを押し、何が消えて何が残るかの
    *  説明を読み、二段目で削除を確定した」という明示操作の連なりであって、
    *  この関数が呼ばれる経路は他に無い（自動実行・起動時の掃除は一切しない）。
    *  run と同じ `run_core` を通すので、実行中は PID スロットが埋まっていて
-   *  受け付けられない＝読み取りと削除が同時に走らない。 */
+   *  受け付けられない＝読み取りと削除が同時に走らない。
+   *
+   *  issue #108: `startPurgeCheck` のプレビューで通常は弾き切れているが、
+   *  core 側は `--yes` の実行時にも同じ判定を二重に行い、`event:"purge_refused"`
+   *  （exit 2）で拒否しうる（保存先を開いている間に変更された等）。その場合は
+   *  下の core-line リスナーが `purgeRefusedRef` を立てて具体的な文言を
+   *  `setError` 済みなので、ここでは汎用文言で上書きしない。 */
   const runPurge = async () => {
     setPurgeStep(null);
     setPurging(true);
     setError("");
+    purgeRefusedRef.current = false;
     // 前の実行の遅れて届く行を、この結果の表示へ混ぜない（issue #96）
     runFilterRef.current = beginRun(runFilterRef.current);
     try {
@@ -850,13 +1096,13 @@ export default function RunScreen(
       if (purgeIncludeOutput) args.push("--include-output");
       const res = await invoke<RunResult>("run_core", { args });
       runFilterRef.current = finishRun(runFilterRef.current, res.run_id);
-      if (res.code !== 0) {
+      if (res.code !== 0 && !purgeRefusedRef.current) {
         // 件数の内訳は purged イベント（お知らせ）側に出ている。ここでは
         // 「全部は消えていない」ことだけを赤帯で伝える
         setError("削除しきれなかったものがあります。上の「実行時のお知らせ」を確認してください。");
       }
     } catch (e) {
-      setError(`削除に失敗しました: ${e}`);
+      if (!purgeRefusedRef.current) setError(`削除に失敗しました: ${e}`);
     } finally {
       setPurging(false);
       // 削除後は中間データの再利用ができなくなる（次回は送信からやり直し）。
@@ -1011,6 +1257,13 @@ export default function RunScreen(
             setRefused(ev.error + (ev.hint ? `
 ${ev.hint}` : ""));
           }
+          // issue #108: purge --yes が core 側の二重防御で拒否した場合
+          // （通常はプレビューの時点で止まっているための保険）。runPurge の
+          // 汎用エラーで上書きされないよう、専用のフラグを立ててから出す
+          if (ev.event === "purge_refused") {
+            purgeRefusedRef.current = true;
+            setError(purgeRefusedNotice(ev));
+          }
           if (ev.event === "summary") {
             summaryRef.current = ev as Summary;
             setSummary(ev as Summary);
@@ -1116,8 +1369,14 @@ ${ev.hint}` : ""));
     }
   };
   const interrupt = async () => {
-    interruptedRef.current = true;
-    try { await invoke("kill_core"); } catch { /* 既に終了 */ }
+    // issue #118: kill_core の結果を見てからフラグを立てる（interruptOutcome）。
+    // 失敗時はフラグを立てず、完了時のエラー表示（completionNotice）を
+    // 抑止しない——中断が効かなかったことと、その後の結果の両方を画面に出す
+    let killed = true;
+    try { await invoke("kill_core"); } catch { killed = false; }
+    const outcome = interruptOutcome(killed);
+    interruptedRef.current = outcome.interrupted;
+    if (outcome.notice) setError(outcome.notice);
   };
   const openOutput = () =>
     invoke("open_folder", { path: outputDir }).catch((e) => setError(String(e)));
@@ -1380,7 +1639,9 @@ ${ev.hint}` : ""));
           </div>
         )}
 
-        {/* はじめの準備（資格情報が無いときだけ） */}
+        {/* はじめの準備（資格情報が無いときだけ）。issue #123: 壊れた鍵
+            （cred_error==="broken"）は「初回設定」ではなく「読み込めない」
+            見出しにし、取り込み直しを促す文言へ切り替える */}
         {!running && verify && verify.parsed && verify.cred === "missing" && (
           <div className="card" style={{ borderColor: "var(--warn-line)", background: "var(--warn-bg)" }}>
             <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
@@ -1389,11 +1650,19 @@ ${ev.hint}` : ""));
                 <circle cx="8" cy="15" r="4" />
                 <path d="M11 12L21 2" /><path d="M17 6l3 3" /><path d="M14 9l2 2" /></svg>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <b style={{ color: "var(--warn-ink)", fontSize: 15 }}>初回設定: 読み取り用の認証キーを設定します</b>
+                <b style={{ color: "var(--warn-ink)", fontSize: 15 }}>
+                  {verify.credError === "broken"
+                    ? "認証キーを読み込めません"
+                    : "初回設定: 読み取り用の認証キーを設定します"}
+                </b>
                 <div style={{ fontSize: 12.5, color: "#7a5a26", lineHeight: 1.7 }}>
-                  管理者から受け取った<b>認証キーファイル（JSON）</b>を選択してください。
-                  暗号化して保存し、元のファイルは取り込み後に削除します
-                  （鍵が平文のまま残らないようにするためです）。
+                  {verify.credError === "broken" ? (
+                    <>{missingCredentialsNotice(verify.credError)}。</>
+                  ) : (
+                    <>管理者から受け取った<b>認証キーファイル（JSON）</b>を選択してください。
+                      暗号化して保存し、元のファイルは取り込み後に削除します
+                      （鍵が平文のまま残らないようにするためです）。</>
+                  )}
                 </div>
                 <button className="btn primary" style={{ width: "fit-content" }}
                   onClick={pickCredentials} disabled={importing}>
@@ -1542,22 +1811,36 @@ ${ev.hint}` : ""));
           </details>
         )}
 
-        {/* 読み取ったデータの削除（issue #52 M-11・S-MC の GUI 化）。
+        {/* 読み取ったデータの削除（issue #52 M-11・S-MC の GUI 化。
+            issue #108: 押した直後に purge --preview で事前確認する）。
             要件 §6.3「削除は明示操作のみ」を満たすのは、①このボタン以外に
             削除が走る経路が無い（起動時・実行後の自動削除はしない）②押しても
-            二段確認（何が消えて何が残るかの説明 → 最終確認）を通るまで何も
-            消えない、の2点。読み取り中は押せない（コア側も PID スロットで
-            二重起動を断るが、押せてしまうと理由が画面から分からない） */}
+            事前確認 → 二段確認（何が消えて何が残るかの説明 → 最終確認）を
+            通るまで何も消えない、の2点。読み取り中は押せない（コア側も PID
+            スロットで二重起動を断るが、押せてしまうと理由が画面から分からない） */}
         <div className="card" style={{ background: "var(--bg)" }}>
           <div className="body">
             <div className="t">読み取ったデータの削除</div>
             <div className="d">読み取りの途中経過（個人情報を含みます）を削除します。
               提出が終わったバッチは削除してください。</div>
             <button className="btn" style={{ width: "fit-content" }}
-              disabled={running || purging}
-              onClick={() => { setPurgeIncludeOutput(false); setPurgeStep("explain"); }}>
-              {purging ? "削除中…" : "読み取ったデータを削除"}
+              disabled={running || purging || purgeChecking}
+              onClick={startPurgeCheck}>
+              {purging ? "削除中…" : purgeChecking ? "確認中…" : "読み取ったデータを削除"}
             </button>
+            {/* issue #108: このフォルダ以外のもの（other_items>0）や、安全と
+                判定できない置き場（safe_root:false）、確認自体の失敗
+                （fail-closed）のいずれかで止めたときの案内。削除ボタンは
+                出さない——原本を移す・保存先を直すなど、画面外の作業が要る */}
+            {purgeBlocked && (
+              <div className="card warnbox" style={{ marginTop: 10 }}>
+                {purgePreview?.path && (
+                  <div style={{ fontFamily: "Consolas, monospace", fontSize: 12,
+                    marginBottom: 6 }}>{purgePreview.path}</div>
+                )}
+                <div>{purgeBlocked}</div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1575,14 +1858,23 @@ ${ev.hint}` : ""));
           </ConfirmDialog>
         )}
 
-        {/* 削除の1段目: 何が消えて何が残るか（issue #52 M-11） */}
+        {/* 削除の1段目: 何が消えて何が残るか（issue #52 M-11）。issue #108:
+            purge --preview の結果（対象フォルダの絶対パス・件数）を先頭に出す */}
         {purgeStep === "explain" && (
           <ConfirmDialog title="読み取ったデータを削除します" confirmLabel="次へ"
             onCancel={() => setPurgeStep(null)}
             onConfirm={() => setPurgeStep("confirm")}>
+            {purgePreview?.path && (
+              <p style={{ margin: "0 0 10px" }}>
+                <b>削除対象のフォルダ</b>:{" "}
+                <span style={{ fontFamily: "Consolas, monospace", fontSize: 12.5 }}>
+                  {purgePreview.path}</span></p>
+            )}
             <p style={{ margin: "0 0 10px" }}>
               <b>消えるもの</b>: 読み取りの途中経過（取り込んだページの画像・
-              読み取った値・位置合わせの結果）。個人情報はここに残っています。</p>
+              読み取った値・位置合わせの結果）{purgePreview
+                ? `。${purgePreview.toolItems} 件が対象です。` : "。"}
+              個人情報はここに残っています。</p>
             <p style={{ margin: "0 0 10px" }}>
               <b>残るもの</b>: 認証キー・テンプレート・設定。認証キーを取り込み
               直す必要はありません。</p>
@@ -1599,10 +1891,14 @@ ${ev.hint}` : ""));
           </ConfirmDialog>
         )}
 
-        {/* 削除の2段目: 最終確認（issue #52 M-11） */}
+        {/* 削除の2段目: 最終確認（issue #52 M-11・issue #108: パスを再掲） */}
         {purgeStep === "confirm" && (
           <ConfirmDialog title="削除してよろしいですか" confirmLabel="削除する"
             danger busy={purging} onCancel={() => setPurgeStep(null)} onConfirm={runPurge}>
+            {purgePreview?.path && (
+              <p style={{ margin: "0 0 10px", fontFamily: "Consolas, monospace", fontSize: 12.5 }}>
+                {purgePreview.path}</p>
+            )}
             <p style={{ margin: "0 0 10px" }}>
               読み取りの途中経過
               {purgeIncludeOutput ? "と、出力した Excel・CSV" : ""}
