@@ -161,7 +161,15 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
         } else if a.starts_with('-') {
             return Err(format!("許可されていない引数です: {a}"));
         } else if cmd == "import-credentials" {
-            // 位置引数（json_path）。他のサブコマンドは位置引数を持たない
+            // 位置引数（json_path）。他のサブコマンドは位置引数を持たない。
+            // 2つ目以降は消費が起きる前にここで拒否する（issue #126 L-3）
+            // ——check_arg_scopes まで通してしまうと、1つ目が
+            // PendingCredentialsPath の一回限りのスロットと一致して
+            // 消費された「後」に2つ目で全体が Err になり、正当な選択の
+            // トークンだけが失われて二度と使えなくなる
+            if pairs.iter().any(|(f, _)| f == "json_path") {
+                return Err("import-credentials は位置引数を1つしか受け付けません".into());
+            }
             pairs.push(("json_path".to_string(), a.to_string()));
             i += 1;
         } else {
@@ -182,23 +190,40 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
 ///
 /// 値を取るかどうかは `pairs` の値の空・非空では判定しない
 /// （`--dpi ""` のような値そのものが空の正当な入力と、値を持たないフラグ
-/// を区別できないため）。`allowed_flags(cmd)` の表を単一の正とする。
-fn rebuild_args(cmd: &str, pairs: &[(String, String)]) -> Vec<String> {
+/// を区別できないため）。`allowed_flags(cmd)` の表を単一の正とする——表に
+/// 無いフラグに出会ったら `Err` にする（issue #126 L-2）。`check_args_v2` が
+/// 通した pairs しかここには来ない想定なので実行時には起こらないはずだが、
+/// 将来 `allowed_flags` と `check_args_v2` の対応が崩れたときに「値の有無を
+/// 勝手に決めて渡してしまう」より安全に倒す。
+/// M-4（`allowed_flags` に値種別を型として持たせ、この対応漏れを
+/// コンパイル時に検出する構造変更）は別 issue（今回は見送り）——新しい
+/// パス系フラグを足すときは、この関数の分岐だけでなく `check_arg_scopes`
+/// の match 腕も忘れずに足すこと。
+///
+/// `purge --preview --yes` は `--yes` を落とす（issue #126 M-5）。core 側が
+/// preview を優先する実装であっても、GUI 側で「削除は起きない」ことを argv
+/// の時点で保証し、コアの実装順序に依存しない。
+fn rebuild_args(cmd: &str, pairs: &[(String, String)]) -> Result<Vec<String>, String> {
     let specs = allowed_flags(cmd);
+    let drop_yes = cmd == "purge" && pairs.iter().any(|(f, _)| f == "--preview");
     let mut out = vec![cmd.to_string()];
     for (flag, value) in pairs {
+        if drop_yes && flag == "--yes" {
+            continue;
+        }
         if flag == "json_path" {
             // import-credentials の位置引数（フラグ表には無い）
             out.push(value.clone());
             continue;
         }
+        let takes_value = specs.iter().find(|s| &s.0 == flag).map(|s| s.1)
+            .ok_or_else(|| format!("内部エラー: 未知の引数です: {flag}"))?;
         out.push(flag.clone());
-        let takes_value = specs.iter().find(|s| &s.0 == flag).map(|s| s.1).unwrap_or(true);
         if takes_value {
             out.push(value.clone());
         }
     }
-    out
+    Ok(out)
 }
 
 /// `--template` を受け付けるサブコマンド（core/chouhyo_ocr/cli.py 準拠・issue #58）。
@@ -412,6 +437,11 @@ fn check_template_scope(abs: &Path, roots: &[PathBuf],
 /// 文字列を渡すと、相対パスの解決基準が検査時（GUI プロセスの cwd）と
 /// 実行時（子プロセスは `<root>/core` を cwd に起動）でずれ、検査した対象と
 /// 実際に開かれる対象が一致する保証がなくなる。
+///
+/// パス系フラグを新しく足すときは、この match の腕（どう検査するか）と
+/// `rebuild_args` の対応表参照（値を取るかどうか）の両方を更新すること
+/// ——両者を1つの型（`allowed_flags` の値種別）で縛る構造変更（issue #126
+/// M-4）は別 issue に切り出し、今回は見送り。
 fn check_arg_scopes(pairs: &[(String, String)], roots: &[PathBuf],
                     picked: &HashSet<PathBuf>,
                     pending_cred: &mut Option<PathBuf>)
@@ -737,7 +767,17 @@ async fn core_output(app: &AppHandle, root: &Path, args: Vec<String>) -> Result<
     } else {
         // detect-grid の不成立などは stdout の JSON にも理由が載る
         Err(if stdout.trim().is_empty() {
-            String::from_utf8_lossy(&out.stderr).to_string()
+            // issue #126 M-1: ここは run_core_capture（verify・detect-grid・
+            // expand-page・detect-frames・import-credentials・purge
+            // --preview 全部の実行経路）が非 0 終了かつ stdout が空のときに
+            // 通る唯一の stderr 経路。run_core の core-err と同じく、
+            // webview（RunScreen.tsx の setError＝赤帯表示）へ渡す前に
+            // 絶対パスを伏せる
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .map(redact_absolute_paths)
+                .collect::<Vec<_>>()
+                .join("\n")
         } else {
             stdout
         })
@@ -766,27 +806,49 @@ async fn core_output_stdout_only(app: &AppHandle, root: &Path,
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-/// パスの伏せ字化における「境界」文字（ここに達したら伏せ字の対象範囲を
-/// 打ち切る／ここの直後でなければパスの開始とは認めない）。ASCII の空白・
-/// 引用符・括弧・読点に加え、全角の括弧・読点も含める——ConfigError
-/// （core/chouhyo_ocr/paths.py・config.py）のメッセージは
+/// パスの伏せ字化で「確定的にここで終わる／ここの直後でなければパスの
+/// 開始とは認めない」とみなす区切り文字（issue #126 (1)）。空白は含めない
+/// ——`C:\Program Files\...`・`C:\Users\山田 太郎\...` のようにパスの途中に
+/// 空白を含む実在パスがあるため、空白の扱いは `path_run_end` で先読みして
+/// 決める（M-2 追補）。全角の丸括弧・鉤括弧・読点は含める——ConfigError
+/// （core/chouhyo_ocr/paths.py・config.py）のメッセージが
 /// `（現在: '<path>'）` のように、Python の `repr()` が付ける引用符の外側を
-/// 全角括弧が空白なしで囲む形をとるため、ASCII 空白だけを区切りにすると
-/// この形を取りこぼす。
-fn is_path_boundary(c: char) -> bool {
-    c.is_whitespace()
-        || matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '`' | ',' | ';'
-                       | '\u{3001}' | '\u{3002}' | '\u{FF08}' | '\u{FF09}')
+/// 全角括弧が空白なしで囲む形をとるため。
+fn is_hard_boundary(c: char) -> bool {
+    matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '`' | ',' | ';'
+                | '\u{3001}' | '\u{3002}' | '\u{FF08}' | '\u{FF09}'
+                | '\u{300C}' | '\u{300D}')
 }
 
-/// `chars[i]` を絶対パスの開始とみなせるか（issue #126 (1)）。ドライブ絶対
-/// パス（`C:\...`・`C:/...`）・UNC（`\\server\share`）・Unix 風絶対パス
-/// （`/home/...` 等）の3種の開始パターンを見る。加えて `chars[i]` の直前が
-/// 境界文字（または行頭）であることを要求する——この左境界チェックが無いと
-/// `and/or`・`2026/09/07` のような通常の文中の `/` まで拾ってしまう。
+/// `is_path_start` の左境界判定（issue #126 M-2 追補）。空白・hard boundary
+/// に加えて `=`（`KEY=/path` 形の環境変数表示）・`:`（`現在:C:\...` の
+/// ようにコロン直後に空白なく続く形）も、パスがここから始まってよい
+/// 直前の文字として認める。
+fn is_left_boundary(c: char) -> bool {
+    c.is_whitespace() || is_hard_boundary(c) || matches!(c, '=' | ':')
+}
+
+/// `chars[i..]` が（大文字小文字を区別せず）`needle` で始まるか。
+fn starts_with_ignore_case(chars: &[char], i: usize, needle: &str) -> bool {
+    let needle: Vec<char> = needle.chars().collect();
+    i + needle.len() <= chars.len()
+        && chars[i..i + needle.len()].iter().zip(needle.iter())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
+}
+
+/// `chars[i]` を絶対パスの開始とみなせるか（issue #126 (1)・M-2 追補
+/// L-4）。`file://`／`FILE://` URI・ドライブ絶対パス（`C:\...`・`C:/...`）・
+/// UNC（`\\server\share`。verbatim 接頭辞 `\\?\...` もこの形で拾える）・
+/// Unix 風絶対パス（`/home/...` 等）の4種の開始パターンを見る。加えて
+/// `chars[i]` の直前が左境界（または行頭）であることを要求する——この
+/// チェックが無いと `and/or`・`2026/09/07` のような通常の文中の `/` まで
+/// 拾ってしまう。
 fn is_path_start(chars: &[char], i: usize) -> bool {
-    if i > 0 && !is_path_boundary(chars[i - 1]) {
+    if i > 0 && !is_left_boundary(chars[i - 1]) {
         return false;
+    }
+    if starts_with_ignore_case(chars, i, "file://") {
+        return true;
     }
     if i + 2 < chars.len() && chars[i].is_ascii_alphabetic() && chars[i + 1] == ':'
         && (chars[i + 2] == '\\' || chars[i + 2] == '/') {
@@ -795,7 +857,51 @@ fn is_path_start(chars: &[char], i: usize) -> bool {
     if i + 1 < chars.len() && chars[i] == '\\' && chars[i + 1] == '\\' {
         return true;
     }
-    chars[i] == '/' && i + 1 < chars.len() && !is_path_boundary(chars[i + 1])
+    // 直後が hard boundary・空白なら、単なる区切り記号（`a / b` の除算・
+    // 区切り等）とみなして拾わない
+    chars[i] == '/' && i + 1 < chars.len()
+        && !is_hard_boundary(chars[i + 1]) && !chars[i + 1].is_whitespace()
+}
+
+/// `is_path_start` が真だった位置 `start` から、伏せる範囲の終端（消費し
+/// 終えた次のインデックス）を返す（issue #126 M-2 追補）。
+///
+/// 非空白・非 hard boundary をできるだけ飲み込み、空白に達したら即座には
+/// 終端にしない——空白の**直後の1語**（次の空白か hard boundary までの
+/// 範囲）に区切り（`\` か `/`）が含まれる限り、その空白1文字を跨いで伸ばす
+/// （`C:\Program Files\...`・`C:\Users\山田 太郎\...` を丸ごと伏せるため）。
+///
+/// 先読みを「次の hard boundary まで」にせず「直後の1語まで」に絞るのが
+/// 重要——前者だと `C:\a\b から C:\c\d` のような「別々の2つのパスが読点も
+/// 引用符も挟まず1行に並ぶ」行で、間の「から」を挟んで2つ目のパスの区切り
+/// まで誤って地続きとみなし、1つの伏せ字に融合してしまう（実装時に単体
+/// テストで検出・修正）。
+/// 直後の語に区切りが無ければ、その空白の手前で打ち切る（空白自体は
+/// 伏せ字の範囲に含めない）。
+fn path_run_end(chars: &[char], start: usize) -> usize {
+    let mut end = start;
+    loop {
+        while end < chars.len() && !chars[end].is_whitespace() && !is_hard_boundary(chars[end]) {
+            end += 1;
+        }
+        if end >= chars.len() || is_hard_boundary(chars[end]) {
+            return end;
+        }
+        // ここに来るのは chars[end] が空白のとき。直後の1語（次の空白か
+        // hard boundary までの範囲）だけを見る
+        let mut peek = end + 1;
+        let mut continues = false;
+        while peek < chars.len() && !chars[peek].is_whitespace() && !is_hard_boundary(chars[peek]) {
+            if chars[peek] == '\\' || chars[peek] == '/' {
+                continues = true;
+            }
+            peek += 1;
+        }
+        if !continues {
+            return end;
+        }
+        end += 1; // この空白1文字だけ跨いで続行
+    }
 }
 
 /// stderr の1行から絶対パスらしい範囲を `[path]` へ伏せる（issue #126 (1)）。
@@ -805,11 +911,15 @@ fn is_path_start(chars: &[char], i: usize) -> bool {
 /// 進捗ログ `[err] ${line}`）は利用者向けの正当な機能なので落とさない
 /// ——`save_user_template`／`match_templates` が使う
 /// `core_output_stdout_only`（stderr を一切出さない）ほど厳密には塞がず、
-/// 値だけを伏せてから中継する。
+/// 値だけを伏せてから中継する。`core_output`（`run_core_capture` が使う。
+/// verify・detect-grid・expand-page・detect-frames・import-credentials・
+/// purge --preview 全てがここを通る）の非 0 終了時 stderr フォールバックにも
+/// 同じ関数を通す（issue #126 M-1 追補）——鍵の取り込み失敗時の赤帯表示
+/// （RunScreen.tsx の `setError`）にも絶対パスを出さない。
 ///
 /// 完全な検出は目指さない。誤検知（パスでない文字列を伏せる）より見逃し
 /// （パスを伏せ損ねる）のほうが実害が大きい防御なので、判定に迷う側は
-/// 「伏せる」に倒す——`path_start_len` の左境界チェックだけは例外で、通常の
+/// 「伏せる」に倒す——`is_path_start` の左境界チェックだけは例外で、通常の
 /// 文中に現れる `/`（`and/or`・日付表記）まで巻き込まないために必要。
 fn redact_absolute_paths(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
@@ -817,12 +927,9 @@ fn redact_absolute_paths(line: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         if is_path_start(&chars, i) {
-            let mut j = i;
-            while j < chars.len() && !is_path_boundary(chars[j]) {
-                j += 1;
-            }
+            let end = path_run_end(&chars, i);
             out.push_str("[path]");
-            i = j;
+            i = end;
         } else {
             out.push(chars[i]);
             i += 1;
@@ -1024,7 +1131,7 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
         let mut cred_slot = pending_cred.0.lock().unwrap();
         check_arg_scopes(&pairs, &roots, &picked_set, &mut cred_slot)?
     };
-    let args = rebuild_args(&args[0], &checked_pairs);
+    let args = rebuild_args(&args[0], &checked_pairs)?;
     let default_tpl = resolve_last_template(&app, &root);
     let args = inject_default_template(args, &default_tpl);
     let mut cmd = core_command(&app, &root)?;
@@ -1154,7 +1261,7 @@ async fn run_core_capture(app: AppHandle, picked: State<'_, PickedPaths>,
         let mut cred_slot = pending_cred.0.lock().unwrap();
         check_arg_scopes(&pairs, &roots, &picked_set, &mut cred_slot)?
     };
-    let args = rebuild_args(&args[0], &checked_pairs);
+    let args = rebuild_args(&args[0], &checked_pairs)?;
     let default_tpl = resolve_last_template(&app, &root);
     let args = inject_default_template(args, &default_tpl);
     core_output(&app, &root, args).await
@@ -1271,8 +1378,12 @@ async fn pick_json(app: AppHandle, save: bool, remember_pick: Option<bool>,
     // json_path はこの値と完全一致するときだけ通る
     // （check_arg_scopes → check_credentials_scope）。正規化に失敗する経路
     // （選択直後に対象が消える等）ではスロットを更新しない——その場合は
-    // 後続の check_credentials_scope が「未選択」として拒否する
-    if kind.as_deref() == Some("credentials") {
+    // 後続の check_credentials_scope が「未選択」として拒否する。
+    // `!save` を要求する（issue #126 M-3）——`kind:"credentials"` は現状
+    // 取り込み（`save:false`）専用の使われ方だが、将来 `save:true` の呼び
+    // 出しが増えても、実在しない保存先パスをスロットへ書き込んで
+    // 一回限りトークンの意味を壊さないようにする
+    if !save && kind.as_deref() == Some("credentials") {
         if let Ok(abs) = normalize_path(&p.to_string_lossy()) {
             *app.state::<PendingCredentialsPath>().0.lock().unwrap() = Some(abs);
         }
@@ -1294,6 +1405,19 @@ async fn pick_json(app: AppHandle, save: bool, remember_pick: Option<bool>,
         remember(&app.state::<PickedPaths>(), &p);
     }
     Some(p.to_string_lossy().to_string())
+}
+
+/// `pick_json(kind:"credentials")` が預けた1回限りのスロットを明示的に
+/// 解放する（issue #126 M-3）。取り込みが実際には起きなかった経路
+/// （利用者が確認ダイアログをキャンセルした・`import-credentials` 呼び出し
+/// 自体が失敗した）でスロットが埋まったまま残ると、次に別の鍵をダイアログ
+/// で選び直すまでその古いパスが「一回だけ使える」状態で残り続ける。
+/// フロント側（RunScreen.tsx の確認キャンセル・取り込み失敗の catch）が
+/// 呼ぶ想定——呼ばなくても次の `pick_json(kind:"credentials")` が上書きする
+/// ため fail-safe だが、キャンセル直後に古いトークンを残さない方が安全。
+#[tauri::command]
+fn clear_pending_credentials(pending: State<'_, PendingCredentialsPath>) {
+    *pending.0.lock().unwrap() = None;
 }
 
 #[tauri::command]
@@ -2085,6 +2209,7 @@ pub fn run() {
             pick_folder,
             pick_image,
             pick_json,
+            clear_pending_credentials,
             read_default_template,
             open_folder,
             read_config,
@@ -2164,7 +2289,7 @@ mod tests {
     fn rebuild_args_reconstructs_argv_from_checked_pairs() {
         let pairs = vec![("--input".to_string(), "C:\\abs\\in".to_string()),
                          ("--template".to_string(), "C:\\abs\\t.json".to_string())];
-        assert_eq!(rebuild_args("run", &pairs),
+        assert_eq!(rebuild_args("run", &pairs).unwrap(),
                    v(&["run", "--input", "C:\\abs\\in", "--template", "C:\\abs\\t.json"]));
     }
 
@@ -2172,14 +2297,15 @@ mod tests {
     fn rebuild_args_keeps_boolean_flags_without_a_value() {
         let pairs = vec![("--yes".to_string(), String::new()),
                          ("--include-output".to_string(), String::new())];
-        assert_eq!(rebuild_args("purge", &pairs), v(&["purge", "--yes", "--include-output"]));
+        assert_eq!(rebuild_args("purge", &pairs).unwrap(),
+                   v(&["purge", "--yes", "--include-output"]));
     }
 
     #[test]
     fn rebuild_args_treats_json_path_as_a_positional_argument() {
         let pairs = vec![("json_path".to_string(), "C:\\abs\\key.json".to_string()),
                          ("--delete-source".to_string(), String::new())];
-        assert_eq!(rebuild_args("import-credentials", &pairs),
+        assert_eq!(rebuild_args("import-credentials", &pairs).unwrap(),
                    v(&["import-credentials", "C:\\abs\\key.json", "--delete-source"]));
     }
 
@@ -2189,10 +2315,35 @@ mod tests {
         // 「値を取らないフラグ」と取り違えて値を落とさない。判定は pairs の
         // 値の空/非空ではなく allowed_flags の表（唯一の正）で行う
         let pairs = vec![("--dpi".to_string(), String::new())];
-        assert_eq!(rebuild_args("detect-grid", &pairs), v(&["detect-grid", "--dpi", ""]));
+        assert_eq!(rebuild_args("detect-grid", &pairs).unwrap(),
+                   v(&["detect-grid", "--dpi", ""]));
     }
 
-    // --- core-err の絶対パス伏せ字化（issue #126 (1)）---
+    #[test]
+    fn rebuild_args_errs_on_a_flag_absent_from_the_table() {
+        // issue #126 L-2: 表に無いフラグに出会ったら黙って値ありと決めない
+        let pairs = vec![("--not-a-real-flag".to_string(), "x".to_string())];
+        assert!(rebuild_args("run", &pairs).is_err());
+    }
+
+    #[test]
+    fn rebuild_args_drops_yes_when_preview_is_present_regardless_of_order() {
+        // issue #126 M-5: コアが preview を優先する実装であることに頼らず、
+        // argv の時点で --yes を落とす。フラグの並び順に関わらず消える
+        let preview_then_yes = vec![("--preview".to_string(), String::new()),
+                                    ("--yes".to_string(), String::new())];
+        assert_eq!(rebuild_args("purge", &preview_then_yes).unwrap(), v(&["purge", "--preview"]));
+
+        let yes_then_preview = vec![("--yes".to_string(), String::new()),
+                                    ("--preview".to_string(), String::new())];
+        assert_eq!(rebuild_args("purge", &yes_then_preview).unwrap(), v(&["purge", "--preview"]));
+
+        // --preview が無ければ --yes は残る
+        let yes_only = vec![("--yes".to_string(), String::new())];
+        assert_eq!(rebuild_args("purge", &yes_only).unwrap(), v(&["purge", "--yes"]));
+    }
+
+    // --- core-err・core_output の絶対パス伏せ字化（issue #126 (1)・M-1・M-2）---
     use super::redact_absolute_paths;
 
     #[test]
@@ -2223,6 +2374,41 @@ mod tests {
         assert_eq!(
             redact_absolute_paths("C:\\a\\b から C:\\c\\d へコピーできません"),
             "[path] から [path] へコピーできません");
+    }
+
+    #[test]
+    fn redact_absolute_paths_spans_spaces_inside_a_path_until_a_hard_boundary() {
+        // issue #126 M-2: 空白で即座に打ち切ると `C:\Program Files\...` の
+        // 後半（`Files\...`）が伏せ残る（実測バグの再現）
+        assert_eq!(
+            redact_absolute_paths(
+                "読み込み失敗: C:\\Program Files\\ChouhyoOCR\\logs\\core.log が壊れています"),
+            "読み込み失敗: [path] が壊れています");
+        // 姓名の間の空白（2箇所）も同様に伏せきる
+        assert_eq!(
+            redact_absolute_paths(
+                "エラー: C:\\Users\\山田 太郎\\Desktop\\a.pdf にアクセスできません"),
+            "エラー: [path] にアクセスできません");
+    }
+
+    #[test]
+    fn redact_absolute_paths_starts_right_after_equals_sign() {
+        // issue #126 M-2: `KEY=/path` 形（空白なしでイコールの直後から
+        // パスが始まる）も伏せる
+        assert_eq!(
+            redact_absolute_paths("CHOUHYO_USER_DIR=/home/someone/.chouhyo が見つかりません"),
+            "CHOUHYO_USER_DIR=[path] が見つかりません");
+    }
+
+    #[test]
+    fn redact_absolute_paths_masks_file_uri_and_verbatim_prefix() {
+        // issue #126 M-2 L-4: file:// URI と \\?\ verbatim 接頭辞
+        assert_eq!(
+            redact_absolute_paths("テンプレート file:///C:/app/templates/chouhyo-v1.json を開けません"),
+            "テンプレート [path] を開けません");
+        assert_eq!(
+            redact_absolute_paths("パス \\\\?\\C:\\Users\\someone\\a.json が不正です"),
+            "パス [path] が不正です");
     }
 
     #[test]
@@ -2287,6 +2473,17 @@ mod tests {
         assert_eq!(pairs, vec![("json_path".to_string(), "C:\\key.json".to_string())]);
         // 他のサブコマンドは位置引数を持たない
         assert!(check_args_v2(&v(&["status", "C:\\key.json"])).is_err());
+    }
+
+    #[test]
+    fn import_credentials_rejects_a_second_positional_argument() {
+        // issue #126 L-3: 2つ目の位置引数はスコープ検査（PendingCredentialsPath
+        // の消費）まで進む前にここで拒否する。1つ目が正当な選択と一致して
+        // 消費された「後」に2つ目で全体が失敗すると、消費だけが起きて
+        // 正当な取り込みが二度とできなくなる
+        assert!(check_args_v2(&v(&["import-credentials", "C:\\a.json", "C:\\b.json"])).is_err());
+        assert!(check_args_v2(
+            &v(&["import-credentials", "C:\\a.json", "C:\\b.json", "--delete-source"])).is_err());
     }
 
     #[test]
