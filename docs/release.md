@@ -55,8 +55,11 @@ release.yml はソースコードをビルドするだけで、バージョン�
 
 - 配布先の PC では、`%LOCALAPPDATA%\ChouhyoOCR\`（取り込んだ認証キー `cred.dpapi`・月次の送信回数 `api_usage.json`・中間データの既定の置き場）を **利用者本人だけが読めるフォルダ** にしておく。共有 PC や、`%LOCALAPPDATA%` に別グループの読み取り権限が継承されている環境では、配布前に `icacls %LOCALAPPDATA%\ChouhyoOCR` で権限を確認する（認証キーは Windows のユーザー単位で暗号化してあるので他のアカウントでは復号できないが、中間データには帳票の記入値が含まれる）。
 
+## 確認済み（2026-09-07）
+
+- `workflow_dispatch` で release.yml を実行し、venv＋依存 → Poppler → 配布物ビルド（PyInstaller）→ 鮮度スタンプの検査 → npm ci → Tauri ビルド → artifact 保存まで通ることを確認した（run 34088267394・所要 7 分 48 秒・artifact `chouhyo-ocr-installer-main` 40.4 MB）。
+- 1 回目（run 34087471906）は起動確認ログの日本語で `UnicodeEncodeError` になった。Windows ランナーのコンソールは cp1252 なので、ワークフローの `env` で `PYTHONIOENCODING=utf-8`・`PYTHONUTF8=1` を固定し、build_dist.py も自分の出力を UTF-8 にした（4bf3597）。
+
 ## 未検証
 
-- release.yml を実際に実行してビルドが最後まで通るかどうか（本レーンの作業はタグ push・ワークフロー実行を伴わないため、`actionlint`（v1.7.12）によるワークフロー構文検査と、`ci.yml` の full ジョブとの手順突き合わせに留めている）
-- ビルド全体の所要時間
-- NSIS インストーラの生成物ファイル名の実際の形（`gui/src-tauri/target/release/bundle/nsis/` 配下・glob で拾う想定だが実ビルドでの確認はしていない）
+- タグ push のときだけ動く「GitHub Release へ添付」（`gh release create`）のステップ。次の `v*` タグで確認する。
