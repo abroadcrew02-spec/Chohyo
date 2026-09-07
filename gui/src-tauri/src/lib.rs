@@ -20,6 +20,15 @@ pub struct CoreProc(pub Mutex<Option<u32>>);
 /// 白リストをルート固定にはせずダイアログの選択結果で広げる。
 pub struct PickedPaths(pub Mutex<HashSet<PathBuf>>);
 
+/// `import-credentials` の位置引数 `json_path` が通ってよい1件だけを覚える
+/// 1回限りのスロット（issue #121）。`pick_json(kind:"credentials")` が選択
+/// 結果をここへ書き込み、`check_credentials_scope`（`check_arg_scopes` から
+/// 呼ぶ）が値の一致を確認したうえで消費して空にする——一致しなければ拒否、
+/// 一致しても2回目は通らない。`PickedPaths` には意図的に入れない
+/// （remember_pick=false のまま・鍵の平文 JSON を `read_text` で読める窓を
+/// 開けないという既存の設計判断はそのまま維持する）。
+pub struct PendingCredentialsPath(pub Mutex<Option<PathBuf>>);
+
 /// ドロップを受け付ける画面が表示されているか（issue #69 セキュリティ LOW (b)）。
 ///
 /// `on_window_event` の DragDrop は**タブに関係なく**発火するため、
@@ -42,7 +51,10 @@ pub struct DropActive(pub Mutex<bool>);
 /// （何が消えて何が残るかの説明 → 最終確認）がその明示操作にあたる。
 /// 削除手段が CLI にしか無い状態こそが、中間データ（要配慮個人情報）を
 /// 無期限に溜め続ける原因になっていた。受け付けるフラグは
-/// `--yes`・`--include-output` だけに限る（`allowed_flags`）。
+/// `--yes`・`--include-output`・`--preview` だけに限る（`allowed_flags`）。
+/// `--preview`（issue #108）はコア側が削除を実行せず対象パス・対象外件数を
+/// 1行イベントで返すだけのフラグで、二段確認の説明文に実際の削除対象を
+/// 出すために使う。
 const ALLOWED_SUBCOMMANDS: &[&str] = &[
     "run", "render", "remap", "status", "verify", "detect-grid",
     "expand-page", "import-credentials", "detect-frames", "purge",
@@ -74,16 +86,21 @@ fn allowed_flags(subcommand: &str) -> &'static [(&'static str, bool)] {
         "detect-frames" => &[
             ("--input", true), ("--page", true), ("--dpi", true), ("--template", true),
         ],
-        // import-credentials は位置引数 json_path（check_args_v2 内で別扱い）に
+        // import-credentials は位置引数 json_path（check_args_v2 内で別扱い。
+        // 値そのものは check_arg_scopes → check_credentials_scope が
+        // PendingCredentialsPath の1回限りのスロットと照合する・issue #121）に
         // 加えて --delete-source（issue #52 M-10）。取り込みに成功したら元の
         // 平文鍵 JSON をランダム上書きのうえ削除するフラグで、GUI からは既定で
         // 付ける——取り込みのたびに平文の秘密鍵がディスクへ残るのを止める。
         "import-credentials" => &[("--delete-source", false)],
-        // purge は値を取らない2つだけ（issue #52 M-11・S-MC）。--config のような
-        // 「どこを消すか」を差し替えられるフラグは絶対に足さない——消す対象は
-        // config.json の workdir/output_dir だけ、という不変条件で二段確認の
-        // 説明文（何が消えるか）と実際の削除範囲を一致させている。
-        "purge" => &[("--yes", false), ("--include-output", false)],
+        // purge は値を取らない3つだけ（issue #52 M-11・S-MC・#108）。--config
+        // のような「どこを消すか」を差し替えられるフラグは絶対に足さない——
+        // 消す対象は config.json の workdir/output_dir だけ、という不変条件で
+        // 二段確認の説明文（何が消えるか）と実際の削除範囲を一致させている。
+        // `--preview`（issue #108）は削除を実行せず対象パス・対象外件数を
+        // 1行返すだけで、`--yes` と同時指定してもコア側が preview を優先し
+        // 削除は起きない（core/chouhyo_ocr/cli.py 側の実装）。
+        "purge" => &[("--yes", false), ("--include-output", false), ("--preview", false)],
         _ => &[],
     }
 }
@@ -152,6 +169,36 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
         }
     }
     Ok(pairs)
+}
+
+/// `check_arg_scopes` が返した（スコープ検査済み・パス値は正規化済みの）
+/// pairs から、子プロセスへ渡す argv を組み立て直す（issue #126 (2)）。
+///
+/// 検査前の生の `args` をそのまま子へ渡すと、相対パスの解決基準が検査時
+/// （この関数を呼ぶ GUI プロセスの cwd）と実行時（子プロセスは
+/// `<root>/core` を cwd に起動する・`core_command`）でずれうる——検査した
+/// 対象と実際に開かれる対象が一致する保証がなくなる。ここで作り直す argv は
+/// 常に絶対パス（`normalize_path` の結果）を積むため、その基準差が消える。
+///
+/// 値を取るかどうかは `pairs` の値の空・非空では判定しない
+/// （`--dpi ""` のような値そのものが空の正当な入力と、値を持たないフラグ
+/// を区別できないため）。`allowed_flags(cmd)` の表を単一の正とする。
+fn rebuild_args(cmd: &str, pairs: &[(String, String)]) -> Vec<String> {
+    let specs = allowed_flags(cmd);
+    let mut out = vec![cmd.to_string()];
+    for (flag, value) in pairs {
+        if flag == "json_path" {
+            // import-credentials の位置引数（フラグ表には無い）
+            out.push(value.clone());
+            continue;
+        }
+        out.push(flag.clone());
+        let takes_value = specs.iter().find(|s| &s.0 == flag).map(|s| s.1).unwrap_or(true);
+        if takes_value {
+            out.push(value.clone());
+        }
+    }
+    out
 }
 
 /// `--template` を受け付けるサブコマンド（core/chouhyo_ocr/cli.py 準拠・issue #58）。
@@ -357,22 +404,69 @@ fn check_template_scope(abs: &Path, roots: &[PathBuf],
 /// 任意のファイルを読ませ、その展開結果（`editor_pages` の PNG）を
 /// `read_file_b64` で吸い出す連鎖が残っていた——API 送信・課金が無くても
 /// 「webview から任意パスの中身を見る」経路としては成立する。
+///
+/// 戻り値は検査に使った pairs そのものではなく、パスを値に取るフラグだけ
+/// `normalize_path` の正規化結果（絶対パス）へ差し替えた新しい pairs
+/// （issue #126 (2)）。呼び出し側はこれを `rebuild_args` で argv へ組み直し、
+/// 子プロセスへは検査した絶対パスをそのまま渡す——生の（相対もありうる）
+/// 文字列を渡すと、相対パスの解決基準が検査時（GUI プロセスの cwd）と
+/// 実行時（子プロセスは `<root>/core` を cwd に起動）でずれ、検査した対象と
+/// 実際に開かれる対象が一致する保証がなくなる。
 fn check_arg_scopes(pairs: &[(String, String)], roots: &[PathBuf],
-                    picked: &HashSet<PathBuf>) -> Result<(), String> {
+                    picked: &HashSet<PathBuf>,
+                    pending_cred: &mut Option<PathBuf>)
+                    -> Result<Vec<(String, String)>, String> {
+    let mut checked = Vec::with_capacity(pairs.len());
     for (flag, value) in pairs {
-        match flag.as_str() {
+        let out_value = match flag.as_str() {
             // フォルダ・拡張子なしのファイルもありうる（run --input・#19）
-            "--input" => check_scope_dir(&normalize_path(value)?, roots, picked)?,
-            "--image" => check_scope(&normalize_path(value)?,
-                                     &["png", "jpg", "jpeg"], roots, picked)?,
-            "--template" => check_template_scope(&normalize_path(value)?, roots, picked)?,
-            // import-credentials の json_path は対象外。pick_json が
-            // remember_pick=false で呼ばれ、鍵を picked へ入れない設計
-            // （lib.rs :594 のコメント）と衝突するため
-            _ => {}
-        }
+            "--input" => {
+                let abs = normalize_path(value)?;
+                check_scope_dir(&abs, roots, picked)?;
+                abs.to_string_lossy().into_owned()
+            }
+            "--image" => {
+                let abs = normalize_path(value)?;
+                check_scope(&abs, &["png", "jpg", "jpeg"], roots, picked)?;
+                abs.to_string_lossy().into_owned()
+            }
+            "--template" => {
+                let abs = normalize_path(value)?;
+                check_template_scope(&abs, roots, picked)?;
+                abs.to_string_lossy().into_owned()
+            }
+            "json_path" => {
+                let abs = normalize_path(value)?;
+                check_credentials_scope(&abs, pending_cred)?;
+                abs.to_string_lossy().into_owned()
+            }
+            _ => value.clone(),
+        };
+        checked.push((flag.clone(), out_value));
     }
-    Ok(())
+    Ok(checked)
+}
+
+/// `import-credentials` の位置引数 `json_path` のスコープ検査（issue #121）。
+///
+/// `json_path` は `PickedPaths` の対象外のまま（`pick_json` が
+/// `kind:"credentials"` のとき `remember_pick` の指定によらず登録しない
+/// 設計・issue #69 セキュリティ LOW (c)）——白リストへ入れると、取り込み後も
+/// 鍵の平文 JSON が `read_text` で読める窓が開いたままになる。その代わり
+/// `pick_json(kind:"credentials")` がダイアログで選ばれたパスを
+/// `PendingCredentialsPath` の1回限りのスロットへ書き込み、ここで
+/// **値が完全一致するときだけ**通す。一致したらスロットを消費して空にする
+/// ——同じパスの2回目の呼び出しや、ダイアログを経ていない任意パスの指定を
+/// 拒否する。以前はこの分岐が無く `_ => {}` で無検査のまま通していたため、
+/// webview を掌握されると任意パスの JSON を鍵として取り込ませ、
+/// `--delete-source`（ランダム上書き→削除）を任意ファイルに対して起動できた。
+fn check_credentials_scope(abs: &Path, pending: &mut Option<PathBuf>) -> Result<(), String> {
+    if pending.as_deref() == Some(abs) {
+        *pending = None;
+        Ok(())
+    } else {
+        Err("選択されていない認証キーです。ファイル選択ダイアログから選び直してください".into())
+    }
 }
 
 /// output_dir/workdir/log_dir に許すパスの安全性判定（issue Q-MC/S-MA）。
@@ -651,7 +745,7 @@ async fn core_output(app: &AppHandle, root: &Path, args: Vec<String>) -> Result<
 }
 
 /// `verify` 専用: プロセス起動そのものの失敗だけを `Err` とし、**終了コードに
-/// 関わらず** stdout を返す（issue #72 (t)・H-1 追補・レビュー AZKi）。
+/// 関わらず** stdout を返す（issue #72 (t)・H-1 追補・セキュリティレビュー）。
 ///
 /// `core_output` は非 0 終了を一律エラー扱いするが、`verify` は資格情報
 /// 未設定・API 残量ゼロ等**テンプレート検証とは無関係な**理由で非 0 終了する
@@ -670,6 +764,71 @@ async fn core_output_stdout_only(app: &AppHandle, root: &Path,
         .map_err(|_| "コアの実行を待機できません".to_string())?
         .map_err(|e| format!("コアを起動できません（{:?}）", e.kind()))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// パスの伏せ字化における「境界」文字（ここに達したら伏せ字の対象範囲を
+/// 打ち切る／ここの直後でなければパスの開始とは認めない）。ASCII の空白・
+/// 引用符・括弧・読点に加え、全角の括弧・読点も含める——ConfigError
+/// （core/chouhyo_ocr/paths.py・config.py）のメッセージは
+/// `（現在: '<path>'）` のように、Python の `repr()` が付ける引用符の外側を
+/// 全角括弧が空白なしで囲む形をとるため、ASCII 空白だけを区切りにすると
+/// この形を取りこぼす。
+fn is_path_boundary(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(c, '"' | '\'' | '(' | ')' | '[' | ']' | '`' | ',' | ';'
+                       | '\u{3001}' | '\u{3002}' | '\u{FF08}' | '\u{FF09}')
+}
+
+/// `chars[i]` を絶対パスの開始とみなせるか（issue #126 (1)）。ドライブ絶対
+/// パス（`C:\...`・`C:/...`）・UNC（`\\server\share`）・Unix 風絶対パス
+/// （`/home/...` 等）の3種の開始パターンを見る。加えて `chars[i]` の直前が
+/// 境界文字（または行頭）であることを要求する——この左境界チェックが無いと
+/// `and/or`・`2026/09/07` のような通常の文中の `/` まで拾ってしまう。
+fn is_path_start(chars: &[char], i: usize) -> bool {
+    if i > 0 && !is_path_boundary(chars[i - 1]) {
+        return false;
+    }
+    if i + 2 < chars.len() && chars[i].is_ascii_alphabetic() && chars[i + 1] == ':'
+        && (chars[i + 2] == '\\' || chars[i + 2] == '/') {
+        return true;
+    }
+    if i + 1 < chars.len() && chars[i] == '\\' && chars[i + 1] == '\\' {
+        return true;
+    }
+    chars[i] == '/' && i + 1 < chars.len() && !is_path_boundary(chars[i + 1])
+}
+
+/// stderr の1行から絶対パスらしい範囲を `[path]` へ伏せる（issue #126 (1)）。
+///
+/// `run`／`purge` は `core-err` イベントで stderr を webview へそのまま
+/// 中継しており（`run_core` の err_reader）、その表示自体（RunScreen.tsx の
+/// 進捗ログ `[err] ${line}`）は利用者向けの正当な機能なので落とさない
+/// ——`save_user_template`／`match_templates` が使う
+/// `core_output_stdout_only`（stderr を一切出さない）ほど厳密には塞がず、
+/// 値だけを伏せてから中継する。
+///
+/// 完全な検出は目指さない。誤検知（パスでない文字列を伏せる）より見逃し
+/// （パスを伏せ損ねる）のほうが実害が大きい防御なので、判定に迷う側は
+/// 「伏せる」に倒す——`path_start_len` の左境界チェックだけは例外で、通常の
+/// 文中に現れる `/`（`and/or`・日付表記）まで巻き込まないために必要。
+fn redact_absolute_paths(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if is_path_start(&chars, i) {
+            let mut j = i;
+            while j < chars.len() && !is_path_boundary(chars[j]) {
+                j += 1;
+            }
+            out.push_str("[path]");
+            i = j;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }
 
 /// 指定 PID を子プロセスごと停止する（`taskkill /T /F`）。Windows は親
@@ -851,17 +1010,21 @@ struct RunResult {
 #[tauri::command]
 async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
                   picked: State<'_, PickedPaths>,
+                  pending_cred: State<'_, PendingCredentialsPath>,
                   args: Vec<String>) -> Result<RunResult, String> {
     let pairs = check_args_v2(&args)?;
     let root = repo_root(&app)?;
     // 値のパススコープ検査（issue S-MD・S-N2）。run_core_capture 側と同じ
     // check_arg_scopes を通す。ロックは await をまたがせない（Send 制約）ため
-    // このブロック内で閉じる
-    {
+    // このブロック内で閉じる。返ってくる pairs はパス値が正規化済み
+    // （issue #126 (2)）——子プロセスには元の生文字列ではなくこちらを渡す
+    let checked_pairs = {
         let roots = allowed_roots(&app)?;
         let picked_set = picked.0.lock().unwrap();
-        check_arg_scopes(&pairs, &roots, &picked_set)?;
-    }
+        let mut cred_slot = pending_cred.0.lock().unwrap();
+        check_arg_scopes(&pairs, &roots, &picked_set, &mut cred_slot)?
+    };
+    let args = rebuild_args(&args[0], &checked_pairs);
     let default_tpl = resolve_last_template(&app, &root);
     let args = inject_default_template(args, &default_tpl);
     let mut cmd = core_command(&app, &root)?;
@@ -901,6 +1064,12 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
     let id_err = run_id.clone();
     let err_reader = std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            // stderr は素通しにしない（issue #126 (1)）。ConfigError 等の
+            // メッセージは絶対パス（環境変数の生値・resolve 後のパス）を含み
+            // うる（core/chouhyo_ocr/paths.py）——「人が読む進捗ログ」という
+            // 表示自体（RunScreen.tsx の `[err] ${line}`）は壊さず、伏せ字化
+            // してから中継する
+            let line = redact_absolute_paths(&line);
             let _ = app_err.emit("core-err", CoreLine { run_id: id_err.clone(), line });
         }
     });
@@ -971,16 +1140,21 @@ fn kill_core(state: State<'_, CoreProc>) -> Result<(), String> {
 /// コアを起動し stdout を丸ごと返す（編集画面の detect-grid / verify 用）。
 #[tauri::command]
 async fn run_core_capture(app: AppHandle, picked: State<'_, PickedPaths>,
+                          pending_cred: State<'_, PendingCredentialsPath>,
                           args: Vec<String>) -> Result<String, String> {
     let pairs = check_args_v2(&args)?;
     let root = repo_root(&app)?;
     // run_core と同じ値検査を通す（issue S-N2）。フラグ表検査だけだと
-    // `expand-page --input <任意.pdf>` で任意ファイルを展開させられる
-    {
+    // `expand-page --input <任意.pdf>` で任意ファイルを展開させられる。
+    // 返ってくる pairs はパス値が正規化済み（issue #126 (2)）——子プロセスに
+    // は元の生文字列ではなくこちらを渡す
+    let checked_pairs = {
         let roots = allowed_roots(&app)?;
         let picked_set = picked.0.lock().unwrap();
-        check_arg_scopes(&pairs, &roots, &picked_set)?;
-    }
+        let mut cred_slot = pending_cred.0.lock().unwrap();
+        check_arg_scopes(&pairs, &roots, &picked_set, &mut cred_slot)?
+    };
+    let args = rebuild_args(&args[0], &checked_pairs);
     let default_tpl = resolve_last_template(&app, &root);
     let args = inject_default_template(args, &default_tpl);
     core_output(&app, &root, args).await
@@ -1092,6 +1266,17 @@ async fn pick_json(app: AppHandle, save: bool, remember_pick: Option<bool>,
         if save { d.save_file() } else { d.pick_file() }
     })
     .await?;
+    // `kind:"credentials"` で選ばれたパスは PendingCredentialsPath の
+    // 1回限りのスロットへ書き込む（issue #121）。import-credentials の
+    // json_path はこの値と完全一致するときだけ通る
+    // （check_arg_scopes → check_credentials_scope）。正規化に失敗する経路
+    // （選択直後に対象が消える等）ではスロットを更新しない——その場合は
+    // 後続の check_credentials_scope が「未選択」として拒否する
+    if kind.as_deref() == Some("credentials") {
+        if let Ok(abs) = normalize_path(&p.to_string_lossy()) {
+            *app.state::<PendingCredentialsPath>().0.lock().unwrap() = Some(abs);
+        }
+    }
     // 認証キーの取り込みは remember_pick=false で呼ぶ。白リストへ入れると
     // GCP サービスアカウント鍵（平文 JSON）がセッション中ずっと read_text で
     // 読める状態になる——鍵を DPAPI へ退避させる操作が、その鍵を読める窓を
@@ -1458,7 +1643,7 @@ fn validate_template_target(path: &str, picked: &HashSet<PathBuf>) -> Result<Pat
 
 /// staged ファイルを本番パスへ確定する本体。rename を注入可能にしてあるのは、
 /// 「確定の rename（staged→abs）が失敗する」経路を単体テストで固定するため
-/// （マリン最終レビュー H-1）。Windows では読み取り専用属性がファイル作成を
+/// （最終レビュー H-1）。Windows では読み取り専用属性がファイル作成を
 /// 妨げず、オープンハンドルの共有モードもプラットフォーム依存で不安定なため、
 /// OS レベルで確実に rename 失敗を誘発する方法が無かった。
 ///
@@ -1703,13 +1888,19 @@ fn read_user_template(app: AppHandle, name: String) -> Result<String, String> {
 #[tauri::command]
 async fn save_user_template(app: AppHandle, name: String, content: String,
                             overwrite: bool) -> Result<String, String> {
-    // M-4 追補（レビュー AZKi）: 書き込み前にサイズ上限を掛ける。
+    // issue #126 (3)（記録のみ・未対応）: この async fn は下の
+    // list_all_stems/write_staged_fresh/promote_staged 等（user_templates.rs）
+    // 経由で std::fs を spawn_blocking なしに同期呼び出ししている。対象は
+    // 利用者テンプレート JSON（数 KB〜数十 KB）のみで体感する遅延は無い想定
+    // ——扱うファイルが大きくなる／件数が増える設計変更が入るときに
+    // spawn_blocking へ切り出すことを検討する。
+    // M-4 追補（セキュリティレビュー）: 書き込み前にサイズ上限を掛ける。
     if content.len() as u64 > user_templates::MAX_TEMPLATE_BYTES {
         return Err("テンプレートの内容が大きすぎます".into());
     }
     let dir = user_templates::user_templates_dir(&app)?;
     let root = repo_root(&app)?;
-    // M-1 追補（レビュー AZKi）: 衝突判定は件数上限・内容解析なしの全件
+    // M-1 追補（セキュリティレビュー）: 衝突判定は件数上限・内容解析なしの全件
     // 列挙（list_all_stems）で行う。list_dir ベースだと21件目以降や
     // 壊れた/大きすぎる同名ファイルを確認なしで上書きしてしまう。
     let existing = user_templates::list_all_stems(&dir);
@@ -1831,6 +2022,11 @@ async fn match_templates(app: AppHandle, picked: State<'_, PickedPaths>,
         check_scope(&input_abs, &["png", "jpg", "jpeg"], &roots, &picked_set)?;
     }
     let dir = user_templates::user_templates_dir(&app)?;
+    // issue #126 (3)（記録のみ・未対応）: classify_candidates
+    // （user_templates.rs）は候補ごとに std::fs を spawn_blocking なしに
+    // 同期呼び出しする。候補は利用者テンプレート一覧（通常数件〜数十件の
+    // JSON）で体感する遅延は無い想定——件数が大きく増える設計変更が入る
+    // ときに spawn_blocking へ切り出すことを検討する。
     let (candidate_paths, excluded) = user_templates::classify_candidates(&dir, &names)?;
 
     let shipped = root.join("templates").join("chouhyo-v1.json");
@@ -1858,6 +2054,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(CoreProc(Mutex::new(None)))
         .manage(PickedPaths(Mutex::new(HashSet::new())))
+        .manage(PendingCredentialsPath(Mutex::new(None)))
         .manage(DropActive(Mutex::new(true)))
         // ドラッグ＆ドロップのパスは OS のイベントから直接受け取る（issue S-N1）。
         // webview 側（RunScreen.tsx の onDragDropEvent）は同じドロップを受けて
@@ -1933,8 +2130,8 @@ mod tests {
     }
 
     #[test]
-    fn purge_accepts_only_yes_and_include_output() {
-        // issue #52 M-11: GUI から呼べるようにしたが、受け付けるのはこの2つだけ
+    fn purge_accepts_only_yes_include_output_and_preview() {
+        // issue #52 M-11: GUI から呼べるようにしたが、受け付けるのはこの3つだけ
         assert!(check_args_v2(&v(&["purge", "--yes"])).is_ok());
         let pairs = check_args_v2(&v(&["purge", "--yes", "--include-output"])).unwrap();
         assert_eq!(pairs, vec![("--yes".to_string(), String::new()),
@@ -1944,6 +2141,88 @@ mod tests {
         assert!(check_args_v2(&v(&["purge", "--yes=1"])).is_err());
         assert!(check_args_v2(&v(&["purge", "C:\\somewhere"])).is_err());
         assert!(check_args_v2(&v(&["purge", "--input", "C:\\in"])).is_err());
+    }
+
+    #[test]
+    fn purge_accepts_preview_flag_alone_and_combined_with_yes() {
+        // issue #108: 削除対象パス・件数を確認するためのプレビュー専用フラグ。
+        // コア側は --preview を優先するので --yes との併用も引数検査は通す
+        let pairs = check_args_v2(&v(&["purge", "--preview"])).unwrap();
+        assert_eq!(pairs, vec![("--preview".to_string(), String::new())]);
+        let pairs = check_args_v2(&v(&["purge", "--preview", "--yes"])).unwrap();
+        assert_eq!(pairs, vec![("--preview".to_string(), String::new()),
+                               ("--yes".to_string(), String::new())]);
+        // 値付き・未知フラグは従来どおり拒否
+        assert!(check_args_v2(&v(&["purge", "--preview=1"])).is_err());
+        assert!(check_args_v2(&v(&["purge", "--dry-run"])).is_err());
+    }
+
+    // --- 子プロセスへの argv 再構築（issue #126 (2)）---
+    use super::rebuild_args;
+
+    #[test]
+    fn rebuild_args_reconstructs_argv_from_checked_pairs() {
+        let pairs = vec![("--input".to_string(), "C:\\abs\\in".to_string()),
+                         ("--template".to_string(), "C:\\abs\\t.json".to_string())];
+        assert_eq!(rebuild_args("run", &pairs),
+                   v(&["run", "--input", "C:\\abs\\in", "--template", "C:\\abs\\t.json"]));
+    }
+
+    #[test]
+    fn rebuild_args_keeps_boolean_flags_without_a_value() {
+        let pairs = vec![("--yes".to_string(), String::new()),
+                         ("--include-output".to_string(), String::new())];
+        assert_eq!(rebuild_args("purge", &pairs), v(&["purge", "--yes", "--include-output"]));
+    }
+
+    #[test]
+    fn rebuild_args_treats_json_path_as_a_positional_argument() {
+        let pairs = vec![("json_path".to_string(), "C:\\abs\\key.json".to_string()),
+                         ("--delete-source".to_string(), String::new())];
+        assert_eq!(rebuild_args("import-credentials", &pairs),
+                   v(&["import-credentials", "C:\\abs\\key.json", "--delete-source"]));
+    }
+
+    #[test]
+    fn rebuild_args_does_not_drop_the_value_of_a_value_taking_flag_even_if_empty() {
+        // `--dpi ""` のように値そのものが空文字である正当な入力を、
+        // 「値を取らないフラグ」と取り違えて値を落とさない。判定は pairs の
+        // 値の空/非空ではなく allowed_flags の表（唯一の正）で行う
+        let pairs = vec![("--dpi".to_string(), String::new())];
+        assert_eq!(rebuild_args("detect-grid", &pairs), v(&["detect-grid", "--dpi", ""]));
+    }
+
+    // --- core-err の絶対パス伏せ字化（issue #126 (1)）---
+    use super::redact_absolute_paths;
+
+    #[test]
+    fn redact_absolute_paths_masks_drive_unc_and_unix_style_paths() {
+        assert_eq!(
+            redact_absolute_paths("設定ファイルが見つかりません: C:\\Users\\someone\\config.json"),
+            "設定ファイルが見つかりません: [path]");
+        assert_eq!(
+            redact_absolute_paths("共有 \\\\server\\share\\file.txt が開けません"),
+            "共有 [path] が開けません");
+        assert_eq!(
+            redact_absolute_paths("CHOUHYO_USER_DIR は絶対パスにする（現在: '/home/someone/x'）"),
+            "CHOUHYO_USER_DIR は絶対パスにする（現在: '[path]'）",
+            "ConfigError の実際の書式（全角括弧が空白なしで引用符を囲む）を再現");
+    }
+
+    #[test]
+    fn redact_absolute_paths_leaves_ordinary_text_with_slashes_untouched() {
+        // 左境界チェック（is_path_start）が無いと and/or・日付表記まで
+        // 巻き込んでしまう
+        assert_eq!(redact_absolute_paths("入力と出力（input/output）は両方必須です"),
+                   "入力と出力（input/output）は両方必須です");
+        assert_eq!(redact_absolute_paths("2026/09/07 に実行"), "2026/09/07 に実行");
+    }
+
+    #[test]
+    fn redact_absolute_paths_masks_multiple_occurrences_in_one_line() {
+        assert_eq!(
+            redact_absolute_paths("C:\\a\\b から C:\\c\\d へコピーできません"),
+            "[path] から [path] へコピーできません");
     }
 
     #[test]
@@ -2268,7 +2547,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- 確定 rename 失敗時の巻き戻し（マリン最終レビュー H-1）---
+    // --- 確定 rename 失敗時の巻き戻し（最終レビュー H-1）---
     //
     // OS レベルで rename 失敗を確実に誘発する手段が無い（Windows の読み取り
     // 専用属性はファイル作成を妨げず、オープンハンドルの共有モードは
@@ -2526,11 +2805,36 @@ mod tests {
         let mut picked = HashSet::new();
         let pdf = fx.outside.join("scan.pdf");
 
-        assert!(check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked).is_err(),
+        assert!(check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked, &mut None).is_err(),
                 "選ばれていないファイルを展開させてはいけない");
         picked.insert(fx.abs(&pdf));
-        assert!(check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked).is_ok(),
+        assert!(check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked, &mut None).is_ok(),
                 "pick_image で選ばれた PDF は通る（編集画面の正当な用途）");
+    }
+
+    #[test]
+    fn arg_scopes_returns_absolute_paths_so_child_process_cwd_basis_cannot_differ() {
+        // issue #126 (2): 検査を通した値は常に絶対パス（normalize_path の結果）
+        // で返る。子プロセスは <root>/core を cwd に起動する一方、検査は
+        // この関数を呼ぶ GUI プロセスの cwd を基準に解決する——生の
+        // （相対でありうる）文字列をそのまま子へ渡すと、検査した対象と
+        // 実際に開かれる対象がずれうる。rebuild_args がこの戻り値だけを
+        // 使って argv を組むことで、そのずれを構造的に無くす
+        let fx = ScopeFixture::new("abs_out");
+        let roots = fx.roots();
+        let mut picked = HashSet::new();
+        let pdf = fx.outside.join("scan.pdf");
+        picked.insert(fx.abs(&pdf));
+
+        let checked = check_arg_scopes(&pairs(&[("--input", &pdf)]), &roots, &picked, &mut None)
+            .expect("picked 済みのパスは通るはず");
+        assert_eq!(checked.len(), 1);
+        let (flag, value) = &checked[0];
+        assert_eq!(flag, "--input");
+        assert!(Path::new(value).is_absolute(),
+                "戻り値は絶対パスであるべき: {value}");
+        assert_eq!(Path::new(value), fx.abs(&pdf).as_path(),
+                   "normalize_path と同じ正規化結果になるべき");
     }
 
     #[test]
@@ -2541,15 +2845,15 @@ mod tests {
         let page = fx.pages.join("page1.png");
         let outside_png = fx.outside.join("elsewhere.png");
 
-        assert!(check_arg_scopes(&pairs(&[("--image", &page)]), &roots, &picked).is_ok(),
+        assert!(check_arg_scopes(&pairs(&[("--image", &page)]), &roots, &picked, &mut None).is_ok(),
                 "expand-page が書いた editor_pages の PNG は通る");
-        assert!(check_arg_scopes(&pairs(&[("--image", &outside_png)]), &roots, &picked).is_err());
+        assert!(check_arg_scopes(&pairs(&[("--image", &outside_png)]), &roots, &picked, &mut None).is_err());
         picked.insert(fx.abs(&outside_png));
-        assert!(check_arg_scopes(&pairs(&[("--image", &outside_png)]), &roots, &picked).is_ok());
+        assert!(check_arg_scopes(&pairs(&[("--image", &outside_png)]), &roots, &picked, &mut None).is_ok());
         // 拡張子違いは picked でも拒否（画像コマンドで JSON を読ませない）
         let json = fx.outside.join("t.json");
         picked.insert(fx.abs(&json));
-        assert!(check_arg_scopes(&pairs(&[("--image", &json)]), &roots, &picked).is_err());
+        assert!(check_arg_scopes(&pairs(&[("--image", &json)]), &roots, &picked, &mut None).is_err());
     }
 
     #[test]
@@ -2565,16 +2869,16 @@ mod tests {
         let staged = super::staged_path(&fx.abs(&target));
         std::fs::write(&staged, "{}").unwrap();
 
-        assert!(check_arg_scopes(&pairs(&[("--template", &staged)]), &roots, &picked).is_ok(),
+        assert!(check_arg_scopes(&pairs(&[("--template", &staged)]), &roots, &picked, &mut None).is_ok(),
                 "保存フローの一時ファイルは拒否されてはいけない");
-        assert!(check_arg_scopes(&pairs(&[("--template", &target)]), &roots, &picked).is_ok(),
+        assert!(check_arg_scopes(&pairs(&[("--template", &target)]), &roots, &picked, &mut None).is_ok(),
                 "picked 本体もこれまでどおり通る");
 
         // 本体が picked に無い `.saving.json` は通さない（任意ファイルを
         // `.saving.json` という名前で読ませる抜け道を作らない）
         let orphan = super::staged_path(&fx.abs(&fx.outside.join("other.json")));
         std::fs::write(&orphan, "{}").unwrap();
-        assert!(check_arg_scopes(&pairs(&[("--template", &orphan)]), &roots, &picked).is_err());
+        assert!(check_arg_scopes(&pairs(&[("--template", &orphan)]), &roots, &picked, &mut None).is_err());
         assert!(!is_staged_of_picked(&fx.abs(&orphan), &picked));
     }
 
@@ -2585,11 +2889,75 @@ mod tests {
         let picked = HashSet::new();
         let flags = vec![("--region".to_string(), "1,2,3,4".to_string()),
                          ("--mode".to_string(), "uniform".to_string()),
-                         ("--dpi".to_string(), "300".to_string()),
-                         // import-credentials の鍵は picked へ入れない設計
-                         // （pick_json remember_pick=false）なので検査対象外
-                         ("json_path".to_string(), "C:\\key.json".to_string())];
-        assert!(check_arg_scopes(&flags, &roots, &picked).is_ok());
+                         ("--dpi".to_string(), "300".to_string())];
+        assert!(check_arg_scopes(&flags, &roots, &picked, &mut None).is_ok());
+    }
+
+    // --- import-credentials の json_path スコープ（issue #121）---
+    use super::{check_credentials_scope, PendingCredentialsPath};
+
+    #[test]
+    fn credentials_scope_allows_only_the_pending_path_and_consumes_it() {
+        let fx = ScopeFixture::new("cred_ok");
+        let key = fx.outside.join("t.json");
+        let abs = fx.abs(&key);
+
+        let mut pending = Some(abs.clone());
+        assert!(check_credentials_scope(&abs, &mut pending).is_ok(),
+                "pick_json(kind:credentials) が預けたパスそのものは通る");
+        assert_eq!(pending, None, "一致したらスロットは消費されて空になる");
+
+        // 消費済みなので同じパスの2回目はもう通らない
+        assert!(check_credentials_scope(&abs, &mut pending).is_err(),
+                "消費後の再送は拒否されるべき（一回限り）");
+    }
+
+    #[test]
+    fn credentials_scope_rejects_unselected_or_mismatched_path() {
+        let fx = ScopeFixture::new("cred_ng");
+        let key = fx.outside.join("t.json");
+        let other = fx.outside.join("other.json");
+        let abs = fx.abs(&key);
+
+        // スロットが空（一度も pick_json(kind:credentials) を呼んでいない）
+        let mut empty: Option<PathBuf> = None;
+        assert!(check_credentials_scope(&abs, &mut empty).is_err(),
+                "ダイアログを経ていない任意パスは拒否されるべき");
+
+        // 別のパスが預けられている（選び直し前・攻撃者の推測）場合も拒否し、
+        // 正当な選択の分は消費せず残す
+        let mut pending = Some(fx.abs(&other));
+        assert!(check_credentials_scope(&abs, &mut pending).is_err(),
+                "預けたパスと一致しない指定は拒否されるべき");
+        assert_eq!(pending, Some(fx.abs(&other)),
+                   "不一致の試行でスロットを消費してはいけない（正当な選択がまだ使える）");
+    }
+
+    #[test]
+    fn check_arg_scopes_routes_json_path_through_credentials_scope() {
+        // check_arg_scopes 経由でも同じ判定になることを確認（_ => {} の
+        // 免除を外した本体）
+        let fx = ScopeFixture::new("cred_route");
+        let roots = fx.roots();
+        let picked = HashSet::new();
+        let key = fx.outside.join("t.json");
+        let abs = fx.abs(&key);
+
+        let mut pending = None;
+        assert!(check_arg_scopes(&pairs(&[("json_path", &key)]), &roots, &picked, &mut pending)
+                    .is_err(), "未選択の json_path は拒否されるべき");
+
+        let mut pending = Some(abs);
+        assert!(check_arg_scopes(&pairs(&[("json_path", &key)]), &roots, &picked, &mut pending)
+                    .is_ok(), "スロットと一致する json_path は通るべき");
+        assert_eq!(pending, None, "check_arg_scopes 経由でも消費される");
+    }
+
+    #[test]
+    fn pending_credentials_path_state_defaults_to_empty() {
+        // Tauri の .manage() 登録と同じ初期値（None）を固定する
+        let state = PendingCredentialsPath(Mutex::new(None));
+        assert_eq!(*state.0.lock().unwrap(), None);
     }
 
     // --- write_config のパッチ検証（issue Q-MC/S-MA）---
