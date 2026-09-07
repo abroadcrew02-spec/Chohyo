@@ -39,10 +39,10 @@ def _synthetic_template(face_w: int, face_h: int,
 
 
 def test_shipped_template_ratio_is_unchanged(shipped_template):
-    """出荷テンプレートは面積比が baseline を明確に上回る（front 0.576・
-    back 0.726・2026-09 実測）ため、閾値は従来の FORMAT_MISMATCH_RATIO の
-    まま——ここが崩れると既存出力が1バイトも変わらない前提（golden 一致）が
-    破れる。
+    """出荷テンプレートは面積比が baseline を明確に上回る（front 0.588・
+    back 0.726・全体 0.652・fallback_rect 込み・2026-09 実測）ため、閾値は
+    従来の FORMAT_MISMATCH_RATIO のまま——ここが崩れると既存出力が1バイトも
+    変わらない前提（golden 一致）が破れる。
     """
     assert (render_rows.format_mismatch_ratio(shipped_template)
             == render_rows.FORMAT_MISMATCH_RATIO)
@@ -54,14 +54,15 @@ def test_sparse_template_raises_threshold_past_case_c_boundary():
     欄20・面2000x3000（面積 6,000,000）に各80x60pxの欄だけを置く
     （被覆率 ≈0.016）——表を持たない「欄だけ」の面を模した極端な疎さ。
     ケースCの実測境界 other/total=0.556（印字:記入比 1.25）を様式不一致に
-    倒さないことを確認する。
+    倒さないこと、かつ上限 _SPARSE_FORMAT_MISMATCH_CAP（0.70）を超えないこと
+    の両方を固定する（レビュー差し戻し・2026-09-07・cap 0.85→0.70）。
     """
     boxes = [(100 + i * 90, 100, 80, 60) for i in range(20)]
     tpl = _synthetic_template(2000, 3000, boxes)
     ratio = render_rows.format_mismatch_ratio(tpl)
     assert ratio > render_rows.FORMAT_MISMATCH_RATIO
     assert ratio >= 0.556  # ケースCの境界を様式不一致に倒さない
-    assert ratio < 1.0
+    assert ratio <= 0.70   # D-15 の検出力を落としすぎない上限
 
 
 def test_ratio_at_baseline_coverage_is_unchanged():
@@ -82,13 +83,15 @@ def test_ratio_just_below_baseline_coverage_is_raised():
             > render_rows.FORMAT_MISMATCH_RATIO)
 
 
-def test_ratio_caps_below_one_for_near_zero_coverage():
-    """被覆率がほぼ0でも、実効閾値は1.0未満の上限で頭打ちになる
-    （明らかに崩れた応答まで様式不一致から救わないため）。
+def test_ratio_caps_at_point_seven_for_near_zero_coverage():
+    """被覆率がほぼ0でも、実効閾値は _SPARSE_FORMAT_MISMATCH_CAP（0.70）で
+    頭打ちになる（明らかに崩れた応答まで様式不一致から救わない・D-15 の
+    検出力を落としすぎない上限・レビュー差し戻し・2026-09-07）。
     """
     tpl = _synthetic_template(10000, 10000, [(0, 0, 1, 1)])
     ratio = render_rows.format_mismatch_ratio(tpl)
-    assert render_rows.FORMAT_MISMATCH_RATIO < ratio < 1.0
+    assert render_rows.FORMAT_MISMATCH_RATIO < ratio <= 0.70
+    assert ratio == pytest.approx(render_rows._SPARSE_FORMAT_MISMATCH_CAP, abs=1e-6)
 
 
 def test_zero_area_face_falls_back_to_default_ratio():

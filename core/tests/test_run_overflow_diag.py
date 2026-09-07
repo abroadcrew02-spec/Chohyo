@@ -70,6 +70,19 @@ def test_summary_event_always_carries_overflow_partial_fill_key(tmp_path):
     assert ev["overflow_partial_fill"] == summary.overflow_partial_fill
 
 
+def test_summary_event_carries_effective_format_mismatch_ratio(tmp_path):
+    """issue #103: summary イベントに D-15 の実効閾値を常に出す（運用監視用・
+    レビュー差し戻し・2026-09-07）。出荷テンプレートは疎テンプレートではない
+    ため、常に render_rows.FORMAT_MISMATCH_RATIO（0.55）と一致する。
+    """
+    from chouhyo_ocr import render_rows
+
+    input_dir, replay_dir, cfg = _prep(tmp_path, "eff_ratio")
+    _summary, ev, _xlsx, _csv = _run_and_capture(input_dir, replay_dir, cfg)
+    assert "format_mismatch_ratio_effective" in ev
+    assert ev["format_mismatch_ratio_effective"] == render_rows.FORMAT_MISMATCH_RATIO
+
+
 def test_overflow_partial_fill_scan_does_not_change_output_bytes(
         tmp_path, monkeypatch):
     """issue #63: diag_overflow の統合は可視化のみ——xlsx/csv のバイト列を
@@ -92,3 +105,36 @@ def test_overflow_partial_fill_scan_does_not_change_output_bytes(
 
     assert xlsx1.read_bytes() == xlsx2.read_bytes()
     assert csv1.read_bytes() == csv2.read_bytes()
+
+
+def test_scan_page_exception_does_not_break_the_run_or_output(
+        tmp_path, monkeypatch):
+    """issue #63 レビュー差し戻し（CRITICAL・2026-09-07）: diag_overflow.scan_page
+    が例外を投げても run() は完走し、当該ページの done 状態・出力
+    （xlsx/csv）に影響しない。
+
+    差し戻し前は store.tokens→scan_page が try/except で守られておらず、
+    診断の例外で `for page in todo:` が中断して F9 の出力まで失われる
+    ——本来「値は変えない・可視化のみ」のはずの追加処理が本体の成否を
+    左右してしまっていた。
+    """
+    def _raise(*_args, **_kwargs):
+        raise RuntimeError("boom（診断ロジックの疑似故障）")
+
+    input_dir, replay_dir, cfg = _prep(tmp_path, "scan_raises")
+    monkeypatch.setattr(pipeline_mod.diag_overflow, "scan_page", _raise)
+
+    summary, ev, xlsx, csv = _run_and_capture(input_dir, replay_dir, cfg)
+
+    # ページは通常どおり成功（failed に落ちていない）——診断の失敗が
+    # 本体の成否・ページの done 状態に波及していないことの直接証拠
+    assert summary.processed_pages == 1
+    assert summary.processed_failed == 0
+    # 例外を捕まえて overflow_found=0 で継続したので、診断カウンタ自体は
+    # 0（〓化や値の変更はもとより発生していない——この関数はカウンタしか
+    # 触らない）
+    assert summary.overflow_partial_fill == 0
+    assert ev["overflow_partial_fill"] == 0
+    # F9 の出力（xlsx/csv）が実際に書かれている
+    assert xlsx.exists() and len(xlsx.read_bytes()) > 0
+    assert csv.exists() and len(csv.read_bytes()) > 0

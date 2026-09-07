@@ -380,18 +380,25 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
 def _map_and_score(store: Store, template: Template, page_id: str,
                    resp: dict, aligned_faces, *,
                    snap_by_face: "dict[str, snap.FaceSnap]"
-                   ) -> tuple[int, int, int, int, int, int, int, int, int, int]:
+                   ) -> tuple[int, int, int, int, int, int, int, int, int, int,
+                             list[tuple]]:
     """応答 → token 保存 → 割付 → cell/era 保存。
 
     (below, other, total, page_total, fallback_used, fallback_discarded,
     carve_hole, fallback_discarded_excluded_field, carve_hole_excluded_field,
-    conflict_excluded_field) を返す。page_total は応答全体の symbol 数で、
-    面内に1つも落ちなかったケース（total==0）を D-15 が素通りする穴を塞ぐ
-    ために使う（issue #37）。fallback_used/fallback_discarded/carve_hole は
-    U-04/U-07 の件数（設計 §10.3）——呼び出し側が進捗イベント・run サマリへ
-    出す。末尾3つは issue #66 段2（FR-1.4）: 上記のうち output: false の欄が
-    発火元のものだけの内訳（MappingResult をそのまま素通しするだけで、
-    ここでは判定しない——判定は mapping.assign() に集約済み）。
+    conflict_excluded_field, token_rows) を返す。page_total は応答全体の
+    symbol 数で、面内に1つも落ちなかったケース（total==0）を D-15 が素通り
+    する穴を塞ぐために使う（issue #37）。fallback_used/fallback_discarded/
+    carve_hole は U-04/U-07 の件数（設計 §10.3）——呼び出し側が進捗イベント・
+    run サマリへ出す。末尾から2つ目までの3つは issue #66 段2（FR-1.4）:
+    上記のうち output: false の欄が発火元のものだけの内訳（MappingResult
+    をそのまま素通しするだけで、ここでは判定しない——判定は mapping.assign()
+    に集約済み）。末尾の token_rows は store.replace_tokens に渡したのと
+    同じ内容（issue #63 レビュー差し戻し・MEDIUM・2026-09-07）: 呼び出し側が
+    diag_overflow.scan_page へ渡す用に store.tokens(page_id) で読み直すのは
+    二重読み込みで、出荷テンプレートでも郵便番号欄がある限り全 run・全ページ
+    で毎回発生していた。ここで返す token_rows をそのまま渡せば DB 往復が
+    要らない。
 
     snap_by_face（issue #75・FR-F37 の経路①）: 面ごとの吸着結果。冒頭で
     `apply_snap` を1回だけ通し、以降の割付・丸印判定は吸着後の `t2` を使う。
@@ -455,7 +462,8 @@ def _map_and_score(store: Store, template: Template, page_id: str,
             total_syms, page_total,
             result.fallback_used, result.fallback_discarded, result.carve_hole,
             result.fallback_discarded_excluded_field,
-            result.carve_hole_excluded_field, result.conflict_excluded_field)
+            result.carve_hole_excluded_field, result.conflict_excluded_field,
+            token_rows)
 
 
 @contextmanager
@@ -691,7 +699,10 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         # issue #63: diag_overflow の判定を run の診断カウンタとして出す
         # （可視化のみ・〓化はしない・値は変えない）。母集団（対象欄・受け皿の
         # 矩形）はテンプレートだけから決まりページごとに変わらないので、
-        # ループの外で1回だけ計算する
+        # ループの外で1回だけ計算する。
+        # 走査の母集団は「今回の run で done になったページ」のみ——CLI
+        # `diag-overflow`（scan()）の store 全体を対象にした累積走査とは
+        # 対象が異なる（レビュー差し戻し・LOW・2026-09-07）
         overflow_fields = diag_overflow.target_fields(template)
         overflow_rects = diag_overflow.rects_by_face(template)
         sends = 0
@@ -925,7 +936,8 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             try:
                 (below, other, total, page_total,
                  fb_used, fb_discarded, hole,
-                 fb_discarded_excl, hole_excl, conflict_excl) = _map_and_score(
+                 fb_discarded_excl, hole_excl, conflict_excl,
+                 token_rows) = _map_and_score(
                     store, template, pid, resp, faces,
                     snap_by_face=snap_by_face)
             except Exception as e:  # noqa: BLE001
@@ -987,13 +999,24 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             summary.carve_hole_excluded_field += hole_excl
             summary.conflict_excluded_field += conflict_excl
             # issue #63: 期待桁数を言える欄が無いテンプレートでは常に0件——
-            # store.tokens の再読み込みを丸ごと省く
+            # 走査そのものを省く。token_rows は _map_and_score が
+            # store.replace_tokens に渡したのと同じ内容（レビュー差し戻し・
+            # MEDIUM・2026-09-07）で、store.tokens(pid) の再読み込みをしない
+            # ——出荷テンプレートでも郵便番号欄がある限り毎ページ発生していた
+            # DB 往復を消す。
+            # 診断はあくまで可視化の追加処理であって、ここで例外が起きて
+            # F9 の出力（xlsx/csv）まで失われては本末転倒（レビュー差し戻し・
+            # CRITICAL・2026-09-07）。失敗しても overflow_found=0 のまま継続し、
+            # このページの done 状態・出力には一切影響させない
             overflow_found = 0
             if overflow_fields:
-                overflow_tokens = store.tokens(pid)
-                candidates, _ = diag_overflow.scan_page(
-                    pid, overflow_tokens, overflow_fields, overflow_rects)
-                overflow_found = len(candidates)
+                try:
+                    candidates, _ = diag_overflow.scan_page(
+                        pid, token_rows, overflow_fields, overflow_rects)
+                    overflow_found = len(candidates)
+                except Exception as e:  # noqa: BLE001
+                    log.error("overflow_diag_failed", page_id=pid,
+                             error_type=type(e).__name__)
             summary.overflow_partial_fill += overflow_found
             # U-04/U-07: このページで発火した件数のみ載せる（0件のページばかりの
             # 進捗ログを埋めない）。記入値は含めない（field_id・件数のみ）
@@ -1069,6 +1092,12 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                   # （§5.9 Must）・出荷ゲートには数えない。〓化はしない・値は
                   # 変えない・可視化のみ（0 でも常に出す・remap_summary と同じ流儀）
                   "overflow_partial_fill": summary.overflow_partial_fill,
+                  # issue #103: D-15 の今回実行で使った実効閾値（運用監視用・
+                  # レビュー差し戻し・2026-09-07）。出荷テンプレートは常に
+                  # render_rows.FORMAT_MISMATCH_RATIO（0.55）と一致する。
+                  # 小数3桁——他の信頼度系の丸め桁（render_rows.CONF_DECIMALS）
+                  # に揃える
+                  "format_mismatch_ratio_effective": round(mismatch_ratio, 3),
                   # P-H1 可視化（累積コストの目安）。total_done_pages は今回処理分
                   # ではなく store に蓄積された state=='done' の累積件数
                   # （コーディネーター指示 2026-09-02）
