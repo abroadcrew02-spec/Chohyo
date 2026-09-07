@@ -122,13 +122,13 @@ def test_right_outside_fields_separates_neighbour_pollution_from_open_space(
     溢れた文字は欄外ではなく**隣の欄に入る**——#63 の実測（住所1='6'）が
     まさにこれで、欄外だけを数えていると0件に見えてしまう。
     """
-    from chouhyo_ocr.diag_overflow import _all_rects_by_face
+    from chouhyo_ocr.diag_overflow import rects_by_face
     f = _postal(template)
     rows = [_tok(i, f.face_id, f.rect.x + 10 + i * 20, f.rect.y + f.rect.h // 2)
             for i in range(6)]
     rows.append(_tok(6, f.face_id, f.rect.x + f.rect.w + 5,
                      f.rect.y + f.rect.h // 2))
-    found, _ = scan_page("p1", rows, [f], _all_rects_by_face(template),
+    found, _ = scan_page("p1", rows, [f], rects_by_face(template),
                          band_scale=1.0)
     assert len(found) == 1
     assert found[0].right_symbols == 1

@@ -155,7 +155,7 @@ def scan_page(page_id: str, tokens: list[tuple], fields: list[TargetField],
     return candidates, empty_main
 
 
-def _all_rects_by_face(template: Template) -> dict[str, list[Rect]]:
+def rects_by_face(template: Template) -> dict[str, list[Rect]]:
     """面ごとの「どこかの欄が受け皿にしている矩形」一覧（欄外判定の母集団）。
 
     参照先（fallback_rect）も含める——郵便番号の参照先は住所欄の上に置かれる
@@ -165,6 +165,11 @@ def _all_rects_by_face(template: Template) -> dict[str, list[Rect]]:
     right_outside_fields は 0 に出やすい——溢れた文字が「どこにも属さない」
     のではなく「主が空のときだけ使う参照先」または隣の欄に入っている、
     というのがこの型の実態（#63 の実測では住所欄を汚染していた）。
+
+    公開関数（pipeline.py の run が診断カウンタとして再利用する・issue #63
+    段2）。scan() は毎回のフル走査で1回だけ呼べば足りるが、run はページ
+    単位で scan_page() を直接呼ぶため、この母集団だけを先に1回計算して
+    使い回す。
     """
     out: dict[str, list[Rect]] = {}
     for cell in template.cells:
@@ -183,7 +188,7 @@ def scan(template: Template, store: Store, band_scale: float = 1.0) -> Report:
     溢れの頻度を測るのに、出力に載ったかどうかで母集団を絞る理由は無い。
     """
     fields = target_fields(template)
-    rects_by_face = _all_rects_by_face(template)
+    rects = rects_by_face(template)
     candidates: list[Candidate] = []
     pages = 0
     empty_main = 0
@@ -193,7 +198,7 @@ def scan(template: Template, store: Store, band_scale: float = 1.0) -> Report:
             continue
         pages += 1
         found, empty = scan_page(page["page_id"], tokens, fields,
-                                 rects_by_face, band_scale)
+                                 rects, band_scale)
         candidates.extend(found)
         empty_main += empty
     return Report(pages_scanned=pages, fields_checked=len(fields),

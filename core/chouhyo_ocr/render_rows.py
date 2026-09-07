@@ -87,6 +87,57 @@ OVERFLOW_MIN_SYMBOLS = 3  # D-06（定数・実物で調整）
 # 実物データ到着後に較正する（設計 §4.6）
 FORMAT_MISMATCH_RATIO = 0.55
 
+# issue #103: 表を持たない疎な面（欄だけのテンプレート）では、印字ラベルの
+# 大半が枠外（other）に落ちるため固定閾値だけでは正常ページまで様式不一致に
+# 倒れる（実測: 欄14だけの面で other/total=0.531、閾値まで symbol 4個ぶんしか
+# 余裕がない）。「枠が覆う面積比が低いほど、印字ラベル由来の枠外が正常でも
+# 増える」という前提で、面積比がこの値を下回るテンプレートに限り実効閾値を
+# 引き上げる（format_mismatch_ratio）。出荷テンプレートの面積比は front
+# 0.576・back 0.726（2026-09 実測）でこの値を明確に上回るため、出荷
+# テンプレートでは常に FORMAT_MISMATCH_RATIO をそのまま返す＝
+# 既存挙動を1バイトも変えない（golden 一致）
+_COVERAGE_BASELINE = 0.35
+# 面積比が0に近い極端な疎テンプレートでも、明らかに崩れた応答（symbol の
+# ほとんどが枠外）まで様式不一致から救わないための上限。1.0未満で、
+# issue #103 の合成ケースC（印字:記入 1.25 で other/total=0.556）を
+# 安全に超える値に置く
+_SPARSE_FORMAT_MISMATCH_CAP = 0.85
+
+
+def _cell_area_coverage(template: Template) -> float:
+    """テンプレートの「枠が覆う面積比」（総セル面積 / 総面面積・issue #103）。
+
+    疎密の目安であって D-15 の判定そのものではないので近似値でよい。
+    fallback_rect や extra_rects が他欄の main と重なっていても面積を
+    そのまま足すため実際の被覆率よりやや大きく出ることがあるが、過大評価は
+    実効閾値を下げる方向（＝様式不一致に倒れやすい＝安全側）にしか働かない。
+    """
+    face_area = sum(f.source_rect.w * f.source_rect.h for f in template.faces)
+    if face_area <= 0:
+        return 1.0  # 面が無い（構造上あり得ない防御）。「密」扱いで従来閾値を維持
+    cell_area = 0
+    for c in template.cells:
+        for r in c.all_rects():
+            cell_area += r.w * r.h
+        if c.fallback_rect is not None:
+            cell_area += c.fallback_rect.w * c.fallback_rect.h
+    return cell_area / face_area
+
+
+def format_mismatch_ratio(template: Template) -> float:
+    """D-15 の実効閾値（issue #103）。疎な面（表なし・低被覆率）ほど引き上げる。
+
+    被覆率が `_COVERAGE_BASELINE` 以上（出荷テンプレートを含む通常のテンプレート）
+    なら `FORMAT_MISMATCH_RATIO` をそのまま返す——既存テンプレートでは閾値が
+    変わらないので、判定・出力は1バイトも変わらない。下回るテンプレートだけ、
+    被覆率が下がるほど `_SPARSE_FORMAT_MISMATCH_CAP` へ向けて線形に引き上げる。
+    """
+    coverage = _cell_area_coverage(template)
+    if coverage >= _COVERAGE_BASELINE:
+        return FORMAT_MISMATCH_RATIO
+    scale = 1.0 - max(0.0, coverage) / _COVERAGE_BASELINE
+    return FORMAT_MISMATCH_RATIO + (_SPARSE_FORMAT_MISMATCH_CAP - FORMAT_MISMATCH_RATIO) * scale
+
 
 @dataclass(frozen=True)
 class Row:

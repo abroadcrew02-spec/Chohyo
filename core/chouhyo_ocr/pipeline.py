@@ -13,7 +13,8 @@ from typing import Callable
 
 from PIL import Image
 
-from . import era, format_check, ingest, logging_safe as log, render_rows, snap
+from . import (diag_overflow, era, format_check, ingest, logging_safe as log,
+              render_rows, snap)
 from .align import (AlignedFace, AlignError, PageSizeMismatch, align_page,
                     geometry_hash, page_size_verdict)
 from .columns import META_COLUMNS, derive_columns, validate_v1
@@ -84,6 +85,11 @@ class Summary:
     # 両方に数えない（excluded を優先・08 §6 判断4-H）
     snap_failsafe_pages: int = 0
     snap_excluded_pages: int = 0
+    # issue #63。主枠に部分記入し残りが隣接欄へ溢れる型の疑い件数
+    # （diag_overflow.scan_page の判定を run 内で数えるだけ・可視化のみ）。
+    # 〓化はしない・値は変えない・出荷ゲートにも数えない——risky_cells・
+    # fallback_used と同じ「サマリ6項目（§5.9 Must）には足さない」扱い
+    overflow_partial_fill: int = 0
 
 
 def _png_bytes(img: "Image.Image") -> bytes:
@@ -491,6 +497,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
     template, raw, geo_hash = _load(template_path)
     from .align import ALGO_VERSION, template_hash as _template_hash
     tpl_hash = _template_hash(raw)
+    # D-15 の実効閾値（issue #103）。テンプレートの被覆率から一度だけ決める
+    # ——ページごとに変わらないのでループの外で計算する
+    mismatch_ratio = render_rows.format_mismatch_ratio(template)
     # template_loaded（template_hash 付き）は _load() が出す（issue #59 H-7・
     # Q-S1・FR-F50・08_frame_detection_design.md §1.4）。run_start（cli.py）の
     # 時点ではテンプレートを読んでおらずハッシュが分からないため、算出できた
@@ -679,6 +688,12 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
         for page in reused_pages:
             progress({"event": "page", "page_id": page["page_id"],
                       "status": "done", "reused": True})
+        # issue #63: diag_overflow の判定を run の診断カウンタとして出す
+        # （可視化のみ・〓化はしない・値は変えない）。母集団（対象欄・受け皿の
+        # 矩形）はテンプレートだけから決まりページごとに変わらないので、
+        # ループの外で1回だけ計算する
+        overflow_fields = diag_overflow.target_fields(template)
+        overflow_rects = diag_overflow.rects_by_face(template)
         sends = 0
         for page in todo:
             pid = page["page_id"]
@@ -931,11 +946,13 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             # ①応答に symbol が1つも無い（印字ラベルすら検出されない＝白紙か壊れた
             # 応答。実測で正常ページは常に 70+ の印字ラベル symbol を含む）
             # ②面内に1つも落ちない（全部が面外＝座標系が合っていない）
-            # ③枠外率が閾値超（母集団は below_table を除く）
+            # ③枠外率が閾値超（母集団は below_table を除く）。閾値は
+            # mismatch_ratio（issue #103・疎な面ほど引き上げ。通常テンプレートは
+            # 従来どおり render_rows.FORMAT_MISMATCH_RATIO のまま）
             # ①②を入れる前は total==0 でガードごと素通りし「正常なのに212列中200列
             # が空白」になっていた（issue #37 実測）
             mismatch = (page_total == 0 or total == 0
-                        or other / total > render_rows.FORMAT_MISMATCH_RATIO)
+                        or other / total > mismatch_ratio)
             if mismatch:
                 # M-2（2026-09-02 レビュー担当指摘）: 送信後3コードにも専用理由コードを
                 # 配線する（FR-F09「pipeline.py の4箇所が共用」の全箇所を分離）
@@ -969,6 +986,15 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
             summary.fallback_discarded_excluded_field += fb_discarded_excl
             summary.carve_hole_excluded_field += hole_excl
             summary.conflict_excluded_field += conflict_excl
+            # issue #63: 期待桁数を言える欄が無いテンプレートでは常に0件——
+            # store.tokens の再読み込みを丸ごと省く
+            overflow_found = 0
+            if overflow_fields:
+                overflow_tokens = store.tokens(pid)
+                candidates, _ = diag_overflow.scan_page(
+                    pid, overflow_tokens, overflow_fields, overflow_rects)
+                overflow_found = len(candidates)
+            summary.overflow_partial_fill += overflow_found
             # U-04/U-07: このページで発火した件数のみ載せる（0件のページばかりの
             # 進捗ログを埋めない）。記入値は含めない（field_id・件数のみ）
             progress({"event": "page", "page_id": pid, "status": "done",
@@ -980,7 +1006,9 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                       **({"fallback_discarded_excluded_field": fb_discarded_excl}
                          if fb_discarded_excl else {}),
                       **({"carve_hole_excluded_field": hole_excl} if hole_excl else {}),
-                      **({"conflict_excluded_field": conflict_excl} if conflict_excl else {})})
+                      **({"conflict_excluded_field": conflict_excl} if conflict_excl else {}),
+                      # issue #63: 診断のみ・可視化のみ（同じ「非ゼロのときだけ」流儀）
+                      **({"overflow_partial_fill": overflow_found} if overflow_found else {})})
 
         # --- F9: 出力 ---
         # ロック内から呼ぶので内側（ロックを取らない側）を使う——render() を
@@ -1036,6 +1064,11 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                   # （要件 §5.9）には数えない＝警告カード側で扱う
                   "snap_failsafe_pages": summary.snap_failsafe_pages,
                   "snap_excluded_pages": summary.snap_excluded_pages,
+                  # issue #63: diag_overflow（主枠に部分記入し残りが隣接欄へ溢れる
+                  # 型）の疑い件数。risky_cells と同じ扱いの追加項目——サマリ6項目
+                  # （§5.9 Must）・出荷ゲートには数えない。〓化はしない・値は
+                  # 変えない・可視化のみ（0 でも常に出す・remap_summary と同じ流儀）
+                  "overflow_partial_fill": summary.overflow_partial_fill,
                   # P-H1 可視化（累積コストの目安）。total_done_pages は今回処理分
                   # ではなく store に蓄積された state=='done' の累積件数
                   # （コーディネーター指示 2026-09-02）
