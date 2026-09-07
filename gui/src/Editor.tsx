@@ -1914,6 +1914,24 @@ export type ExpandAlignReason = "template" | "align" | "size" | "image" | "other
 /// 従来分岐（旧コア互換）へフォールバックする。
 export type ExpandVerdict = "match" | "mismatch" | "undecidable";
 
+/// PDF/画像を開くときに core の `expand-page` へ渡す引数（issue #107・要件07
+/// R-2）。表示ページの dpi は、いま編集中のテンプレート（`meta.current.render_dpi`）
+/// に揃える——`detect-frames`（手動「ページ全体から枠候補を生成」・
+/// `runDetectFrames` 参照）が渡す `--dpi` と根拠を1本にする。以前は
+/// `--dpi` を渡さずコア既定の 300 に固定していたため、render_dpi が 300 以外の
+/// 利用者テンプレートを編集中に手動生成すると、表示ページ（300dpi 相当）と
+/// 候補座標（render_dpi 相当）のスケールが食い違う可能性があった。
+/// テンプレート未選択（`meta.current.render_dpi` は既定 300 のまま）でも
+/// 常に `--dpi 300` を明示するだけで、コア既定と同じ値になる（回帰なし）。
+/// `tplPath` は「テンプレートを開く」で開いたファイルのときだけ渡す（従来どおり）。
+export function expandPageArgs(o: {
+  input: string; tplPath: string | null; renderDpi: number;
+}): string[] {
+  const args = ["expand-page", "--input", o.input, "--no-mask", "--dpi", String(o.renderDpi)];
+  if (o.tplPath) args.push("--template", o.tplPath);
+  return args;
+}
+
 /// PDF/画像を開いた直後の位置合わせ・様式判定結果から、案内文言を出し分ける
 /// （5巡目レビュー・セキュリティ表層レビュー担当指摘＋issue #71 (a') で verdict/level を追加）。
 /// 優先順は 07 FR-F07: template（テンプレ破損） > size（寸法不一致） >
@@ -2115,6 +2133,28 @@ export function formatBandApplies(o: {
   if (o.view !== "template") return false;
   if (o.hasOpenedTemplateFile) return true;   // --template を実際に渡した判定
   return o.appliedMemory === o.lastTemplate;
+}
+
+/// 判定不能の紙に前回のテンプレートが自動適用された回への追加案内
+/// （issue #106・要件07 R-1 の残穴）。undecidable は不一致ではないため
+/// hasFormatMismatch の導線（「この紙用に新しいテンプレートを作る」等）が
+/// 出ず、記憶のテンプレートが別様式の紙へ黙って自動適用されたまま気づけない
+/// 状態が残る。R-1 の当面の受け皿は適用中バーに常時ある「候補から作り直す」
+/// ボタンだが、その存在が判定不能の黄帯からは見えなかった。
+///
+/// 対処は 07 R-1 の「自動での救済（自動的に候補パスへ倒す）は別 issue」の
+/// 方針どおり、自動適用そのものは止めない（利用者の前回作業を消さない）。
+/// 判定不能の黄帯に、受け皿への気づきだけを足す。
+///
+/// 対象は「自動適用」の回だけ（hasUndecidable かつ autoApplied）。人が明示的に
+/// 選び直した直後の判定不能は、選んだ本人が承知の上なので誘導は不要。
+export function undecidableAutoApplyNotice(
+  hasUndecidable: boolean, autoApplied: boolean,
+): string {
+  if (!hasUndecidable || !autoApplied) return "";
+  return "前回のテンプレートが自動で適用されましたが、この紙の様式は判定できていません。"
+    + "別の様式の紙の可能性があります。「候補から作り直す」で、"
+    + "この紙専用の枠候補を作り直すこともできます。";
 }
 
 /// 記憶が指すテンプレートの実体が無かったとき（削除された・名前を変えた）。
@@ -4136,9 +4176,10 @@ export default function Editor(
       // 枠オーバーレイ描画（draw 内の excls ループ）で見えているので、
       // 下地側は焼かずに済む。--template は今読み込んでいるテンプレを
       // 明示する（未読込＝tplPath が null のときは省略し、lib.rs の
-      // inject_default_template が出荷テンプレを注入する・第0段の配線）
-      const args = ["expand-page", "--input", p, "--no-mask"];
-      if (tplPath) args.push("--template", tplPath);
+      // inject_default_template が出荷テンプレを注入する・第0段の配線）。
+      // --dpi は選択中テンプレートの render_dpi に揃える（issue #107・
+      // 要件07 R-2・expandPageArgs 参照）
+      const args = expandPageArgs({ input: p, tplPath, renderDpi: meta.current.render_dpi });
       const out = await invoke<string>("run_core_capture", { args });
       const ev = out.split("\n")
         .map((l) => { try { return JSON.parse(l); } catch { return null; } })
@@ -7280,6 +7321,13 @@ export default function Editor(
   const formatBannerText = formatOverride
     ? formatOverrideBannerText()
     : formatWarnMsg;
+  // issue #106・要件07 R-1 残穴: 判定不能の面が1つでもあり、かつ「今適用中の
+  // テンプレートが自動適用された」回だけ、候補への気づきを黄帯に足す
+  // （undecidableAutoApplyNotice 参照）
+  const hasUndecidableFormat = formatFaces.some((f) => f.verdict === "undecidable");
+  const undecidableNotice = undecidableAutoApplyNotice(
+    hasUndecidableFormat,
+    tplDecision?.state === "applied" ? tplDecision.auto : false);
 
   return (
     <div className="editor">
@@ -7409,6 +7457,18 @@ export default function Editor(
                 </button>
                 <span className="note">空のテンプレートから表を描き直します</span>
               </span>
+            </span>
+          )}
+          {/* issue #106・要件07 R-1 残穴: 判定不能で前回テンプレートが自動
+              適用された回だけ、候補への気づきを添える。ボタンは適用中バー
+              （下）の「候補から作り直す」と同じ startFromCandidates を呼ぶ
+              ——動作を増やさず、判定不能の帯からも同じ受け皿へ届くようにする */}
+          {undecidableNotice && (
+            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span className="note">{undecidableNotice}</span>
+              <button className="btn" onClick={() => { void startFromCandidates(); }}>
+                候補から作り直す
+              </button>
             </span>
           )}
           {/* issue #72 (t)・実機通し確認の指摘: 上書き中（formatOverride）は

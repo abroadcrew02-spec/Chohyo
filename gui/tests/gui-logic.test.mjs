@@ -22,13 +22,13 @@ globalThis.window = globalThis.window ?? {};
 const bundle = await build({
   stdin: {
     contents:
-      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
+      'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, expandPageArgs, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
       'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } from "./RunScreen.tsx";\n' +
       // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
       // 衝突しやすいので独立した1行にする
       'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n' +
       // 初回読み込みフロー（候補先行・2026-09-04）。ここも独立した1行にする
-      'export { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } from "./Editor.tsx";\n' +
+      'export { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, undecidableAutoApplyNotice, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } from "./Editor.tsx";\n' +
       // 升（表の1マス）単位の出力制御・まとめ提案（issue #66 段9・#73 (b)）
       'export { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel, pruneSuggestionsForCands, duplicateColumnNames, duplicateColumnNamesNotice, remapSelCellOnColumnDelete, remapSelCellOnColumnMove, buildCellColumnPositionIndex, countCellsOffByColumn, cellsOffDropSummary, mergeCellsOffDropSummaries, cellsOffDropNotice, nextBlockX, NEW_BLOCK_GAP_PX, overlappingTableBlocks, overlappingTableBlocksNotice } from "./Editor.tsx";\n',
     resolveDir: srcDir,
@@ -51,9 +51,9 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, expandPageArgs, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
-const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
+const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, undecidableAutoApplyNotice, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
 const { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel, pruneSuggestionsForCands, duplicateColumnNames, duplicateColumnNamesNotice, remapSelCellOnColumnDelete, remapSelCellOnColumnMove, buildCellColumnPositionIndex, countCellsOffByColumn, cellsOffDropSummary, mergeCellsOffDropSummaries, cellsOffDropNotice, nextBlockX, NEW_BLOCK_GAP_PX, overlappingTableBlocks, overlappingTableBlocksNotice } = mod;
 
 let failed = 0;
@@ -3757,6 +3757,85 @@ test("AC-F73 buildTemplateJson: 候補だけから作った欄に出荷由来の
   assert.ok(!/family/.test(text), text.slice(0, 200));
 });
 
+test("issue #66 P4-4 buildTemplateJson: 出荷テンプレートの無編集往復が入力と一致する", () => {
+  // P4-4（Tauri 実機で templates/chouhyo-v1.json を開き無編集保存 → 差分ゼロ）
+  // の代替検証。ネイティブの「名前を付けて保存」ダイアログは自動操作できない
+  // （issue #66 の残る手動確認コメント・2026-09-04 実機トライ済み）ため、
+  // 実機で確かめたい本質——「読み込み → 無編集 → 保存」で JSON が意味的に
+  // 同一（キー順・数値・省略キー）に戻ること——を純関数だけで固定する。
+  // Rust 側の書き込み経路（書いたバイト列がそのまま読み戻ること）は
+  // gui/src-tauri/src/lib.rs の write_template_staged が呼ぶ write_staged_fresh
+  // ／promote_staged の既存テスト（promote_staged_backs_up_existing_target_and_renames
+  // 等）が別途担保している——ここでの対象は GUI 側の直列化ロジック
+  // （buildTemplateJson）だけ。
+  const raw = fs.readFileSync(
+    path.join(here, "..", "..", "templates", "chouhyo-v1.json"), "utf8");
+  const original = JSON.parse(raw);
+
+  // 「読み込み」側は toEditorState（Editor.tsx・React state に書き込む
+  // コンポーネント内クロージャで node から直接呼べない）と同じマッピングを
+  // ここで再現する。面ローカル座標→ページ座標への変換（face.source.rect.y を
+  // 足す）は、buildTemplateJson 側が保存時に同じ量を引いて面ローカルへ
+  // 戻す変換と対になっており、無編集なら往復で値が保たれる
+  let n = 0;
+  const nextUid = () => "u" + (n++);
+  const fields = [];
+  const tables = [];
+  const excls = [];
+  let splitY = null;
+  for (const face of original.faces) {
+    const oy = face.source.rect.y;
+    if (face.face_id === "back") splitY = oy;
+    for (const e of face.exclusions ?? [])
+      excls.push({ uid: nextUid(), id: e.id, rect: { ...e.rect, y: e.rect.y + oy } });
+    for (const f of face.fields ?? [])
+      fields.push({
+        uid: nextUid(), field_id: f.field_id, kind: f.kind,
+        rect: { ...f.rect, y: f.rect.y + oy }, normalize: f.normalize,
+        fallback: f.fallback_rect
+          ? { ...f.fallback_rect, y: f.fallback_rect.y + oy } : undefined,
+        extras: (f.extra_rects ?? []).map((r) => ({ ...r, y: r.y + oy })),
+        marks: (f.choice_marks ?? []).map((m) =>
+          ({ value: m.value, rect: { ...m.rect, y: m.rect.y + oy } })),
+        output: f.output === false ? false : undefined,
+      });
+    for (const tb of face.tables ?? []) {
+      const blocks = tb.blocks.map((b) => ({ x: b.origin.x, y: b.origin.y + oy, rows: b.rows }));
+      const columns = tb.columns.map((c) => ({
+        name: c.name, x_offset: c.x_offset, width: c.width, kind: c.kind,
+        subfields: (c.subfields ?? []).join(","),
+        normalize: c.normalize,
+        marks: c.choice_marks ?? [],
+        output: c.output === false ? false : undefined,
+      }));
+      const totalRows = blocks.reduce((s, b) => s + Math.max(0, b.rows | 0), 0);
+      const cellsOff = cellsOffFromJson(tb.output_disabled_cells, columns, totalRows);
+      tables.push({
+        uid: nextUid(), table_id: tb.table_id, row_pitch: tb.row_pitch,
+        row_height: tb.row_height, blocks, columns,
+        ...(cellsOff.size ? { cellsOff } : {}),
+      });
+    }
+  }
+  splitY = splitY ?? original.image.height;
+
+  const { template, droppedCount } = buildTemplateJson({
+    fields, tables, excls, splitY,
+    W: original.image.width, H: original.image.height,
+    meta: {
+      template_id: original.template_id, render_dpi: original.render_dpi,
+      image: original.image, record: original.record,
+    },
+  });
+
+  // 無編集なので1件も面の範囲外に落ちない（範囲外要素があると保存自体が
+  // 拒否される・outOfFaceElements と対になる不変条件）
+  assert.equal(droppedCount, 0);
+  // 意味的に同一——パース後の構造（キー順・数値・省略キーの有無を含む）が
+  // 完全一致する
+  assert.deepEqual(template, original);
+});
+
 test("AC-F74 formatBandApplies: 判定の根拠が別テンプレートなら帯を出さない", () => {
   const f = (view, appliedMemory, lastTemplate, hasOpenedTemplateFile) =>
     formatBandApplies({ view, appliedMemory, lastTemplate, hasOpenedTemplateFile });
@@ -3765,6 +3844,38 @@ test("AC-F74 formatBandApplies: 判定の根拠が別テンプレートなら帯
   assert.equal(f("template", "user:帳票B", "shipped", false), false);  // 乖離（R-6）
   assert.equal(f("template", "", "shipped", true), true);   // --template を渡した判定
   assert.equal(f("candidates", "", "", true), false);       // 候補パスでは常に出さない
+});
+
+test("issue #107 expandPageArgs: 展開の --dpi を選択中テンプレートの render_dpi に揃える", () => {
+  // テンプレート未選択（meta の既定 render_dpi=300）でも --dpi を明示するだけで
+  // コア既定と同じ値になる（回帰なし）
+  assert.deepEqual(
+    expandPageArgs({ input: "C:/x.pdf", tplPath: null, renderDpi: 300 }),
+    ["expand-page", "--input", "C:/x.pdf", "--no-mask", "--dpi", "300"]);
+  // render_dpi が 300 以外の利用者テンプレートを編集中 → --dpi にその値が渡る。
+  // runDetectFrames が渡す detect-frames の --dpi も同じ meta.current.render_dpi
+  // が源であり（Editor.tsx: renderDpi: meta.current.render_dpi）、同じ入力を
+  // 与えれば必ず同じ文字列値になる（issue #107・要件07 R-2 のスケール食い違いの
+  // 根拠を1本化）
+  const renderDpi = 400;
+  const args = expandPageArgs({ input: "C:/x.pdf", tplPath: "C:/t.json", renderDpi });
+  assert.deepEqual(args,
+    ["expand-page", "--input", "C:/x.pdf", "--no-mask", "--dpi", "400", "--template", "C:/t.json"]);
+  assert.equal(args[args.indexOf("--dpi") + 1], String(renderDpi));
+});
+
+test("issue #106 undecidableAutoApplyNotice: 判定不能で自動適用された回だけ候補への気づきを出す", () => {
+  // 自動適用の回で判定不能な面がある → 通知あり
+  const n = undecidableAutoApplyNotice(true, true);
+  assert.notEqual(n, "");
+  assert.match(n, /判定できていません/);
+  assert.match(n, /候補から作り直す/);
+  // 判定不能な面が無い（一致・不一致だけ） → 出さない
+  assert.equal(undecidableAutoApplyNotice(false, true), "");
+  // 判定不能でも、今回は自動適用されていない
+  // （人がテンプレートを選び直した／候補パス／ファイルで開いた）→ 出さない
+  assert.equal(undecidableAutoApplyNotice(true, false), "");
+  assert.equal(undecidableAutoApplyNotice(false, false), "");
 });
 
 test("H-1 candidateResultApplies: 古い世代の生成結果は捨てる", () => {
