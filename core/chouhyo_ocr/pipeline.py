@@ -1016,7 +1016,7 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                     overflow_found = len(candidates)
                 except Exception as e:  # noqa: BLE001
                     log.error("overflow_diag_failed", page_id=pid,
-                             error_type=type(e).__name__)
+                             error_code=type(e).__name__)
             summary.overflow_partial_fill += overflow_found
             # U-04/U-07: このページで発火した件数のみ載せる（0件のページばかりの
             # 進捗ログを埋めない）。記入値は含めない（field_id・件数のみ）
