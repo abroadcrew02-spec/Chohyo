@@ -507,21 +507,22 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
     before = page.locator("#edittabpanel .panel-outrow").count()
 
     page.get_by_role("button", name="ページ全体から枠候補を生成").click()
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     # 生成すると自動で「枠候補」タブへ切り替わる
     expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
-    # 疑似応答: 表1（overlaps無し）＋欄3（うち1件 overlaps_existing）。
-    # 件数の判定も expect（再試行つき）で置く（issue #79）——count() は
-    # 「今この瞬間」を数えるため、再描画の遅れがそのまま偽の失敗になる
+    # 疑似応答（issue #127 (1)）: 欄3件（うち1件 person_氏名 と幾何的に
+    # 重なるため overlaps_existing）。件数の判定も expect（再試行つき）で
+    # 置く（issue #79）——count() は「今この瞬間」を数えるため、再描画の
+    # 遅れがそのまま偽の失敗になる
     expect(page.get_by_text("既存と重なり")).to_have_count(1)
 
     page.get_by_role("button", name="選んだ候補を採用").click()
-    page.wait_for_selector("text=3 件を採用しました")
-    # overlaps だった候補（c2）が1件残るため自動ではタブが戻らない設計——
+    page.wait_for_selector("text=2 件を採用しました")
+    # overlaps だった候補が1件残るため自動ではタブが戻らない設計——
     # 出力列一覧は明示的にタブを切り替えて数える
     page.locator("#edittab-output").click()
     outrows = page.locator("#edittabpanel .panel-outrow")
-    expect(outrows).to_have_count(before + 3)   # 採用後の欄/表の増分
+    expect(outrows).to_have_count(before + 2)   # 採用後の欄/表の増分（重なり1件は対象外）
     expect(page.get_by_text("field_01", exact=False)).to_be_visible()
     # overlaps だった候補は個別採用の対象として枠候補タブに残る
     page.locator("#edittab-candidates").click()
@@ -535,7 +536,7 @@ def test_editor_detect_frames_generate_accept_and_undo(page):
     # 積んだタイマーなら、先に登録された 400ms の方が必ず先に発火する
     page.evaluate("() => new Promise((r) => setTimeout(r, 600))")
     page.keyboard.press("Control+z")
-    # 候補は1→4件の非ゼロ遷移なので自動タブ切替は起きない。出力列タブへ
+    # 候補は1→3件の非ゼロ遷移なので自動タブ切替は起きない。出力列タブへ
     # 切り替えて確定枠が採用前の件数に戻ったことを確認する（固定 sleep の
     # 代わりに、件数が戻るまで再試行する expect で待つ）
     page.locator("#edittab-output").click()
@@ -596,15 +597,14 @@ def test_editor_size_mismatch_new_template_generate_accept_save(page):
     page.wait_for_selector("text=空のテンプレートで開きました")
 
     page.get_by_role("button", name="ページ全体から枠候補を生成").click()
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
 
     page.get_by_role("button", name="選んだ候補を採用").click()
-    # 4件（旧: 3件）。デモの c2 は「実コアが --template 無しでも
-    # overlaps_existing:true を返す」という実物と食い違う疑似応答だったため、
-    # person_氏名 に幾何的に重なる位置へ移して false で返すように直した。
-    # 空テンプレートの上では重なる相手がいないので4件すべてが対象になる
-    # ——この件数差そのものが「候補は空テンプレートの上で作る」の回帰検知
-    page.wait_for_selector("text=4 件を採用しました")
+    # 疑似応答（issue #127 (1)）は欄3件。うち1件（c0）は person_氏名 に
+    # 幾何的に重なる位置にあるが、空テンプレートの上では重なる相手が
+    # いないので overlaps_existing は立たず、3件すべてが対象になる
+    # ——この重なり有無の違いそのものが「候補は空テンプレートの上で作る」の回帰検知
+    page.wait_for_selector("text=3 件を採用しました")
 
     seen_dialog_types = []
 
@@ -670,7 +670,7 @@ def test_editor_autodetect_no_memory_shows_candidates(page):
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
 
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
     # 上部は「決定カード」に組み替わり、未適用であることを案内する
     expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_be_visible()
@@ -691,7 +691,7 @@ def test_editor_autodetect_starts_from_empty_template(page):
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
 
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     expect(page.locator("#edittab-output")).to_be_disabled()
     expect(page.get_by_text("既存と重なり")).to_have_count(0)
 
@@ -704,7 +704,7 @@ def test_editor_autodetect_apply_template_discards_candidates(page):
     _apply_demo_config(page, _NO_MEMORY)
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
 
     native_dialogs = []
 
@@ -740,7 +740,7 @@ def test_editor_autodetect_reopen_applies_remembered_template(page):
     _apply_demo_config(page, _NO_MEMORY)
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
     _expect_template_applied(page, "帳票B")
     # 記憶が書けたことを、固定 sleep ではなく保存された中身そのもので待つ
@@ -819,7 +819,7 @@ def test_editor_autodetect_new_template_button_generates_candidates(page):
 
     page.get_by_role("button", name="この紙用に新しいテンプレートを作る", exact=True).click()
     # ツールバーの「ページ全体から枠候補を生成」は押さない
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     expect(page.locator("#edittab-candidates")).to_have_attribute("aria-selected", "true")
     # 空テンプレートの上なので重なりは0件
     expect(page.get_by_text("既存と重なり")).to_have_count(0)
@@ -861,7 +861,7 @@ def test_editor_locks_frame_replacing_actions_while_generating(page):
 
     # AC-F78: 完了後は欄の追加・除外範囲・くり返し行・表裏の境界と「開く」系が
     # すべて操作できる状態に戻る（生成中の締め出しが居残らない）
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     for name in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
         expect(page.get_by_role("button", name=name, exact=True)).to_be_enabled()
     expect(page.get_by_role("button", name="帳票を開く（PDF・画像）")).to_be_enabled()
@@ -878,7 +878,7 @@ def test_editor_open_template_file_clears_applied_bar(page):
     _apply_demo_config(page, _NO_MEMORY)
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     page.get_by_role("button", name="このテンプレートを使う（帳票B）").click()
     _expect_template_applied(page, "帳票B")
     expect(page.get_by_text("適用中のテンプレート: 帳票B", exact=False)).to_be_visible()
@@ -902,7 +902,7 @@ def test_editor_stale_memory_still_offers_template_chooser(page):
     _open_editor(page)
     page.get_by_role("button", name="帳票を開く（PDF・画像）").click()
 
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     expect(page.get_by_text("見つかりませんでした", exact=False).first).to_be_visible()
     expect(page.get_by_text("テンプレートを選ぶ", exact=True)).to_be_visible()
     expect(page.get_by_role("button", name="このテンプレートを使う（帳票B）")).to_be_visible()
@@ -956,7 +956,7 @@ def test_editor_new_template_keeps_drawing_hint_on_screen(page):
     assert hint.get_attribute("aria-live") is None
     assert hint.get_attribute("role") is None
 
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     expect(hint).to_contain_text("候補を確認して採用してください")
 
 
@@ -1062,7 +1062,7 @@ def test_editor_suggestion_card_merge_into_table_and_undo(page):
 
     page.get_by_role("button", name="ページ全体から枠候補を生成").click()
     # AC-H35: 見出しに升候補と提案の両方の件数が出る
-    page.wait_for_selector("text=枠候補（升 4 件・まとめ提案 1 件）")
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
     expect(page.get_by_text("まとめ提案（1 件）")).to_be_visible()
     expect(page.get_by_text("この 3行 × 1列（3升）は表にまとめられます")).to_be_visible()
     # AC-H42: 見出し行を外した提案だけが1行を出す
@@ -1079,14 +1079,25 @@ def test_editor_suggestion_card_merge_into_table_and_undo(page):
     page.get_by_role("button", name="3行×1列の提案を表にまとめる", exact=True).click()
     # AC-H36: 結果文に「Ctrl+Z で戻せます」を添える
     page.wait_for_selector("text=Ctrl+Z で戻せます")
-    # AC-H34: 採用した3升だけが候補から消え、提案カードも消える
-    page.wait_for_selector("text=枠候補（升 1 件）")
-    expect(page.locator(".cand-suggest")).to_have_count(0)
+    # AC-H34: 採用した3升（この提案が指す升候補の全件）が候補から消え、
+    # 提案カードも消える。疑似応答（issue #127 (1)）は升候補3件・提案の
+    # cell_indexes がその全件を指すため、採用後は残升0件になる——候補が
+    # 尽きると「枠候補」タブは disabled になり、直前のタブ（選択中）へ
+    # 自動で戻る（Editor.tsx の cands.length 監視 useEffect）
+    expect(page.locator("#edittab-candidates")).to_be_disabled()
+    expect(page.get_by_text("要素が選択されていません")).to_be_visible()
 
-    # 履歴コマは採用時に pushHistoryNow で積んである（押した直後でも効く）
+    # 履歴コマは採用時に pushHistoryNow で積んである（押した直後でも効く）。
+    # Ctrl+Z は「表にまとめる」の直前（＝生成直後にpushHistoryNow済みの状態）
+    # へ戻すため、その時点で存在した升候補・提案カードの両方が戻る。
+    # Undo は panelTab（UI ナビゲーション状態）までは戻さないため、
+    # 中身の確認はタブを明示的に切り替えて行う
     page.keyboard.press("Control+z")
-    # 升候補は戻る。提案カードは Snap に入れていないので戻らない（設計 R-11）
-    page.wait_for_selector("text=枠候補（升 4 件）")
+    expect(page.locator("#edittab-candidates")).to_be_enabled()
+    page.locator("#edittab-candidates").click()
+    page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
+    expect(page.locator(".cand-list .panel-outrow")).to_have_count(3)
+    expect(page.locator(".cand-suggest")).to_have_count(1)
 
     page.once("dialog", lambda d: d.accept())
     page.locator(".tabs button", has_text="実行").click()
@@ -1156,6 +1167,97 @@ def test_editor_block_rows_and_column_rename_commit_on_blur(page):
     page.get_by_role("button", name="このまま保存").click()
     page.wait_for_selector("text=保存＋コア検証 OK")
 
+    page.once("dialog", lambda d: d.accept())
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")
+
+
+# ---------------------------------------------------------- 今回の改修の目玉2つ
+# #108: 中間データ削除の事前確認画面（パス・件数を見せて止まる／進む）。
+# #114: 行数確定は pushHistoryNow を明示的に呼ぶため、確定直後（400ms 静止を
+# 待たず）の Ctrl+Z でもその1回の行数変更だけを取り消せる。
+
+
+def test_editor_purge_confirm_shows_path_and_counts_then_deletes(page):
+    # issue #108: 「読み取ったデータを削除」を押すと、まず purge --preview を
+    # 確認してから二段確認（explain=何が消えて何が残るか → confirm=最終確認）
+    # を出す。どちらの画面にも保存先の絶対パスを再掲する（設計 08・レビュー
+    # L-6）。中止すれば何も消えないことを確認したうえで、通しで進めて
+    # 完了のお知らせ（削除件数）まで確認する。
+    page.locator(".tabs button", has_text="実行").click()
+    page.wait_for_selector("text=読み取る帳票の選択")
+
+    page.get_by_role("button", name="読み取ったデータを削除").click()
+    explain = page.get_by_role("alertdialog", name="読み取ったデータを削除します")
+    expect(explain).to_be_visible()
+    # デモの purge --preview 既定応答（bridge.ts の mockPurgePreview）:
+    # path="C:\デモ\workdir"・tool_items=12
+    expect(explain.get_by_text("C:\\デモ\\workdir", exact=False)).to_be_visible()
+    expect(explain.get_by_text("消えるもの", exact=False)).to_be_visible()
+    expect(explain.get_by_text("12 件", exact=False)).to_be_visible()
+    # ツールが作ったフォルダは中身ごと消える旨の注記（コーディネーター追加分）
+    expect(explain.get_by_text("中身ごと消えます", exact=False)).to_be_visible()
+    expect(explain.get_by_text("残るもの", exact=False)).to_be_visible()
+
+    # 中止すれば確認画面が閉じ、削除は走らない（お知らせに削除件数が出ない）
+    explain.get_by_role("button", name="中止", exact=True).click()
+    expect(page.get_by_role("alertdialog")).to_have_count(0)
+    expect(page.get_by_text("実行時のお知らせ")).to_have_count(0)
+
+    # 改めて押し直し、今度は最後まで進める
+    page.get_by_role("button", name="読み取ったデータを削除").click()
+    explain = page.get_by_role("alertdialog", name="読み取ったデータを削除します")
+    expect(explain).to_be_visible()
+    explain.get_by_role("button", name="次へ", exact=True).click()
+
+    confirm = page.get_by_role("alertdialog", name="削除してよろしいですか")
+    expect(confirm).to_be_visible()
+    # 最終確認にも保存先パスを再掲する（issue #108）
+    expect(confirm.get_by_text("C:\\デモ\\workdir", exact=False)).to_be_visible()
+    confirm.get_by_role("button", name="削除する", exact=True).click()
+
+    # 完了のお知らせに削除件数が出る（purgeNotice・bridge.ts の mockPurge:
+    # removed=12・cred_kept=true）
+    expect(page.get_by_text("実行時のお知らせ")).to_be_visible()
+    expect(page.get_by_text("の中間データを 12 件削除しました", exact=False)).to_be_visible()
+    expect(page.get_by_role("alertdialog")).to_have_count(0)
+
+
+def test_editor_block_rows_undo_right_after_commit_reverts_rows_only(page):
+    # issue #114: 行数の確定（onBlur/Enter・commitBlockRows）は他の
+    # 1クリック=1コマ系操作（升の切り替え・候補の一括採用等）と同じく
+    # pushHistoryNow を明示的に呼ぶ。旧実装は 400ms 静止の履歴 effect 任せ
+    # だったため、確定直後の反射的な Ctrl+Z が正しく効かなかった
+    # （行数の確定は一度に数十件の升指定を落としうる最も破壊的な操作）。
+    # ここでは他のテストのように 600ms 静止を待たず、確定直後にそのまま
+    # Ctrl+Z を押して即座に効くことを確認する。
+    _open_editor_with_demo_template(page)
+
+    page.locator(".panel-outrow.tablerow").get_by_role("button", name="開く").click()
+    page.wait_for_selector("text=選択中のくり返し行")
+    rows_input = page.get_by_label("ブロック1 行数")
+    expect(rows_input).to_have_value("3")
+
+    rows_input.fill("5")
+    rows_input.press("Enter")
+    expect(rows_input).to_have_value("5")
+
+    # 400ms 静止を待たず、確定直後に Ctrl+Z（issue #114 の受入そのもの）
+    page.keyboard.press("Control+z")
+    # restoreSnap は選択状態を Snap の対象外として毎回解除する（列の繰り上がり
+    # 事故を防ぐ既存方針・issue #117）ため、Undo 後は「選択中」タブが
+    # 未選択表示に戻る——ここまでの反応自体が「即座に効いた」ことの確認になる
+    expect(page.get_by_text("要素が選択されていません")).to_be_visible()
+
+    # 表を選び直し、行数だけが3へ戻っていることを確認する（升の指定など他の
+    # 状態を巻き込んで壊していないことは、この表がそのまま選び直せて開ける
+    # こと自体が示す）
+    page.locator("#edittab-output").click()
+    page.locator(".panel-outrow.tablerow").get_by_role("button", name="開く").click()
+    page.wait_for_selector("text=選択中のくり返し行")
+    expect(page.get_by_label("ブロック1 行数")).to_have_value("3")
+
+    # 実行タブへ戻す（後続テストが増えても状態を素直に保つ）
     page.once("dialog", lambda d: d.accept())
     page.locator(".tabs button", has_text="実行").click()
     page.wait_for_selector("text=読み取る帳票の選択")
