@@ -142,7 +142,7 @@
 
 | NFR | 内容 | 担保 |
 |---|---|---|
-| §6.1 性能 | 100頁を目安時間内・メモリ上限内 | scripts/perf_check.py（実測 2026-08-27: 100頁 142.2s・RSS 310MB・PASS）。L2 |
+| §6.1 性能 | 100頁を目安時間内・メモリ上限内 | scripts/perf_check.py（実測 2026-08-27: 100頁 142.2s・RSS 310MB・PASS）。再測 2026-09-07: 04bbbed 139.2s／HEAD 1.27〜1.45 s/枚（並行負荷なし・#128 は計測誤差）。L2 |
 | §6.2 信頼性 | 中断・再開・二重取り込み | test_resume_cap・test_process_interrupt・test_duplicate_source |
 | §6.3 誤操作防御 | purge は明示時のみ | TR-G5（CLI）・cargo test（GUI 境界）・csp スモーク（実機） |
 | §6.4 文字集合 | 異体字保持 | test_charset |
