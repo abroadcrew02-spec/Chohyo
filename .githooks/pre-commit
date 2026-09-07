@@ -94,14 +94,18 @@ for path in $staged; do
 		*.json)
 			case "$path" in
 				# schema/ は .gitignore が `!/schema/**/*.json` で再帰的に戻すのに対し、
-				# ここは完全パスに絞る（非対称は意図・AZKi L-2）。case の `*` は `/` も
-				# 跨ぐので `schema/*.json` にすると schema 配下の任意の深さが免除になる。
-				# 追跡中の schema JSON は1件だけで、増やすときにこの行を触らせるのが狙い。
-				templates/*.json|schema/template.schema.json|design/canvas.json) continue ;;
+				# ここは完全パスに絞る。case の `*` は `/` も跨ぐので `schema/*.json` に
+				# すると schema 配下の任意の深さが免除になる。templates/*.json と
+				# gui/src-tauri/capabilities/*.json も同じ理由で完全パスへ直した
+				# （issue #125）——`/` を跨ぐ `*` のせいで templates/sub/deep/key.json や
+				# gui/src-tauri/capabilities/a/b.json まで免除になっていた（非対称は
+				# 意図してよいが、この向きの非対称=より緩い側は意図していなかった）。
+				# 追跡中のファイルはどれも1件だけで、増やすときにこの行を触らせるのが狙い。
+				templates/chouhyo-v1.json|schema/template.schema.json|design/canvas.json) continue ;;
 				gui/package.json|gui/package-lock.json) continue ;;
 				gui/tsconfig.json|gui/tsconfig.node.json) continue ;;
 				gui/src-tauri/tauri.conf.json) continue ;;
-				gui/src-tauri/capabilities/*.json) continue ;;
+				gui/src-tauri/capabilities/default.json) continue ;;
 				testdata/golden_manifest.json) continue ;;
 				testdata/formB/formB-v1.json) continue ;;
 				testdata/formB/responses/formB-1_p0001.json) continue ;;

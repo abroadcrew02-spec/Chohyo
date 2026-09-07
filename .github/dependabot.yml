@@ -1,0 +1,9 @@
+# GitHub Actions の uses: を commit SHA へ固定した（issue #125）。SHA 固定は
+# バージョン追従を止めるため、Dependabot に追従させる。対象は .github/workflows/
+# 配下（root）だけ。npm/pip/cargo の依存更新はこの issue の対象外。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
