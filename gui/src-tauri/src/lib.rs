@@ -60,39 +60,93 @@ const ALLOWED_SUBCOMMANDS: &[&str] = &[
     "expand-page", "import-credentials", "detect-frames", "purge",
 ];
 
-/// サブコマンドが受け付けるフラグと、値を取るかどうかの対応表
-/// （issue #52 M-7: 旧 `check_args` が argv[0] しか検証しておらず、以降の
-/// フラグが無検証で子プロセスへ渡っていた穴を塞ぐ）。表に無いフラグは
-/// 拒否する。`--replay`・`--resend-on-template-change` は cli.py の run が
-/// 実際に持つフラグだが、意図的にどのサブコマンドの表にも入れていない——
-/// 要配慮個人情報の再送・任意ディレクトリでの再生は GUI 境界からは常に
-/// 禁止し、CLI 直叩き限定にする（S-MD 方針・#52 M-7 の対応方針どおり）。
-fn allowed_flags(subcommand: &str) -> &'static [(&'static str, bool)] {
+/// フラグ（または `import-credentials` の位置引数 `json_path`）が値に取る
+/// パスの種別（issue #129・旧 M-4）。
+///
+/// 以前は `allowed_flags` が「値を取るか（`bool`）」しか持たず、`check_arg_scopes`
+/// はフラグ名ごとの match でパス検査の要否を個別に判定していた。既定の腕
+/// （`_ => value.clone()`）が「検査しない」を意味していたため、パス系フラグを
+/// `allowed_flags` に足しても `check_arg_scopes` の腕を足し忘れると無検査の値が
+/// そのまま子プロセスへ渡った（過去に2回発生: #52 M-7 は argv[0] しか見ていな
+/// かった／S-N2 は `expand-page --input` が未検査だった）。
+///
+/// この型を `allowed_flags` の値に持たせることで、`check_arg_scopes` は種別の
+/// match になる。列挙型の match は非網羅だとコンパイルが落ちるため、新しい
+/// 種別を足したのに対応する腕を書き忘れるとビルドが失敗する——書き忘れが
+/// レビュー頼みではなく型検査で止まる。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArgKind {
+    /// 値を取らないフラグ（例: `--yes`）。
+    None,
+    /// フォルダ、または拡張子を問わない入力（`check_scope_dir` で検査。例: `--input`）。
+    Dir,
+    /// 拡張子を絞ったファイル（`check_scope` で検査。許す拡張子の一覧を持つ。例: `--image`）。
+    File(&'static [&'static str]),
+    /// `--template`。JSON かつ、保存フローが作る `<picked>.saving.json` の
+    /// 例外を持つ（`check_template_scope`）。
+    Template,
+    /// `import-credentials` の鍵ファイル（位置引数 `json_path`）。
+    /// `PendingCredentialsPath` の1回限りのスロットと照合する
+    /// （`check_credentials_scope`）。
+    Credentials,
+    /// パスではない値（例: `--dpi`・`--page`・`--region`・`--mode`・`--rows`・
+    /// `--cols`・`--expect-columns`）。スコープ検査はせずそのまま通す。
+    Opaque,
+}
+
+impl ArgKind {
+    /// `None`（値を取らないフラグ）以外はすべて値を取る。
+    fn takes_value(self) -> bool {
+        !matches!(self, ArgKind::None)
+    }
+}
+
+/// サブコマンドが受け付けるフラグと、その値の種別（`ArgKind`）の対応表
+/// （issue #52 M-7・#129）。表に無いフラグは拒否する。`--replay`・
+/// `--resend-on-template-change` は cli.py の run が実際に持つフラグだが、
+/// 意図的にどのサブコマンドの表にも入れていない——要配慮個人情報の再送・
+/// 任意ディレクトリでの再生は GUI 境界からは常に禁止し、CLI 直叩き限定に
+/// する（S-MD 方針・#52 M-7 の対応方針どおり）。
+///
+/// **フラグを足すときは値の種別（`ArgKind`）を書くこと。** パスを扱うフラグ
+/// なら `Dir`／`File(exts)`／`Template`／`Credentials` のどれかを選ぶ——
+/// `Opaque` を安易に選ぶと #129 と同じ「検査漏れ」になる。種別さえ正しく書け
+/// ば、`check_arg_scopes`・`rebuild_args` はこの表から挙動を導出するので
+/// 個別に対応漏れが起きない。
+fn allowed_flags(subcommand: &str) -> &'static [(&'static str, ArgKind)] {
+    const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg"];
     match subcommand {
-        "run" => &[("--input", true), ("--template", true)],
-        "render" | "remap" => &[("--template", true)],
+        "run" => &[("--input", ArgKind::Dir), ("--template", ArgKind::Template)],
+        "render" | "remap" => &[("--template", ArgKind::Template)],
         "status" => &[],
-        "verify" => &[("--template", true), ("--expect-columns", true)],
+        "verify" => &[("--template", ArgKind::Template), ("--expect-columns", ArgKind::Opaque)],
         "detect-grid" => &[
-            ("--image", true), ("--region", true), ("--mode", true),
-            ("--rows", true), ("--cols", true), ("--dpi", true),
+            ("--image", ArgKind::File(IMAGE_EXTS)), ("--region", ArgKind::Opaque),
+            ("--mode", ArgKind::Opaque), ("--rows", ArgKind::Opaque),
+            ("--cols", ArgKind::Opaque), ("--dpi", ArgKind::Opaque),
         ],
         "expand-page" => &[
-            ("--input", true), ("--page", true), ("--dpi", true),
-            ("--template", true), ("--no-mask", false),
+            ("--input", ArgKind::Dir), ("--page", ArgKind::Opaque), ("--dpi", ArgKind::Opaque),
+            ("--template", ArgKind::Template), ("--no-mask", ArgKind::None),
         ],
-        // detect-frames は #73 (b) のページ全体からの枠候補生成（新しい権限は要らない・
-        // run_core_capture 経由・--input は既存の読み取りルート検査に従う）。
+        // detect-frames は #73 (b) のページ全体からの枠候補生成(新しい権限は要らない・
+        // run_core_capture 経由・--input は既存の読み取りルート検査に従う)。
         "detect-frames" => &[
-            ("--input", true), ("--page", true), ("--dpi", true), ("--template", true),
+            ("--input", ArgKind::Dir), ("--page", ArgKind::Opaque),
+            ("--dpi", ArgKind::Opaque), ("--template", ArgKind::Template),
         ],
-        // import-credentials は位置引数 json_path（check_args_v2 内で別扱い。
-        // 値そのものは check_arg_scopes → check_credentials_scope が
-        // PendingCredentialsPath の1回限りのスロットと照合する・issue #121）に
-        // 加えて --delete-source（issue #52 M-10）。取り込みに成功したら元の
-        // 平文鍵 JSON をランダム上書きのうえ削除するフラグで、GUI からは既定で
-        // 付ける——取り込みのたびに平文の秘密鍵がディスクへ残るのを止める。
-        "import-credentials" => &[("--delete-source", false)],
+        // import-credentials は位置引数 json_path（check_args_v2 内で別扱い。値
+        // そのものは check_arg_scopes → check_credentials_scope が
+        // PendingCredentialsPath の1回限りのスロットと照合する・issue #121）を
+        // Credentials 種別として表に持つ（位置引数の扱い自体は check_args_v2・
+        // rebuild_args の json_path 分岐が引き続き担う。ここでは種別の一元管理
+        // のためだけに載せる）。加えて --delete-source（issue #52 M-10）。
+        // 取り込みに成功したら元の平文鍵 JSON をランダム上書きのうえ削除する
+        // フラグで、GUI からは既定で付ける——取り込みのたびに平文の秘密鍵が
+        // ディスクへ残るのを止める。
+        "import-credentials" => &[
+            ("json_path", ArgKind::Credentials), ("--delete-source", ArgKind::None),
+        ],
         // purge は値を取らない3つだけ（issue #52 M-11・S-MC・#108）。--config
         // のような「どこを消すか」を差し替えられるフラグは絶対に足さない——
         // 消す対象は config.json の workdir/output_dir だけ、という不変条件で
@@ -100,7 +154,10 @@ fn allowed_flags(subcommand: &str) -> &'static [(&'static str, bool)] {
         // `--preview`（issue #108）は削除を実行せず対象パス・対象外件数を
         // 1行返すだけで、`--yes` と同時指定してもコア側が preview を優先し
         // 削除は起きない（core/chouhyo_ocr/cli.py 側の実装）。
-        "purge" => &[("--yes", false), ("--include-output", false), ("--preview", false)],
+        "purge" => &[
+            ("--yes", ArgKind::None), ("--include-output", ArgKind::None),
+            ("--preview", ArgKind::None),
+        ],
         _ => &[],
     }
 }
@@ -143,13 +200,19 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
         if let Some((name, value)) = split_eq(a) {
             let spec = specs.iter().find(|s| s.0 == name)
                 .ok_or_else(|| format!("許可されていない引数です: {name}"))?;
-            if !spec.1 {
+            if !spec.1.takes_value() {
                 return Err(format!("値を取らない引数に値が指定されています: {name}"));
             }
             pairs.push((spec.0.to_string(), value.to_string()));
             i += 1;
-        } else if let Some(spec) = specs.iter().find(|s| s.0 == a) {
-            if spec.1 {
+        } else if a.starts_with("--") {
+            // json_path（import-credentials の位置引数）は表に載っているが
+            // "--" で始まらないため、ここでは絶対に一致しない——位置引数の値が
+            // たまたま文字列 "json_path" と一致しても、この腕でフラグとして
+            // 誤消費されることはない。
+            let spec = specs.iter().find(|s| s.0 == a)
+                .ok_or_else(|| format!("許可されていない引数です: {a}"))?;
+            if spec.1.takes_value() {
                 let value = args.get(i + 1)
                     .ok_or_else(|| format!("{a} に値が指定されていません"))?;
                 pairs.push((spec.0.to_string(), value.clone()));
@@ -190,15 +253,16 @@ fn check_args_v2(args: &[String]) -> Result<Vec<(String, String)>, String> {
 ///
 /// 値を取るかどうかは `pairs` の値の空・非空では判定しない
 /// （`--dpi ""` のような値そのものが空の正当な入力と、値を持たないフラグ
-/// を区別できないため）。`allowed_flags(cmd)` の表を単一の正とする——表に
-/// 無いフラグに出会ったら `Err` にする（issue #126 L-2）。`check_args_v2` が
-/// 通した pairs しかここには来ない想定なので実行時には起こらないはずだが、
-/// 将来 `allowed_flags` と `check_args_v2` の対応が崩れたときに「値の有無を
-/// 勝手に決めて渡してしまう」より安全に倒す。
-/// M-4（`allowed_flags` に値種別を型として持たせ、この対応漏れを
-/// コンパイル時に検出する構造変更）は別 issue（今回は見送り）——新しい
-/// パス系フラグを足すときは、この関数の分岐だけでなく `check_arg_scopes`
-/// の match 腕も忘れずに足すこと。
+/// を区別できないため）。`allowed_flags(cmd)` の表（`ArgKind::takes_value`）を
+/// 単一の正とする——表に無いフラグに出会ったら `Err` にする（issue #126 L-2）。
+/// `check_args_v2` が通した pairs しかここには来ない想定なので実行時には
+/// 起こらないはずだが、将来 `allowed_flags` と `check_args_v2` の対応が崩れた
+/// ときに「値の有無を勝手に決めて渡してしまう」より安全に倒す。
+///
+/// `json_path`（import-credentials の位置引数）だけは表の `ArgKind::Credentials`
+/// を見ずに flag 名で直接分岐する——位置引数はフラグトークン自体を出力しない
+/// （値だけを push する）という argv 構築上の扱いの違いであって、値種別の
+/// 検査は `check_arg_scopes` 側の役目（issue #129）。
 ///
 /// `purge --preview --yes` は `--yes` を落とす（issue #126 M-5）。core 側が
 /// preview を優先する実装であっても、GUI 側で「削除は起きない」ことを argv
@@ -212,14 +276,14 @@ fn rebuild_args(cmd: &str, pairs: &[(String, String)]) -> Result<Vec<String>, St
             continue;
         }
         if flag == "json_path" {
-            // import-credentials の位置引数（フラグ表には無い）
+            // import-credentials の位置引数（フラグトークンは出さず値だけ積む）
             out.push(value.clone());
             continue;
         }
-        let takes_value = specs.iter().find(|s| &s.0 == flag).map(|s| s.1)
+        let kind = specs.iter().find(|s| &s.0 == flag).map(|s| s.1)
             .ok_or_else(|| format!("内部エラー: 未知の引数です: {flag}"))?;
         out.push(flag.clone());
-        if takes_value {
+        if kind.takes_value() {
             out.push(value.clone());
         }
     }
@@ -243,9 +307,10 @@ fn rebuild_args(cmd: &str, pairs: &[(String, String)]) -> Result<Vec<String>, St
 /// ため、GUI が空のテンプレートで開いた候補生成でも罫線が黙って消えていた。
 ///
 /// GUI は自分で `--dpi` を必ず渡すので、注入をやめると dpi の根拠は1本になる
-/// ——`emptyTemplateFor`（Editor.tsx）の `render_dpi` は 300 固定、下地を作る
-/// `expand-page` は `--dpi` 既定 300 で GUI は未指定（cli.py:1350）。両者が
-/// 一致していることを確認済み（2026-09-04）。
+/// ——候補生成（detect-frames）も下地を作る `expand-page` も、Editor.tsx の
+/// `expandPageArgs`／`runDetectFrames` が選択中テンプレートの `render_dpi` を
+/// 同じ値で渡す（issue #107・2026-09-07。それ以前は expand-page だけ未指定で
+/// コア既定 300 に固定されていた）。
 const TEMPLATE_ACCEPTING_SUBCOMMANDS: &[&str] = &[
     "run", "render", "remap", "verify", "expand-page", "debug-images",
 ];
@@ -421,6 +486,20 @@ fn check_template_scope(abs: &Path, roots: &[PathBuf],
     check_scope(abs, &["json"], roots, picked)
 }
 
+/// フラグ（または `json_path`）の `ArgKind` を全サブコマンドの表から引く。
+///
+/// `check_arg_scopes` は pairs にサブコマンド名を持たない（呼び出し側の
+/// `run_core`/`run_core_capture` がサブコマンドを跨いでこの関数を共有して
+/// いるため）。フラグ名だけで種別を引けるのは、同じフラグ名がどのサブコマンド
+/// の表でも常に同じ種別で定義されている前提があるため——例えば `--input` は
+/// run／expand-page／detect-frames のどこでも `Dir`、`--template` はどこでも
+/// `Template`。この前提が崩れる（同名フラグを別の意味で複数サブコマンドに
+/// 足す）設計は避けること。
+fn arg_kind_for(flag: &str) -> Option<ArgKind> {
+    ALLOWED_SUBCOMMANDS.iter().copied()
+        .find_map(|cmd| allowed_flags(cmd).iter().find(|s| s.0 == flag).map(|s| s.1))
+}
+
 /// コアへ渡す引数のうち、パスを値に取るフラグをスコープ検査する
 /// （issue S-MD・S-N2）。`run_core`（run）と `run_core_capture`
 /// （verify / detect-grid / expand-page）で同じ関数を通す。
@@ -438,39 +517,42 @@ fn check_template_scope(abs: &Path, roots: &[PathBuf],
 /// 実行時（子プロセスは `<root>/core` を cwd に起動）でずれ、検査した対象と
 /// 実際に開かれる対象が一致する保証がなくなる。
 ///
-/// パス系フラグを新しく足すときは、この match の腕（どう検査するか）と
-/// `rebuild_args` の対応表参照（値を取るかどうか）の両方を更新すること
-/// ——両者を1つの型（`allowed_flags` の値種別）で縛る構造変更（issue #126
-/// M-4）は別 issue に切り出し、今回は見送り。
+/// パス系フラグを新しく足すときは、`allowed_flags` の表に正しい `ArgKind` を
+/// 書くこと。この関数は種別（`ArgKind`）で match するため、`allowed_flags` に
+/// 種別を書きさえすれば検査の腕は自動で決まる——列挙型の match は非網羅だと
+/// コンパイルが落ちるので、新しい種別を足したのに腕を書き忘れることはできない
+/// （issue #129・旧 M-4）。
 fn check_arg_scopes(pairs: &[(String, String)], roots: &[PathBuf],
                     picked: &HashSet<PathBuf>,
                     pending_cred: &mut Option<PathBuf>)
                     -> Result<Vec<(String, String)>, String> {
     let mut checked = Vec::with_capacity(pairs.len());
     for (flag, value) in pairs {
-        let out_value = match flag.as_str() {
+        let kind = arg_kind_for(flag)
+            .ok_or_else(|| format!("内部エラー: 未知の引数です: {flag}"))?;
+        let out_value = match kind {
+            ArgKind::None | ArgKind::Opaque => value.clone(),
             // フォルダ・拡張子なしのファイルもありうる（run --input・#19）
-            "--input" => {
+            ArgKind::Dir => {
                 let abs = normalize_path(value)?;
                 check_scope_dir(&abs, roots, picked)?;
                 abs.to_string_lossy().into_owned()
             }
-            "--image" => {
+            ArgKind::File(exts) => {
                 let abs = normalize_path(value)?;
-                check_scope(&abs, &["png", "jpg", "jpeg"], roots, picked)?;
+                check_scope(&abs, exts, roots, picked)?;
                 abs.to_string_lossy().into_owned()
             }
-            "--template" => {
+            ArgKind::Template => {
                 let abs = normalize_path(value)?;
                 check_template_scope(&abs, roots, picked)?;
                 abs.to_string_lossy().into_owned()
             }
-            "json_path" => {
+            ArgKind::Credentials => {
                 let abs = normalize_path(value)?;
                 check_credentials_scope(&abs, pending_cred)?;
                 abs.to_string_lossy().into_owned()
             }
-            _ => value.clone(),
         };
         checked.push((flag.clone(), out_value));
     }
