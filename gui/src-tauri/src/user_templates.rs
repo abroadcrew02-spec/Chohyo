@@ -51,7 +51,7 @@ pub enum NameVerdict {
 
 /// Windows の予約デバイス名（NFC 正規化後・大小文字無視で比較する・07 §7.4）。
 ///
-/// L-1 追補（レビュー AZKi）: `CLOCK$` を追加。`COM`/`LPT` は 0〜9 の
+/// L-1 追補（セキュリティレビュー）: `CLOCK$` を追加。`COM`/`LPT` は 0〜9 の
 /// ASCII 数字に加え、Windows が予約する上付き数字（U+00B9 ¹・U+00B2 ²・
 /// U+00B3 ³）付きの `COM¹`/`LPT¹` 等も対象にする——`COM0`/`LPT0` は
 /// デバイスとしては存在しないが、Win32 の予約名判定自体は 0 も含めて
@@ -79,7 +79,7 @@ fn is_reserved_device_name(nfc_name: &str) -> bool {
 /// 返す（07 §7.4 の条件1〜4。既存名・出荷物との衝突は呼び出し側・
 /// `validate_user_template_name` が扱う）。
 ///
-/// **NFC 正規化を最初に行う**（M-3 追補・レビュー AZKi）: 分解形（NFD、例:
+/// **NFC 正規化を最初に行う**（M-3 追補・セキュリティレビュー）: 分解形（NFD、例:
 /// 「か」+ 結合濁点 U+3099）は結合文字そのものが英数・かな漢字いずれの
 /// 文字種判定にも当たらず、正規化前に文字種検査すると誤って拒否される。
 /// 正規化を最初に済ませてから以降の検査（長さ・文字種・先頭/末尾・予約名）
@@ -97,7 +97,7 @@ pub fn validate_name_shape(name: &str) -> Result<String, String> {
     if char_count > 64 {
         return Err("名前は64文字以内にしてください".into());
     }
-    // L-2 追補（レビュー AZKi）: 先頭の空白も拒否する（従来は末尾のみ）。
+    // L-2 追補（セキュリティレビュー）: 先頭の空白も拒否する（従来は末尾のみ）。
     if normalized.starts_with(' ') || normalized.ends_with(' ') || normalized.ends_with('.') {
         return Err("名前の先頭・末尾に空白を、末尾にピリオドを使用できません".into());
     }
@@ -347,7 +347,7 @@ pub fn list_dir(dir: &Path) -> ListResult {
             continue;
         }
 
-        // M-7 追補（レビュー AZKi）: 表示名（stem）自体が自前の命名規則
+        // M-7 追補（セキュリティレビュー）: 表示名（stem）自体が自前の命名規則
         // （validate_name_shape）を通らない場合（例: `a.b.json` の stem
         // `a.b` はドットを含み許可文字集合の外）は、そのまま一覧に混ぜず
         // 除外理由付きで報告する——名前ベースの後続操作（read_user_template・
@@ -459,7 +459,7 @@ pub fn list_shipped_stems(root: &Path) -> Vec<String> {
 
 /// `dir` 直下の `*.json`（`.saving.json`／`.bak`／通常のディレクトリを
 /// 除く）の表示名（stem）を**件数上限・内容解析なしで全件**返す
-/// （M-1 追補・レビュー AZKi・`save_user_template` の衝突判定専用）。
+/// （M-1 追補・セキュリティレビュー・`save_user_template` の衝突判定専用）。
 ///
 /// `list_dir` は表示用に件数上限（`MAX_LISTED`）・サイズ上限・JSON 解析・
 /// 名前検証を掛けるため、21件目以降や壊れた/大きすぎる/名前が自前の規則を
@@ -467,7 +467,7 @@ pub fn list_shipped_stems(root: &Path) -> Vec<String> {
 /// はこれらも含めて必ず検出しなければならない（黙って上書きしない）。
 /// こちらは列挙のみで実ファイルを読まない（軽量・件数上限なし）。
 ///
-/// **symlink／junction も衝突集合に含める**（L-6 追補・レビュー AZKi）。
+/// **symlink／junction も衝突集合に含める**（L-6 追補・セキュリティレビュー）。
 /// `list_dir`（表示用）は reparse point を除外するが、こちらを同じ基準に
 /// すると「同名の symlink が既にある」状態を `New` と誤判定し、確認なしで
 /// そのパスへ書き込む（`promote_staged` の rename が reparse point を
@@ -649,7 +649,7 @@ pub fn sanitize_match_output(value: &serde_json::Value) -> serde_json::Value {
 }
 
 /// verify の stdout（JSON Lines）から「テンプレート検証」行の `ok` を読む
-/// （H-1 追補・レビュー AZKi・純関数）。
+/// （H-1 追補・セキュリティレビュー・純関数）。
 ///
 /// **終了コードに依存しない**——verify は資格情報未設定・API 残量ゼロ等の
 /// 理由で個別の JSON Lines を出しつつプロセス自体は非 0 で終わることがある
@@ -675,7 +675,7 @@ pub fn verify_template_ok(stdout: &str) -> bool {
 }
 
 /// verify の stdout（JSON Lines）を許可キーだけに絞り込んで再構築する
-/// （M-2r 追補・レビュー AZKi の実例を受けた再修正・純関数）。
+/// （M-2r 追補・セキュリティレビュー の実例を受けた再修正・純関数）。
 ///
 /// **`mask_known_paths`（既知の絶対パス文字列を単純置換）は撤回した。**
 /// コア側の `OSError` は `repr()` を経由して JSON 文字列へ入るため、
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn rejects_reserved_device_names_l1_additions() {
-        // L-1 追補（レビュー AZKi）: COM0/LPT0・CLOCK$・上付き数字付き COM/LPT。
+        // L-1 追補（セキュリティレビュー）: COM0/LPT0・CLOCK$・上付き数字付き COM/LPT。
         for n in ["COM0", "LPT0", "CLOCK$", "clock$",
                   "COM\u{00B9}", "COM\u{00B2}", "COM\u{00B3}",
                   "LPT\u{00B9}", "LPT\u{00B2}", "LPT\u{00B3}"] {
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn rejects_leading_space() {
-        // L-2 追補（レビュー AZKi）: 従来は末尾の空白のみ拒否していたが、
+        // L-2 追補（セキュリティレビュー）: 従来は末尾の空白のみ拒否していたが、
         // 先頭の空白も同様に拒否する。
         assert!(validate_user_template_name(" abc", &[], &[]).is_err());
     }
@@ -902,7 +902,7 @@ mod tests {
 
     #[test]
     fn validate_name_shape_normalizes_nfd_input_before_charset_check() {
-        // M-3 追補（レビュー AZKi）: 正規化前に文字種検査すると、結合文字
+        // M-3 追補（セキュリティレビュー）: 正規化前に文字種検査すると、結合文字
         // （NFD の「か」+ 結合濁点 U+3099）は英数・かな漢字のいずれの
         // 文字種判定にも当たらず誤って拒否されていた。NFC を先に掛けて
         // から検査することで、NFD 入力そのものが通ることを固定する。
@@ -1007,7 +1007,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn list_dir_excludes_directory_junction_entry() {
-        // #13（AC-F59・L-5 追補・レビュー AZKi）: user dir 内のエントリが
+        // #13（AC-F59・L-5 追補・セキュリティレビュー）: user dir 内のエントリが
         // reparse point の場合、列挙から除外される。旧実装はファイル symlink
         // で検証していたが、Windows のファイル symlink 作成は管理者権限を
         // 要求する（2026-09-02 実機確認: `New-Item -ItemType SymbolicLink` が
@@ -1106,7 +1106,7 @@ mod tests {
 
     #[test]
     fn list_dir_excludes_name_that_fails_shape_validation() {
-        // M-7 追補（レビュー AZKi）: 表示名（stem）自体が validate_name_shape
+        // M-7 追補（セキュリティレビュー）: 表示名（stem）自体が validate_name_shape
         // を通らないファイル（例: `a.b.json` の stem `a.b` はドットを含む）は
         // 一覧に混ぜず、理由付きで除外する。
         let dir = mkdir("invalid_stem");
@@ -1584,7 +1584,7 @@ mod tests {
 
     #[test]
     fn list_all_stems_has_no_count_cap_and_does_not_parse_content() {
-        // M-1 追補（レビュー AZKi）: list_dir ベースの衝突判定は件数上限20・
+        // M-1 追補（セキュリティレビュー）: list_dir ベースの衝突判定は件数上限20・
         // JSON 解析・サイズ上限の影響を受けるため、21件目以降や壊れた/
         // 大きすぎる同名ファイルとの衝突を見逃す。list_all_stems は
         // それらに関わらず全件のファイル名だけを返すことを確認する。
@@ -1610,7 +1610,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- verify_template_ok（H-1・レビュー AZKi） ---
+    // --- verify_template_ok（H-1・セキュリティレビュー） ---
 
     #[test]
     fn verify_template_ok_reads_the_template_check_line_from_jsonl() {
@@ -1646,11 +1646,11 @@ mod tests {
         assert!(!verify_template_ok(""));
     }
 
-    // --- sanitize_verify_output（M-2r 追補・レビュー AZKi） ---
+    // --- sanitize_verify_output（M-2r 追補・セキュリティレビュー） ---
 
     #[test]
     fn sanitize_verify_output_strips_error_details_and_keeps_allowed_fields() {
-        // AZKi の実例: OSError の repr が二重エスケープされたバックスラッシュ
+        // セキュリティ担当 の実例: OSError の repr が二重エスケープされたバックスラッシュ
         // （実機では \\\\ の4連）を伴って error フィールドへ混入するケース。
         // mask_known_paths（既知パスの単純置換）はこの形に一致しないため、
         // 許可キーのみを通す方式へ転換した。生の JSON テキストを rust の

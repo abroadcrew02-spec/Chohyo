@@ -2081,7 +2081,7 @@ async fn save_user_template(app: AppHandle, name: String, content: String,
         return Err(e);
     }
 
-    // H-1 対応（レビュー AZKi）: verify の判定は終了コードに依存しない
+    // H-1 対応（セキュリティレビュー）: verify の判定は終了コードに依存しない
     // 専用経路（core_output_stdout_only）で行う。core_output は非 0 終了を
     // 一律エラー扱いするため、資格情報未設定等テンプレート検証と無関係な
     // 理由で verify が非 0 終了すると、以前の実装は常に「検証失敗」と
@@ -2118,7 +2118,7 @@ async fn save_user_template(app: AppHandle, name: String, content: String,
     } else {
         let _ = discard_staged_file(&target);
     }
-    // M-2r 追補（レビュー AZKi・実例再確認）: 既知の絶対パス文字列を
+    // M-2r 追補（セキュリティレビュー・実例再確認）: 既知の絶対パス文字列を
     // 単純置換する mask_known_paths は撤回した。コア側の OSError は
     // repr() 経由で二重エスケープされたバックスラッシュを伴って JSON
     // 文字列へ混入し、単純な文字列一致では拾えない（実測: パス区切り
@@ -3663,7 +3663,7 @@ mod tests {
 
     #[test]
     fn resolve_core_program_override_venv_succeeds_when_venv_present() {
-        // override "venv" の成功パス（おかゆ提案）
+        // override "venv" の成功パス（テスト担当の提案）
         let fx = CoreProgramFixture::new("override_venv_ok").with_venv().with_bundled();
         assert_eq!(resolve_core_program(&fx.root, Some("venv")),
                    Ok(CoreProgram::Venv(fx.venv_path())));
@@ -3712,7 +3712,7 @@ mod tests {
 
     #[test]
     fn resolve_core_program_dev_checkout_without_venv_falls_back_to_bundled() {
-        // おかゆ提案: 開発チェックアウトだが venv 未構築の場合のフォールバック
+        // テスト担当の提案: 開発チェックアウトだが venv 未構築の場合のフォールバック
         let fx = CoreProgramFixture::new("dev_checkout_no_venv")
             .with_git().with_bundled();
         assert_eq!(resolve_core_program(&fx.root, None),

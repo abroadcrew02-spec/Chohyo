@@ -641,15 +641,15 @@ assert all(v == "〓" for v in row.values)
 
 | 側 | 担当 | ファイル | 主な変更 |
 |---|---|---|---|
-| core | シオン（`coder_backend`） | `core/chouhyo_ocr/align.py` | `ShiftEstimate` に7フィールド／`AlignedFace.estimate`／`AlignError.diag`／`_face_estimate` の抽出 |
-| core | シオン | `core/chouhyo_ocr/format_check.py`（新規） | `classify`／`score_of`／`fold`／`from_diag`／`check_page` |
-| core | シオン | `core/chouhyo_ocr/pipeline.py` | 例外分岐の書き換え・記録・カウンタ・進捗イベント |
-| core | シオン | `core/chouhyo_ocr/store.py` | 列5つの追加（`_ensure_column`）・`set_format_result`／`set_status_reason` |
-| core | シオン | `core/chouhyo_ocr/cli.py` | `expand-page` の JSON 拡張 |
-| core | シオン | `core/tests/test_format_check.py`（新規）ほか | AC-F01・F03〜F06・F12〜F15 |
-| GUI | フブキ（`coder_frontend`） | `gui/src/Editor.tsx` | 画像も expand-page 経由／`expandAlignNotice` 拡張／`hiddenFaces`・`visibleFields`／上書き操作／黄帯 state |
-| GUI | フブキ | `gui/src/RunScreen.tsx` | `reason_code` 表示・出口2択・`completionNotice` 差し替え |
-| GUI | フブキ | `gui/tests/gui-logic.test.mjs` | AC-F02・F06〜F10 の純関数テスト（export リストへの追加が要る） |
+| core | バックエンド実装担当（`coder_backend`） | `core/chouhyo_ocr/align.py` | `ShiftEstimate` に7フィールド／`AlignedFace.estimate`／`AlignError.diag`／`_face_estimate` の抽出 |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/format_check.py`（新規） | `classify`／`score_of`／`fold`／`from_diag`／`check_page` |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/pipeline.py` | 例外分岐の書き換え・記録・カウンタ・進捗イベント |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/store.py` | 列5つの追加（`_ensure_column`）・`set_format_result`／`set_status_reason` |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/cli.py` | `expand-page` の JSON 拡張 |
+| core | バックエンド実装担当 | `core/tests/test_format_check.py`（新規）ほか | AC-F01・F03〜F06・F12〜F15 |
+| GUI | フロント実装担当（`coder_frontend`） | `gui/src/Editor.tsx` | 画像も expand-page 経由／`expandAlignNotice` 拡張／`hiddenFaces`・`visibleFields`／上書き操作／黄帯 state |
+| GUI | フロント実装担当 | `gui/src/RunScreen.tsx` | `reason_code` 表示・出口2択・`completionNotice` 差し替え |
+| GUI | フロント実装担当 | `gui/tests/gui-logic.test.mjs` | AC-F02・F06〜F10 の純関数テスト（export リストへの追加が要る） |
 
 **分担境界の注意**: `gui/src-tauri`（Rust）は今回変更しない。`expand-page` は既に `run_core_capture` の白リストを通っている。NFR-F06（GUI に画像処理を持たない）は自動的に満たされる。
 
@@ -797,7 +797,7 @@ fn validate_user_template_name(
 
 | 案 | 内容 | 判断 |
 |---|---|---|
-| **B-1（推奨）** | `unicode-normalization` クレートを追加（MIT/Apache-2.0・実行時依存は `tinyvec` のみ） | 供給網レビュー（AZKi＋ミオ）を通したうえで採用する |
+| **B-1（推奨）** | `unicode-normalization` クレートを追加（MIT/Apache-2.0・実行時依存は `tinyvec` のみ） | 供給網レビュー（セキュリティ担当＋ミオ）を通したうえで採用する |
 | B-2 | webview 側で `name.normalize("NFC")` してから渡し、Rust は受け取った文字列をそのまま比較 | **不採用**。レンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる。AC-F51 が「名前検証を Rust の純関数で」と要求した趣旨からも外れる |
 | B-3 | NFC 判定だけ core（Python の `unicodedata`）へ出す | **不採用**。名前検証が Rust と Python に割れる。AC-F51 が `cargo test` の表駆動を求めているのは判定を1箇所へ集めるため |
 
@@ -1240,15 +1240,15 @@ const runCandidateFlow = async (o) => {
 
 | 側 | 担当 | ファイル | 主な変更 |
 |---|---|---|---|
-| Rust | あくあ（`coder_api`） | `gui/src-tauri/src/lib.rs` | `user_templates_dir`／`validate_user_template_name`／新コマンド3つ／`allowed_flags`・`ALLOWED_SUBCOMMANDS` に `match-templates`／`check_arg_scopes` の roots 2系統化／`inject_default_template` の config 解決／`core_command` の env 追加／`KNOWN_CONFIG_KEYS` |
-| Rust | あくあ | `gui/src-tauri/Cargo.toml` | `unicode-normalization`（B-1 採用時のみ・供給網レビュー後） |
-| core | シオン（`coder_backend`） | `core/chouhyo_ocr/paths.py` | `user_templates_dir()`（環境変数＋検証＋フォールバック） |
-| core | シオン | `core/chouhyo_ocr/cli.py` | `match-templates` サブコマンド（`--input`／`--shipped`／`--candidate` 反復） |
-| core | シオン | `core/chouhyo_ocr/config.py` | `last_template` の追加と、**例外を投げない**検証 |
-| core | シオン | `core/tests/` | AC-F52・F60・F61・F62 |
-| GUI | フブキ（`coder_frontend`） | `gui/src/RunScreen.tsx` | テンプレート選択・`write_config` |
-| GUI | フブキ | `gui/src/Editor.tsx` | 起動時既定・照合提示 UI・`rankCandidates`／`emptyTemplateFor`／`newTemplateNotice`・保存ダイアログ（名前入力＋上書き確認）・書き出し／取り込み |
-| GUI | フブキ | `gui/tests/gui-logic.test.mjs` | AC-F25・F26・F27・F28・F53・F54（export リストへの追加が要る） |
+| Rust | API 実装担当（`coder_api`） | `gui/src-tauri/src/lib.rs` | `user_templates_dir`／`validate_user_template_name`／新コマンド3つ／`allowed_flags`・`ALLOWED_SUBCOMMANDS` に `match-templates`／`check_arg_scopes` の roots 2系統化／`inject_default_template` の config 解決／`core_command` の env 追加／`KNOWN_CONFIG_KEYS` |
+| Rust | API 実装担当 | `gui/src-tauri/Cargo.toml` | `unicode-normalization`（B-1 採用時のみ・供給網レビュー後） |
+| core | バックエンド実装担当（`coder_backend`） | `core/chouhyo_ocr/paths.py` | `user_templates_dir()`（環境変数＋検証＋フォールバック） |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/cli.py` | `match-templates` サブコマンド（`--input`／`--shipped`／`--candidate` 反復） |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/config.py` | `last_template` の追加と、**例外を投げない**検証 |
+| core | バックエンド実装担当 | `core/tests/` | AC-F52・F60・F61・F62 |
+| GUI | フロント実装担当（`coder_frontend`） | `gui/src/RunScreen.tsx` | テンプレート選択・`write_config` |
+| GUI | フロント実装担当 | `gui/src/Editor.tsx` | 起動時既定・照合提示 UI・`rankCandidates`／`emptyTemplateFor`／`newTemplateNotice`・保存ダイアログ（名前入力＋上書き確認）・書き出し／取り込み |
+| GUI | フロント実装担当 | `gui/tests/gui-logic.test.mjs` | AC-F25・F26・F27・F28・F53・F54（export リストへの追加が要る） |
 
 ### 3.10 守るべき不変条件
 
@@ -1638,7 +1638,7 @@ dpi の根拠は **GUI が渡す `--dpi` の1本**に統一する。候補パス
 
 - `Cand` を新しい state に持つ。**確定枠（`fields`／`tables`）とは別配列**で、保存対象には含めない
 - `type Cand = { id: string; kind: "table" | "field"; rect: Rect; faceHint?: string; residual: number; overlaps: boolean; table?: TableSpec; name: string }`
-- **描画（FR-F18）**: 破線＋半透明の塗り＋角の小マーカーで確定枠と区別する。**色だけに依存しない**（AC-F22）。ラベルは仮名（`field_01` 等）に `?` を付ける等、テキストでも候補と分かるようにする。実際のコントラスト・記号選定は accessibility（ラミィ）へ委ねる
+- **描画（FR-F18）**: 破線＋半透明の塗り＋角の小マーカーで確定枠と区別する。**色だけに依存しない**（AC-F22）。ラベルは仮名（`field_01` 等）に `?` を付ける等、テキストでも候補と分かるようにする。実際のコントラスト・記号選定は accessibility（a11y 担当）へ委ねる
 
 #### 4.5.2 ⚠️ 一括採用と既存の切り抜き（carve）の衝突
 
@@ -1855,7 +1855,7 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 | formB-1 ＋ formB テンプレート | 700 / 577 / 715 | 300 / 396 / 271 | 10/8 | 4 |
 | formC-1（テンプレートなし） | 1883 / 1375 / 2787 | 2346 / 1903 / 1496 | 37/9 | 1 |
 
-**§4.7.1 の測定より 2〜4 倍遅いという観測（#85 あくあ・2026-09-03）は追認できる。** 同じ素材・同じ測り方（`detect_frames` 単体）で 0.830 秒 → 1.70〜1.97 秒。倍率は約 2.2 で、報告の下限にあたる。実機が遅いのであって実装が退化したのではない——§4.7.1 と同じ経路・同じ入力で比が一定に出ている。
+**§4.7.1 の測定より 2〜4 倍遅いという観測（#85 API 実装担当・2026-09-03）は追認できる。** 同じ素材・同じ測り方（`detect_frames` 単体）で 0.830 秒 → 1.70〜1.97 秒。倍率は約 2.2 で、報告の下限にあたる。実機が遅いのであって実装が退化したのではない——§4.7.1 と同じ経路・同じ入力で比が一定に出ている。
 
 **NFR-F02（ページ 1 枚 3.0 秒）には実際に触れる。** `elapsed_ms` は 3 回中 1 回が 3304 ms で予算を超えた（実行環境の負荷が高い時間帯には 3 回中 2 回が 3171／3655 ms で超過するのも観測している）。内訳は `detect_frames` 本体 1.7〜2.0 秒＋残り 0.6〜0.9 秒（プロセス起動・設定読み込み・画像読み込み・ページ全体の Otsu）。**本体だけなら予算内で、超過はプロセス1回ぶんの固定費を足したときに起きる。** 予算をどちらの尺度で測るかは Q-F13 の判断に含める（未確定）。
 
@@ -1869,13 +1869,13 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 
 | 側 | 担当 | ファイル | 主な変更 |
 |---|---|---|---|
-| core | シオン（`coder_backend`） | `core/chouhyo_ocr/segments.py`（新規） | `Segment`／`detect_segments`／閾値定数（dpi スケール） |
-| core | シオン | `core/chouhyo_ocr/grid.py` | `detect_frames(gray, dpi, template=None)` を追加。**既存の `detect_ruled`／`make_uniform` は1行も変えない** |
-| core | シオン | `core/chouhyo_ocr/cli.py` | `detect-frames` サブコマンド |
-| core | シオン | `core/tests/test_detect_frames.py`（新規） | AC-F16・F17・F18・F55 |
-| GUI | フブキ（`coder_frontend`） | `gui/src-tauri/src/lib.rs` | `ALLOWED_SUBCOMMANDS`／`allowed_flags` に `detect-frames` を追加（**それ以外は触らない**）。`TEMPLATE_ACCEPTING_SUBCOMMANDS` へは**足さない**（2026-09-04 撤去・§4.4） |
-| GUI | フブキ | `gui/src/Editor.tsx` | `Cand` 状態・描画・一括/個別の採用と除去・`Snap.cands`・生成中表示・仮名と一括リネーム・ボタン2分割 |
-| GUI | フブキ | `gui/tests/gui-logic.test.mjs` | AC-F19〜F23（export リストへの追加が要る） |
+| core | バックエンド実装担当（`coder_backend`） | `core/chouhyo_ocr/segments.py`（新規） | `Segment`／`detect_segments`／閾値定数（dpi スケール） |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/grid.py` | `detect_frames(gray, dpi, template=None)` を追加。**既存の `detect_ruled`／`make_uniform` は1行も変えない** |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/cli.py` | `detect-frames` サブコマンド |
+| core | バックエンド実装担当 | `core/tests/test_detect_frames.py`（新規） | AC-F16・F17・F18・F55 |
+| GUI | フロント実装担当（`coder_frontend`） | `gui/src-tauri/src/lib.rs` | `ALLOWED_SUBCOMMANDS`／`allowed_flags` に `detect-frames` を追加（**それ以外は触らない**）。`TEMPLATE_ACCEPTING_SUBCOMMANDS` へは**足さない**（2026-09-04 撤去・§4.4） |
+| GUI | フロント実装担当 | `gui/src/Editor.tsx` | `Cand` 状態・描画・一括/個別の採用と除去・`Snap.cands`・生成中表示・仮名と一括リネーム・ボタン2分割 |
+| GUI | フロント実装担当 | `gui/tests/gui-logic.test.mjs` | AC-F19〜F23（export リストへの追加が要る） |
 
 ### 4.9 守るべき不変条件
 
@@ -1942,7 +1942,7 @@ align 経路  stats: lines_h 51, lines_v 22, rects 143, rails_h 37, rails_v 20, 
 | `block_idx=1` | `med=3`・`max=4` | `med=0`・`max=1` |
 
 - 合併集合から出すと **`block_idx=1` が `block_idx=0` と同じ値になり、面の h 残差（`med=0`・`max=1`）とも一致する**——4px 動かした事実が跡形もなく消える。出荷テンプレートは2ブロックが同じ `h_lines` を持つ（back は両方とも y 93..1549・2026-09-03 実測）ため、合併集合には常に「動いていない側」の線が混じる
-- この主張は実装後に **`_build_residual` のブロック計算を合併集合から出すよう壊すと非対称合成のテストが赤になる**ことでも裏を取った（あやめ・`test_residual_block_shift_is_isolated_per_block` が `(0, 0, 0)` を返して落ちる）
+- この主張は実装後に **`_build_residual` のブロック計算を合併集合から出すよう壊すと非対称合成のテストが赤になる**ことでも裏を取った（単体テスト担当・`test_residual_block_shift_is_isolated_per_block` が `(0, 0, 0)` を返して落ちる）
 
 #### (c) 分けて持つのに追加走査は要らない
 
@@ -2138,16 +2138,16 @@ align_residual page_id=<id> face_idx=0 res_h=1 res_v=1 res_pairs=26 res_unpaired
 
 ### 5.8 変更ファイルと分担
 
-**coder 1名（シオン・`coder_backend`）で収まる。** GUI 側の変更はゼロ——`expand-page` の新キーは既存 GUI が無視して従来どおり動く（§2.6 の後方互換）。Rust も触らない（新しいサブコマンドもフラグも増えない）。
+**coder 1名（バックエンド実装担当・`coder_backend`）で収まる。** GUI 側の変更はゼロ——`expand-page` の新キーは既存 GUI が無視して従来どおり動く（§2.6 の後方互換）。Rust も触らない（新しいサブコマンドもフラグも増えない）。
 
 | 側 | 担当 | ファイル | 主な変更 |
 |---|---|---|---|
-| core | シオン（`coder_backend`） | `core/chouhyo_ocr/align.py` | `AxisResidual`／`BlockResidual`／`Residual` の追加・`ShiftEstimate.residual`・ループのブロック別控え1行・成功パスでの残差組み立て |
-| core | シオン | `core/chouhyo_ocr/store.py` | 列2つの追加（`_ensure_column`）・`upsert_alignment` のキーワード引数2つ |
-| core | シオン | `core/chouhyo_ocr/pipeline.py` | `upsert_alignment` への受け渡し・`align_residual` ログ |
-| core | シオン | `core/chouhyo_ocr/logging_safe.py` | 白リストへ4キー（`res_h`・`res_v`・`res_pairs`・`res_unpaired`） |
-| core | シオン | `core/chouhyo_ocr/cli.py` | `expand-page` の `faces[].residual` |
-| core | シオン | `core/tests/test_align_residual.py`（新規） | §5.7 の8項目 |
+| core | バックエンド実装担当（`coder_backend`） | `core/chouhyo_ocr/align.py` | `AxisResidual`／`BlockResidual`／`Residual` の追加・`ShiftEstimate.residual`・ループのブロック別控え1行・成功パスでの残差組み立て |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/store.py` | 列2つの追加（`_ensure_column`）・`upsert_alignment` のキーワード引数2つ |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/pipeline.py` | `upsert_alignment` への受け渡し・`align_residual` ログ |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/logging_safe.py` | 白リストへ4キー（`res_h`・`res_v`・`res_pairs`・`res_unpaired`） |
+| core | バックエンド実装担当 | `core/chouhyo_ocr/cli.py` | `expand-page` の `faces[].residual` |
+| core | バックエンド実装担当 | `core/tests/test_align_residual.py`（新規） | §5.7 の8項目 |
 
 **触らないファイル**: `projection.py`（`H_COVERAGE`／`V_COVERAGE`／`LINE_GAP`／`line_positions`）・`format_check.py`・`grid.py`・`gui/` 配下すべて。
 
@@ -2473,7 +2473,7 @@ chouhyo-ocr snap-diff [--template <path>] [--page <page_id>] [--limit N]
 
 - 07 §7.4 は「**NFC 正規化後**に予約名と一致しない」「**NFC 正規化後に case-insensitive** で比較する」を要求している。AC-F51 はこの検証を **Rust の純関数として `cargo test` で表駆動**することを求める
 - `gui/src-tauri/Cargo.toml` の依存は `tauri`・`serde`・`serde_json`・`rfd`・`base64` の5つで、**Unicode 正規化を持つものは無い**（2026-09-02 確認）
-- **提案**: `unicode-normalization`（MIT/Apache-2.0・実行時依存は `tinyvec` のみ）を追加し、**供給網レビュー（AZKi＋ミオ）を通す**。代替（webview 側で正規化して渡す）はレンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる
+- **提案**: `unicode-normalization`（MIT/Apache-2.0・実行時依存は `tinyvec` のみ）を追加し、**供給網レビュー（セキュリティ担当＋ミオ）を通す**。代替（webview 側で正規化して渡す）はレンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる
 - 却下される場合は、**「見た目が同じ別名ファイルが作れる」を残存リスクとして 07 §7.4 に明記**したうえで比較を case-insensitive のみに落とす。範囲逸脱（`templates_user/` の外へ書く）は別レイヤ（親ディレクトリ一致検査）で塞がれているため、影響は重複ファイルに留まる
 
 ### 7-7. 照合の列挙責務を Rust に一本化する（FR-F28 の表現）

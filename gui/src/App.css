@@ -164,13 +164,13 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   border-bottom: 1px solid var(--line); background: var(--surface); flex-wrap: wrap; }
 .toolbar .sep { width: 12px; }
 .toolbar .msg { margin-left: auto; color: var(--sub); font-size: 12px; }
-/* ラミィ（accessibility）差し戻し（issue #73 (b)・3回目確認・WCAG 4.1.3）:
+/* a11y 担当（accessibility）差し戻し（issue #73 (b)・3回目確認・WCAG 4.1.3）:
    視覚的には隠すがスクリーンリーダーには読ませる定番パターン。
    display:none・visibility:hidden は読み上げ自体を止めてしまうため使わない */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .editor-body { flex: 1; display: flex; min-height: 0; }
-/* おかゆ実機検証（issue #73 (b)・候補36件）で発覚: 枠候補パネルが編集領域
+/* テスト担当実機検証（issue #73 (b)・候補36件）で発覚: 枠候補パネルが編集領域
    上部の全幅カードだった当時、パネルが伸びると .editor-body の残り空間が
    ゼロに近づき、canvas が getBoundingClientRect 0px まで潰れていた
    （draw() が cv.width/height を 0 にし、AC-F22 の同時表示が成立しない）。
@@ -204,7 +204,7 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   text-align: right; font-variant-numeric: tabular-nums; }
 .panel-outrow .name { flex: 1; font-size: 12.5px; }
 .panel-outrow.off .name { color: var(--sub); }
-/* issue #71 (a')・スバル差し戻し1: 様式不一致で隠れている面の欄・表は
+/* issue #71 (a')・設計レビュー差し戻し1: 様式不一致で隠れている面の欄・表は
    一覧でも選べない旨をグレー表示＋バッジで示す（--faint は 2.6:1 で本文
    基準割れのため使わず、既存 .off と同じ --sub=約5.9:1 を使う） */
 /* 表の行は欄の行より中身が多い（表名＋行数×列数＝升数＋出力しない件数に
@@ -233,7 +233,7 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .tpl-row .tpl-row-meta { flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tpl-row .btn { flex-shrink: 0; }
-/* 決定カードの補足テキスト（ラミィ a11y レビュー Should-2・2026-09-04）。
+/* 決定カードの補足テキスト（a11y 担当 a11y レビュー Should-2・2026-09-04）。
    .note のスコープ付き指定は .panel／.modal にしか無く、どちらでもない
    決定カードでは見出しと同じ 14px・--ink で出ていた（実測: .tpl-row-meta
    も同値）。メタ情報を本文より弱くして視覚階層を戻す。--sub は白地で
@@ -335,7 +335,7 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .btn.danger:hover { background: #7a1717; }
 
 /* ------------------------------------------------------------------
-   升（表の1マス）単位の出力制御・段9（issue #66）。かなた UI 案 §3.2 の
+   升（表の1マス）単位の出力制御・段9（issue #66）。デザイン担当 UI 案 §3.2 の
    実測に基づく: 升の高さ 28px（WCAG 2.5.8 の 24×24 を上回る）・最小幅 30px・
    可視領域 240px（28 行のうち 7〜8 行が同時に見える）。
    横スクロールは列名の長さと右パネルの幅しだいで出る——列名を最小幅の 30px
@@ -357,7 +357,7 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
   font-weight: 400; min-width: 26px; }
 .cellgrid input { min-width: 16px; min-height: 16px; margin: 0; }
 /* 列名は 30px には入らないので省略に倒す（title に全文）。45 度の縦書きは
-   読み上げ順・折り返し・行の高さのすべてで割に合わない（かなた §3.4） */
+   読み上げ順・折り返し・行の高さのすべてで割に合わない（デザインレビュー §3.4） */
 .cellgrid .colhead { max-width: 64px; }
 .cellgrid .colhead .colhead-name { display: block; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
@@ -372,7 +372,7 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .cand-suggest p { margin: 0 0 4px; }
 .cand-suggest .cand-suggest-btns { display: flex; gap: 6px; flex-wrap: wrap; }
 .cand-suggest .cand-suggest-btns .btn { min-height: 30px; padding: 3px 10px; }
-/* 升グリッドの直前に置くスキップボタン（かなた §6.2 Should）。普段は
+/* 升グリッドの直前に置くスキップボタン（デザインレビュー §6.2 Should）。普段は
    .sr-only で隠れ、Tab で到達したときだけ見える定番のスキップリンク型
    ——新しいクラスは足さず、既存 .sr-only に focus 時の解除だけを足す */
 .sr-only:focus { position: static; width: auto; height: auto; margin: 0;
