@@ -30,7 +30,7 @@ on:
 concurrency:
   group: ci-${{ github.ref }}
   # push では前の run を殺さない。main へ連続 push したとき前の run が kill
-  # されると、その差分に対するフルスイートの結果が残らない（AZKi H-4 と同型）。
+  # されると、その差分に対するフルスイートの結果が残らない（セキュリティ担当 H-4 と同型）。
   # PR は最新版だけ見れば足りるので殺してよい。
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -236,7 +236,7 @@ jobs:
       # 取得済みクレートだけをキャッシュする。target/ は載せない——復元した
       # ビルド成果物は次の cargo 実行でそのまま使われ、build.rs や
       # プロシージャマクロは実行されるコードなので、汚染された成果物が
-      # 復元されると実行経路になる（AZKi M-6）。registry/git は取得物の
+      # 復元されると実行経路になる（セキュリティ担当 M-6）。registry/git は取得物の
       # 保管で、Cargo.lock のハッシュ照合を経てから使われる。
       - name: 取得済みクレートをキャッシュ
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4

@@ -22,7 +22,7 @@ name: guard
 
 on:
   # 全ブランチを対象にする。公開リポジトリでは main に入る前の push でも、その
-  # 時点で blob が公開されるため main だけ見ても遅い（AZKi M-1）。branches を
+  # 時点で blob が公開されるため main だけ見ても遅い（セキュリティ担当 M-1）。branches を
   # 明示しているのでタグ push では起動しない。
   push:
     branches: ['**']
@@ -32,7 +32,7 @@ concurrency:
   group: guard-${{ github.ref }}
   # push では前の run を殺さない。main へ A→B と続けて push したとき、A の run が
   # kill されると A で入った差分が誰にも検査されないまま残る（B の run は B の
-  # 差分しか見ない）。PR は最新版だけ見れば足りるので殺してよい（AZKi H-4）。
+  # 差分しか見ない）。PR は最新版だけ見れば足りるので殺してよい（セキュリティ担当 H-4）。
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -56,7 +56,7 @@ jobs:
         run: |
           # -f はパス名展開を切る（`for path in $(...)` がグロブで化けるのを防ぐ）。
           # pipefail は `git ... | tr` の終了コードを git 側から取るため——付けないと
-          # 末尾の tr の 0 が返り、git が落ちても「該当なし」で通る（AZKi H-3）。
+          # 末尾の tr の 0 が返り、git が落ちても「該当なし」で通る（セキュリティ担当 H-3）。
           set -euf -o pipefail
 
           die() {
@@ -83,7 +83,7 @@ jobs:
             REV="$GITHUB_SHA"
             # main 以外のブランチは origin/main との分岐点を起点にする。新しい
             # ブランチの初回 push は before が全ゼロで、そこで全量走査へ落ちると
-            # 受け入れ済みの testdata/formB/formB-1.png が毎回赤くなる（AZKi M-1）。
+            # 受け入れ済みの testdata/formB/formB-1.png が毎回赤くなる（セキュリティ担当 M-1）。
             # main への push で merge-base を使うと origin/main が自分自身になり
             # 差分が空になってしまうので、そちらは before を使う。
             if [ "$GITHUB_REF" != "refs/heads/main" ] \
@@ -130,7 +130,7 @@ jobs:
           for path in $changed; do
             [ -n "$path" ] || continue
             # 文字集合は pre-commit と同じ列挙にする（`tr A-Z a-z` は範囲指定が
-            # ロケール依存で、環境によって想定外の対応表になりうる・AZKi LOW）
+            # ロケール依存で、環境によって想定外の対応表になりうる・セキュリティ担当 LOW）
             lower=$(printf '%s' "$path" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
             case "$lower" in
               workdir/*|*/workdir/*)
@@ -144,7 +144,7 @@ jobs:
               # JSON は鍵の既定の入れ物（GCP のサービスアカウント鍵は
               # <project-id>-<hash>.json という名前で降ってくる）。免除は完全パスか
               # 実在ディレクトリ限定にし、.gitignore の否定行と同じ顔ぶれに保つ
-              # （AZKi M-5）。広い glob にすると、そこへ置くだけで検査を外せる。
+              # （セキュリティ担当 M-5）。広い glob にすると、そこへ置くだけで検査を外せる。
               *.json)
                 case "$path" in
                   # schema/ は .gitignore が `!/schema/**/*.json` で再帰的に戻すのに対し、
@@ -172,7 +172,7 @@ jobs:
               *.png|*.jpg|*.jpeg|*.tif|*.tiff|*.bmp)
                 # 正当な同梱アセット（アイコンと静的ファイル）と testdata の合成画像
                 # だけ免除する。testdata は完全パス指定にする——`testdata/*` にすると
-                # そこへ本物のスキャンを置けば検査を外せる（AZKi 回答7）。
+                # そこへ本物のスキャンを置けば検査を外せる（セキュリティ担当 回答7）。
                 case "$path" in
                   gui/src-tauri/icons/*|gui/public/*) continue ;;
                   testdata/formB/formB-1.png) continue ;;
@@ -189,22 +189,22 @@ jobs:
           # 「中身の量」（.githooks/pre-commit と同じ5本・同じ並び）。名前だけを見ると
           # 資格情報を扱うソースとそのテストが毎回引っかかり、検査を外す運用に倒れる。
           #
-          # type が service_account の宣言は見ない（AZKi M-3）。鍵本体を伴わない
+          # type が service_account の宣言は見ない（セキュリティ担当 M-3）。鍵本体を伴わない
           # サービスアカウント JSON は秘密材料を含まず、private_key_id があれば S2 が
           # 拾う。加えて .gitignore が全階層の *.json を落としているので add に -f が
           # 要り、上のパス基準 *.json でも許可リスト外は止まる。
           #
-          # -G の性質（AZKi LOW）: git は拡張正規表現で、差分の1行ごとに照合する。
+          # -G の性質（セキュリティ担当 LOW）: git は拡張正規表現で、差分の1行ごとに照合する。
           # 複数行にまたがるパターンは書いても効かない——だから「ヘッダ行」(S4) と
           # 「本体行」(S3) を別々に受ける。CRLF のリポジトリでは行末の CR が行の一部
           # として残るため、行末アンカーの手前に [[:space:]]* が要る（付けないと
-          # CRLF の PEM が丸ごと素通りする・AZKi H-2）。アンカー自体は外さない——
+          # CRLF の PEM が丸ごと素通りする・セキュリティ担当 H-2）。アンカー自体は外さない——
           # 外すと package-lock.json / Cargo.lock 等が誤検出になる。
           #
           # 除外リストは持たない——除外はそのまま穴になる（そこへ鍵を置けば抜けられる）。
           # パターンは自分自身に一致しない綴りにしてある。
           #
-          # 既知の限界（AZKi L-1・2026-09-03）:
+          # 既知の限界（セキュリティ担当 L-1・2026-09-03）:
           #   取りこぼす: 行をまたいで断片を連結した鍵（-G は1行ごとの照合なので原理的に届かない）。
           #               AWS のアクセスキーと GitHub の PAT も対象外——ここは GCP と PEM に絞っている。
           #   将来当たる: 裸の64桁16進が並ぶファイルと、折り返した data URI（どちらも現リポには無い）。
