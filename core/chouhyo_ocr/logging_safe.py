@@ -34,7 +34,17 @@ error.log）のみ——GUI 表示・stdout の JSON Lines・出力ファイル�
 from __future__ import annotations
 
 import logging
+import logging.handlers
 from pathlib import Path
+
+# ログのローテーション上限（issue #156）。既定のままだと app.log は無停止で
+# 際限なく育つ（実測: 2026-08-27 から無停止で 3.87MB）。source_file・path 等の
+# 白リスト済みキーは記入値ではないが、入力ファイル名や絶対パスをそのまま
+# 通す運用（利用者がファイルを人名で命名していれば氏名の索引になりうる）
+# のため、無期限に貯め続けない上限を設ける。5MB・世代3（app.log ＋
+# app.log.1〜3）は目安値——大きすぎず、直近の診断に足る程度の量を残す
+_MAX_LOG_BYTES = 5 * 1024 * 1024
+_LOG_BACKUP_COUNT = 3
 
 _ALLOWED_KEYS = {
     "source_file", "page_no", "page_id", "step", "error_code",
@@ -87,14 +97,18 @@ def init(log_dir: str | Path) -> None:
     _app = logging.getLogger("chouhyo.app")
     _app.setLevel(logging.INFO)
     _app.handlers.clear()
-    h = logging.FileHandler(d / "app.log", encoding="utf-8")
+    h = logging.handlers.RotatingFileHandler(
+        d / "app.log", maxBytes=_MAX_LOG_BYTES, backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8")
     h.setFormatter(fmt)
     _app.addHandler(h)
 
     _err = logging.getLogger("chouhyo.error")
     _err.setLevel(logging.WARNING)
     _err.handlers.clear()
-    h2 = logging.FileHandler(d / "error.log", encoding="utf-8")
+    h2 = logging.handlers.RotatingFileHandler(
+        d / "error.log", maxBytes=_MAX_LOG_BYTES, backupCount=_LOG_BACKUP_COUNT,
+        encoding="utf-8")
     h2.setFormatter(fmt)
     _err.addHandler(h2)
 

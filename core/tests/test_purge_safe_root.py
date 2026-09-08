@@ -21,6 +21,7 @@ PM決定 (b)・2026-09-07）。
 （`_unsafe_workdir_reason` が文字列判定を先に見る）ことに支えられている）。
 """
 import json
+from pathlib import Path
 
 import pytest
 
@@ -323,6 +324,146 @@ def test_logs_dir_with_unrecognized_file_is_partially_kept(tmp_path):
     assert not (tool_logs / "app.log").exists()
     assert (tool_logs / "memo.txt").exists()
     assert tool_logs.exists()              # 中身が残っているのでフォルダは残る
+
+
+# ========== responses/ の書き込み中一時ファイル（issue #151・2026-09-08） ==========
+#
+# vision_client._atomic_write_text は本体を書く前に "<name>.<pid>.tmp" を
+# 作り os.replace する。強制終了・電源断で tmp のまま残ると、素の拡張子一致
+# （".json"）ではすり抜け「ツールが作ったものではない」に分類されてしまう。
+
+def test_yes_removes_responses_inflight_tmp_file(tmp_path, capsys):
+    """<page_id>.json.<pid>.tmp は _RESPONSES_TMP_RE のパターン一致で
+    削除対象になり、kept にも数えず、空になった responses/ ごと消える。
+    """
+    wd = tmp_path / "wd"; wd.mkdir()
+    responses = wd / "responses"; responses.mkdir()
+    tmp_file = responses / "p1.json.1234.tmp"
+    tmp_file.write_text("x", encoding="utf-8")
+    cfg = _cfg_file(tmp_path, wd)
+
+    assert _run(cfg, "--yes") == 0
+
+    assert not tmp_file.exists()
+    assert not responses.exists()          # 中身が空になったのでフォルダごと消える
+
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["removed"] == 1 and ev["failed"] == 0
+    assert ev["kept"] == 0 and ev["kept_examples"] == []
+
+
+def test_yes_removes_responses_meta_sidecar_inflight_tmp_file(tmp_path, capsys):
+    """サイドカー（<page_id>.meta.json）側の書き込み中一時ファイルも
+    同じパターンで一致し、既存の本体 .json と混在しても両方消える。
+    """
+    wd = tmp_path / "wd"; wd.mkdir()
+    responses = wd / "responses"; responses.mkdir()
+    (responses / "p1.json").write_text("{}", encoding="utf-8")
+    tmp_file = responses / "p1.meta.json.5678.tmp"
+    tmp_file.write_text("x", encoding="utf-8")
+    cfg = _cfg_file(tmp_path, wd)
+
+    assert _run(cfg, "--yes") == 0
+
+    assert not (responses / "p1.json").exists()
+    assert not tmp_file.exists()
+    assert not responses.exists()
+
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["removed"] == 2 and ev["kept"] == 0
+
+
+def test_responses_unrelated_tmp_file_is_kept(tmp_path, capsys):
+    """`.json.<数字>.tmp` の形に一致しないファイルは responses/ 内でも残す
+    ——利用者が直接置いた無関係ファイルを誤って巻き込まないことの確認。
+    """
+    wd = tmp_path / "wd"; wd.mkdir()
+    responses = wd / "responses"; responses.mkdir()
+    unrelated = responses / "memo.tmp"
+    unrelated.write_text("x", encoding="utf-8")
+    cfg = _cfg_file(tmp_path, wd)
+
+    assert _run(cfg, "--yes") == 0
+
+    assert unrelated.exists()
+    assert responses.exists()
+
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["removed"] == 0
+    assert ev["kept"] == 1 and ev["kept_examples"] == ["responses/memo.tmp"]
+
+
+# ========== 許可リストのフォルダを列挙・rmdir できない場合（issue #144） ==========
+#
+# 以前の `_classify_tool_subdir` は iterdir 失敗を [], [] で握りつぶし、
+# `_purge_workdir` の rmdir 失敗も無言で pass していた。どちらも実際には
+# 何も消せていない・フォルダが残っているのに、purged イベントの failed が
+# 0 のままになる（プレビューと実削除後の状態が食い違う）不具合だった。
+
+def test_subdir_unreadable_counts_as_failed_not_silently_zero(tmp_path, capsys, monkeypatch):
+    """responses/ の中身を列挙できない（権限エラー等）場合、以前は
+    [], [] が返って「対象0・残存0」に見えていた。failed に計上し、
+    中身には触らない（＝実ファイルは残る）ことを固定する。
+    """
+    wd = tmp_path / "wd"; wd.mkdir()
+    responses = wd / "responses"; responses.mkdir()
+    (responses / "p1.json").write_text("{}", encoding="utf-8")
+    cfg = _cfg_file(tmp_path, wd)
+
+    real_iterdir = Path.iterdir
+
+    def _boom_iterdir(self):
+        if self == responses:
+            raise PermissionError("simulated: cannot list responses/")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _boom_iterdir)
+
+    # 削除できなかったものがある（failed>0）ので rc=1
+    assert _run(cfg, "--yes") == 1
+
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["removed"] == 0
+    assert ev["failed"] == 1
+    # プレビュー相当の _scan_workdir_entries も同じ理由で列挙できないため、
+    # 「読み取り不可」として kept 側に数える（実削除前後で一致させる）
+    assert ev["kept"] == 1 and ev["kept_examples"] == ["responses/(読み取り不可)"]
+    assert (responses / "p1.json").exists()  # 列挙できなかったので触っていない
+
+    app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "purge_subdir_unreadable" in app_log
+
+
+def test_subdir_rmdir_failure_counts_as_failed_not_silently_zero(tmp_path, capsys, monkeypatch):
+    """フォルダの中身は全部消せても、空になったフォルダ自体の rmdir が
+    失敗する場合（使用中・権限等）、以前は握りつぶされ purged イベントの
+    failed が実態（フォルダが残っている）と食い違っていた。
+    """
+    wd = tmp_path / "wd"; wd.mkdir()
+    pages = wd / "pages"; pages.mkdir()
+    (pages / "0001.png").write_text("x", encoding="utf-8")
+    cfg = _cfg_file(tmp_path, wd)
+
+    real_rmdir = Path.rmdir
+
+    def _boom_rmdir(self):
+        if self == pages:
+            raise PermissionError("simulated: cannot rmdir pages/")
+        return real_rmdir(self)
+
+    monkeypatch.setattr(Path, "rmdir", _boom_rmdir)
+
+    # 削除できなかったもの（フォルダ自体）がある（failed>0）ので rc=1
+    assert _run(cfg, "--yes") == 1
+
+    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    assert ev["removed"] == 1        # 中身のファイルは消えている
+    assert ev["failed"] == 1         # フォルダ自体が残った分を数える
+    assert not (pages / "0001.png").exists()
+    assert pages.exists()            # rmdir が失敗したのでフォルダ自体は残る
+
+    app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
+    assert "purge_subdir_rmdir_failed" in app_log
 
 
 # ========== USERPROFILE 欠落時の警告（issue #108 レビュー指摘・2026-09-07） ==========

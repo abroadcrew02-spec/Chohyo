@@ -12,6 +12,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import logging_safe as log
+
 # state: pending → expanded → aligned → sending → received → done
 #        枝分かれ: failed（処理不能）／skipped_duplicate（同一内容の再投入）
 # ※ 旧コメントにあった "mapped" は実在しない値だった（レビュー LOW）。
@@ -89,13 +91,29 @@ class StoreError(RuntimeError):
     """
 
 
+# `IN (...)`/`NOT IN (...)` に1クエリで詰め込むプレースホルダ数の上限
+# （issue #150 (3)）。SQLite の変数上限は環境によって既定999のことがあり、
+# 約1,000升超のテンプレートで `upsert_cells` の `NOT IN (...)` が実行時
+# エラーになっていた。999 より十分低い値にして安全側に倒す
+_CELL_DELETE_CHUNK = 900
+
+
 class Store:
     def __init__(self, db_path: str | Path):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         # transaction() の入れ子深度（0 = 各メソッドが自分で commit する従来動作）
         self._tx_depth = 0
         self.con = sqlite3.connect(db_path)
-        self.con.execute("PRAGMA journal_mode=WAL")
+        wal_row = self.con.execute("PRAGMA journal_mode=WAL").fetchone()
+        wal_mode = wal_row[0] if wal_row else None
+        if not (isinstance(wal_mode, str) and wal_mode.lower() == "wal"):
+            # issue #150 (2): ネットワーク共有・読み取り専用 FS 等では要求どおり
+            # WAL へ切り替わらず、黙って delete モードのままになることがある
+            # （SQLite の仕様——PRAGMA は失敗せず、要求前のモードを返すだけ）。
+            # busy_timeout の前提（同一 DB への複数接続が共存し、書き込みは
+            # 待ちで吸収される）が delete モードでは崩れるため、痕跡を残す
+            log.warn("wal_mode_not_active",
+                     state=wal_mode if isinstance(wal_mode, str) else "")
         # WAL では NORMAL で十分な耐久性（アプリクラッシュ・プロセス強制終了では
         # 何も失われず、DB も壊れない）。FULL は commit 毎 fsync で、ページ毎に
         # 十数回 commit する本ツールでは実測に響く（issue #16）。失われうるのは
@@ -404,18 +422,38 @@ class Store:
                  kind=excluded.kind, is_empty_row=excluded.is_empty_row""",
             [(page_id, *r) for r in rows])
         keep = [r[0] for r in rows]
-        if keep:
-            ph = ",".join("?" * len(keep))
-            self.con.execute(
-                f"DELETE FROM cell WHERE page_id=? AND field_id NOT IN ({ph})",
-                (page_id, *keep))
-        else:
+        if not keep:
             # rows が空なら「残す欄が無い」＝全削除。空文字の IN 句を組み立てると
             # `NOT IN ()` になり sqlite3 の構文エラーで落ちる（#53 L-10）。
             # 呼び出し元（pipeline._map_and_score・remap）では例外が
             # `except Exception` に捕まって「様式不一致」へ化けるため、
             # 原因不明の様式不一致として現れていた
             self.con.execute("DELETE FROM cell WHERE page_id=?", (page_id,))
+        elif len(keep) <= _CELL_DELETE_CHUNK:
+            # 大多数のテンプレートはここを通る（1クエリで済ませる・従来どおり）
+            ph = ",".join("?" * len(keep))
+            self.con.execute(
+                f"DELETE FROM cell WHERE page_id=? AND field_id NOT IN ({ph})",
+                (page_id, *keep))
+        else:
+            # issue #150 (3): `NOT IN (...)` のプレースホルダを行数ぶん生成すると
+            # SQLite の変数上限（環境によっては既定999）を約1,000升超のテンプレート
+            # で超え、実行時エラーが起きる。呼び出し元は `except Exception` で
+            # 拾うため「様式不一致」に化けて原因が分からなくなる（issue #37/#80 と
+            # 同型の取り違え）。NOT IN のまま単純にチャンク分割すると、各チャンクが
+            # 「自分のチャンクに無いものは消す」と解釈して keep の他チャンク分まで
+            # 消してしまうため素朴な分割はできない——既存 field_id を読み、
+            # 削除対象（existing - keep）を Python 側で求めてから、IN (...) 側を
+            # チャンクに分けて削除する
+            existing = {r[0] for r in self.con.execute(
+                "SELECT field_id FROM cell WHERE page_id=?", (page_id,))}
+            to_delete = list(existing - set(keep))
+            for i in range(0, len(to_delete), _CELL_DELETE_CHUNK):
+                chunk = to_delete[i:i + _CELL_DELETE_CHUNK]
+                ph = ",".join("?" * len(chunk))
+                self.con.execute(
+                    f"DELETE FROM cell WHERE page_id=? AND field_id IN ({ph})",
+                    (page_id, *chunk))
         self._commit()
 
     def cells(self, page_id: str) -> dict[str, tuple]:
@@ -509,6 +547,10 @@ class Store:
             try:
                 t = json.loads(transform)
             except (ValueError, TypeError):
+                # issue #144: 以前は無言で落としていた。呼び出し側は面が
+                # 1つでも欠ければ再整列に倒すので run 自体は止めないが、
+                # 痕跡が残らないと「毎回なぜか再整列が走る」原因を追えない
+                log.warn("align_transform_broken", page_id=page_id)
                 continue
             if isinstance(t, dict):
                 out[face_id] = (t, bool(ok), geo, algo, tpl)
@@ -537,6 +579,8 @@ class Store:
             try:
                 t = json.loads(transform)
             except (ValueError, TypeError):
+                # issue #144: alignments() と同じ理由でここも痕跡を残す
+                log.warn("align_transform_broken", page_id=page_id)
                 continue
             if not isinstance(t, dict):
                 continue

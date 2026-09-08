@@ -23,7 +23,7 @@ from .mapping import assign, symbols_from_response, to_face_local
 from .render_out import write_outputs
 from .render_rows import Row, build_failure_row, build_row
 from .pipeline_errors import OperationRefused
-from .store import Store
+from .store import Store, StoreError
 from .template import Template, load_template
 from .vision_client import (OcrClient, SendError, load_saved_response,
                             save_response)
@@ -365,6 +365,11 @@ def _restore_alignment(store: Store, template: Template, aligned_dir: Path,
             with Image.open(img_path) as fh:
                 img = fh.convert("RGB")
         except Exception:  # noqa: BLE001 — 壊れた中間データは再整列で作り直す
+            # issue #144: 以前は無言で再整列に倒していた。1ページの破損は
+            # 再整列で自己修復するので run 自体は止めないが、痕跡が残らないと
+            # 「毎回なぜか再整列が走る」原因を追えないため、頻度を診断できる
+            # よう app.log へ残す（page_id のみ・記入値は含まない）
+            log.warn("aligned_image_broken", page_id=page_id)
             return None
         if img.size != (r.w, r.h):
             return None
@@ -940,6 +945,31 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                  token_rows) = _map_and_score(
                     store, template, pid, resp, faces,
                     snap_by_face=snap_by_face)
+            except (sqlite3.Error, StoreError) as e:
+                # issue #138: DB 障害（ロック競合・store.py の整合性検査違反）を
+                # 様式不一致と取り違えない。原因はテンプレートでも記入内容でも
+                # なく中間データ側にあるため、`_render_locked` の
+                # row_build_failed/row_build_bug 分離と同じ発想で理由コードを
+                # 分ける。STATUS_INTERRUPTED（未処理（中断））を使うのは、この
+                # ページが「次回 run で再処理される」という含意がここでは正しい
+                # ため——state はここでは動かさない（sending/received のまま
+                # 残す）。failed に落とすと次回 run の todo に入った際に
+                # Vision へ再送＝再課金されるが、state を保てば次回 run は
+                # 保存済み応答（送信直後に save_response 済み）を再利用して
+                # 割付だけやり直せる。status は明示的に上書きする——ここで
+                # 何もしないと、以前の run が残した別の status（様式不一致等）
+                # が消えずに残り、今回の原因と食い違って利用者を誤誘導しうる
+                import traceback
+                summary.processed_failed += 1  # #53 L-9
+                store.set_status(pid, render_rows.STATUS_INTERRUPTED,
+                                 reason="store_error")
+                log.error("store_error", page_id=pid, error_code=type(e).__name__)
+                log.error_trace(type(e).__name__,
+                                "".join(traceback.format_tb(e.__traceback__)))
+                progress({"event": "page", "page_id": pid,
+                          "status": render_rows.STATUS_INTERRUPTED,
+                          "reason_code": "store_error"})
+                continue
             except Exception as e:  # noqa: BLE001
                 store.set_state(pid, "failed")
                 # M-2（2026-09-02 レビュー担当指摘）: 送信後3コードにも専用理由コードを

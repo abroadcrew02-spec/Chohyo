@@ -167,6 +167,41 @@ def test_missing_aligned_image_forces_realign(tmp_path, monkeypatch):
     assert second.calls == 1
 
 
+def test_corrupted_aligned_image_forces_realign_and_logs_warning(tmp_path, monkeypatch):
+    """整列画像が壊れている（存在するが開けない）場合も再利用せず作り直す。
+
+    issue #144: 以前は `except Exception: return None` が無言で再整列に
+    倒していた。1ページの破損だけでは run 自体を止めない（自己修復する）が、
+    痕跡が app.log に残ることを固定する（page_id のみ・記入値は含まない）。
+    """
+    from chouhyo_ocr import cli
+
+    inp = tmp_path / "input"; inp.mkdir()
+    resp = tmp_path / "resp"; resp.mkdir()
+    put_pages(inp, resp, 1)
+    log_dir = tmp_path / "logs"
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({
+        "output_dir": str(tmp_path / "out"), "workdir": str(tmp_path / "wd"),
+        "log_dir": str(log_dir), "send_limit": 0}), encoding="utf-8")
+    assert cli.main(["--config", str(cfg_path), "run", "--input", str(inp),
+                     "--template", str(TPL), "--replay", str(resp)]) == 0
+
+    pngs = sorted((tmp_path / "wd" / "aligned").glob("*.png"))
+    assert pngs
+    pngs[0].write_bytes(b"not a png")  # 存在するが壊れている（削除ではない）
+
+    second = AlignCounter(monkeypatch)
+    assert cli.main(["--config", str(cfg_path), "run", "--input", str(inp),
+                     "--template", str(TPL), "--replay", str(resp)]) == 0
+    assert second.calls == 1  # 再利用せず作り直した
+
+    app_log = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                        for p in log_dir.glob("*.log"))
+    assert "aligned_image_broken" in app_log
+    assert "page_id=" in app_log
+
+
 def test_reuse_produces_identical_send_and_output(tmp_path, monkeypatch):
     """再利用しても送信画像・出力行が「再利用しない場合」と一致する（受入基準5）。"""
     # A: 1回目で上限に当てて整列だけ済ませ、2回目に再利用して送信する

@@ -76,7 +76,6 @@ words[].symbols[]` および `textAnnotations[]` の各階層に同型でネス�
 from __future__ import annotations
 
 import copy
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -199,40 +198,3 @@ def shift_response_vertices(resp_json: dict, region: Rect | tuple[int, int, int,
     out = copy.deepcopy(resp_json)
     _walk_shift(out, region_t, dy)
     return out
-
-
-# ---------------------------------------------------------------------------
-# §10.2-7: 複数テンプレート状態（templates_user/）の fixture
-# ---------------------------------------------------------------------------
-#
-# templates/ 直下は Tauri（gui/src-tauri/tauri.conf.json）が配布物へ丸ごと
-# 同梱するため、利用者の顧客固有テンプレートを置く場所ではない
-# （06_second_form_findings.md §0.2-2・07要件 v0.4 変更点2）。実運用では
-# `templates_user/` に置く想定——ただし現状このディレクトリはリポジトリに
-# 存在せず、.gitignore の `*.json` ルールの副作用で偶然無視されているだけ
-# だった（セキュリティ担当 M-6）。本 fixture はテスト実行時にだけ
-# `templates_user/formB-v1.json`（testdata/formB/formB-v1.json の複製）を
-# 作り、テスト終了後に削除する。
-def copy_template_to_user_dir(repo_root: Path | None = None) -> Path:
-    """testdata/formB/formB-v1.json を templates_user/formB-v1.json へ複製する。
-
-    戻り値: 複製先のパス。呼び出し元が finally 節で
-    `cleanup_user_template_dir()` を呼ぶこと（このモジュールは pytest の
-    fixture 登録を行わない——helpers_geom.py 自身は conftest ではないため、
-    自動 teardown はしない設計）。
-    """
-    root = repo_root or Path(__file__).resolve().parents[2]
-    src = root / "testdata" / "formB" / "formB-v1.json"
-    dst_dir = root / "templates_user"
-    dst_dir.mkdir(exist_ok=True)
-    dst = dst_dir / "formB-v1.json"
-    shutil.copy(src, dst)
-    return dst
-
-
-def cleanup_user_template_dir(repo_root: Path | None = None) -> None:
-    """copy_template_to_user_dir が作った templates_user/ を削除する（存在すれば）。"""
-    root = repo_root or Path(__file__).resolve().parents[2]
-    dst_dir = root / "templates_user"
-    if dst_dir.exists():
-        shutil.rmtree(dst_dir)

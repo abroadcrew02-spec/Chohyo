@@ -284,9 +284,19 @@ def cmd_verify(args) -> int:
         proc = subprocess.run([str(pdftoppm_path()), "-v"], capture_output=True, timeout=30)
         _progress({"event": "verify", "check": "poppler", "ok": proc.returncode == 0})
         ok = ok and proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        # issue #150 (5): 以前は error キーが無く、タイムアウトと「pdftoppm が
+        # 無い」が同一イベントに潰れて区別できなかった。固定コードのみ
+        # （パス・例外メッセージは出さない・issue #2 と同じ方針）
+        ok = False
+        _progress({"event": "verify", "check": "poppler", "ok": False, "error": "timeout"})
+    except (FileNotFoundError, OSError):
+        # poppler 未インストール・PATH 未設定など、実行ファイルに到達できない
+        ok = False
+        _progress({"event": "verify", "check": "poppler", "ok": False, "error": "not_found"})
     except Exception:
         ok = False
-        _progress({"event": "verify", "check": "poppler", "ok": False})
+        _progress({"event": "verify", "check": "poppler", "ok": False, "error": "failed"})
     # 保存先が同期フォルダ配下でないか（要配慮個人情報の同期防止・issue #8）
     from .paths import is_cloud_synced_path
     synced = [name for name, d in
@@ -420,86 +430,101 @@ def cmd_expand_page(args) -> int:
         from .align import AlignError, PageSizeMismatch, align_page
         from .align import template_hash as _tpl_hash
         from .template import TemplateError, load_template
-        template = load_template(args.template)
-        # expand-page も pipeline._load を経由しないため template_loaded を
-        # 自前で出す（cmd_verify と同じ理由・不変条件A・Q-S1・FR-F50・
-        # 08_frame_detection_design.md §1.4）
-        log.info("template_loaded", template_hash=_tpl_hash(
-            json.loads(Path(args.template).read_text(encoding="utf-8"))))
-        with Image.open(page_path) as img:
-            img.load()
-            # --no-mask: 除外領域を白塗りしない下地を返す（#59 H-8）。編集画面が
-            # 出荷テンプレの除外を焼いた画像しか下地に持てず、除外枠の位置調整・
-            # 取捨の判断材料が無かった問題への対応。run（送信経路）はこの引数に
-            # 到達しない——expand-page からしか呼ばれない分岐
-            _faces, composite = align_page(img, template, mask=not args.no_mask)
-        # 名前は決め打ちで毎回上書き（同じ紙を開き直すたびに増やさない）。
-        # 別ページを開き直すと旧ページの -aligned.png は上書きされず残るため、
-        # expand() の stale 掃除（<stem>-<数字> 完全一致）に -aligned.png 用の
-        # 分岐を足して一緒に消している（#60 M-7・帳票原本の複製が滞留する問題）
-        out = out_dir / f"{src.stem}-p{args.page:04d}-aligned.png"
-        composite.save(out, format="PNG", compress_level=3)
-        page_path = out.resolve()
-        aligned = True
-        # 成功側の verdict（全面 match のはず・08 §2.6 の例）。
-        # M-3（2026-09-02 レビュー担当指摘）: from_faces 自体を内側 try で囲む。
-        # aligned=True 確定後にここで例外が起きると、囲わない場合は下の
-        # except 節（例: 汎用 Exception → fail_reason="other"）に落ちて
-        # 「aligned:true なのに reason も乗る」という既存契約違反の応答に
-        # なる（aligned:false のときだけ reason を返す契約・テストで固定
-        # 済み）。判定関数の例外は verdict を欠落させるだけに留め、
-        # expand-page 自体（画像は既に保存済み）は成功のまま返す
-        try:
-            verdict_fields = _expand_page_verdict_fields(
-                format_check.from_faces(_faces),
-                estimates={f.face_id: f.estimate for f in _faces})
-        except Exception as ex:  # noqa: BLE001
-            import traceback
-            log.error("format_check_failed", error_code=type(ex).__name__)
-            log.error_trace(type(ex).__name__,
-                            "".join(traceback.format_tb(ex.__traceback__)))
-    # テンプレート破損・位置合わせ失敗・画像不正のいずれも生画像で続行する
-    # （契約は変えない・GUI は aligned:false のまま編集を続けられる）。以前は
-    # bare except Exception 一本で全部を同じ aligned:false に潰していたため、
-    # テンプレート破損（設定ミス・要修正）と位置合わせ失敗（紙の品質）を
-    # GUI 側で区別できなかった。reason に**種別のみ**を載せる——例外メッセージ
-    # 本文は出さない（パスに入力ファイル名が乗りうる・既存方針どおり）
-    except TemplateError:
-        fail_reason = "template"
-        # テンプレートが読めていないため判定を行わない（verdict は返さない・
-        # 08 §2.6）
-    # N-2: PageSizeMismatch は AlignError のサブクラス（Q-H1）。基底クラスより
-    # 前に置かないと下の except AlignError に落ちて "align"（位置合わせ失敗）
-    # に化ける——run（送信経路）ではこの入力は様式不一致として弾かれるため、
-    # 編集画面には "align" ではなく専用の reason を返して案内を分ける
-    except PageSizeMismatch:
-        fail_reason = "size"
-        # LOW（2026-09-02 レビュー担当指摘）: size 用の PageVerdict を直接組んで
-        # 唯一の整形関数（_expand_page_verdict_fields）へ通す——辞書リテラルを
-        # 個別に持つと、_expand_page_verdict_fields 側のキー構成を変えたときに
-        # ここだけ追随し忘れる二重定義になる（pipeline.py の同種構成と統一）
-        verdict_fields = _expand_page_verdict_fields(
-            format_check.PageVerdict("mismatch", "size", -1.0, ()))
-    except AlignError as e:
-        fail_reason = "align"
-        # AC-F14 と同じ歯止め: 判定関数の例外で verdict を欠落させるだけに
-        # 留め、expand-page 自体は生画像＋aligned:false で従来どおり続行する
-        try:
-            pv = format_check.from_diag(e.diag)
-            verdict_fields = _expand_page_verdict_fields(
-                pv, estimates={d.face_id: d.estimate for d in e.diag})
-        except Exception as ex:  # noqa: BLE001
-            import traceback
-            # error_trace の第1引数は error_code（型名）。format_tb のみ渡す
-            # （例外メッセージ本文は帳票の値を含みうるため出さない・
-            # logging_safe.error_trace の docstring・pipeline.py と同型）
-            log.error("format_check_failed", error_code=type(ex).__name__)
-            log.error_trace(type(ex).__name__,
-                            "".join(traceback.format_tb(ex.__traceback__)))
-    except (OSError, ValueError):
-        fail_reason = "image"
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — hidden import 漏れ等（issue #142）。
+        # 依存を読み込めないと以降の判定を一切実行できない。以前はこの import
+        # を下の try（except TemplateError 等）の内側に置いていたため、import
+        # 失敗時は TemplateError 等の例外クラス名自体が未定義のままとなり、
+        # except 節の評価そのものが NameError を起こしてこの関数を素通りし、
+        # main() の汎用ハンドラへ抜けて expand_page イベントを一つも出さずに
+        # exit 1 していた（GUI は「展開中…」のまま止まる）。import を外側の
+        # 専用 except で受けることで、生画像のまま aligned:false・reason="other"
+        # として従来の失敗経路（下の except Exception と同じ扱い）へ合流させる
+        import traceback
+        log.error("expand_page_import_failed", error_code=type(e).__name__)
+        log.error_trace(type(e).__name__, "".join(traceback.format_tb(e.__traceback__)))
         fail_reason = "other"
+    else:
+        try:
+            template = load_template(args.template)
+            # expand-page も pipeline._load を経由しないため template_loaded を
+            # 自前で出す（cmd_verify と同じ理由・不変条件A・Q-S1・FR-F50・
+            # 08_frame_detection_design.md §1.4）
+            log.info("template_loaded", template_hash=_tpl_hash(
+                json.loads(Path(args.template).read_text(encoding="utf-8"))))
+            with Image.open(page_path) as img:
+                img.load()
+                # --no-mask: 除外領域を白塗りしない下地を返す（#59 H-8）。編集画面が
+                # 出荷テンプレの除外を焼いた画像しか下地に持てず、除外枠の位置調整・
+                # 取捨の判断材料が無かった問題への対応。run（送信経路）はこの引数に
+                # 到達しない——expand-page からしか呼ばれない分岐
+                _faces, composite = align_page(img, template, mask=not args.no_mask)
+            # 名前は決め打ちで毎回上書き（同じ紙を開き直すたびに増やさない）。
+            # 別ページを開き直すと旧ページの -aligned.png は上書きされず残るため、
+            # expand() の stale 掃除（<stem>-<数字> 完全一致）に -aligned.png 用の
+            # 分岐を足して一緒に消している（#60 M-7・帳票原本の複製が滞留する問題）
+            out = out_dir / f"{src.stem}-p{args.page:04d}-aligned.png"
+            composite.save(out, format="PNG", compress_level=3)
+            page_path = out.resolve()
+            aligned = True
+            # 成功側の verdict（全面 match のはず・08 §2.6 の例）。
+            # M-3（2026-09-02 レビュー担当指摘）: from_faces 自体を内側 try で囲む。
+            # aligned=True 確定後にここで例外が起きると、囲わない場合は下の
+            # except 節（例: 汎用 Exception → fail_reason="other"）に落ちて
+            # 「aligned:true なのに reason も乗る」という既存契約違反の応答に
+            # なる（aligned:false のときだけ reason を返す契約・テストで固定
+            # 済み）。判定関数の例外は verdict を欠落させるだけに留め、
+            # expand-page 自体（画像は既に保存済み）は成功のまま返す
+            try:
+                verdict_fields = _expand_page_verdict_fields(
+                    format_check.from_faces(_faces),
+                    estimates={f.face_id: f.estimate for f in _faces})
+            except Exception as ex:  # noqa: BLE001
+                import traceback
+                log.error("format_check_failed", error_code=type(ex).__name__)
+                log.error_trace(type(ex).__name__,
+                                "".join(traceback.format_tb(ex.__traceback__)))
+        # テンプレート破損・位置合わせ失敗・画像不正のいずれも生画像で続行する
+        # （契約は変えない・GUI は aligned:false のまま編集を続けられる）。以前は
+        # bare except Exception 一本で全部を同じ aligned:false に潰していたため、
+        # テンプレート破損（設定ミス・要修正）と位置合わせ失敗（紙の品質）を
+        # GUI 側で区別できなかった。reason に**種別のみ**を載せる——例外メッセージ
+        # 本文は出さない（パスに入力ファイル名が乗りうる・既存方針どおり）
+        except TemplateError:
+            fail_reason = "template"
+            # テンプレートが読めていないため判定を行わない（verdict は返さない・
+            # 08 §2.6）
+        # N-2: PageSizeMismatch は AlignError のサブクラス（Q-H1）。基底クラスより
+        # 前に置かないと下の except AlignError に落ちて "align"（位置合わせ失敗）
+        # に化ける——run（送信経路）ではこの入力は様式不一致として弾かれるため、
+        # 編集画面には "align" ではなく専用の reason を返して案内を分ける
+        except PageSizeMismatch:
+            fail_reason = "size"
+            # LOW（2026-09-02 レビュー担当指摘）: size 用の PageVerdict を直接組んで
+            # 唯一の整形関数（_expand_page_verdict_fields）へ通す——辞書リテラルを
+            # 個別に持つと、_expand_page_verdict_fields 側のキー構成を変えたときに
+            # ここだけ追随し忘れる二重定義になる（pipeline.py の同種構成と統一）
+            verdict_fields = _expand_page_verdict_fields(
+                format_check.PageVerdict("mismatch", "size", -1.0, ()))
+        except AlignError as e:
+            fail_reason = "align"
+            # AC-F14 と同じ歯止め: 判定関数の例外で verdict を欠落させるだけに
+            # 留め、expand-page 自体は生画像＋aligned:false で従来どおり続行する
+            try:
+                pv = format_check.from_diag(e.diag)
+                verdict_fields = _expand_page_verdict_fields(
+                    pv, estimates={d.face_id: d.estimate for d in e.diag})
+            except Exception as ex:  # noqa: BLE001
+                import traceback
+                # error_trace の第1引数は error_code（型名）。format_tb のみ渡す
+                # （例外メッセージ本文は帳票の値を含みうるため出さない・
+                # logging_safe.error_trace の docstring・pipeline.py と同型）
+                log.error("format_check_failed", error_code=type(ex).__name__)
+                log.error_trace(type(ex).__name__,
+                                "".join(traceback.format_tb(ex.__traceback__)))
+        except (OSError, ValueError):
+            fail_reason = "image"
+        except Exception:  # noqa: BLE001
+            fail_reason = "other"
     # 絶対パスで返す。相対だと呼び出し側（GUI）の cwd 基準で解決され、コアの
     # cwd（core/）と食い違って「ファイルが見つからない」になる（実測: dev 窓で
     # 編集画面が「展開中…」のまま止まった原因・2026-08-28）
@@ -572,19 +597,35 @@ def cmd_match_templates(args) -> int:
     帳票の値が乗りうるため・issue #2 と同じ方針）:
     `input_not_found` / `expand_failed` / `input_unreadable` / `internal`。
     """
-    import time as _time
-    from datetime import datetime
+    # 監査ログの欠落を防ぐため import 失敗時にも log.error/error_trace が
+    # 効くよう、cfg 読み込み（log.init を含む）を import より先に済ませる
+    # （issue #142・M-9 と同じ流儀。cfg 読み込み自体は下の import 群に
+    # 依存しない）
+    cfg = _load_config_and_init_log(args.config)
+    try:
+        import time as _time
+        from datetime import datetime
 
-    from PIL import Image
+        from PIL import Image
 
-    from . import format_check
-    from .align import template_hash as _tpl_hash
-    from .columns import validate_v1
-    from .ingest import IngestError, expand, pdf_page_count
-    from .template import TemplateError, load_template
+        from . import format_check
+        from .align import template_hash as _tpl_hash
+        from .columns import validate_v1
+        from .ingest import IngestError, expand, pdf_page_count
+        from .template import TemplateError, load_template
+    except Exception as e:  # noqa: BLE001 — hidden import 漏れ等（issue #142）。
+        # 以前はこの import が関数先頭・どの try にも入っていなかったため、
+        # 失敗すると match_templates イベントを一つも出さないまま
+        # main() の汎用ハンドラへ抜けて exit 1 していた（GUI は結果待ちの
+        # まま止まる）。ドキュメント化済みの固定コード "internal"（下の
+        # ループ外枠の想定外failureと同じ扱い）で必ず1行返す
+        import traceback
+        log.error("match_templates_failed", error_code=type(e).__name__)
+        log.error_trace(type(e).__name__, "".join(traceback.format_tb(e.__traceback__)))
+        _progress({"event": "match_templates", "ok": False, "error": "internal"})
+        return 0
 
     t0 = _time.perf_counter()
-    cfg = _load_config_and_init_log(args.config)
 
     out_dir = Path(cfg.workdir) / "editor_pages"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -821,10 +862,13 @@ def cmd_debug_images(args) -> int:
                             "ページのみ）ため、可視化画像を1枚も作れなかった",
                    "count": 0, "dir": str(out_dir.resolve())})
         return 0
+    # 生成したファイルの絶対パス一覧は素の print ではなく同じイベントへ
+    # 載せる（issue #144）——JSON Lines の「1行1イベント」契約を破ると、
+    # GUI が JSON.parse 前に生行をログ枠へ追記して webview へ届いてしまう
+    # （stderr 経路の redact_absolute_paths を通らない）
     _progress({"event": "debug_images", "ok": True,
-               "count": len(made), "dir": str(out_dir.resolve())})
-    for m in made:
-        print(str(m.resolve()))
+               "count": len(made), "dir": str(out_dir.resolve()),
+               "paths": [str(m.resolve()) for m in made]})
     return 0
 
 
@@ -935,20 +979,35 @@ def cmd_detect_frames(args) -> int:
 
     ログにはテンプレート名・欄名を出さない（Q-S1・FR-F50 の方針）。
     """
-    import time as _time
+    # 監査ログの欠落を防ぐため import 失敗時にも log.error/error_trace が
+    # 効くよう、cfg 読み込み（log.init を含む）を import より先に済ませる
+    # （issue #142・M-9 と同じ流儀。cfg 読み込み自体は下の import 群に
+    # 依存しない）
+    cfg = _load_config_and_init_log(args.config)
+    try:
+        import time as _time
 
-    import numpy as np
-    from PIL import Image
+        import numpy as np
+        from PIL import Image
 
-    from .align import _otsu
-    from .align import template_hash as _tpl_hash
-    from .grid import detect_frames
-    from .ingest import IngestError, expand, pdf_page_count
-    from .template import Rect as _Rect
-    from .template import TemplateError, load_template
+        from .align import _otsu
+        from .align import template_hash as _tpl_hash
+        from .grid import detect_frames
+        from .ingest import IngestError, expand, pdf_page_count
+        from .template import Rect as _Rect
+        from .template import TemplateError, load_template
+    except Exception as e:  # noqa: BLE001 — hidden import 漏れ等（issue #142）。
+        # 以前はこの import が関数先頭・どの try にも入っていなかったため、
+        # 失敗すると detect_frames イベントを一つも出さないまま main() の
+        # 汎用ハンドラへ抜けて exit 1 していた（GUI は結果待ちのまま止まる）。
+        # cmd_match_templates の "internal" と同じ固定コードで必ず1行返す
+        import traceback
+        log.error("detect_frames_failed", error_code=type(e).__name__)
+        log.error_trace(type(e).__name__, "".join(traceback.format_tb(e.__traceback__)))
+        _progress({"event": "detect_frames", "ok": False, "error": "internal"})
+        return 0
 
     t0 = _time.perf_counter()
-    cfg = _load_config_and_init_log(args.config)  # 監査ログの欠落を防ぐ（M-9 と同じ流儀）
     # M-6: expand() は out_dir 直下の同一 stem 残骸（-aligned.png 含む）を
     # 展開のたびに掃除する（ingest.expand の仕様）。editor_pages と共用すると
     # 編集画面が開いている -aligned.png を detect-frames の実行が消しうるため、
@@ -1280,7 +1339,16 @@ def _purge_workdir(wd: Path, cfg: Config) -> tuple[bool, int, int]:
             continue  # 許可リストに無い＝ツール由来と分からないものは残す
 
         if p.is_dir() and p.name in _TOOL_SUBDIR_EXTENSIONS and not _is_reparse_point(p):
-            removable, kept_children = _classify_tool_subdir(p)
+            try:
+                removable, kept_children = _classify_tool_subdir(p)
+            except OSError:
+                # 中身を列挙できなかった（権限・使用中等）——実際には何も
+                # 消せていないので failed に計上する（issue #144。以前は
+                # [], [] を返され、この分岐自体に入らず「failed 0」のまま
+                # 見過ごされていた）
+                failed += 1
+                log.warn("purge_subdir_unreadable", path=str(p))
+                continue
             for child in removable:
                 try:
                     _remove_workdir_entry(child)
@@ -1294,7 +1362,12 @@ def _purge_workdir(wd: Path, cfg: Config) -> tuple[bool, int, int]:
                     if not any(p.iterdir()):
                         p.rmdir()
                 except OSError:
-                    pass  # 消せなくても致命的ではない（中身は既に空）
+                    # 消せなかった＝フォルダが空にならなかった（rmdir 失敗）。
+                    # 兄弟の削除失敗と同様に failed へ計上する（issue #144）——
+                    # 以前はここで握りつぶし、purged イベントの failed=0 が
+                    # 実際にはフォルダが残っている状態と食い違っていた
+                    failed += 1
+                    log.warn("purge_subdir_rmdir_failed", path=str(p))
             continue
 
         try:
@@ -1359,7 +1432,15 @@ _TOOL_WORKDIR_FILE_NAMES = frozenset({
 #                         <stem>-p<NNNN>-aligned.png（いずれも .png）
 #   detect_frames_pages/  ingest.expand()（<stem>-<連番>.png）
 #   responses/            vision_client.save_response
-#                         （<page_id>.json／<page_id>.meta.json）
+#                         （<page_id>.json／<page_id>.meta.json）。加えて
+#                         vision_client._atomic_write_text が書く途中の一時
+#                         ファイル（<name>.<pid>.tmp）が強制終了・電源断で
+#                         残ることがある——拡張子は ".tmp" になり素の
+#                         拡張子一致（".json"）ではすり抜けるため、この1
+#                         フォルダに限り _RESPONSES_TMP_RE でも一致させる
+#                         （issue #151）。記入値の生応答がこの形で残ると
+#                         「ツールが作ったものではない」と逆の報告になり、
+#                         responses/ 自体も空にならず残ってしまう
 #   debug/                debug_images.write_debug_images
 #                         （<page_id>_debug.png）
 #   logs/                 logging_safe.init（app.log／error.log）。
@@ -1375,6 +1456,14 @@ _TOOL_SUBDIR_EXTENSIONS: dict[str, frozenset[str]] = {
     "debug": frozenset({".png"}),
     "logs": frozenset({".log"}),
 }
+
+# responses/ 配下限定で追加一致させる一時ファイル名のパターン（issue #151）。
+# vision_client._atomic_write_text は `path.with_name(f"{path.name}.{pid}.tmp")`
+# で書くため、本体が "<page_id>.json" なら "<page_id>.json.<pid>.tmp"、
+# サイドカーが "<page_id>.meta.json" なら "<page_id>.meta.json.<pid>.tmp" になる。
+# ".json." を要求することで、利用者が responses/ へ直接置いた無関係な
+# *.tmp（拡張子だけ見れば同じ）まで巻き込まない。
+_RESPONSES_TMP_RE = re.compile(r"^.+\.json\.\d+\.tmp$")
 
 
 def _log_dir_matches(p: Path, cfg: Config) -> bool:
@@ -1427,19 +1516,27 @@ def _classify_tool_subdir(p: Path) -> tuple[list[Path], list[Path]]:
     利用者がこのフォルダへ直接ファイルを置いた場合に巻き込まないため。
     p が reparse point（ジャンクション等）の場合は中身を辿らず両方とも
     空リストで返す（呼び出し側が p 自体を丸ごと扱う）。
+
+    p.iterdir() が失敗した場合（権限・使用中等）は OSError をそのまま
+    呼び出し元へ送出する（issue #144）——以前はここで [], [] を返して
+    いたため、実際には中身を確認できていないのに「削除対象0・残存0」と
+    いう実態と食い違う値になり、`_purge_workdir` は何も失敗として数えず、
+    `_scan_workdir_entries` の `--preview` は中身が空であるかのように
+    見せていた。呼び出し側が `failed`/`other_items` として計上する。
     """
     if _is_reparse_point(p):
         return [], []
     exts = _TOOL_SUBDIR_EXTENSIONS.get(p.name, frozenset())
+    is_responses = p.name == "responses"
     removable: list[Path] = []
     kept: list[Path] = []
-    try:
-        children = sorted(p.iterdir())
-    except OSError:
-        return [], []
+    children = sorted(p.iterdir())  # OSError はそのまま呼び出し元へ送出する
     for child in children:
-        if (not _is_reparse_point(child) and child.is_file()
-                and child.suffix.lower() in exts):
+        if _is_reparse_point(child) or not child.is_file():
+            kept.append(child)
+            continue
+        if (child.suffix.lower() in exts
+                or (is_responses and _RESPONSES_TMP_RE.match(child.name))):
             removable.append(child)
         else:
             kept.append(child)
@@ -1484,7 +1581,15 @@ def _scan_workdir_entries(wd: Path, cfg: Config) -> tuple[int, int, list[str]]:
             continue
         tool_items += 1
         if p.is_dir() and p.name in _TOOL_SUBDIR_EXTENSIONS:
-            _removable, kept_children = _classify_tool_subdir(p)
+            try:
+                _removable, kept_children = _classify_tool_subdir(p)
+            except OSError:
+                # 中身を列挙できない＝実際に何が残るか分からない（issue #144）。
+                # 以前は [], [] が返って「未認識ファイルは無い」ように見えて
+                # いたが、実態は不明なので other_items 側へ数え、preview と
+                # 実削除後の kept が食い違わないようにする
+                _add_example(f"{p.name}/(読み取り不可)")
+                continue
             for child in kept_children:
                 _add_example(f"{p.name}/{child.name}")
     return tool_items, other_items, other_examples
@@ -1569,10 +1674,13 @@ def cmd_purge(args) -> int:
     # --include-output 側（削除 N 件／対象外として残したファイル N 件）と
     # 同じ形で、workdir 側も人が読む1行を必ず出す（セキュリティレビューの指摘: 消し損ねが
     # あっても「purged」とだけ出て気づかれない事故を防ぐ）。kept は0でも
-    # 常に出す——「認識できないものは無かった」ことも同じ1行で分かる
+    # 常に出す——「認識できないものは無かった」ことも同じ1行で分かる。
+    # stdout ではなく stderr へ出す（issue #144）——JSON Lines の「1行1
+    # イベント」契約（§7.3）を守るのは stdout だけで、この人が読む1行を
+    # stdout に混ぜると GUI が JSON.parse 前に生行をログ枠へ追記してしまう
     cred_note = "資格情報は残した" if cred_kept else "資格情報は無かった"
     print(f"中間データ {wd_removed} 件を削除し、ツールが作ったものではない "
-          f"{wd_kept} 件は残した（{cred_note}）")
+          f"{wd_kept} 件は残した（{cred_note}）", file=sys.stderr)
     rc = 0
     if wd_failed:
         print(f"workdir 内の {wd_failed} 件を削除できなかった（使用中または"
@@ -1600,8 +1708,10 @@ def cmd_purge(args) -> int:
                       "output_kept": kept, "output_failed": failed})
         # 標準出力の JSON Lines（§7.3）は GUI 用だが、purge は GUI からも
         # 呼べる（#52 M-11・lib.rs の ALLOWED_SUBCOMMANDS）ため、CLI で
-        # 直接叩いたときにも状況が分かるよう人が読む1行を併記する
-        print(f"削除 {removed} 件／対象外として残したファイル {kept} 件")
+        # 直接叩いたときにも状況が分かるよう人が読む1行を併記する。
+        # stdout ではなく stderr へ出す（issue #144・上の workdir 側の行と同じ理由）
+        print(f"削除 {removed} 件／対象外として残したファイル {kept} 件",
+              file=sys.stderr)
         if failed:
             print(f"削除できないファイルが {failed} 件ある（Excel などで開かれて"
                   "いる可能性）。閉じてからやり直す。", file=sys.stderr)

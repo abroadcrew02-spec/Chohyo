@@ -52,9 +52,16 @@ def _purge(cfg, *extra):
 
 
 def _events(capsys):
-    out = capsys.readouterr().out
-    return ([json.loads(line) for line in out.splitlines()
-             if line.startswith("{")], out)
+    """stdout の JSON Lines イベント一覧・stdout 生テキスト・stderr 生テキストを返す。
+
+    issue #144（2026-09-08）: 人が読む要約行（「削除 N 件／…」「中間データ N 件を
+    削除し…」）は stdout の JSON Lines「1行1イベント」契約を破らないよう
+    stderr へ移した。呼び出し側はこの2つを別々に検証する。
+    """
+    captured = capsys.readouterr()
+    events = [json.loads(line) for line in captured.out.splitlines()
+             if line.startswith("{")]
+    return events, captured.out, captured.err
 
 
 def test_include_output_removes_generated_files_only(tmp_path, capsys):
@@ -68,10 +75,10 @@ def test_include_output_removes_generated_files_only(tmp_path, capsys):
     assert sorted(p.name for p in out.iterdir()) == sorted(KEEP_FILES)
     assert out.is_dir()                                      # フォルダ自体は残す
 
-    events, raw = _events(capsys)
+    events, _raw, err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert (ev["output_removed"], ev["output_kept"], ev["output_failed"]) == (4, 2, 0)
-    assert "削除 4 件／対象外として残したファイル 2 件" in raw
+    assert "削除 4 件／対象外として残したファイル 2 件" in err
 
     # 削除前の走査結果がログに残る（件数と日時のみ・記入値は含まない）
     app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
@@ -112,17 +119,18 @@ def test_subdirectory_is_left_alone(tmp_path, capsys):
     assert _purge(cfg, "--yes", "--include-output") == 0
     assert (sub / f"output_{TS}.xlsx").exists()
     # ディレクトリは「残したファイル数」に数えない（数えるのは直下のファイルのみ）
-    events, _raw = _events(capsys)
+    events, _raw, _err = _events(capsys)
     assert next(e for e in events if e["event"] == "purged")["output_kept"] == 2
 
 
 def test_without_include_output_keeps_outputs(tmp_path, capsys):
     """既定（--include-output なし）は出力に一切触れない。
 
-    workdir 側の削除件数は人が読む1行として必ず出る（セキュリティレビューの指摘・
-    --include-output と同じ規律）ため、「削除」という語自体は出力側に
-    触れていなくても raw に現れる。ここで見るのは output 固有のキー・
-    文言が無いことだけに絞る。
+    workdir 側の削除件数は人が読む1行として必ず stderr に出る（セキュリティ
+    レビューの指摘・--include-output と同じ規律。issue #144 で stdout の
+    JSON Lines 契約を破らないよう stderr へ移した）ため、「削除」という語
+    自体は出力側に触れていなくても err に現れる。ここで見るのは output
+    固有のキー・文言が無いことだけに絞る。
     """
     cfg, out, wd = _setup(tmp_path)
     assert _purge(cfg, "--yes") == 0
@@ -130,15 +138,15 @@ def test_without_include_output_keeps_outputs(tmp_path, capsys):
     assert not (wd / "intermediate.sqlite").exists()
     assert len(list(out.iterdir())) == len(TOOL_FILES) + len(KEEP_FILES)
 
-    events, raw = _events(capsys)
+    events, raw, err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert "output_removed" not in ev and "対象外として残したファイル" not in raw
     assert ev["cred_kept"] is False                          # cred.dpapi は元々無い
     assert ev["removed"] == 1 and ev["failed"] == 0          # intermediate.sqlite の1件
     # issue #108 PM決定 (b): 許可リスト方式になり、残した件数（0件でも）が
-    # 同じ1行に載る
+    # 同じ1行に載る（issue #144: この1行は stderr）
     assert "中間データ 1 件を削除し、ツールが作ったものではない 0 件は残した" \
-        "（資格情報は無かった）" in raw
+        "（資格情報は無かった）" in err
 
 
 def test_requires_yes_even_with_include_output(tmp_path):
@@ -155,10 +163,10 @@ def test_missing_output_dir_is_not_an_error(tmp_path, capsys):
     out.rmdir()
     assert _purge(cfg, "--yes", "--include-output") == 0
 
-    events, raw = _events(capsys)
+    events, _raw, err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert (ev["output_removed"], ev["output_kept"]) == (0, 0)
-    assert "削除 0 件／対象外として残したファイル 0 件" in raw
+    assert "削除 0 件／対象外として残したファイル 0 件" in err
 
 
 # ========== issue #83: 資格情報 cred.dpapi を purge から守る（keep-list 方式） ==========
@@ -183,13 +191,13 @@ def test_purge_keeps_credentials_but_removes_intermediate_data(tmp_path, capsys)
     for sub in ("pages", "editor_pages", "detect_frames_pages"):
         assert not (wd / sub).exists()
 
-    events, _raw = _events(capsys)
+    events, _raw, _err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["cred_kept"] is True
     # 資格情報の中身・絶対パスは出さない（値は "dummy" を含まず、パスは
-    # workdir のルートのみ）
-    assert "dummy" not in _raw
-    assert str(cred) not in _raw
+    # workdir のルートのみ）——stdout・stderr のどちらにも漏れていないことを見る
+    assert "dummy" not in _raw and "dummy" not in _err
+    assert str(cred) not in _raw and str(cred) not in _err
 
 
 def test_purge_missing_workdir_is_not_an_error(tmp_path):
@@ -211,7 +219,7 @@ def test_purge_without_credentials_still_removes_intermediate_data(tmp_path, cap
 
     assert wd.exists()
     assert not (wd / "intermediate.sqlite").exists()
-    events, _raw = _events(capsys)
+    events, _raw, _err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["cred_kept"] is False
 def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
@@ -235,11 +243,11 @@ def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
     assert not ro.exists()
     assert not (wd / "intermediate.sqlite").exists()
 
-    events, raw = _events(capsys)
+    events, _raw, err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["failed"] == 0
     assert ev["removed"] == 2  # intermediate.sqlite-wal + intermediate.sqlite
-    assert "中間データ 2 件を削除し、ツールが作ったものではない 0 件は残した" in raw
+    assert "中間データ 2 件を削除し、ツールが作ったものではない 0 件は残した" in err
 
 
 def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys):
@@ -271,7 +279,7 @@ def test_purge_removes_junction_link_but_keeps_target_contents(tmp_path, capsys)
     assert not (wd / "intermediate.sqlite").exists()           # 通常の中間データは消える
     assert wd.exists()
 
-    events, _raw = _events(capsys)
+    events, _raw, _err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["failed"] == 0
     assert ev["removed"] == 2  # aligned（リンク自体）+ intermediate.sqlite
@@ -308,7 +316,7 @@ def test_purge_refuses_when_workdir_itself_is_a_junction(tmp_path, capsys):
     assert (real_dir / "keep_me.sqlite").exists()             # リンク先は無傷
     assert wd_link.is_dir()                                    # リンク自体も残る（拒否のみ）
 
-    events, _raw = _events(capsys)
+    events, _raw, _err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purge_refused")
     assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "reparse_point"
 
@@ -336,6 +344,6 @@ def test_purge_does_not_keep_a_symlink_named_cred_dpapi(tmp_path, capsys):
     assert not fake_cred.exists()   # リンクは keep されず消える
     assert real_file.exists()       # リンク先の実ファイルは無傷
 
-    events, _raw = _events(capsys)
+    events, _raw, _err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["cred_kept"] is False
