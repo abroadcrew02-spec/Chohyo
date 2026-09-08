@@ -150,7 +150,7 @@ jobs:
       # ブラウザで確認できる範囲（UI の配線）に限定したスモークとして CI に足す。
       - name: Playwright ブラウザをキャッシュから復元
         id: playwright-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('core/pyproject.toml') }}
@@ -239,7 +239,7 @@ jobs:
       # 復元されると実行経路になる（セキュリティ担当 M-6）。registry/git は取得物の
       # 保管で、Cargo.lock のハッシュ照合を経てから使われる。
       - name: 取得済みクレートをキャッシュ
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -256,7 +256,7 @@ jobs:
       # 専用キャッシュを持つ。バージョンを固定し、更新するときはこのキーも変える。
       - name: cargo-deny をキャッシュから復元
         id: cargo-deny-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-deny.exe
           key: cargo-deny-bin-${{ runner.os }}-0.20.2
