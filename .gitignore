@@ -31,7 +31,7 @@ intermediate/
 
 # 利用者のテンプレート保存先（templates/ とは別。templates/ は Tauri が
 # 配布物へ丸ごと同梱するため、顧客固有テンプレートの置き場にはできない
-# ——07要件 v0.4 変更点2・AZKi M-6。現状は *.json ルールの副作用で偶然
+# ——07要件 v0.4 変更点2・セキュリティ担当 M-6。現状は *.json ルールの副作用で偶然
 # 無視されているだけだったため、明示行として残す）
 /templates_user/
 
@@ -84,7 +84,7 @@ error.log
 !/gui/src-tauri/capabilities/*.json
 # 保存のトランザクション化（issue #56 T1）で生じる作業ファイル。.saving.json
 # は templates/ 直下だと *.json → !/templates/*.json の再包含に巻き込まれて
-# 追跡対象になっていた（実測: NOT IGNORED・マリン最終レビュー M-5）
+# 追跡対象になっていた（実測: NOT IGNORED・レビュー M-5）
 *.saving.json
 *.bak
 *.key
@@ -145,7 +145,7 @@ desktop.ini
 # 戻すのはワイルドカードでなく実在パスの列挙にする。`!/testdata/**/*.json` だと
 # testdata 配下に置いた任意の JSON が追跡対象へ戻り、たとえば
 # testdata/formB/responses/本番読取_p0001.json（実データの Vision 応答）が
-# NOT IGNORED になる（実測・AZKi レビュー M-4）。追跡を増やすときは
+# NOT IGNORED になる（実測・セキュリティレビューの指摘 M-4）。追跡を増やすときは
 # git ls-files testdata で現物を確かめてから1行足す。
 !/testdata/golden_manifest.json
 !/testdata/formB/formB-v1.json
