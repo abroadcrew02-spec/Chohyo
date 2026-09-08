@@ -6,8 +6,9 @@
 にまとめる。手書きしない——依存が変わるたびに人手で追うのは追従できない。
 
 出力: <repo>/THIRD-PARTY-NOTICES.txt
-  第1部 Rust   … GUI 実行ファイルへリンクされるクレート（cargo-about）
-  第2部 Python … コア CLI へ同梱されるパッケージ（pip-licenses）
+  第1部 Rust             … GUI 実行ファイルへリンクされるクレート（cargo-about）
+  第2部 Python           … コア CLI へ同梱されるパッケージ（pip-licenses）
+  第3部 Vendored ネイティブ … 別プロセスで起動する同梱ツール（poppler・固定記載）
 
 実行:
     .venv\\Scripts\\python.exe scripts\\gen_notices.py
@@ -16,10 +17,18 @@
     cargo install cargo-about --locked --features cli
     .venv\\Scripts\\pip install pip-licenses
 
-Python 側は「PyInstaller が実際に何を取り込んだか」を正とするため、先に
-scripts/build_dist.py を通しておく必要がある。ビルドの中間生成物
-（workdir_build/pyi/chouhyo-core/*.toc）を読んで同梱パッケージを決めるので、
-pytest や playwright のような開発専用の依存は自動的に外れる。
+Python 側・第3部（poppler）は、どちらも「実際に build_dist.py が同梱したもの」
+を正とするため、先に scripts/build_dist.py を通しておく必要がある。Python は
+ビルドの中間生成物（workdir_build/pyi/chouhyo-core/*.toc）を読んで同梱
+パッケージを決めるので、pytest や playwright のような開発専用の依存は自動的に
+外れる。poppler は core-dist/chouhyo-core/poppler/ に複製されたライセンス
+本文（COPYING*）をそのまま読む。
+
+第3部について: poppler（pdftoppm 他）は cargo-about（Rust のリンク対象）にも
+pip-licenses（Python パッケージ）にも乗らない——ビルド時にリンクされるのでも
+pip でインストールされるのでもなく、実行時に別プロセスとして起動する GPL の
+バイナリを配布物へそのままコピーしているだけだから。この収集方式の外側に
+あるため、この項だけは自動収集ではなく固定の記載にしている（issue #161）。
 """
 import argparse
 import json
@@ -283,8 +292,75 @@ def render_python(entries: list[dict]) -> tuple[list[str], int, dict]:
 
 
 # --------------------------------------------------------------------------
+# Vendored ネイティブ（poppler・別プロセスで起動する GPL バイナリ）
+# --------------------------------------------------------------------------
 
-def header(rust_n: int, py_n: int) -> list[str]:
+POPPLER_VENDOR_ROOT = ROOT / "vendor" / "poppler"
+POPPLER_DIST_DIR = ROOT / "core-dist" / "chouhyo-core" / "poppler"
+POPPLER_VERSION_RE = re.compile(r"poppler-([\d.]+)")
+
+POPPLER_INTRO = (
+    "poppler（本ツールが呼ぶのは pdftoppm）は PDF を画像へ展開するために\n"
+    "別プロセスとして起動している（subprocess 経由。本体へのリンクはしない）。\n"
+    "GPL-2.0 のバイナリで、下記のライセンス本文は build_dist.py が\n"
+    "vendor/poppler/**/share/poppler/ から配布物へそのまま複製したもの。\n"
+    "\n"
+    "別プロセス起動が GPL の mere aggregation にあたるか、GPL §3 の\n"
+    "ソース提供義務（ソースまたは書面の申し出）をどう満たすかは法務判断待ち\n"
+    "（未確定・issue #161）。このスクリプトが行うのはライセンス本文の同梱のみ。"
+)
+
+
+def poppler_version() -> str:
+    """vendor/poppler の展開先ディレクトリ名からバージョンを読む。
+
+    版が上がったときにここを手で書き換えずに済むよう、固定文字列にしない。
+    見つからなくても表記自体は続行する（バージョン文字列は付随情報であって、
+    ライセンス本文の同梱ほど厳密な失敗条件ではない）。
+    """
+    bins = sorted(POPPLER_VENDOR_ROOT.glob("**/Library/bin"))
+    if not bins:
+        return "(バージョン不明: vendor/poppler が無い)"
+    m = POPPLER_VERSION_RE.search(str(bins[0]))
+    return m.group(1) if m else "(バージョン不明)"
+
+
+def render_poppler() -> tuple[list[str], int]:
+    """build_dist.py が同梱したライセンス本文（COPYING*）をそのまま載せる。
+
+    Rust・Python と違い自動収集はしない——poppler は cargo-about（リンク対象の
+    クレート）にも pip-licenses（pip パッケージ）にも乗らない配布形態のため。
+    """
+    if not POPPLER_DIST_DIR.is_dir():
+        raise SystemExit(
+            f"NG: {POPPLER_DIST_DIR} が無い。\n"
+            "    先に .venv\\Scripts\\python.exe scripts\\build_dist.py を実行する。")
+    license_files = sorted(POPPLER_DIST_DIR.glob("COPYING*"))
+    if not license_files:
+        raise SystemExit(
+            f"NG: {POPPLER_DIST_DIR} にライセンス本文（COPYING*）が無い。"
+            "build_dist.py の複製処理を確認する。")
+
+    out = [RULE, "第3部  Vendored ネイティブ — 別プロセスで起動する同梱ツール",
+           RULE, ""]
+    out.append(f"対象: poppler {poppler_version()}（pdftoppm 他・GPL-2.0）")
+    out.append("入手元: https://github.com/oschwartz10612/poppler-windows"
+                "（conda-forge の poppler-feedstock のビルドを配布用に")
+    out.append("        zip へまとめ直しているプロジェクト。ビルド自体の出所は"
+                " conda-forge）")
+    out.append("")
+    out += POPPLER_INTRO.splitlines()
+
+    for f in license_files:
+        out += ["", RULE, f"[poppler] {f.name}", RULE, "",
+                lf(f.read_text(encoding="utf-8", errors="replace")).rstrip(),
+                "", THIN, ""]
+    return out, len(license_files)
+
+
+# --------------------------------------------------------------------------
+
+def header(rust_n: int, py_n: int, poppler_n: int) -> list[str]:
     return [
         RULE,
         "帳票OCRツール（chouhyo-ocr）— サードパーティ・ライセンス表記",
@@ -298,7 +374,8 @@ def header(rust_n: int, py_n: int) -> list[str]:
         "生成方法: python scripts/gen_notices.py（手で編集しないこと）",
         f"対象: Windows 64bit（{TARGET}）向け配布物",
         "",
-        f"内訳: Rust {rust_n} クレート / Python {py_n} パッケージ",
+        f"内訳: Rust {rust_n} クレート / Python {py_n} パッケージ / "
+        f"vendored ネイティブ {poppler_n} 件",
         "",
     ]
 
@@ -315,8 +392,10 @@ def main() -> int:
     rust_lines, rust_n, _ = render_rust(collect_rust(args.offline))
     py_entries = collect_python(shipped_python_packages())
     py_lines, py_n, _ = render_python(py_entries)
+    poppler_lines, poppler_n = render_poppler()
 
-    body = "\n".join(header(rust_n, py_n) + rust_lines + py_lines).rstrip() + "\n"
+    body = "\n".join(header(rust_n, py_n, poppler_n) + rust_lines + py_lines
+                      + poppler_lines).rstrip() + "\n"
 
     if args.check:
         if not OUT.exists():
@@ -336,6 +415,7 @@ def main() -> int:
     OUT.write_text(body, encoding="utf-8", newline="\n")
     print(f"OK: {OUT} "
           f"（Rust {rust_n} クレート / Python {py_n} パッケージ / "
+          f"vendored ネイティブ {poppler_n} 件 / "
           f"{len(body.encode('utf-8')) // 1024} KB）")
     return 0
 

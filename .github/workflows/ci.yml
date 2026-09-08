@@ -5,7 +5,8 @@
 # 積み上がるので、役割を分ける。
 #
 #   pull_request → light（ubuntu-latest）: 型検査・GUI 純ロジック・依存宣言の解決
-#   push (main)  → full （windows-latest）: pytest 全体・GUI 純ロジック・cargo test
+#   push (main)  → full （windows-latest）: pytest 全体・GUI スモーク（Playwright）・
+#                  GUI 純ロジック・cargo test・cargo deny
 #
 # ランナーは標準の ubuntu-latest / windows-latest だけを使う。大型ランナー
 # （ubuntu-latest-4-cores 等）とセルフホストは公開リポジトリでも課金対象になる
@@ -124,9 +125,12 @@ jobs:
       # 無いと detect-frames / 様式判定のテストが skip になるので、pytest の前に作る
       - name: formC を生成
         run: python -X utf8 testdata/formC/make_formC.py
+      # test_gui_smoke.py（core/tests/test_gui_smoke.py）はここでは除外する。vite dev
+      # サーバーがまだ無いため import 時の skipif で必ず skip になり、ここに含めても
+      # 検証にならない（issue #139）。実行は後段の専用ステップで行う。
       - name: pytest
         working-directory: core
-        run: python -X utf8 -m pytest -q --tb=short -rf -rs -n auto
+        run: python -X utf8 -m pytest -q --tb=short -rf -rs -n auto --ignore=tests/test_gui_smoke.py
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -137,6 +141,84 @@ jobs:
       - name: npm ci
         working-directory: gui
         run: npm ci
+
+      # --- GUI スモーク（issue #139） --------------------------------------
+      # core/tests/test_gui_smoke.py は vite dev サーバー（tauri dev が使う
+      # http://localhost:1420）を素の Chromium で開き、bridge.ts のデモモック
+      # 経由で画面遷移とサマリ表示を検証する。Tauri の webview（gui.exe）は
+      # 使わない——デスクトップアプリの起動やネイティブ側の配線は検証しない、
+      # ブラウザで確認できる範囲（UI の配線）に限定したスモークとして CI に足す。
+      - name: Playwright ブラウザをキャッシュから復元
+        id: playwright-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('core/pyproject.toml') }}
+
+      # full ジョブは venv を作らず system Python へ直接 core[dev] を入れている
+      # （release.yml と違い venv 化していない・このジョブの「Python 依存の導入」
+      # ステップ参照）。python は PATH 上のもの（setup-python 導入）を使う。
+      - name: Playwright（Chromium）の導入
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
+
+      - name: vite dev サーバーを起動（バックグラウンド）
+        working-directory: gui
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'vite-dev.log'
+          $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm run dev' `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
+          $p.Id | Out-File -FilePath (Join-Path $env:RUNNER_TEMP 'vite-dev.pid') -Encoding ascii
+
+      - name: vite dev サーバーの起動を待つ（最大60秒・issue #139）
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddSeconds(60)
+          $up = $false
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $resp = Invoke-WebRequest -Uri 'http://localhost:1420' -UseBasicParsing -TimeoutSec 2
+              if ($resp.StatusCode -eq 200) { $up = $true; break }
+            } catch {}
+            Start-Sleep -Seconds 2
+          }
+          if (-not $up) {
+            Write-Host '--- vite-dev.log ---'
+            Get-Content (Join-Path $env:RUNNER_TEMP 'vite-dev.log') -ErrorAction SilentlyContinue
+            Write-Host '--- vite-dev.log.err ---'
+            Get-Content (Join-Path $env:RUNNER_TEMP 'vite-dev.log.err') -ErrorAction SilentlyContinue
+            throw 'vite dev サーバーが 60 秒以内に起動しなかった'
+          }
+          Write-Host 'vite dev サーバー起動確認（http://localhost:1420）'
+
+      # -n auto を使わない（逐次実行）。この1ファイルはモジュールスコープの
+      # page フィクスチャ（同一ブラウザページ）をテスト間で共有しており、
+      # xdist のワーカー分散でテストがばらけるとフィクスチャがワーカーごとに
+      # 作り直され、状態を積み上げていく前提の検証が壊れる（issue #139）。
+      - name: pytest（GUI スモーク・32件）
+        working-directory: core
+        run: python -X utf8 -m pytest tests/test_gui_smoke.py -q -p no:randomly --tb=short -rf -rs
+
+      - name: vite dev サーバーを停止
+        if: always()
+        shell: pwsh
+        run: |
+          $pidFile = Join-Path $env:RUNNER_TEMP 'vite-dev.pid'
+          if (Test-Path $pidFile) {
+            $procId = Get-Content $pidFile
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+          }
+          # cmd.exe 経由で起動した npm run dev は子の node（vite）プロセスを
+          # 別 PID で持つ。ポート 1420 を掴んでいるプロセスも合わせて止める
+          # （ベストエフォート。ランナーはこのジョブの直後に破棄されるため、
+          # 取りこぼしても後続ステップの実害はない）。
+          try {
+            Get-NetTCPConnection -LocalPort 1420 -State Listen -ErrorAction Stop |
+              Select-Object -ExpandProperty OwningProcess -Unique |
+              ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+          } catch {}
+      # --- GUI スモークここまで ---------------------------------------------
 
       # tsc && vite build。型検査を兼ねるうえ、gui/dist を作る——tauri-build が
       # tauri.conf.json の frontendDist（../dist）を要求するため、これが無いと
@@ -164,6 +246,28 @@ jobs:
             ~/.cargo/git
           key: cargo-${{ runner.os }}-${{ hashFiles('gui/src-tauri/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
+
+      # 依存のライセンスと既知の脆弱性を CI で自動点検する（issue #153）。
+      # deny.toml は既に用意されている（許可ライセンス・yanked=deny 等）が、
+      # これまで README の手打ちコマンドでしか実行されておらず、CI には無かった。
+      # ツール本体（cargo-deny バイナリ）は crates.io からビルドする——
+      # サードパーティ action は増やさない（供給網を増やさない方針）。
+      # ~/.cargo/bin は上のクレートキャッシュ（registry/git）とは別物なので
+      # 専用キャッシュを持つ。バージョンを固定し、更新するときはこのキーも変える。
+      - name: cargo-deny をキャッシュから復元
+        id: cargo-deny-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-deny.exe
+          key: cargo-deny-bin-${{ runner.os }}-0.20.2
+
+      - name: cargo-deny の導入（キャッシュに無ければビルド）
+        if: steps.cargo-deny-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: cargo deny check（ライセンス・脆弱性アドバイザリ）
+        working-directory: gui/src-tauri
+        run: cargo deny check
 
       # tauri-build（build.rs）は tauri.conf.json の bundle.resources に書いたパスの存在を
       # 検査する。同梱 exe（core-dist/・gitignore 済み・PyInstaller で作る）は CI に無いので

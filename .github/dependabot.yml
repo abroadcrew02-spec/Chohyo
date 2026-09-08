@@ -1,9 +1,31 @@
 # GitHub Actions の uses: を commit SHA へ固定した（issue #125）。SHA 固定は
 # バージョン追従を止めるため、Dependabot に追従させる。対象は .github/workflows/
-# 配下（root）だけ。npm/pip/cargo の依存更新はこの issue の対象外。
+# 配下（root）だけ。
+#
+# npm/pip/cargo は issue #153 で追加。供給網の脆弱性監査（cargo deny check・
+# gen_notices.py --check）を CI に足しても、依存の更新自体を促す仕組みが無いと
+# 既知の脆弱性が塞がれないまま残る。pip 側はロックファイルが無い（core/pyproject.toml
+# のバージョン範囲を直接見る）ため、Dependabot が上げるのは範囲の下限・上限で、
+# 実際の解決結果を固定するものではない（ロックファイル導入は別issue・#153 では
+# やらない）。
 version: 2
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "cargo"
+    directory: "/gui/src-tauri"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/gui"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "pip"
+    directory: "/core"
     schedule:
       interval: "weekly"

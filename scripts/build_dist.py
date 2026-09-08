@@ -87,6 +87,21 @@ def main() -> int:
         shutil.rmtree(dst)
     shutil.copytree(poppler_bins[0], dst)
 
+    # poppler は GPL のバイナリ（issue #161）。ライセンス本文を同梱先へ複製する。
+    # 展開後のレイアウトは vendor/poppler/<版>/Library/bin/（pdftoppm.exe 他）と
+    # vendor/poppler/<版>/share/poppler/COPYING*（ライセンス本文）が並列にある
+    # ので、poppler_bins[0]（.../Library/bin）から2階層上がった版ディレクトリを
+    # 基点に share/poppler を見に行く。
+    poppler_root = poppler_bins[0].parent.parent
+    license_src = poppler_root / "share" / "poppler"
+    license_files = sorted(license_src.glob("COPYING*"))
+    if not license_files:
+        print(f"NG: poppler のライセンス本文が見つからない（{license_src}）",
+              file=sys.stderr)
+        return 1
+    for f in license_files:
+        shutil.copy2(f, dst / f.name)
+
     # 疎通: 同梱 exe で verify。終了コードは見ない——資格情報の有無で 1 になり、
     # ビルドの成否とは無関係だから。見るのは「exe が起動して verify を出したか」
     # （レビュー M-18: 戻り値も出力も捨てていたので、DLL 欠落で起動できなくても
