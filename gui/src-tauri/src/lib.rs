@@ -404,13 +404,23 @@ fn repo_root(app: &AppHandle) -> Result<PathBuf, String> {
     Err("アプリのルートが見つからない（templates/chouhyo-v1.json を基準に探索）".into())
 }
 
-/// 実在しないファイル（保存先）も扱えるパス正規化（issue #49）。
+/// 実在しないファイル（保存先）も扱えるパス正規化（issue #49・#152 M-1）。
 /// `..` は canonicalize の前に弾く——canonicalize は実在するパスしか畳めず、
 /// 「保存先の親だけ実在」というケースで外へ抜ける余地を残すため。
+///
+/// **ネットワークパスも canonicalize の前に弾く（issue #152 M-1）**:
+/// `Path::canonicalize()` は生パスに触れる（Windows では UNC・DeviceNS 等の
+/// リダイレクタへ実際に到達しうる）ため、`check_scope`（呼び出し側の拒否判定）
+/// より先に SMB セッションが張られる窓があった。`is_safe_root`（#152 H-1 で
+/// 許可リスト化済み・Disk/VerbatimDisk 以外のプレフィックスをすべて拒否）を
+/// canonicalize の前に通す。
 fn normalize_path(path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
     if p.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err("パスに .. を含めることはできません".into());
+    }
+    if !is_safe_root(p) {
+        return Err("使用できないパスです（ネットワークパス等は指定できません）".into());
     }
     if let Ok(c) = p.canonicalize() {
         return Ok(c);
@@ -581,16 +591,26 @@ fn check_credentials_scope(abs: &Path, pending: &mut Option<PathBuf>) -> Result<
     }
 }
 
-/// output_dir/workdir/log_dir に許すパスの安全性判定（issue Q-MC/S-MA）。
-/// 空・空白のみ／ドライブルート（`C:\`・`C:`・`/`）／UNC（`\\server\share`）／
-/// `..` を含むものを拒否する。判定は `Path::components()` ベースで
-/// `normalize_path`（:121-141）の流儀に揃え、文字列プレフィックス一致だけに
-/// 頼らない。
+/// output_dir/workdir/log_dir に許すパスの安全性判定（issue Q-MC/S-MA・#152 H-1）。
+/// 空・空白のみ／ドライブルート（`C:\`・`C:`・`/`）／`..` を含むものを拒否する。
+/// 判定は `Path::components()` ベースで `normalize_path`（:410 付近）の流儀に
+/// 揃え、文字列プレフィックス一致だけに頼らない。
+///
+/// **プレフィックスは許可リスト方式（issue #152 H-1 再指摘）**: 以前は
+/// `Prefix::UNC`／`VerbatimUNC` だけを拒否リストとして見ていたため、
+/// `\\.\UNC\<host>\<share>`（DeviceNS）・`\\.\GLOBALROOT\Device\Mup\...`
+/// （DeviceNS）・`\\?\GLOBALROOT\Device\Mup\...`（Verbatim・UNC でも
+/// VerbatimUNC でもない）が素通りし、実機で `is_dir()` がリダイレクタへ
+/// 到達した。通常のローカルドライブが取りうる `Prefix::Disk`／
+/// `Prefix::VerbatimDisk` の**2種類だけ**を許可し、それ以外
+/// （UNC・VerbatimUNC・DeviceNS・非ディスクの Verbatim）はすべて拒否する。
+/// プレフィックスを持たない相対パス（`output` 等）は `Component::Prefix` を
+/// 含まないためこのループに引っかからず、従来どおり通る。
 ///
 /// **呼び出し側の注意**: canonicalize 前の生パスに対して呼ぶこと。
 /// `Path::canonicalize()` は Windows で `\\?\` verbatim プレフィックスを
-/// 付与するため、その後段では UNC 判定が別物になる（VerbatimUNC も併せて
-/// 見ているのはこのため）。
+/// 付与するため、その後段では判定が別物になる（`VerbatimDisk` を許可リストに
+/// 含めているのはこのため——canonicalize 後の `C:\...` は `\\?\C:\...` になる）。
 fn is_safe_root(p: &Path) -> bool {
     match p.as_os_str().to_str() {
         Some(s) if !s.trim().is_empty() => {}
@@ -600,7 +620,7 @@ fn is_safe_root(p: &Path) -> bool {
     for c in p.components() {
         match c {
             Component::Prefix(prefix) => {
-                if matches!(prefix.kind(), Prefix::UNC(..) | Prefix::VerbatimUNC(..)) {
+                if !matches!(prefix.kind(), Prefix::Disk(..) | Prefix::VerbatimDisk(..)) {
                     return false;
                 }
             }
@@ -1157,12 +1177,17 @@ impl Drop for PidSlot<'_> {
             // 別の実行が同じ pid を取っていた場合にそちらを消してしまう
             return;
         }
+        // issue #152 M-2（#141・kill_running_core_with と同型の窓）: kill が
+        // 終わるまでロックを手放さない。以前はここで先に release_slot して
+        // ロックを解放してから kill_pid を呼んでいたため、その間
+        // （異常系——stdout/stderr 取得失敗・wait 失敗のときだけ通るこの
+        // 経路限定）に run_core が「未実行」と見なして2本目を spawn でき、
+        // 死にきっていない旧プロセスと新しい core が並走する窓があった。
         let mut slot = self.state.lock().unwrap();
-        release_slot(&mut slot, self.pid);
-        drop(slot);
         if self.kill_on_drop {
             let _ = kill_pid(self.pid);
         }
+        release_slot(&mut slot, self.pid);
     }
 }
 
@@ -1824,8 +1849,14 @@ where
     let mut tmp_name = path.as_os_str().to_os_string();
     tmp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
     let tmp = PathBuf::from(tmp_name);
-    std::fs::write(&tmp, content)
-        .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))?;
+    if let Err(e) = std::fs::write(&tmp, content) {
+        // issue #152 L-1: 書き込み自体の失敗（ディスク満杯等の途中失敗を含む）
+        // でも tmp が部分的に残りうる。一時ファイル名がプロセス内一意
+        // （issue #137）になった分、消さずに放置すると失敗のたびに残骸が
+        // 増える——rename 失敗時（下）と同じく削除してから元の失敗を返す。
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()));
+    }
     if let Err(e) = rename(&tmp, path) {
         // 書き損じの一時ファイルを残さない（次回の保存が古い内容の tmp を
         // 見つけて混乱するのを防ぐ）。削除できなくても元の失敗を返す。
@@ -2462,10 +2493,16 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             // アプリ終了イベントでも同じ経路を通す（issue #135）。ウィンドウが
-            // 複数あるとき・OS のセッション終了など `CloseRequested` を経ずに
-            // 落ちる経路の保険として、`ExitRequested`・`Exit` の両方で拾う
-            // （二重に呼んでも `kill_running_core` はスロットが既に空なら
-            // 何もしない・冪等）。
+            // 複数あるとき・通常の終了操作（メニューからの終了・Alt+F4 等）
+            // など `CloseRequested` を経ずに落ちる経路の保険として、
+            // `ExitRequested`・`Exit` の両方で拾う（二重に呼んでも
+            // `kill_running_core` はスロットが既に空なら何もしない・冪等）。
+            // **タスクマネージャからの強制終了（プロセスの `TerminateProcess`）
+            // では、ここも `CloseRequested` も発火しない**（issue #152 L-2/L-3）
+            // ——イベントループごと即座に終わるため、アプリ側にイベントを
+            // 配送する猶予が無い。この経路は現状のこの実装ではカバーできない
+            // （子プロセスは Windows のジョブオブジェクト等、別の仕組みでしか
+            // 塞げない・今回は対象外）。
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
@@ -2770,6 +2807,17 @@ mod tests {
         assert!(normalize_path("C:\\app\\..\\secret\\cred.json").is_err());
         assert!(normalize_path("../secret.json").is_err());
         assert!(normalize_path("C:\\app\\templates\\..\\..\\x.json").is_err());
+    }
+
+    #[test]
+    fn normalize_rejects_network_paths_before_touching_the_filesystem() {
+        // issue #152 M-1: canonicalize は生パスに触れるため、check_scope が
+        // 拒否する前に UNC 等のネットワークパスへ実際にアクセスしてしまう
+        // 窓があった。is_safe_root（#152 H-1）を canonicalize の前に通し、
+        // ローカルホスト管理共有のような「実在しうる」UNC でも FS に触れず
+        // Err で止まることを固定する（存在確認なしに拒否できることの証跡）。
+        assert!(normalize_path("\\\\localhost\\c$\\Windows").is_err());
+        assert!(normalize_path("\\\\?\\GLOBALROOT\\Device\\Mup\\localhost\\c$").is_err());
     }
 
     #[test]
@@ -3156,6 +3204,28 @@ mod tests {
                 "verbatim UNC も拒否されるべき");
         // 正常な canonicalize 結果（Normal 成分あり）は通す
         assert!(is_safe_root(&PathBuf::from("\\\\?\\C:\\app\\workdir\\editor_pages")));
+    }
+
+    #[test]
+    fn is_safe_root_uses_an_allowlist_of_prefix_kinds_not_a_denylist() {
+        // issue #152 H-1（セキュリティ再検証の差し戻し）: UNC/VerbatimUNC だけを
+        // 見る拒否リストだと、DeviceNS（`\\.\...`）や非ディスクの Verbatim
+        // （`\\?\GLOBALROOT\...`）を素通しし、実機で is_dir() がリダイレクタへ
+        // 到達した。許可リスト（Disk・VerbatimDisk のみ許可）に反転したことで、
+        // これらのプレフィックスは種類を問わずすべて拒否されることを固定する。
+        for ng in [
+            "\\\\.\\UNC\\localhost\\c$",              // DeviceNS 経由の UNC
+            "\\\\.\\GLOBALROOT\\Device\\Mup\\localhost\\c$", // DeviceNS 経由の GLOBALROOT
+            "\\\\?\\GLOBALROOT\\Device\\Mup\\localhost\\c$", // Verbatim（非ディスク）経由の GLOBALROOT
+            "\\\\?\\UNC\\server\\share",               // VerbatimUNC
+            "//server/share",                          // スラッシュ区切りの UNC
+            "\\\\localhost\\c$",                       // ローカルホスト経由の UNC（管理共有）
+        ] {
+            assert!(!is_safe_root(&PathBuf::from(ng)), "{ng}: 拒否されるべき");
+        }
+        for ok in ["C:\\x", "\\\\?\\C:\\x", "output"] {
+            assert!(is_safe_root(&PathBuf::from(ok)), "{ok}: 許可されるべき");
+        }
     }
 
     // --- 読み取りルートの限定（issue S-N4）---
