@@ -404,23 +404,33 @@ fn repo_root(app: &AppHandle) -> Result<PathBuf, String> {
     Err("アプリのルートが見つからない（templates/chouhyo-v1.json を基準に探索）".into())
 }
 
-/// 実在しないファイル（保存先）も扱えるパス正規化（issue #49・#152 M-1）。
+/// 実在しないファイル（保存先）も扱えるパス正規化（issue #49・#152 M-1・F-1）。
 /// `..` は canonicalize の前に弾く——canonicalize は実在するパスしか畳めず、
 /// 「保存先の親だけ実在」というケースで外へ抜ける余地を残すため。
 ///
-/// **ネットワークパスも canonicalize の前に弾く（issue #152 M-1）**:
-/// `Path::canonicalize()` は生パスに触れる（Windows では UNC・DeviceNS 等の
-/// リダイレクタへ実際に到達しうる）ため、`check_scope`（呼び出し側の拒否判定）
-/// より先に SMB セッションが張られる窓があった。`is_safe_root`（#152 H-1 で
-/// 許可リスト化済み・Disk/VerbatimDisk 以外のプレフィックスをすべて拒否）を
-/// canonicalize の前に通す。
+/// **`is_safe_root`（置き場用）とは別の、狭い拒否リストを使う（issue #152
+/// F-1）**: `is_safe_root` が対象にする workdir/output_dir/log_dir は
+/// config.json の手編集や別プロセスからも書き換わりうる「置き場」なので
+/// UNC ごと拒否してよいが、`normalize_path` が扱うのは利用者がダイアログ／
+/// ドロップで明示的に選んだ入力ファイルであり、信頼の性質が違う——同じ
+/// 拒否リストを使うと、ファイルサーバ運用（`\\fileserver\scan\a.pdf` 等）で
+/// 正当な読み取りまで止めてしまう（issue #152 セキュリティ再検証 F-1）。
+/// canonicalize の前に拒否するのは、リダイレクタ経由で意図しない場所へ
+/// 抜けられる「穴だった形」——DeviceNS（`\\.\...`）・非ディスクの
+/// Verbatim（`\\?\GLOBALROOT\...` 等）——だけに絞る。素の UNC
+/// （`\\server\share`）・VerbatimUNC（`\\?\UNC\server\share`）・
+/// Disk／VerbatimDisk・相対パスはすべて canonicalize まで通す。
 fn normalize_path(path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
     if p.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err("パスに .. を含めることはできません".into());
     }
-    if !is_safe_root(p) {
-        return Err("使用できないパスです（ネットワークパス等は指定できません）".into());
+    for c in p.components() {
+        if let Component::Prefix(prefix) = c {
+            if matches!(prefix.kind(), Prefix::DeviceNS(..) | Prefix::Verbatim(..)) {
+                return Err("使用できないパスです（対応していない形式のパスです）".into());
+            }
+        }
     }
     if let Ok(c) = p.canonicalize() {
         return Ok(c);
@@ -713,13 +723,28 @@ fn allowed_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
 /// 無効化できた（白リストの自己申告化）。
 ///
 /// 正規化に失敗したパス（`..` を含む等）は登録せず読み飛ばす——ドロップは
-/// 複数パスを一度に運ぶので、1つの不正で残りを巻き添えにしない。
-fn remember_dropped(picked: &PickedPaths, paths: &[PathBuf]) {
+/// 複数パスを一度に運ぶので、1つの不正で残りを巻き添えにしない
+/// （issue #152 F-2）。**全件が不正だったときだけ** `Err` で理由を返す。
+/// 一部だけ不正なときは黙って読み飛ばす従来の挙動のまま——複数パスの
+/// うち1つが変な形式でも、残りが読み書きできなくなるのは利用者にとって
+/// 意外な劣化になる。空リストは「何も渡されなかった」であり不正とは
+/// 区別する（`Ok(())`）。
+fn remember_dropped(picked: &PickedPaths, paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
     let mut set = picked.0.lock().unwrap();
+    let mut any_ok = false;
     for p in paths {
         if let Ok(abs) = normalize_path(&p.to_string_lossy()) {
             set.insert(abs);
+            any_ok = true;
         }
+    }
+    if any_ok {
+        Ok(())
+    } else {
+        Err("選択されたパスを読み書きの対象として登録できませんでした".into())
     }
 }
 
@@ -730,9 +755,11 @@ fn set_drop_active(state: State<'_, DropActive>, active: bool) {
     *state.0.lock().unwrap() = active;
 }
 
-/// ダイアログで選ばれたパスを白リストへ登録する。
-fn remember(picked: &PickedPaths, p: &Path) {
-    remember_dropped(picked, std::slice::from_ref(&p.to_path_buf()));
+/// ダイアログで選ばれたパスを白リストへ登録する。1件だけを渡すため、
+/// `remember_dropped` の「全件不正」は「この1件が不正」と同義になる
+/// （issue #152 F-2）。
+fn remember(picked: &PickedPaths, p: &Path) -> Result<(), String> {
+    remember_dropped(picked, std::slice::from_ref(&p.to_path_buf()))
 }
 
 /// コア実体（同梱 exe / venv python）の選択結果。
@@ -1082,13 +1109,42 @@ fn explorer_program() -> PathBuf {
     system_program(std::env::var_os("SystemRoot"), "explorer.exe", "explorer")
 }
 
-fn kill_pid(pid: u32) -> Result<(), String> {
+/// `kill_pid` の結果（issue #141 再指摘・MEDIUM）。taskkill の終了コードを
+/// 一律 `Err` に潰すと、「対象が既に居ない（望む終了状態と同義）」と
+/// 「アクセス拒否等で生きたまま失敗」を `kill_running_core_with` 側が
+/// 区別できず、後者でもスロットを解放していた——#141 が閉じた「take→kill の
+/// 窓」が、失敗経路だけ形を変えて残っていた。
+#[derive(Debug, PartialEq, Eq)]
+enum KillOutcome {
+    /// 停止できた、またはそもそも対象プロセスが存在しなかった（taskkill
+    /// 終了コード 128）。どちらも「もう生きていない」という望む終了状態に
+    /// 達しているので、呼び出し側は同じ扱い（スロット解放）にしてよい。
+    Gone,
+    /// 停止を試みたが失敗し、対象が生きている可能性がある。呼び出し側は
+    /// スロットを維持し、利用者にエラーを返すべき。
+    StillAlive { message: String },
+}
+
+fn kill_pid(pid: u32) -> KillOutcome {
     let mut c = Command::new(taskkill_program());
     c.args(["/T", "/F", "/PID", &pid.to_string()]);
     #[cfg(windows)]
     c.creation_flags(CREATE_NO_WINDOW);
-    let out = c.output().map_err(|e| e.to_string())?;
-    if out.status.success() { Ok(()) } else { Err("停止できませんでした".into()) }
+    let out = match c.output() {
+        Ok(out) => out,
+        Err(e) => return KillOutcome::StillAlive { message: e.to_string() },
+    };
+    if out.status.success() {
+        return KillOutcome::Gone;
+    }
+    // taskkill は対象プロセスが既に存在しないとき終了コード 128 を返す
+    // （issue #141 再指摘・実機確認）。この失敗は「生きたまま」ではなく、
+    // 望む終了状態（居ない）に既に達しているのと同義——アクセス拒否等の
+    // 他の失敗（生きている可能性がある）とは区別して扱う。
+    if out.status.code() == Some(128) {
+        return KillOutcome::Gone;
+    }
+    KillOutcome::StillAlive { message: "停止できませんでした".into() }
 }
 
 /// 実行中の core を止める唯一の実装（issue #135・#141）。中断ボタン
@@ -1101,25 +1157,35 @@ fn kill_pid(pid: u32) -> Result<(), String> {
 /// ため、その間に `run_core` が「未実行」と見なして新しい core を spawn
 /// できてしまい、死にきっていない旧プロセスと新しい core が同じ
 /// workdir/SQLite に並走する窓があった。ここでは pid を読んだのと同じロックを
-/// 握ったまま kill し、完了後に `release_slot`（issue Q-MB の「自分の pid の
-/// ときだけ消す」不変条件）で解放する。
+/// 握ったまま kill し、`KillOutcome::Gone` のときだけ `release_slot`
+/// （issue Q-MB の「自分の pid のときだけ消す」不変条件）で解放する。
 ///
 /// スロットが空なら何もせず `Ok(false)` を返す（対象が無いことをエラーに
 /// するかは呼び出し側の判断——中断ボタンは「実行中の処理がありません」を
-/// 返したいが、終了経路ではエラーにする意味が無い）。kill が失敗しても
-/// スロットは解放する（次回起動を永久にブロックしない）。
+/// 返したいが、終了経路ではエラーにする意味が無い）。
+///
+/// **`KillOutcome::StillAlive` ではスロットを維持する（issue #141 再指摘）**。
+/// 以前は kill の成否に関わらず常に `release_slot` していたため、
+/// アクセス拒否等で対象が生きたまま失敗しても解放されてしまい、
+/// `run_core` が同じ workdir/SQLite に2本目を spawn できる窓が残っていた。
 fn kill_running_core_with(
     state: &Mutex<Option<u32>>,
-    killer: impl FnOnce(u32) -> Result<(), String>,
+    killer: impl FnOnce(u32) -> KillOutcome,
 ) -> Result<bool, String> {
     let mut slot = state.lock().unwrap();
     let pid = match *slot {
         Some(pid) => pid,
         None => return Ok(false),
     };
-    let result = killer(pid);
-    release_slot(&mut slot, pid);
-    result.map(|_| true)
+    match killer(pid) {
+        KillOutcome::Gone => {
+            release_slot(&mut slot, pid);
+            Ok(true)
+        }
+        // スロットは触らない——生きている可能性がある間は run_core に
+        // 「実行中」のままと見せる
+        KillOutcome::StillAlive { message } => Err(message),
+    }
 }
 
 /// `kill_running_core_with` に本番の kill 手段（`kill_pid`）を固定した薄いラッパ。
@@ -1185,6 +1251,10 @@ impl Drop for PidSlot<'_> {
         // 死にきっていない旧プロセスと新しい core が並走する窓があった。
         let mut slot = self.state.lock().unwrap();
         if self.kill_on_drop {
+            // `KillOutcome::StillAlive` を区別せず常に release_slot する
+            // （issue #141 再指摘は `kill_running_core_with` 側の対応のみが
+            // 依頼範囲——ここは異常系専用の後始末経路で、失敗しても
+            // 誰かに投げる先が無いためベストエフォートのまま据え置く）。
             let _ = kill_pid(self.pid);
         }
         release_slot(&mut slot, self.pid);
@@ -1457,7 +1527,9 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
     // ここで一括登録しても実害は無い——読み書きコマンド側の拡張子制限は
     // 別に効いている）。
     let p = dialog(|| rfd::FileDialog::new().pick_folder()).await?;
-    remember(&app.state::<PickedPaths>(), &p);
+    // pick_json と違い、登録失敗時に None へ縮退させる変更はしない
+    // （issue #152 F-2 の明示対象は remember_dropped/pick_json のみ）。
+    let _ = remember(&app.state::<PickedPaths>(), &p);
     Some(p.to_string_lossy().to_string())
 }
 
@@ -1471,7 +1543,7 @@ async fn pick_image(app: AppHandle) -> Option<String> {
             .pick_file()
     })
     .await?;
-    remember(&app.state::<PickedPaths>(), &p);
+    let _ = remember(&app.state::<PickedPaths>(), &p);
     Some(p.to_string_lossy().to_string())
 }
 
@@ -1551,8 +1623,17 @@ async fn pick_json(app: AppHandle, save: bool, remember_pick: Option<bool>,
     // fail-open な既定値に、用途による fail-closed の上書きを重ねる形にする。
     let remember_pick = remember_pick.unwrap_or(true)
         && kind.as_deref() != Some("credentials");
-    if remember_pick {
-        remember(&app.state::<PickedPaths>(), &p);
+    // issue #152 F-2: 白リストへ登録できなかった唯一のパスを、選択された
+    // かのように返さない。以前は remember() の結果を見ずに常に
+    // Some(path) を返していたため、フロントは「選択済み」に見えるのに
+    // 後続の読み書きコマンドが「選択されていないパスです」で拒否される
+    // ——利用者からは原因不明の失敗に見える。remember_dropped が対象は
+    // 1件だけ（`remember` は1要素のスライスで呼ぶ）なので「全件不正」と
+    // 「この1件が不正」は同義——ダイアログをキャンセルしたときと同じ
+    // `None` を返す（`Option<String>` の既存の値域内・フロント側の型は
+    // 変えない）。
+    if remember_pick && remember(&app.state::<PickedPaths>(), &p).is_err() {
+        return None;
     }
     Some(p.to_string_lossy().to_string())
 }
@@ -2447,7 +2528,11 @@ pub fn run() {
                 if !*window.state::<DropActive>().0.lock().unwrap() {
                     return;
                 }
-                remember_dropped(&window.state::<PickedPaths>(), paths);
+                // 全件不正（issue #152 F-2）でも、ドロップ自体は
+                // フロント側の入力欄表示更新（onDragDropEvent）に使われて
+                // おり、ここで通知先を新設するのは frontend 側の変更が要る
+                // ため今回は対象外——結果は無視する（従来と同じ黙殺）
+                let _ = remember_dropped(&window.state::<PickedPaths>(), paths);
             }
             tauri::WindowEvent::CloseRequested { .. } => {
                 // ウィンドウを閉じても実行中の core は自動では止まらない
@@ -2810,14 +2895,30 @@ mod tests {
     }
 
     #[test]
-    fn normalize_rejects_network_paths_before_touching_the_filesystem() {
-        // issue #152 M-1: canonicalize は生パスに触れるため、check_scope が
-        // 拒否する前に UNC 等のネットワークパスへ実際にアクセスしてしまう
-        // 窓があった。is_safe_root（#152 H-1）を canonicalize の前に通し、
-        // ローカルホスト管理共有のような「実在しうる」UNC でも FS に触れず
-        // Err で止まることを固定する（存在確認なしに拒否できることの証跡）。
-        assert!(normalize_path("\\\\localhost\\c$\\Windows").is_err());
-        assert!(normalize_path("\\\\?\\GLOBALROOT\\Device\\Mup\\localhost\\c$").is_err());
+    fn normalize_rejects_device_and_globalroot_prefixes_but_lets_plain_unc_through() {
+        // issue #152 F-1（セキュリティ再検証・副作用）: M-1 で is_safe_root
+        // をそのまま normalize_path の入口に通したところ、利用者がダイアログ/
+        // ドロップで明示的に選んだファイルサーバ上の入力（`\\fileserver\scan\
+        // a.pdf` 等）まで拒否され、ファイルサーバ運用で読み取りを開始できなく
+        // なった。is_safe_root（置き場用・config の手編集や別プロセスからも
+        // 書き換わりうる）とは信頼の性質が違うため、ここでは狭い拒否リストに
+        // 差し替える——canonicalize の前に拒否するのは、リダイレクタ経由で
+        // 抜けられる「穴だった形」（DeviceNS・非ディスクの Verbatim）だけ。
+        for ng in [
+            "\\\\.\\UNC\\localhost\\c$",                      // DeviceNS 経由の UNC
+            "\\\\.\\GLOBALROOT\\Device\\Mup\\localhost\\c$",  // DeviceNS 経由の GLOBALROOT
+            "\\\\?\\GLOBALROOT\\Device\\Mup\\localhost\\c$",  // Verbatim（非ディスク）経由の GLOBALROOT
+        ] {
+            let err = normalize_path(ng).unwrap_err();
+            assert!(err.contains("対応していない形式"), "{ng}: {err}");
+        }
+
+        // 素の UNC は canonicalize まで進む。存在しない共有名なので最終的に
+        // Err にはなるが、拒否リストによる早期 Err とはメッセージが異なる
+        // ——canonicalize（または親フォルダ解決）まで進んだことの証跡になる
+        let err = normalize_path("\\\\localhost\\__chouhyo_no_such_share__\\a.pdf").unwrap_err();
+        assert!(!err.contains("対応していない形式"),
+                "素の UNC は拒否リストで早期に弾かれてはいけない（理由が変わるはず）: {err}");
     }
 
     #[test]
@@ -2889,8 +2990,10 @@ mod tests {
 
         let picked = PickedPaths(Mutex::new(HashSet::new()));
         // 2件目は `..` を含み normalize_path が拒否する。1件の不正で
-        // 残りを巻き添えにしない（ドロップは複数パスを一度に運ぶ）
-        remember_dropped(&picked, &[f.clone(), dir.join("..").join("etc.json")]);
+        // 残りを巻き添えにしない（ドロップは複数パスを一度に運ぶ・issue #152
+        // F-2）。一部だけ不正なので結果は Ok（全件不正のときだけ Err）
+        let result = remember_dropped(&picked, &[f.clone(), dir.join("..").join("etc.json")]);
+        assert!(result.is_ok(), "一部だけ不正なら Ok（黙って読み飛ばす従来の挙動）");
 
         let set = picked.0.lock().unwrap();
         assert_eq!(set.len(), 1, "不正なパスは登録しない");
@@ -2899,11 +3002,34 @@ mod tests {
         drop(set);
 
         // フォルダのドロップ（run --input の主用途）も同じ経路で通る
-        remember_dropped(&picked, &[dir.clone()]);
+        assert!(remember_dropped(&picked, &[dir.clone()]).is_ok());
         assert!(picked.0.lock().unwrap()
                 .contains(&normalize_path(&dir.to_string_lossy()).unwrap()));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remember_dropped_returns_err_only_when_every_path_is_invalid() {
+        // issue #152 F-2: 一部だけ不正なら黙って読み飛ばす（上のテストで固定
+        // 済み）。全件が不正だったときだけ Err で理由を返すことをここで固定する。
+        let picked = PickedPaths(Mutex::new(HashSet::new()));
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_drop_test_all_invalid_{}", std::process::id()));
+        let result = remember_dropped(&picked, &[
+            dir.join("..").join("a.json"),
+            dir.join("..").join("b.json"),
+        ]);
+        assert!(result.is_err(), "全件が不正なら Err");
+        assert!(picked.0.lock().unwrap().is_empty(), "1件も登録されない");
+    }
+
+    #[test]
+    fn remember_dropped_is_ok_for_empty_input() {
+        // 空リストは「不正」ではなく「渡されなかった」——Err にしない
+        // （issue #152 F-2）
+        let picked = PickedPaths(Mutex::new(HashSet::new()));
+        assert!(remember_dropped(&picked, &[]).is_ok());
     }
 
     // --- テンプレート既定値の注入（issue #58・#72 (t) で経路を分離）---
@@ -3483,7 +3609,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_config_patch_checks_path_keys_only() {
+    fn validate_config_patch_checks_path_key_shapes() {
         for key in ["output_dir", "workdir", "log_dir"] {
             assert!(validate_config_patch(&json!({key: "output"})).is_ok(), "{key}: 通常の相対パス");
             assert!(validate_config_patch(&json!({key: "C:\\"})).is_err(), "{key}: ドライブ直下");
@@ -3781,7 +3907,7 @@ mod tests {
     // --- 終了経路の kill を1本化（issue #135・#141）---
     // kill_pid（実プロセスへの taskkill）は起動せず、`kill_running_core_with`
     // に渡す `killer` をダミーへ差し替えて状態遷移だけを検証する。
-    use super::kill_running_core_with;
+    use super::{kill_running_core_with, KillOutcome};
 
     #[test]
     fn kill_running_core_with_holds_slot_until_killer_returns_then_clears() {
@@ -3793,7 +3919,7 @@ mod tests {
             // （lock() は killer 内で取り直すと自己デッドロックするため行わない
             //   ——それ自体が「kill 完了までロックを保持する」設計の裏付け）。
             seen_pid = Some(pid);
-            Ok(())
+            KillOutcome::Gone
         });
         assert_eq!(seen_pid, Some(999), "killer には現在の pid が渡る");
         assert_eq!(result, Ok(true), "実行中の core があれば true");
@@ -3806,21 +3932,41 @@ mod tests {
         let mut called = false;
         let result = kill_running_core_with(&state, |_| {
             called = true;
-            Ok(())
+            KillOutcome::Gone
         });
         assert_eq!(result, Ok(false), "実行中の core が無ければ false");
         assert!(!called, "対象が無ければ kill 手段を呼ばない");
     }
 
     #[test]
-    fn kill_running_core_with_clears_slot_even_if_killer_fails() {
-        // kill が失敗しても、次回実行を永久にブロックしないようスロットは
-        // 解放する（旧 kill_core の take() と同じ「失敗しても後始末はする」
-        // 挙動を維持しつつ、ロック保持のタイミングだけを直す）。
+    fn kill_running_core_with_clears_slot_when_target_is_already_gone() {
+        // issue #141 再指摘: taskkill が「対象が既に存在しない」（終了コード
+        // 128）で失敗しても、それは望む終了状態（居ない）に既に達している
+        // のと同義——kill_pid はこれを KillOutcome::Gone として返す
+        // （このテストは以前 `..._clears_slot_even_if_killer_fails` という
+        // 名前で「失敗してもスロットは解放する」を無条件に固定していたが、
+        // 「生きたまま失敗」まで含めて解放していたのが今回直したバグだった
+        // ため、Gone（＝居ないと確定した場合）専用のケースへ読み替えた）。
         let state = Mutex::new(Some(7u32));
-        let result = kill_running_core_with(&state, |_| Err("停止できませんでした".into()));
+        let result = kill_running_core_with(&state, |_| KillOutcome::Gone);
+        assert_eq!(result, Ok(true));
+        assert_eq!(*state.lock().unwrap(), None, "対象が既に居ないならスロットは解放する");
+    }
+
+    #[test]
+    fn kill_running_core_with_keeps_slot_when_target_may_still_be_alive() {
+        // issue #141 再指摘（MEDIUM）: kill が失敗し対象が生きている可能性が
+        // あるときにスロットを解放すると、run_core が「未実行」と見なして
+        // 同じ workdir/SQLite に2本目を spawn できてしまう——#141 が閉じた
+        // 窓が失敗経路（アクセス拒否等）だけ開いたままだった。
+        // StillAlive はスロットを維持し Err を返す。
+        let state = Mutex::new(Some(7u32));
+        let result = kill_running_core_with(&state, |_| {
+            KillOutcome::StillAlive { message: "アクセスが拒否されました".into() }
+        });
         assert!(result.is_err());
-        assert_eq!(*state.lock().unwrap(), None, "失敗時もスロットは解放する");
+        assert_eq!(*state.lock().unwrap(), Some(7),
+                   "生きている可能性がある間はスロットを維持する（次回 run_core が2本目を防ぐ）");
     }
 
     // --- PID 再利用レース（issue #53 L-13）---
