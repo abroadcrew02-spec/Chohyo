@@ -4304,7 +4304,7 @@ test("AC-H21/H22 columnBulkToggleLabel / AriaLabel: 中間状態でも向きは�
   assert.equal(columnBulkToggleLabel("mixed", 28), "この列 28升 をまとめて出力しない");
   assert.equal(columnBulkToggleLabel("none", 28), "この列 28升 をまとめて出力する");
   assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "mixed", 12),
-    "明細 備考 の 28升 をまとめて切り替える（現在: 12升が出力しない）");
+    "明細 備考 の 28升 をまとめて切り替える（現在: 12升を出力しない）");
   assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "all", 0),
     "明細 備考 の 28升 をまとめて切り替える（現在: すべて出力する）");
   assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "none", 28),
@@ -5040,9 +5040,18 @@ test("#136 差し戻し対応 配線: keyRef.current は anyModalOpen（uiConfir
 
   const anyModalOpenAt = body.indexOf("const anyModalOpen =");
   assert.ok(anyModalOpenAt >= 0, "anyModalOpen という1つの派生値が見つからない");
+  // レビュー再検証 MEDIUM: body.includes(term) だと keyRef.current 本体の
+  // どこか別の場所にその語があるだけで通ってしまい、anyModalOpen の式から
+  // 1語落とす退行を検知できない。代入式そのもの（`const anyModalOpen = ...;`
+  // の1行）だけを正規表現で切り出し、その式に対して4語を検査する。
+  // ソースは CRLF なので `[^\r\n]*` で改行をまたがないようにする
+  const anyModalOpenExprMatch = /const anyModalOpen = ([^\r\n]*);/.exec(body);
+  assert.ok(anyModalOpenExprMatch, "anyModalOpen の代入式（1行）が見つからない");
+  const anyModalOpenExpr = anyModalOpenExprMatch[1];
   // 4種類すべてが式に含まれる（1つでも抜けると差し戻し前と同じ穴に戻る）
   for (const term of ["uiConfirm", "confirmModal", "userTplPanel", "showSettings"]) {
-    assert.ok(body.includes(term), `anyModalOpen の式に ${term} が含まれていない`);
+    assert.ok(anyModalOpenExpr.includes(term),
+      `anyModalOpen の代入式に ${term} が含まれていない: ${anyModalOpenExpr}`);
   }
 
   const framesGeneratingAt = body.indexOf("if (framesGenerating) return;");
@@ -5058,6 +5067,43 @@ test("#136 差し戻し対応 配線: keyRef.current は anyModalOpen（uiConfir
     "順序が framesGenerating → anyModalOpen 計算 → 早期 return → "
     + "activeElement 判定 → keyAction 呼び出し になっていない"
     + "（早期 return が effectively でなければ、モーダルの裏でキー操作が抜ける）");
+});
+
+// ================================================================ a11y再検証 Should
+// 「利用者テンプレートから開く」モーダルを閉じた後（Escape・「閉じる」・
+// 背景クリックの3経路）、フォーカスが呼び出し元のトリガーボタンへ戻らず
+// body に落ちていた。closeConfirmModal／App.tsx の closeSettings と同じ
+// パターンで、閉じる処理を closeUserTplPanel に1本化してフォーカスを戻す。
+// 3経路のどれか1つでも inline の setUserTplPanel(null) に戻すと退行するため、
+// 各経路が closeUserTplPanel を使っていることをソースで固定する
+test("a11y再検証 Should 配線: closeUserTplPanel がトリガーへフォーカスを戻し、Escape/閉じる/背景クリックの3経路すべてから使われる", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const m = /const closeUserTplPanel = \(\) => \{([\s\S]*?)\n  \};/.exec(src);
+  assert.ok(m, "closeUserTplPanel の本体が見つからない");
+  const body = m[1];
+  assert.ok(body.includes("setUserTplPanel(null);"),
+    "closeUserTplPanel が setUserTplPanel(null) を呼んでいない");
+  assert.ok(body.includes("requestAnimationFrame(() => userTplTriggerRef.current?.focus());"),
+    "closeUserTplPanel がトリガーボタン（userTplTriggerRef）へフォーカスを戻していない");
+
+  // 経路1: Escape（modalKeyHandler の onCancel）
+  assert.ok(src.includes(
+    "const onUserTplPanelKeyDown = modalKeyHandler(userTplPanelRef, closeUserTplPanel);"),
+    "Escape 経路（onUserTplPanelKeyDown）が closeUserTplPanel を使っていない");
+  // 経路2: 背景クリック（.modal-back）
+  assert.ok(src.includes('<div className="modal-back" onClick={closeUserTplPanel}>'),
+    "背景クリック経路（.modal-back）が closeUserTplPanel を使っていない");
+  // 経路3: 「閉じる」ボタン
+  assert.ok(src.includes("onClick={closeUserTplPanel}>閉じる</button>"),
+    "「閉じる」ボタンが closeUserTplPanel を使っていない");
+
+  // トリガーボタン自身に ref が付いている（戻す先が実在することの確認）。
+  // ソースは CRLF のため、改行をまたぐ1つの文字列としては照合しない
+  // （\n 埋め込みだと \r\n と一致せず誤検知する）——2行を別々に見る
+  assert.ok(src.includes('<button ref={userTplTriggerRef} className="btn"'),
+    "「利用者テンプレートから開く」ボタンに userTplTriggerRef が付いていない");
+  assert.ok(src.includes("onClick={openUserTemplateList}>利用者テンプレートから開く</button>"),
+    "「利用者テンプレートから開く」ボタンの onClick が openUserTemplateList のままか確認できない");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

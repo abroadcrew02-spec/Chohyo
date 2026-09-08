@@ -1157,7 +1157,7 @@ export function columnBulkToggleAriaLabel(
   state: ColumnCellState, offCount: number): string {
   const cur = state === "all" ? "すべて出力する"
     : state === "none" ? "すべて出力しない"
-    : `${offCount}升が出力しない`;
+    : `${offCount}升を出力しない`;
   return `${tableId || "表"} ${columnName || "（名前未設定）"} の ${rows}升 を`
     + `まとめて切り替える（現在: ${cur}）`;
 }
@@ -3273,8 +3273,11 @@ const CellGrid = memo(function CellGrid(props: CellGridProps) {
 export default function Editor(
   { onDirty, active, showSettings }: { onDirty: (d: boolean) => void; active: boolean;
     // issue #136 差し戻し対応: 設定モーダルは App.tsx が描画するため props で
-    // 受け取る。キャンバスの keydown ガード（anyModalOpen）に含める
-    showSettings?: boolean }) {
+    // 受け取る。キャンバスの keydown ガード（anyModalOpen）に含める。
+    // keyAction の modalOpen と同じ理由（レビュー再検証 MEDIUM）で必須にする
+    // ——optional だと渡し忘れても型検査が通り、設定モーダルのガードだけが
+    // 静かに外れる。呼び出し側は App.tsx の1か所（既に渡している）
+    showSettings: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
@@ -3347,6 +3350,9 @@ export default function Editor(
   const userTplPanelRef = useRef<HTMLDivElement>(null);
   const userTplCloseBtnRef = useRef<HTMLButtonElement>(null);
   const prevUserTplPanelOpen = useRef(false);
+  // a11y再検証 Should: 閉じたら呼び出し元（「利用者テンプレートから開く」
+  // ボタン）へフォーカスを戻す（closeConfirmModal の saveBtnRef と同じ役目）
+  const userTplTriggerRef = useRef<HTMLButtonElement>(null);
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
@@ -4974,7 +4980,17 @@ export default function Editor(
   // confirmModal/uiConfirm と同じダイアログにする（Esc で閉じる・Tab 循環・
   // 開いた瞬間だけ「閉じる」へ初期フォーカス）。以前は role="dialog" だけ
   // 付けて中身はキーボード操作を素通しにしていた
-  const onUserTplPanelKeyDown = modalKeyHandler(userTplPanelRef, () => setUserTplPanel(null));
+  // a11y再検証 Should: 閉じた後（Escape／「閉じる」／背景クリックの3経路）に
+  // フォーカスが body へ落ちていた。closeConfirmModal／App.tsx の
+  // closeSettings と同じパターンで、閉じる処理を1関数に集約しトリガー
+  // ボタン（openUserTemplateList を呼ぶ「利用者テンプレートから開く」）へ
+  // 戻す。openMatchedTemplate（一覧から「開く」を押した経路）は適用中バーへ
+  // フォーカスを送る別方針（UI §7）なので、こちらのボタンには戻さない
+  const closeUserTplPanel = () => {
+    setUserTplPanel(null);
+    requestAnimationFrame(() => userTplTriggerRef.current?.focus());
+  };
+  const onUserTplPanelKeyDown = modalKeyHandler(userTplPanelRef, closeUserTplPanel);
   useEffect(() => {
     const isOpen = !!userTplPanel;
     if (isOpen && !prevUserTplPanelOpen.current) userTplCloseBtnRef.current?.focus();
@@ -7453,7 +7469,8 @@ export default function Editor(
         <button className="btn" onClick={loadTemplate} disabled={framesGenerating}
           title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
           テンプレートを開く</button>
-        <button className="btn" onClick={openUserTemplateList}>利用者テンプレートから開く</button>
+        <button ref={userTplTriggerRef} className="btn"
+          onClick={openUserTemplateList}>利用者テンプレートから開く</button>
         <button ref={saveBtnRef} className="btn primary" onClick={saveTemplate}>保存して検証</button>
         <button className="btn" onClick={saveAsUserTemplate}>利用者テンプレートとして保存</button>
         <button className="btn" onClick={importUserTemplate}>取り込み</button>
@@ -7861,7 +7878,7 @@ export default function Editor(
           issue #136 差し戻し対応（HIGH-2）: confirmModal/uiConfirm と同じ
           ダイアログの作り（Tab 循環・Esc で閉じる・初期フォーカス）にする */}
       {userTplPanel && (
-        <div className="modal-back" onClick={() => setUserTplPanel(null)}>
+        <div className="modal-back" onClick={closeUserTplPanel}>
           <div className="modal" ref={userTplPanelRef} role="dialog" aria-modal="true"
             aria-labelledby="user-tpl-list-title" onClick={(e) => e.stopPropagation()}
             onKeyDown={onUserTplPanelKeyDown}>
@@ -7892,7 +7909,7 @@ export default function Editor(
             ))}
             <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
               <button ref={userTplCloseBtnRef} type="button" className="btn"
-                onClick={() => setUserTplPanel(null)}>閉じる</button>
+                onClick={closeUserTplPanel}>閉じる</button>
             </div>
           </div>
         </div>
