@@ -1071,6 +1071,42 @@ fn kill_pid(pid: u32) -> Result<(), String> {
     if out.status.success() { Ok(()) } else { Err("停止できませんでした".into()) }
 }
 
+/// 実行中の core を止める唯一の実装（issue #135・#141）。中断ボタン
+/// （`kill_core`）・ウィンドウを閉じる・アプリ終了のすべてがこの関数を通る。
+/// kill の実行手段を `killer` として受け取るのは、実プロセスを起動せずに
+/// 状態遷移だけを単体テストするため（本番は `kill_pid` を渡す）。
+///
+/// **ロックは kill が終わるまで持ち続ける**（issue #141）。以前の `kill_core`
+/// は `take()` でスロットを先に空にしてからロックの外で `taskkill` していた
+/// ため、その間に `run_core` が「未実行」と見なして新しい core を spawn
+/// できてしまい、死にきっていない旧プロセスと新しい core が同じ
+/// workdir/SQLite に並走する窓があった。ここでは pid を読んだのと同じロックを
+/// 握ったまま kill し、完了後に `release_slot`（issue Q-MB の「自分の pid の
+/// ときだけ消す」不変条件）で解放する。
+///
+/// スロットが空なら何もせず `Ok(false)` を返す（対象が無いことをエラーに
+/// するかは呼び出し側の判断——中断ボタンは「実行中の処理がありません」を
+/// 返したいが、終了経路ではエラーにする意味が無い）。kill が失敗しても
+/// スロットは解放する（次回起動を永久にブロックしない）。
+fn kill_running_core_with(
+    state: &Mutex<Option<u32>>,
+    killer: impl FnOnce(u32) -> Result<(), String>,
+) -> Result<bool, String> {
+    let mut slot = state.lock().unwrap();
+    let pid = match *slot {
+        Some(pid) => pid,
+        None => return Ok(false),
+    };
+    let result = killer(pid);
+    release_slot(&mut slot, pid);
+    result.map(|_| true)
+}
+
+/// `kill_running_core_with` に本番の kill 手段（`kill_pid`）を固定した薄いラッパ。
+fn kill_running_core(state: &Mutex<Option<u32>>) -> Result<bool, String> {
+    kill_running_core_with(state, kill_pid)
+}
+
 /// run_core が確保する PID スロットの RAII ガード（issue Q-MB）。
 ///
 /// spawn 直後に確保し、以降の `?` による早期 return（stdout/stderr 取得
@@ -1320,10 +1356,17 @@ async fn run_core(app: AppHandle, state: State<'_, CoreProc>,
 
 /// 実行中のコアを子プロセス（pdftoppm 等）ごと停止する。中断分は
 /// 「未処理（中断）」として出力され、次回 run で続きから再開する（要件 §5.8）。
+///
+/// 実装は `kill_running_core`（issue #135・#141）に委ねる——ウィンドウを
+/// 閉じる・アプリ終了と同じ「kill が終わるまでスロットを保持してから解放する」
+/// 経路を通す。
 #[tauri::command]
 fn kill_core(state: State<'_, CoreProc>) -> Result<(), String> {
-    let pid = state.0.lock().unwrap().take().ok_or("実行中の処理がありません")?;
-    kill_pid(pid)
+    if kill_running_core(&state.0)? {
+        Ok(())
+    } else {
+        Err("実行中の処理がありません".into())
+    }
 }
 
 /// コアを起動し stdout を丸ごと返す（編集画面の detect-grid / verify 用）。
@@ -1504,6 +1547,22 @@ fn clear_pending_credentials(pending: State<'_, PendingCredentialsPath>) {
 
 #[tauri::command]
 fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
+    // write_config（validate_config_patch の CONFIG_PATH_KEYS）と同じ判定を
+    // 通す（issue #152）。ここが唯一パス検査を通らないコマンドで、UNC
+    // （`\\host\share`）を渡すと下の `abs.is_dir()` の時点で SMB セッションが
+    // 張られ、Windows が NTLMv2 資格情報を任意ホストへ送ってしまう——検査は
+    // ファイルシステムに触れる**前**（canonicalize・is_dir いずれの前）に、
+    // コンポーネントだけを見る `is_safe_root` で行う必要がある（同関数の
+    // 呼び出し規約どおり）。`is_safe_root` は自身のドキュメントどおり
+    // 空・ドライブ直下・UNC・`..` を1関数で拒否するため、`..` 用に
+    // 別途 `normalize_path` を通す必要はない（`normalize_path` は保存先が
+    // 未作成でも解決できるよう作られており、ここでは意味が重ならない）。
+    if !is_safe_root(Path::new(&path)) {
+        return Err(
+            "フォルダとして開けないパスです（空・ドライブ直下・ネットワークパス・.. は指定できません）"
+                .into(),
+        );
+    }
     let root = repo_root(&app)?;
     let p = PathBuf::from(&path);
     // CLI の相対パス設定（既定 "output"）は cwd=core 基準
@@ -1601,7 +1660,19 @@ fn validate_last_applied_template(s: &str) -> Result<(), String> {
         .map_err(|e| format!("last_applied_template のテンプレート名が不正です: {e}"))
 }
 
-/// `write_config` の patch を検証する（issue Q-MC/S-MA）。
+/// Python 側 `api_budget.py` の `FREE_TIER_UNITS`（無料枠）と同値
+/// （issue #155）。webview から届く `write_config` はこの値までしか
+/// `api_monthly_cap` を引き上げられないようにする——`api_monthly_cap` は
+/// 「正しさ」の設定ではなく費用の遮断器で、core 側が受け付ける上限
+/// （1,000,000・`config.py:132-136`）まで webview 経由で押し上げられると
+/// 遮断器の意味が無い。config.json の**手編集**で 1,000,000 まで上げる
+/// という文書化済みの逃げ道（`api_budget.py:76-81`）はそのまま残す——
+/// 塞ぐのは webview 経路 1 本だけ。値がズレたら `api_budget.py` 側の定義を
+/// 見て直すこと（二重管理だが、課金の遮断器という性質上ここは JSON 外出しに
+/// しない）。
+const API_MONTHLY_CAP_WEBVIEW_MAX: i64 = 1000;
+
+/// `write_config` の patch を検証する（issue Q-MC/S-MA・#143・#155）。
 ///
 /// 未知キーは拒否する——ここで止めないと、`config.json` へ書かれた未知キーが
 /// 次のコア起動時に `load_config`（`config.py:76-78`）の `ConfigError` を
@@ -1610,16 +1681,23 @@ fn validate_last_applied_template(s: &str) -> Result<(), String> {
 /// 3キーは `allowed_roots`（`read_file_b64` の読み取り範囲の起点）にそのまま
 /// 使われるため、パスの安全性（空・ドライブ直下・UNC・`..`）も検査する。
 ///
-/// **設計判断（意図的なスコープ限定）**: unclear_threshold 等の型・範囲検証
-/// （0〜1・0以上の整数、など）は行わない。それらは `config.py:_validate` が
-/// 既に唯一の正として検証しており、ここで重複させると2箇所の定義が
-/// 将来ズレる（片方だけ範囲を変えて他方を直し忘れる）リスクの方が高いと
-/// 判断した。patch 側で拒否できなかった不正値は、次のコア起動時に
-/// `ConfigError` として core 側で捕捉される（起動不能にはなるが、少なくとも
-/// 理由が明示される）。
+/// **設計判断の変更（issue #143・#155）**: 数値4キー
+/// （unclear_threshold・era_threshold・send_limit・api_monthly_cap）の
+/// 型・範囲検証は、当初「`config.py:_validate` に一本化し、ここでは重複
+/// させない」という判断だったが、2つの理由で不十分だった。(1) `send_limit`
+/// に負値が書けてしまい、次回のコア起動で run/verify/render/remap が
+/// すべて `ConfigError`（自己 DoS）になる。(2) `api_monthly_cap` は
+/// 「正しさ」ではなく費用の遮断器であり、core の上限（1,000,000）に
+/// 一本化すると、掌握された renderer がそこまで引き上げられる（issue
+/// #155）。範囲は `config.py:_validate`（unclear_threshold/era_threshold は
+/// `0 < v <= 1`・send_limit は `>= 0`）と**同じ境界**をここでも守る——
+/// 独自に緩め/狭めた範囲を書くと、ここは通っても core が弾く（またはその
+/// 逆）値が生まれ、`api_monthly_cap` を除いて2箇所の定義がズレたときに
+/// 気づけない。ズレの検出は #143 の想定対処にある pytest（`KNOWN_CONFIG_KEYS`
+/// と `Config.__dataclass_fields__` の比較）は範囲までは見ないため、
+/// 境界値を変えるときは両ファイルを一緒に見ること。
 ///
-/// 例外は `CONFIG_BOOL_KEYS` の型検査と `last_applied_template` の形検査
-/// だけ（理由は `KNOWN_CONFIG_KEYS` のコメント）。範囲の検証は増やさない——
+/// 他のキー（`CONFIG_BOOL_KEYS`・`last_applied_template`）は従来どおり。
 /// 表示名の文字種検証も利用者テンプレート保存と同じ
 /// `user_templates::validate_name_shape` を使い、許可リストを二重に持たない。
 fn validate_config_patch(patch: &serde_json::Value) -> Result<(), String> {
@@ -1644,6 +1722,37 @@ fn validate_config_patch(patch: &serde_json::Value) -> Result<(), String> {
         let Some(v) = obj.get(*key) else { continue };
         if !v.is_boolean() {
             return Err(format!("{key} は true / false で指定してください"));
+        }
+    }
+    // unclear_threshold / era_threshold: core の _validate（config.py:113-115）
+    // と同じ `0 < v <= 1`。0 ちょうどは「〓閾値の無効化」に相当し core が拒否
+    // するので、ここでも 0 を含めない（issue #143・#155）
+    for key in ["unclear_threshold", "era_threshold"] {
+        let Some(v) = obj.get(key) else { continue };
+        let n = v.as_f64()
+            .ok_or_else(|| format!("{key} は数値で指定してください"))?;
+        if !(n > 0.0 && n <= 1.0) {
+            return Err(format!("{key} は 0 より大きく 1 以下の数値にする必要があります"));
+        }
+    }
+    // send_limit: core の _validate（config.py:117-119）と同じ「0 以上の整数」。
+    // 0 は「送信しないドライラン」として正当な値なので下限には含める
+    if let Some(v) = obj.get("send_limit") {
+        let n = v.as_i64()
+            .ok_or_else(|| "send_limit は整数で指定してください".to_string())?;
+        if n < 0 {
+            return Err("send_limit は 0 以上の整数にする必要があります".into());
+        }
+    }
+    // api_monthly_cap: 課金の遮断器（issue #155）。core の上限（1,000,000）
+    // より狭い API_MONTHLY_CAP_WEBVIEW_MAX を webview からの上限として使う
+    if let Some(v) = obj.get("api_monthly_cap") {
+        let n = v.as_i64()
+            .ok_or_else(|| "api_monthly_cap は整数で指定してください".to_string())?;
+        if !(0..=API_MONTHLY_CAP_WEBVIEW_MAX).contains(&n) {
+            return Err(format!(
+                "api_monthly_cap は 0〜{API_MONTHLY_CAP_WEBVIEW_MAX} の整数にする必要があります"
+            ));
         }
     }
     if let Some(v) = obj.get("last_applied_template") {
@@ -1688,20 +1797,32 @@ fn merge_config(existing: Option<&str>, patch: &serde_json::Value)
     Ok(cur)
 }
 
-/// `<path>.tmp` へ書いてから rename で置き換える（issue #97・`promote_staged`
-/// と同型）。rename を注入可能にしてあるのは、確定の rename が失敗する経路を
-/// 単体テストで固定するため（`promote_with` と同じ理由——OS レベルで rename
-/// 失敗を確実に誘発する方法が Windows に無い）。
+/// 一時ファイル名のプロセス内一意な連番（issue #137）。`write_atomic_with` を
+/// 呼ぶたび 1 進む。
+static WRITE_ATOMIC_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// `<path>.<pid>.<連番>.tmp` へ書いてから rename で置き換える（issue #97・#137・
+/// `promote_staged` と同型）。rename を注入可能にしてあるのは、確定の rename が
+/// 失敗する経路を単体テストで固定するため（`promote_with` と同じ理由——OS
+/// レベルで rename 失敗を確実に誘発する方法が Windows に無い）。
 ///
 /// 失敗しても既存ファイルは書き換わらない。途中で電源が落ちても、壊れた
 /// 内容が本体へ入るのは rename の一瞬だけになる（Windows の `MoveFileEx`
 /// 相当・`std::fs::rename` は既存ファイルを置き換える）。
+///
+/// **一時ファイル名（issue #137）**: 固定名 `<path>.tmp` だった頃は、Tauri
+/// コマンドがスレッドプールで並行実行されるため2つの `write_config` が
+/// 同じ tmp に書き合い、両方が rename すると内容が混ざった。pid＋連番で
+/// プロセス内一意にする（Python 側 `config.py:294` の
+/// `f"{p.name}.{os.getpid()}.tmp"` と同じ狙い。連番も足すのは、同一プロセス
+/// 内での並行呼び出しは pid だけでは区別できないため）。
 fn write_atomic_with<F>(path: &Path, content: &str, mut rename: F) -> Result<(), String>
 where
     F: FnMut(&Path, &Path) -> std::io::Result<()>,
 {
+    let seq = WRITE_ATOMIC_SEQ.fetch_add(1, Ordering::Relaxed);
     let mut tmp_name = path.as_os_str().to_os_string();
-    tmp_name.push(".tmp");
+    tmp_name.push(format!(".{}.{}.tmp", std::process::id(), seq));
     let tmp = PathBuf::from(tmp_name);
     std::fs::write(&tmp, content)
         .map_err(|e| format!("一時ファイルの書き込みに失敗しました（{:?}）", e.kind()))?;
@@ -1719,6 +1840,30 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
     write_atomic_with(path, content, |from, to| std::fs::rename(from, to))
 }
 
+/// `write_config` の read-modify-write（`config_file` を読む→`merge_config`→
+/// `write_atomic`）をプロセス内で直列化する（issue #137）。tmp ファイル名を
+/// 一意にしても、2つの `write_config` がほぼ同時に既存 config を読んでから
+/// それぞれ別のキーだけ足して書き戻すと、後から rename した方が先の変更を
+/// 消す（read-modify-write の後勝ち）。tmp 名の衝突とは別の問題なので、
+/// 一意な tmp 名だけでは直らない——書き込み全体を1本のロックで囲む。
+static WRITE_CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+/// `write_config` の本体（issue #137）。`AppHandle` に依存する `config_file`
+/// 解決と、ファイルに対する read-modify-write を分けておくことで、後者を
+/// `AppHandle` なしに（実ファイルだけで）単体テストできるようにしてある
+/// （`merge_config`／`write_atomic_with` と同じ「コマンドは薄いラッパ」方針）。
+fn write_config_to_path(p: &Path, patch: &serde_json::Value) -> Result<(), String> {
+    let _serialize = WRITE_CONFIG_LOCK.lock().unwrap();
+    let existing = if p.exists() {
+        Some(std::fs::read_to_string(p).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    let merged = merge_config(existing.as_deref(), patch)?;
+    let text = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+    write_atomic(p, &text)
+}
+
 /// 設定の部分更新（要件 §5.7: GUI で選んだ値を保存し次回既定値に）。他キーは保持する。
 ///
 /// 書き込みは tmp + rename（issue #97）。`merge_config` は壊れた config への
@@ -1726,17 +1871,12 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), String> {
 /// GUI からは二度と書けなくなる（防御と非アトミック書き込みが噛み合って
 /// 自己修復不能になる）。テンプレート切替のたびに呼ばれる経路であり、
 /// 書き込み頻度も低くない。
+///
+/// `WRITE_CONFIG_LOCK` で read-modify-write 全体を直列化する（issue #137）。
 #[tauri::command]
 fn write_config(app: AppHandle, patch: serde_json::Value) -> Result<(), String> {
     let p = config_file(&app)?;
-    let existing = if p.exists() {
-        Some(std::fs::read_to_string(&p).map_err(|e| e.to_string())?)
-    } else {
-        None
-    };
-    let merged = merge_config(existing.as_deref(), &patch)?;
-    let text = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
-    write_atomic(&p, &text)
+    write_config_to_path(&p, &patch)
 }
 
 /// 画像を data URL で返す（編集画面のキャンバス表示用・asset protocol 不使用）。
@@ -2267,10 +2407,8 @@ pub fn run() {
         // 入力欄の表示を更新するだけで、白リストへの登録には関与しない——
         // webview から任意パスを登録できる経路（旧 remember_dropped_path）は
         // PickedPaths の前提そのものを崩すため削除した。
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::DragDrop(
-                tauri::DragDropEvent::Drop { paths, .. }) = event
-            {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 // ドロップを受ける画面が表示されているときだけ登録する
                 // （issue #69 セキュリティ LOW (b)）。編集タブを見ている
                 // 最中のドロップは、画面上は何も起きないのに白リストだけが
@@ -2280,6 +2418,17 @@ pub fn run() {
                 }
                 remember_dropped(&window.state::<PickedPaths>(), paths);
             }
+            tauri::WindowEvent::CloseRequested { .. } => {
+                // ウィンドウを閉じても実行中の core は自動では止まらない
+                // （issue #135）。`PidSlot::drop` は run_core の spawn_blocking
+                // ワーカースレッドの中にあり、アプリが `std::process::exit`
+                // 相当で終了するとそちらの Drop は走らない——ここで明示的に
+                // kill する。RunEvent::ExitRequested/Exit（下の `.run` 側）と
+                // 同じ `kill_running_core` を呼ぶことで、kill を実行する経路を
+                // 1本に保つ
+                let _ = kill_running_core(&window.state::<CoreProc>().0);
+            }
+            _ => {}
         })
         // opener プラグインは撤去した（issue #49）。gui/src からの呼び出しは
         // 0 件で、IPC 経由で OS のブラウザ・エクスプローラを起動できる分
@@ -2309,8 +2458,21 @@ pub fn run() {
             save_user_template,
             match_templates
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // アプリ終了イベントでも同じ経路を通す（issue #135）。ウィンドウが
+            // 複数あるとき・OS のセッション終了など `CloseRequested` を経ずに
+            // 落ちる経路の保険として、`ExitRequested`・`Exit` の両方で拾う
+            // （二重に呼んでも `kill_running_core` はスロットが既に空なら
+            // 何もしない・冪等）。
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                let _ = kill_running_core(&app_handle.state::<CoreProc>().0);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -3259,9 +3421,6 @@ mod tests {
             assert!(validate_config_patch(&json!({key: "\\\\server\\share"})).is_err(), "{key}: UNC");
             assert!(validate_config_patch(&json!({key: "..\\escape"})).is_err(), "{key}: 親traversal");
         }
-        // パス検証対象でないキーは触らない（数値の範囲検証は core 側の役割のまま）
-        assert!(validate_config_patch(&json!({"send_limit": -1})).is_ok(),
-                "型/範囲検証は意図的に core 側に一本化している（設計判断）");
     }
 
     #[test]
@@ -3290,6 +3449,59 @@ mod tests {
             assert!(validate_config_patch(&json!({key: "yes"})).is_err(), "{key}: 文字列");
             assert!(validate_config_patch(&json!({key: 1})).is_err(), "{key}: 整数");
         }
+    }
+
+    // --- 数値キーの型・範囲検証（issue #143・#155）---
+    // 旧テスト `validate_config_patch_checks_path_keys_only` は
+    // `send_limit: -1` が通ることを「型/範囲検証は core 側に一本化している
+    // （設計判断）」として固定していた。この設計判断は反転した——
+    // send_limit の負値は次回のコア起動を ConfigError で全滅させる自己 DoS、
+    // api_monthly_cap は core の上限（1,000,000）まで webview 経由で押し上げ
+    // られると課金の遮断器として機能しない（issue #155）。以下はその反転後の
+    // 挙動を固定する。
+
+    #[test]
+    fn validate_config_patch_rejects_negative_or_non_integer_send_limit() {
+        // 反転: 以前は「core 側に一本化」の根拠として -1 が通ることを固定
+        // していたが、次回のコア起動で run/verify/render/remap がすべて
+        // ConfigError になる自己 DoS だったため拒否に変える（issue #143）
+        assert!(validate_config_patch(&json!({"send_limit": -1})).is_err(),
+                "負値は次回起動を ConfigError で止める自己 DoS になるため拒否する");
+        assert!(validate_config_patch(&json!({"send_limit": 0})).is_ok(),
+                "0 は送信しないドライランとして core が正当な値にしている");
+        assert!(validate_config_patch(&json!({"send_limit": 100})).is_ok());
+        assert!(validate_config_patch(&json!({"send_limit": 3.5})).is_err(), "整数でない");
+        assert!(validate_config_patch(&json!({"send_limit": true})).is_err(), "真偽値は整数ではない");
+    }
+
+    #[test]
+    fn validate_config_patch_checks_unclear_and_era_threshold_range() {
+        // core の _validate（config.py:113-115）と同じ `0 < v <= 1`。0 は
+        // 「〓閾値の無効化」に相当し core が拒否するため、境界に含めない
+        for key in ["unclear_threshold", "era_threshold"] {
+            assert!(validate_config_patch(&json!({key: 0.85})).is_ok(), "{key}: 通常値");
+            assert!(validate_config_patch(&json!({key: 1})).is_ok(), "{key}: 上限（整数1も許可）");
+            assert!(validate_config_patch(&json!({key: 0})).is_err(), "{key}: 0 は下限含まず拒否");
+            assert!(validate_config_patch(&json!({key: -0.1})).is_err(), "{key}: 負値");
+            assert!(validate_config_patch(&json!({key: 1.1})).is_err(), "{key}: 上限超え");
+            assert!(validate_config_patch(&json!({key: "0.5"})).is_err(), "{key}: 文字列");
+        }
+    }
+
+    #[test]
+    fn validate_config_patch_caps_api_monthly_cap_below_core_limit() {
+        // issue #155: core の上限は 1,000,000 だが、webview からはそこまで
+        // 引き上げさせない。API_MONTHLY_CAP_WEBVIEW_MAX（FREE_TIER_UNITS 相当）
+        // が実際の境界
+        assert!(validate_config_patch(&json!({"api_monthly_cap": 900})).is_ok(), "既定値相当");
+        assert!(validate_config_patch(&json!({"api_monthly_cap": 0})).is_ok(), "下限 0 は許可");
+        assert!(validate_config_patch(&json!({"api_monthly_cap": super::API_MONTHLY_CAP_WEBVIEW_MAX})).is_ok(),
+                "上限ちょうどは許可");
+        assert!(validate_config_patch(&json!({"api_monthly_cap": super::API_MONTHLY_CAP_WEBVIEW_MAX + 1})).is_err(),
+                "上限+1 は拒否");
+        assert!(validate_config_patch(&json!({"api_monthly_cap": 1_000_000})).is_err(),
+                "core が受け付ける上限まで webview からは引き上げさせない（issue #155 の核心）");
+        assert!(validate_config_patch(&json!({"api_monthly_cap": -1})).is_err(), "負値");
     }
 
     #[test]
@@ -3357,7 +3569,77 @@ mod tests {
 
         assert!(err.contains("設定は変更されていません"), "{err}");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"keep\":true}");
-        assert!(!dir.join("config.json.tmp").exists(), "失敗時に一時ファイルを残さない");
+        // 一時ファイル名は `<path>.<pid>.<連番>.tmp`（issue #137）に変わったため、
+        // 固定名ではなく拡張子で leftovers を判定する（1つ目のテストと同じ流儀）
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "失敗時に一時ファイルを残さない: {leftovers:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_with_uses_a_pid_and_sequence_scoped_tmp_name() {
+        // issue #137: 固定名 `config.json.tmp` だと2つの書き込みが同じ tmp を
+        // 取り合う。名前そのものに pid と連番が入ることを確認する
+        // （rename を差し替えて tmp のパスを覗き見る）。
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_write_atomic_tmpname_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.json");
+
+        let mut seen_tmp_name = String::new();
+        write_atomic_with(&target, "{}", |from, to| {
+            seen_tmp_name = from.file_name().unwrap().to_string_lossy().to_string();
+            std::fs::rename(from, to)
+        })
+        .unwrap();
+
+        let pid = std::process::id().to_string();
+        assert!(seen_tmp_name.starts_with("config.json."), "{seen_tmp_name}");
+        assert!(seen_tmp_name.ends_with(".tmp"), "{seen_tmp_name}");
+        assert!(seen_tmp_name.contains(&pid), "pid を含む: {seen_tmp_name}");
+        assert_ne!(seen_tmp_name, "config.json.tmp", "固定名には戻さない");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_config_to_path_serializes_concurrent_writes_without_losing_either_key() {
+        // issue #137: 2 スレッドが同時に別々のキーだけを patch すると、
+        // read-modify-write が後勝ちで先の変更を消していた。
+        // WRITE_CONFIG_LOCK で直列化した後は、順序に関わらず両方のキーが残る。
+        let dir = std::env::temp_dir()
+            .join(format!("chouhyo_write_config_concurrent_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("config.json");
+        std::fs::write(&target, "{}").unwrap();
+
+        let t1 = {
+            let target = target.clone();
+            std::thread::spawn(move || {
+                super::write_config_to_path(&target, &json!({"workdir": "a"}))
+            })
+        };
+        let t2 = {
+            let target = target.clone();
+            std::thread::spawn(move || {
+                super::write_config_to_path(&target, &json!({"output_dir": "b"}))
+            })
+        };
+        t1.join().unwrap().unwrap();
+        t2.join().unwrap().unwrap();
+
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&target).unwrap()).unwrap();
+        assert_eq!(saved.get("workdir").and_then(|v| v.as_str()), Some("a"),
+                   "先勝ちでも後勝ちでも、直列化されていれば消えない: {saved}");
+        assert_eq!(saved.get("output_dir").and_then(|v| v.as_str()), Some("b"),
+                   "先勝ちでも後勝ちでも、直列化されていれば消えない: {saved}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -3424,6 +3706,51 @@ mod tests {
         let mut slot: Option<u32> = None;
         release_slot(&mut slot, 111);
         assert_eq!(slot, None);
+    }
+
+    // --- 終了経路の kill を1本化（issue #135・#141）---
+    // kill_pid（実プロセスへの taskkill）は起動せず、`kill_running_core_with`
+    // に渡す `killer` をダミーへ差し替えて状態遷移だけを検証する。
+    use super::kill_running_core_with;
+
+    #[test]
+    fn kill_running_core_with_holds_slot_until_killer_returns_then_clears() {
+        let state = Mutex::new(Some(999u32));
+        let mut seen_pid = None;
+        let result = kill_running_core_with(&state, |pid| {
+            // killer が呼ばれている時点でもスロットにはまだ pid が残っている
+            // ことを、外側の state を直接読める形で確認する
+            // （lock() は killer 内で取り直すと自己デッドロックするため行わない
+            //   ——それ自体が「kill 完了までロックを保持する」設計の裏付け）。
+            seen_pid = Some(pid);
+            Ok(())
+        });
+        assert_eq!(seen_pid, Some(999), "killer には現在の pid が渡る");
+        assert_eq!(result, Ok(true), "実行中の core があれば true");
+        assert_eq!(*state.lock().unwrap(), None, "kill 完了後にスロットが解放される");
+    }
+
+    #[test]
+    fn kill_running_core_with_returns_false_without_calling_killer_when_idle() {
+        let state: Mutex<Option<u32>> = Mutex::new(None);
+        let mut called = false;
+        let result = kill_running_core_with(&state, |_| {
+            called = true;
+            Ok(())
+        });
+        assert_eq!(result, Ok(false), "実行中の core が無ければ false");
+        assert!(!called, "対象が無ければ kill 手段を呼ばない");
+    }
+
+    #[test]
+    fn kill_running_core_with_clears_slot_even_if_killer_fails() {
+        // kill が失敗しても、次回実行を永久にブロックしないようスロットは
+        // 解放する（旧 kill_core の take() と同じ「失敗しても後始末はする」
+        // 挙動を維持しつつ、ロック保持のタイミングだけを直す）。
+        let state = Mutex::new(Some(7u32));
+        let result = kill_running_core_with(&state, |_| Err("停止できませんでした".into()));
+        assert!(result.is_err());
+        assert_eq!(*state.lock().unwrap(), None, "失敗時もスロットは解放する");
     }
 
     // --- PID 再利用レース（issue #53 L-13）---

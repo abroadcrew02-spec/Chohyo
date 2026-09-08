@@ -137,8 +137,11 @@ desktop.ini
 # `!testdata/**` のような丸ごと否定は、上の *.key/*.pem/*.dpapi/*.sqlite/.env/*.pdf の
 # 除外まで testdata 配下で全て打ち消す（2026-09-02 セキュリティレビュー H-1）。
 # 戻す拡張子は最小限にし、鍵 JSON の混入は pre-commit の内容検査に委ねる。
-# 配布物には同梱されない（tauri.conf は templates/ のみ同梱）。経緯は
-# docs/design/chouhyo-ocr/06_second_form_findings.md §2
+# 配布物には同梱されない（tauri.conf が同梱するのは出荷テンプレート1ファイル
+# templates/chouhyo-v1.json のみ・issue #158。以前は templates/ ディレクトリ
+# 丸ごとを同梱しており、testdata 配下の未追跡ファイルとは別経路で
+# templates/drafts/ の下書きがローカルビルドのインストーラへ混入していた）。
+# 経緯は docs/design/chouhyo-ocr/06_second_form_findings.md §2
 # 戻すのはワイルドカードでなく実在パスの列挙にする。`!/testdata/**/*.json` だと
 # testdata 配下に置いた任意の JSON が追跡対象へ戻り、たとえば
 # testdata/formB/responses/本番読取_p0001.json（実データの Vision 応答）が

@@ -36,7 +36,7 @@
     ],
     "resources": {
       "../../core-dist/chouhyo-core": "core-dist/chouhyo-core",
-      "../../templates": "templates",
+      "../../templates/chouhyo-v1.json": "templates/chouhyo-v1.json",
       "../../schema": "schema",
       "../../THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
     }
