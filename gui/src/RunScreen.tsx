@@ -961,18 +961,20 @@ export function acceptsRunEvent(f: RunFilter, runId?: string): boolean {
 
 /** 進捗バーの ARIA 属性（issue #162 M2・WCAG 4.1.2）。role="progressbar" に加え
  *  aria-valuemin/aria-valuemax/aria-label を返す。total が確定していない
- *  （0 のまま・未取得）ときは aria-valuenow を省く——0 を出すと「0% で
- *  止まっている」という誤った値の断定になる。呼び出し側は
+ *  （0 のまま・未取得）ときは aria-valuenow に加えて aria-valuemax も省く
+ *  （再検証 LOW 指摘）——0 を出すと「上限0（＝終わっている）」「0% で止まって
+ *  いる」のどちらの誤った断定にもなりうる。値が無い間は ARIA の既定に
+ *  委ねる。aria-valuemin は 0 固定で常に出す（範囲の下限自体は total の
+ *  確定と無関係に決まっている）。呼び出し側は
  *  `<div className="bar" {...progressAriaProps(done, total)}>` のように展開する。 */
 export function progressAriaProps(done: number, total: number): {
-  role: "progressbar"; "aria-valuemin": number; "aria-valuemax": number;
+  role: "progressbar"; "aria-valuemin": number; "aria-valuemax"?: number;
   "aria-valuenow"?: number; "aria-label": string;
 } {
   return {
     role: "progressbar",
     "aria-valuemin": 0,
-    "aria-valuemax": total,
-    ...(total > 0 ? { "aria-valuenow": done } : {}),
+    ...(total > 0 ? { "aria-valuemax": total, "aria-valuenow": done } : {}),
     "aria-label": "読み取りの進捗",
   };
 }
@@ -1511,6 +1513,13 @@ ${ev.hint}` : ""));
       {notices.map((t, i) => <div key={i}>{t}</div>)}
     </div>
   ) : null;
+  // 完了報告のライブ領域（issue #162 M3）に今出す中身があるか。無いときは
+  // 常時マウントする role="status" の div を .sr-only（position:absolute）に
+  // する——.run-main は flex+gap のため、visible な空 div を挟むと
+  // gap が2重（前後）に付いて見た目にすき間が増える（実測で発覚・再検証時の
+  // 追加修正）。.sr-only は流れから外れるので gap の計算に加わらず、
+  // かつ DOM には残るのでライブ領域としての登録は保たれる
+  const hasStatusContent = !!summary || !!noticesCard;
 
   return (
     <div className="run-screen" ref={screenRef}>
@@ -1521,129 +1530,144 @@ ${ev.hint}` : ""));
       )}
       <div className="run-main">
 
-        {/* A11y-Must（WCAG 4.1.3 Status Messages）: 完了バナー・サマリ6項目・
+        {/* A11y-Must（WCAG 4.1.3 Status Messages）: 完了バナー・サマリ・
             実行時のお知らせ・様式不一致の黄帯は、フォーカスを動かさずに
-            まとめて現れる（issue #162 M3）。バナーからこの完了ブロックの
-            末尾（様式不一致の黄帯）までを1つの role="status" ライブ領域に
-            まとめる——分割すると領域を増やしすぎるか、この一括更新の一部を
-            ライブ領域の外に置くかのどちらかになる。role="status" の div
-            自体は summary の有無で出し入れするが、中身をまとめて包むこの
-            外枠は run-main の直接の子が1つ減る分、.run-main と同じ
-            flex/gap をここに引き継いで元の見た目を保つ */}
-        {summary && (
-          <div role="status" aria-live="polite"
-            style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* 完了バナー。1件も送信せず全ページ様式不一致で終わった実行は
-                緑ではなく注意色にする（issue #69 残置1・completionBannerTone）。
-                文言は変えない——何が起きたかは completionNotice の赤帯が既に
-                説明しており、同じ内容を2箇所に持たない */}
-            <div className={`banner ${bannerTone}`}>
-              {bannerTone === "ok" ? (
-                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
-                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" /><path d="M8 12.5l3 3 5-6" />
-                </svg>
-              ) : (
-                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#a16207"
-                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" role="img"
-                  aria-label="注意">
-                  <path d="M12 3.5L21.5 20H2.5z" /><path d="M12 10v4" /><path d="M12 17.2v.1" />
-                </svg>
+            まとめて現れる（issue #162 M3）。
+            再検証 MEDIUM 指摘（M3）: 中身の挿入と同時に role="status" を
+            マウントすると、生成直後のライブ領域は監視が間に合わず読み上げが
+            不安定になる。そのため外枠のこの div 自体は summary の有無に
+            関わらず常時マウントし、中身（summary && ... / !summary &&
+            noticesCard）だけを出し入れする。読み上げ対象はバナー・サマリ
+            （行間の注記を含む）・実行時のお知らせ・様式不一致の黄帯に絞り、
+            ボタン列・「次の作業」カード・CSV注意・位置合わせ失敗の案内は
+            この領域の外に出す——「何が起きたか」の報告と「次に何をするか」の
+            操作案内を分け、後者まで毎回読み上げさせない。run-main と同じ
+            flex/gap をこの div にも引き継いで、外に出した要素との間隔
+            （14px）を変えない。中身が無いとき（起動直後・削除だけを行った
+            直後）は hasStatusContent が false になり .sr-only へ切り替える
+            ——run-main は flex+gap のため、visible な空 div のままだと
+            前後の要素との間に gap が二重に付いてすき間が増える */}
+        <div role="status" aria-live="polite"
+          className={hasStatusContent ? undefined : "sr-only"}
+          style={hasStatusContent
+            ? { display: "flex", flexDirection: "column", gap: 14 } : undefined}>
+          {summary && (
+            <>
+              {/* 完了バナー。1件も送信せず全ページ様式不一致で終わった実行は
+                  緑ではなく注意色にする（issue #69 残置1・completionBannerTone）。
+                  文言は変えない——何が起きたかは completionNotice の赤帯が既に
+                  説明しており、同じ内容を2箇所に持たない */}
+              <div className={`banner ${bannerTone}`}>
+                {bannerTone === "ok" ? (
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
+                    strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" /><path d="M8 12.5l3 3 5-6" />
+                  </svg>
+                ) : (
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#a16207"
+                    strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" role="img"
+                    aria-label="注意">
+                    <path d="M12 3.5L21.5 20H2.5z" /><path d="M12 10v4" /><path d="M12 17.2v.1" />
+                  </svg>
+                )}
+                <div className="txt">
+                  <b>読み取りが完了しました</b>
+                  <span>Excel と CSV を保存しました{xlsxName ? `（${xlsxName}）` : ""}</span>
+                </div>
+              </div>
+
+              {/* 完了サマリ6項目（要件 §5.9 と同一。副題は平易な言葉） */}
+              <div className="summary6">
+                <div className="sumcard"><span className="k">処理枚数</span>
+                  <span className="v">{summary.pages}</span><span className="s">読み取ったページ数</span></div>
+                <div className="sumcard"><span className="k">出力行数</span>
+                  <span className="v">{summary.rows}</span><span className="s">Excel に出力した行数</span></div>
+                <div className="sumcard"><span className="k">API送信回数</span>
+                  <span className="v">{summary.api_calls}</span><span className="s">クラウド OCR の送信回数</span></div>
+                <div className="sumcard warn"><span className="k">要確認セル数総計</span>
+                  <span className="v">{summary.unclear_cells}</span><span className="s">〓の個数（要修正箇所）</span></div>
+                <div className={summary.align_failed > 0 ? "sumcard err" : "sumcard"}>
+                  <span className="k">位置合わせ失敗</span>
+                  <span className="v">{summary.align_failed}</span><span className="s">読み取れなかったページ数</span></div>
+                <div className="sumcard"><span className="k">行数超過件数</span>
+                  <span className="v">{summary.overflow}</span><span className="s">行数を超過したページ数</span></div>
+              </div>
+              {/* issue #72 (t)・実機通し確認の指摘: 「API送信回数」がページ数より
+                  少ない理由（中間データの再利用）を、その項目の直後に説明する。
+                  summary6 は要件 §5.9 が固定した6項目のグリッドのため、7件目の
+                  カードとしては足さず、グリッドのすぐ下に注記として置く */}
+              {reusedPagesNotice(summary.reused_pages) && (
+                <div className="muted" style={{ fontSize: 12.5, marginTop: -8 }}>
+                  {reusedPagesNotice(summary.reused_pages)}
+                </div>
               )}
-              <div className="txt">
-                <b>読み取りが完了しました</b>
-                <span>Excel と CSV を保存しました{xlsxName ? `（${xlsxName}）` : ""}</span>
-              </div>
-            </div>
 
-            {/* 完了サマリ6項目（要件 §5.9 と同一。副題は平易な言葉） */}
-            <div className="summary6">
-              <div className="sumcard"><span className="k">処理枚数</span>
-                <span className="v">{summary.pages}</span><span className="s">読み取ったページ数</span></div>
-              <div className="sumcard"><span className="k">出力行数</span>
-                <span className="v">{summary.rows}</span><span className="s">Excel に出力した行数</span></div>
-              <div className="sumcard"><span className="k">API送信回数</span>
-                <span className="v">{summary.api_calls}</span><span className="s">クラウド OCR の送信回数</span></div>
-              <div className="sumcard warn"><span className="k">要確認セル数総計</span>
-                <span className="v">{summary.unclear_cells}</span><span className="s">〓の個数（要修正箇所）</span></div>
-              <div className={summary.align_failed > 0 ? "sumcard err" : "sumcard"}>
-                <span className="k">位置合わせ失敗</span>
-                <span className="v">{summary.align_failed}</span><span className="s">読み取れなかったページ数</span></div>
-              <div className="sumcard"><span className="k">行数超過件数</span>
-                <span className="v">{summary.overflow}</span><span className="s">行数を超過したページ数</span></div>
-            </div>
-            {/* issue #72 (t)・実機通し確認の指摘: 「API送信回数」がページ数より
-                少ない理由（中間データの再利用）を、その項目の直後に説明する。
-                summary6 は要件 §5.9 が固定した6項目のグリッドのため、7件目の
-                カードとしては足さず、グリッドのすぐ下に注記として置く */}
-            {reusedPagesNotice(summary.reused_pages) && (
-              <div className="muted" style={{ fontSize: 12.5, marginTop: -8 }}>
-                {reusedPagesNotice(summary.reused_pages)}
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 12 }}>
-              <button className="btn primary big" onClick={openOutput}>
-                <FolderIcon c="#ffffff" />出力フォルダを開く
-              </button>
-              <button className="btn big" onClick={start}>再度読み取る</button>
-              <button className="btn" onClick={() => setSummary(null)}>条件を変更して読み取る</button>
-            </div>
+              {noticesCard}
 
-            {/* 完了後の付随情報（次の作業・実行時のお知らせ・CSV注意・位置合わせ失敗）。
-                issue #65-5: 以前は右カラム（幅380px固定）に出していたが、実行前は
-                その右カラムが空のまま幅だけ確保されて余白になっていた（issue #65-4
-                で説明文を消した後に発覚）。単一カラムへ統合し、完了時にウィンドウ幅を
-                変えずに済むようにする（完了の瞬間にリサイズすると体験が悪い） */}
-            <div className="card nextsteps">
-              <div className="explain"><div className="h">次の作業（目視確認）</div></div>
-              <div className="row"><b>1.</b>
-                <div>Excel を開き、先頭列の<b>「要確認セル数」</b>を降順に並べ替えます</div></div>
-              <div className="row"><b>2.</b>
-                <div>背景色付きの <span className="mark">〓</span> セルを、原本と照合して修正します</div></div>
-              <div className="row"><b>3.</b>
-                <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
-            </div>
-            {noticesCard}
-            {(summary.risky_cells ?? 0) > 0 && (
-              // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
-              // 出ており、修正の必要はない——CSV の開き方だけの注意
-              <div className="card warnbox">
-                <b>CSV の開き方に注意</b>
-                <div>「=」「+」「-」で始まる値が {summary.risky_cells} セルあります。
-                  CSV を Excel でダブルクリックして開くと、これらが計算式として実行され、
-                  先頭ゼロも失われます。中身を見るときはテキストエディタか、Excel の
-                  「データ」→「テキストまたは CSV から」で全列を文字列として取り込んでください。
-                  目視確認と提出に使う Excel（.xlsx）側は影響を受けません。</div>
-              </div>
-            )}
-            {summary.align_failed > 0 && (
-              <div className="errbox">
-                位置合わせに失敗したページが {summary.align_failed} 件あります。該当行はすべて〓のため、原本を参照して直接入力してください。
-              </div>
-            )}
-            {/* 送信前に様式不一致で止まったページ（issue #71 (a')・FR-F09・FR-F10）。
-                API を1回も呼んでいない＝課金が発生していないことを明示し、
-                出口2択を案内する。issue #72 (t) でテンプレート選択が
-                画面上部（補助カード）に増えたため、出口も編集画面ではなく
-                この選択＋「再度読み取る」を第一に案内する（UX 代弁担当／
-                user_advocate の初見ユーザー予測レビュー: 旧文言は画面にある
-                実際のボタン（出力フォルダを開く／再度読み取る／条件を変更
-                して読み取る）のどれとも対応していなかった） */}
-            {(summary.format_mismatch_pre_send ?? 0) > 0 && (
-              <div className="card warnbox">
-                <b>様式不一致（送信前・課金なし）: {summary.format_mismatch_pre_send} 件</b>
-                <div>次にできること: テンプレートを選び直して「再度読み取る」か、テンプレート編集タブでこの紙のテンプレートを作ってください
-                  （テンプレート選択は「条件を変更して読み取る」を押すと画面上部に出ます）。</div>
-              </div>
-            )}
+              {/* 送信前に様式不一致で止まったページ（issue #71 (a')・FR-F09・FR-F10）。
+                  API を1回も呼んでいない＝課金が発生していないことを明示し、
+                  出口2択を案内する。issue #72 (t) でテンプレート選択が
+                  画面上部（補助カード）に増えたため、出口も編集画面ではなく
+                  この選択＋「再度読み取る」を第一に案内する（UX 代弁担当／
+                  user_advocate の初見ユーザー予測レビュー: 旧文言は画面にある
+                  実際のボタン（出力フォルダを開く／再度読み取る／条件を変更
+                  して読み取る）のどれとも対応していなかった） */}
+              {(summary.format_mismatch_pre_send ?? 0) > 0 && (
+                <div className="card warnbox">
+                  <b>様式不一致（送信前・課金なし）: {summary.format_mismatch_pre_send} 件</b>
+                  <div>次にできること: テンプレートを選び直して「再度読み取る」か、テンプレート編集タブでこの紙のテンプレートを作ってください
+                    （テンプレート選択は「条件を変更して読み取る」を押すと画面上部に出ます）。</div>
+                </div>
+              )}
+            </>
+          )}
+          {!summary && noticesCard}
+        </div>
+
+        {/* 完了後の操作・付随情報（ボタン列・次の作業・CSV注意・位置合わせ失敗）。
+            issue #162 M3 再検証 MEDIUM 指摘: 上の role="status" 領域からは
+            意図して外す（「次に何をするか」の操作案内・詳細の掘り下げで、
+            完了のたびに読み上げる必要はない）。
+            issue #65-5: 以前は右カラム（幅380px固定）に出していたが、実行前は
+            その右カラムが空のまま幅だけ確保されて余白になっていた（issue #65-4
+            で説明文を消した後に発覚）。単一カラムへ統合し、完了時にウィンドウ幅を
+            変えずに済むようにする（完了の瞬間にリサイズすると体験が悪い） */}
+        {summary && (
+          <div style={{ display: "flex", gap: 12 }}>
+            <button className="btn primary big" onClick={openOutput}>
+              <FolderIcon c="#ffffff" />出力フォルダを開く
+            </button>
+            <button className="btn big" onClick={start}>再度読み取る</button>
+            <button className="btn" onClick={() => setSummary(null)}>条件を変更して読み取る</button>
           </div>
         )}
-
-        {/* サマリが無いとき（削除だけを行った直後など）のお知らせ。
-            summary があるときは上の付随情報の並びの中で出している。
-            A11y-Must: こちらも role="status" のライブ領域にする（issue #162 M3） */}
-        {!summary && noticesCard && (
-          <div role="status" aria-live="polite">{noticesCard}</div>
+        {summary && (
+          <div className="card nextsteps">
+            <div className="explain"><div className="h">次の作業（目視確認）</div></div>
+            <div className="row"><b>1.</b>
+              <div>Excel を開き、先頭列の<b>「要確認セル数」</b>を降順に並べ替えます</div></div>
+            <div className="row"><b>2.</b>
+              <div>背景色付きの <span className="mark">〓</span> セルを、原本と照合して修正します</div></div>
+            <div className="row"><b>3.</b>
+              <div>修正のたびに「要確認セル数」は自動的に減ります。<b>合計が 0</b> になれば完了です</div></div>
+          </div>
+        )}
+        {summary && (summary.risky_cells ?? 0) > 0 && (
+          // 出荷ゲート（要確認セル数）には載せない警告（D-28）。値は正しく
+          // 出ており、修正の必要はない——CSV の開き方だけの注意
+          <div className="card warnbox">
+            <b>CSV の開き方に注意</b>
+            <div>「=」「+」「-」で始まる値が {summary.risky_cells} セルあります。
+              CSV を Excel でダブルクリックして開くと、これらが計算式として実行され、
+              先頭ゼロも失われます。中身を見るときはテキストエディタか、Excel の
+              「データ」→「テキストまたは CSV から」で全列を文字列として取り込んでください。
+              目視確認と提出に使う Excel（.xlsx）側は影響を受けません。</div>
+          </div>
+        )}
+        {summary && summary.align_failed > 0 && (
+          <div className="errbox">
+            位置合わせに失敗したページが {summary.align_failed} 件あります。該当行はすべて〓のため、原本を参照して直接入力してください。
+          </div>
         )}
 
         {/* 処理中 */}

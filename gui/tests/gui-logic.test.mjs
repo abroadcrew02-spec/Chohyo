@@ -1080,7 +1080,7 @@ test("findTableColumnPositions: 行展開された表の列を table_id と列�
 });
 
 test("outputCheckboxLabel: accessible name に識別子と現在の状態を含める（AC-1.21・AC-1.25）", () => {
-  assert.equal(outputCheckboxLabel("氏名", false, null), "氏名を出力する（現在: 出力対象外）");
+  assert.equal(outputCheckboxLabel("氏名", false, null), "氏名を出力する（現在: 出力しない）");
   assert.equal(outputCheckboxLabel("氏名", true, { first: 9, last: 9 }), "氏名を出力する（現在: 9列目）");
   assert.equal(outputCheckboxLabel("生年月日", true, { first: 8, last: 11 }),
     "生年月日を出力する（現在: 8〜11列目）");
@@ -1153,9 +1153,9 @@ test("tableColumnOrderNote: 表の中での定義順と x_offset の左右順を
   assert.equal(tableColumnOrderNote(columns, 2, true), "表の中で3番目・帳票では左から3番目");
 });
 
-test("tableColumnOrderNote: output:false の列は番号でなく「出力対象外」（段3実装と整合）", () => {
+test("tableColumnOrderNote: output:false の列は番号でなく「出力しない」（段3実装と整合）", () => {
   const columns = [{ x_offset: 100 }, { x_offset: 0 }];
-  assert.equal(tableColumnOrderNote(columns, 0, false), "出力対象外");
+  assert.equal(tableColumnOrderNote(columns, 0, false), "出力しない");
 });
 
 test("tableColumnOrderNote: 範囲外の index は null（防御的）", () => {
@@ -3523,11 +3523,11 @@ test("#87-1 uiConfirmSpec: 破棄の本文は結果（元に戻せない）を�
 // ================================================================ issue #65-7 追補
 // 保存成功は灰色1行ではなく、注意帯と対の成功帯に出す
 test("#65-7 saveOkBanner: 保存成功の msg は見出し（保存先まで）と詳細に分かれる", () => {
-  const msg = "保存＋コア検証 OK（欄 14 → 20列＝欄14＋管理6・除外 2）: C:\t\a.json"
+  const msg = "保存＋コア検証 OK（欄 14 → 20列＝欄14＋管理6・送信しない範囲 2）: C:\t\a.json"
     + " ／ 読み込み時から: 欄 14→14 ／ 並べ替えを反映しました";
   const b = saveOkBanner(msg);
   assert.ok(b);
-  assert.equal(b.head, "保存＋コア検証 OK（欄 14 → 20列＝欄14＋管理6・除外 2）: C:\t\a.json");
+  assert.equal(b.head, "保存＋コア検証 OK（欄 14 → 20列＝欄14＋管理6・送信しない範囲 2）: C:\t\a.json");
   assert.equal(b.detail, "読み込み時から: 欄 14→14 ／ 並べ替えを反映しました");
 });
 test("#65-7 saveOkBanner: 利用者テンプレート保存・切り抜き注記つきも成功帯へ", () => {
@@ -4291,7 +4291,7 @@ test("AC-H21/H22 cellCheckboxDisplayName / outputCheckboxLabel: 表名を含み�
   assert.equal(outputCheckboxLabel(name, true, { first: 47, last: 47 }),
     "明細 3行目 備考を出力する（現在: 47列目）");
   assert.equal(outputCheckboxLabel(name, false, null),
-    "明細 3行目 備考を出力する（現在: 出力対象外）");
+    "明細 3行目 備考を出力する（現在: 出力しない）");
   assert.equal(outputCheckboxLabel(name, true, null),
     "明細 3行目 備考を出力する（現在: 出力する）");
   // 表が複数ある紙でも一意（PM の AC 文言「3行目 備考」だけだと重複する）
@@ -4304,11 +4304,11 @@ test("AC-H21/H22 columnBulkToggleLabel / AriaLabel: 中間状態でも向きは�
   assert.equal(columnBulkToggleLabel("mixed", 28), "この列 28升 をまとめて出力しない");
   assert.equal(columnBulkToggleLabel("none", 28), "この列 28升 をまとめて出力する");
   assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "mixed", 12),
-    "明細 備考 の 28升 をまとめて切り替える（現在: 12升が出力対象外）");
+    "明細 備考 の 28升 をまとめて切り替える（現在: 12升が出力しない）");
   assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "all", 0),
     "明細 備考 の 28升 をまとめて切り替える（現在: すべて出力する）");
   assert.equal(columnBulkToggleAriaLabel("明細", "備考", 28, "none", 28),
-    "明細 備考 の 28升 をまとめて切り替える（現在: すべて出力対象外）");
+    "明細 備考 の 28升 をまとめて切り替える（現在: すべて出力しない）");
 });
 
 test("H-1 columnBulkToggleLabel: 列 off から戻しても残る升があるなら約束しない", () => {
@@ -4985,7 +4985,9 @@ test("#117 H-2 配線: restoreSnap が selCell を setSel と一緒に解除す�
 
 // ================================================================ issue #162
 // M2: 進捗バーの ARIA 属性。total 確定前は aria-valuenow を出さない
-// （0% で止まっていると誤って断定しないため）
+// （0% で止まっていると誤って断定しないため）。再検証 LOW 指摘（M2）:
+// total===0 のときは aria-valuemax も 0 を出さず省く（0 を出すと「上限0」
+// という別の誤った断定になる。ARIA の既定に委ねる）
 test("#162 M2 progressAriaProps: total>0 では role/valuemin/valuemax/valuenow/label が揃う", () => {
   const p = progressAriaProps(4, 8);
   assert.equal(p.role, "progressbar");
@@ -4994,10 +4996,11 @@ test("#162 M2 progressAriaProps: total>0 では role/valuemin/valuemax/valuenow/
   assert.equal(p["aria-valuenow"], 4);
   assert.equal(p["aria-label"], "読み取りの進捗");
 });
-test("#162 M2 progressAriaProps: total===0（未取得）では aria-valuenow を出さない", () => {
+test("#162 M2 progressAriaProps: total===0（未取得）では aria-valuenow・aria-valuemax のどちらも出さない", () => {
   const p = progressAriaProps(0, 0);
   assert.ok(!("aria-valuenow" in p), "total 未確定なのに aria-valuenow が付いている");
-  assert.equal(p["aria-valuemax"], 0);
+  assert.ok(!("aria-valuemax" in p), "total 未確定なのに aria-valuemax(0) が付いている（上限0と誤断定される）");
+  assert.equal(p["aria-valuemin"], 0, "aria-valuemin は total 未確定でも常に出す");
 });
 test("#162 M2 progressAriaProps: done===0 かつ total>0（開始直後）では aria-valuenow=0 を出す", () => {
   const p = progressAriaProps(0, 8);
@@ -5021,6 +5024,40 @@ test("#162 M4 コントラスト: --sub(#5a6577) は --bg(#f4f6f9) 背景でも 
 test("#162 M4 コントラスト（回帰用）: 旧配色 --faint(#99a2b1) はどちらの背景でも 4.5:1 に届かない", () => {
   assert.ok(contrastRatio("#99a2b1", "#ffffff") < 4.5, "--faint が白背景で基準を満たしてしまっている（前提が変わっている）");
   assert.ok(contrastRatio("#99a2b1", "#f4f6f9") < 4.5, "--faint が --bg 背景で基準を満たしてしまっている（前提が変わっている）");
+});
+
+// ================================================================ issue #136 差し戻し対応
+// HIGH-1: 「開いているモーダルが1つでもあるか」を anyModalOpen という1つの
+// 派生値に集約し、keyRef.current の早期 return と keyAction への modalOpen の
+// 両方をそこから読む配線を固定する（#117 H-2 配線と同じ、ソースを正規表現で
+// 抜き出して確認する形）。新しいモーダル（userTplPanel・showSettings）が
+// 追加された経緯（差し戻し）を踏まえ、4種類すべてが式に含まれることも見る
+test("#136 差し戻し対応 配線: keyRef.current は anyModalOpen（uiConfirm/confirmModal/userTplPanel/showSettings）で早期 return し、keyAction にも同じ値を渡す", () => {
+  const src = fs.readFileSync(path.join(srcDir, "Editor.tsx"), "utf8");
+  const m = /keyRef\.current = \(e: KeyboardEvent\) => \{([\s\S]*?)\n  \};/.exec(src);
+  assert.ok(m, "keyRef.current の本体が見つからない");
+  const body = m[1];
+
+  const anyModalOpenAt = body.indexOf("const anyModalOpen =");
+  assert.ok(anyModalOpenAt >= 0, "anyModalOpen という1つの派生値が見つからない");
+  // 4種類すべてが式に含まれる（1つでも抜けると差し戻し前と同じ穴に戻る）
+  for (const term of ["uiConfirm", "confirmModal", "userTplPanel", "showSettings"]) {
+    assert.ok(body.includes(term), `anyModalOpen の式に ${term} が含まれていない`);
+  }
+
+  const framesGeneratingAt = body.indexOf("if (framesGenerating) return;");
+  const earlyReturnAt = body.indexOf("if (anyModalOpen) return;");
+  const activeElementAt = body.indexOf("document.activeElement");
+  const keyActionCallAt = body.indexOf("modalOpen: anyModalOpen");
+  assert.ok(framesGeneratingAt >= 0 && earlyReturnAt >= 0
+    && activeElementAt >= 0 && keyActionCallAt >= 0,
+    "framesGenerating チェック／anyModalOpen 早期 return／activeElement 判定／"
+    + "keyAction 呼び出しのいずれかが見つからない");
+  assert.ok(framesGeneratingAt < anyModalOpenAt && anyModalOpenAt < earlyReturnAt
+    && earlyReturnAt < activeElementAt && activeElementAt < keyActionCallAt,
+    "順序が framesGenerating → anyModalOpen 計算 → 早期 return → "
+    + "activeElement 判定 → keyAction 呼び出し になっていない"
+    + "（早期 return が effectively でなければ、モーダルの裏でキー操作が抜ける）");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で

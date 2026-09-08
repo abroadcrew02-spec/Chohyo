@@ -55,6 +55,12 @@ function modalKeyHandler(
   rootRef: React.RefObject<HTMLDivElement | null>, onClose: () => void,
 ) {
   return (e: React.KeyboardEvent) => {
+    // issue #136 差し戻し対応: モーダル内のキー入力は Escape/Tab 以外も
+    // ここで止める。stopPropagation を呼ばないと window 直付けの keydown
+    // リスナー（Editor.tsx のキャンバス keyRef.current・Delete/矢印を
+    // 処理する）まで素通りし、設定モーダルの裏で選択中の枠が消える／動く
+    // （Editor.tsx の modalKeyHandler と同じ修正）
+    e.stopPropagation();
     if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
     if (e.key !== "Tab") return;
     const root = rootRef.current;
@@ -304,7 +310,13 @@ export default function App() {
         <RunScreen active={tab === "run"} configRev={configRev} />
       </div>
       <div className="editor-wrap" style={{ display: tab === "editor" ? "flex" : "none" }}>
-        <Editor active={tab === "editor"} onDirty={(d) => { editorDirty.current = d; }} />
+        {/* issue #136 差し戻し対応: 設定モーダルは App.tsx が描画するため、
+            編集タブで枠を選択→歯車→設定モーダル内で Delete を押す経路は
+            Editor.tsx の uiConfirm/confirmModal/userTplPanel だけでは
+            見えない。showSettings を渡し、anyModalOpen（1つに集約した
+            派生値）に含めてキャンバスの keydown を止める */}
+        <Editor active={tab === "editor"} onDirty={(d) => { editorDirty.current = d; }}
+          showSettings={showSettings} />
       </div>
       {showSettings && <Settings onClose={closeSettings} />}
     </div>

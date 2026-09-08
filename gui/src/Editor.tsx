@@ -1156,8 +1156,8 @@ export function columnBulkToggleAriaLabel(
   tableId: string, columnName: string, rows: number,
   state: ColumnCellState, offCount: number): string {
   const cur = state === "all" ? "すべて出力する"
-    : state === "none" ? "すべて出力対象外"
-    : `${offCount}升が出力対象外`;
+    : state === "none" ? "すべて出力しない"
+    : `${offCount}升が出力しない`;
   return `${tableId || "表"} ${columnName || "（名前未設定）"} の ${rows}升 を`
     + `まとめて切り替える（現在: ${cur}）`;
 }
@@ -1222,14 +1222,14 @@ export function findTableColumnPositions(
 /// 「出力する」チェックボックスの accessible name（AC-1.21・AC-1.25）。
 /// 欄の識別子を必ず含み（AC-1.21・SR のフォームコントロール一覧で行が
 /// 重複しないようにする）、チェック操作の結果（現在の状態）を動的に含める
-/// （AC-1.25・SC 4.1.3）。output:false は常に「出力対象外」（ローカルに
+/// （AC-1.25・SC 4.1.3）。output:false は常に「出力しない」（ローカルに
 /// 確定できる）。output:true は column_names 上の位置が分かれば列番号を、
 /// 分からなければ（未読込・編集直後で verify 未反映など）素直に
 /// 「出力する」とだけ言い、誤った列番号を言わない。
 export function outputCheckboxLabel(
   displayName: string, output: boolean,
   position: { first: number; last: number } | null): string {
-  if (!output) return `${displayName}を出力する（現在: 出力対象外）`;
+  if (!output) return `${displayName}を出力する（現在: 出力しない）`;
   if (!position) return `${displayName}を出力する（現在: 出力する）`;
   const posText = position.first === position.last
     ? `${position.first}列目` : `${position.first}〜${position.last}列目`;
@@ -1240,7 +1240,7 @@ export function outputCheckboxLabel(
 /// position・totalColumns のどちらか一方でも欠けたら null（column_names 未取得・
 /// 不整合時は番号を出さない——段3 の安全側判断を踏襲）。output:false の場合の
 /// 表示は呼び出し側の既存文言（「ただし今は出力しない設定です」）に委ねるため、
-/// ここでは output は受け取らない（重複した「出力対象外」表記を避ける）。
+/// ここでは output は受け取らない（重複した「出力しない」表記を避ける）。
 export function fieldColumnPositionNote(
   position: { first: number; last: number } | null,
   totalColumns: number | null): string | null {
@@ -1277,10 +1277,10 @@ export function tableColumnRangeInfo(
 /// x_offset 順——列を後から追加すると定義順と見た目の左右順がずれるため、
 /// 両方を示す。CSV・Excel の列番号（column_names 由来）とは別の、表単体で
 /// ローカルに求まる情報なので column_names は使わない。output:false の列は
-/// 番号を出さず「出力対象外」（段3実装と整合）。
+/// 番号を出さず「出力しない」（段3実装と整合）。
 export function tableColumnOrderNote(
   columns: { x_offset: number }[], index: number, output: boolean): string | null {
-  if (!output) return "出力対象外";
+  if (!output) return "出力しない";
   if (index < 0 || index >= columns.length) return null;
   const order = columns.map((_, i) => i)
     .sort((a, b) => columns[a].x_offset - columns[b].x_offset);
@@ -3104,17 +3104,21 @@ export type KeyAction = { action: KeyActionType; preventDefault: boolean };
 export function keyAction(
   e: { code: string; key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
   ctx: { active: boolean; typing: boolean; isButtonFocused: boolean; hasSel: boolean;
-    modalOpen?: boolean },
+    // issue #136 差し戻し対応: 省略可能（?）だと「渡し忘れても型検査が
+    // 通ってしまう」——現に呼び出し側で userTplPanel/showSettings を含む
+    // 派生値へ更新する差し戻しが起きた。必須にして、モーダル判定を渡さない
+    // 呼び出しをコンパイル時に弾く
+    modalOpen: boolean },
 ): KeyAction | null {
   // Editor が表示されていないタブ（実行タブ等）ではキー入力を一切拾わない。
   // 旧実装はグローバル window リスナーがタブ非表示中も生き続けていたため、
   // 実行タブで Delete を押すとテンプレートの欄が消える事故があった
   if (!ctx.active) return null;
-  // issue #136: 保存前確認モーダル（confirmModal）・画面内確認モーダル
-  // （uiConfirm）の表示中は一切のキー操作を no-op にする。呼び出し側
-  // （keyRef.current）は modalOpen を待たず早期 return も行うが、判定を
-  // この純関数側にも持たせることで「モーダル中は keyAction が no-op」を
-  // 単体テストで固定できる（active と同じ考え方）
+  // issue #136: 開いているモーダルが1つでもあれば（confirmModal・uiConfirm・
+  // userTplPanel・設定モーダル等・呼び出し側の anyModalOpen）一切のキー操作を
+  // no-op にする。呼び出し側（keyRef.current）は modalOpen を待たず早期
+  // return も行うが、判定をこの純関数側にも持たせることで「モーダル中は
+  // keyAction が no-op」を単体テストで固定できる（active と同じ考え方）
   if (ctx.modalOpen) return null;
   if (e.code === "Space" && !ctx.typing) {
     // ボタンにフォーカスがある間の Space はボタン自身のクリック起動に譲る。
@@ -3267,7 +3271,10 @@ const CellGrid = memo(function CellGrid(props: CellGridProps) {
 });
 
 export default function Editor(
-  { onDirty, active }: { onDirty: (d: boolean) => void; active: boolean }) {
+  { onDirty, active, showSettings }: { onDirty: (d: boolean) => void; active: boolean;
+    // issue #136 差し戻し対応: 設定モーダルは App.tsx が描画するため props で
+    // 受け取る。キャンバスの keydown ガード（anyModalOpen）に含める
+    showSettings?: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null);
@@ -3334,6 +3341,12 @@ export default function Editor(
   // 利用者テンプレート一覧（「利用者テンプレートから開く」パネル・FR-F27/F29）
   const [userTplPanel, setUserTplPanel] = useState<null
     | { templates: UserTemplateListEntry[]; excluded: ExcludedEntry[]; error: string }>(null);
+  // issue #136 差し戻し対応（HIGH-2）: confirmModal/uiConfirm と同じダイアログ
+  // にする——Tab 循環走査対象（ref）・開いた瞬間だけ初期フォーカスする
+  // 番兵・戻す先の「閉じる」ボタン
+  const userTplPanelRef = useRef<HTMLDivElement>(null);
+  const userTplCloseBtnRef = useRef<HTMLButtonElement>(null);
+  const prevUserTplPanelOpen = useRef(false);
   const [pending, setPending] = useState<Rect | null>(null); // テーブル外枠（生成待ち）
   // 「参照先の枠を描く」で待ち受け中の欄 uid。セット中は次のドラッグが参照先になる
   const [fbTarget, setFbTarget] = useState<string | null>(null);
@@ -3371,12 +3384,23 @@ export default function Editor(
   useEffect(() => { candsRef.current = cands; }, [cands]);
   const suggestionsRef = useRef(suggestions);
   useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
+  // adoptSuggestion が pushHistoryNow の Snap に渡す excls／splitY も同じ
+  // await 後の古い closure 読みになりうるため揃える（candSelectedRef は
+  // candSelected の宣言直後に置く・7項目を同じ読み方に）
+  const exclsRef = useRef(excls);
+  useEffect(() => { exclsRef.current = excls; }, [excls]);
+  const splitYRef = useRef(splitY);
+  useEffect(() => { splitYRef.current = splitY; }, [splitY]);
   // 升候補一覧に出している件数（デザインレビュー §4.5: 50 件ずつ「もっと見る」で伸ばす。
   // ページングにしない＝何ページ目に何があったかを覚えさせない）
   const [candShown, setCandShown] = useState(CAND_PAGE_SIZE);
   // 候補パネルのチェック状態（id→選択中）。既定値は candidateDefaultChecked
   // （overlaps_existing は既定オフ）。生成のたびに作り直す
   const [candSelected, setCandSelected] = useState<Record<string, boolean>>({});
+  // issue #136 差し戻し対応: adoptSuggestion の await 後の pushHistoryNow が
+  // 古い candSelected を Snap に焼き付けないよう、こちらも ref ミラーで読む
+  const candSelectedRef = useRef(candSelected);
+  useEffect(() => { candSelectedRef.current = candSelected; }, [candSelected]);
   const [framesGenerating, setFramesGenerating] = useState(false);
   // 画像を1回開くごとに進む世代番号（設計 §1.2・R-3）。非同期の候補生成が
   // 「前の紙」へ着地するのを止める——生成中に次の紙を開いたら結果を捨てる
@@ -4946,6 +4970,16 @@ export default function Editor(
     if (isOpen && !prevUiConfirmOpen.current) uiConfirmCancelRef.current?.focus();
     prevUiConfirmOpen.current = isOpen;
   }, [uiConfirm]);
+  // issue #136 差し戻し対応（HIGH-2）: 「利用者テンプレートから開く」も
+  // confirmModal/uiConfirm と同じダイアログにする（Esc で閉じる・Tab 循環・
+  // 開いた瞬間だけ「閉じる」へ初期フォーカス）。以前は role="dialog" だけ
+  // 付けて中身はキーボード操作を素通しにしていた
+  const onUserTplPanelKeyDown = modalKeyHandler(userTplPanelRef, () => setUserTplPanel(null));
+  useEffect(() => {
+    const isOpen = !!userTplPanel;
+    if (isOpen && !prevUserTplPanelOpen.current) userTplCloseBtnRef.current?.focus();
+    prevUserTplPanelOpen.current = isOpen;
+  }, [userTplPanel]);
 
   const saveTemplate = async () => {
     if (savingRef.current) return;   // 二重押下防止（C-5）。モーダルの外側の起点
@@ -5056,7 +5090,7 @@ export default function Editor(
       // 落ちた要素がある——想定外の不整合なので握り潰さず保存を止める
       setMsg("");
       setErrMsg(`保存していません: テンプレートの書き出しで ${built.droppedCount} 件の要素が`
-        + "面の範囲外として除外されました（内部不整合のため保存を中止しました）。");
+        + "面の外に出たため対象から外れました（内部不整合のため保存を中止しました）。");
       return;
     }
     const content = JSON.stringify(built.template, null, 2);
@@ -5297,7 +5331,7 @@ export default function Editor(
     if (built.droppedCount > 0) {
       setMsg("");
       setErrMsg(`保存していません: テンプレートの書き出しで ${built.droppedCount} 件の要素が`
-        + "面の範囲外として除外されました（内部不整合のため保存を中止しました）。");
+        + "面の外に出たため対象から外れました（内部不整合のため保存を中止しました）。");
       return;
     }
     if (resolved.carved.length) {
@@ -5671,8 +5705,12 @@ export default function Editor(
     // issue #109 (a): この提案の採用で消費された cands により、他の提案が
     // 解決不能になっていないかも合わせて確認する
     const nextSuggestions = pruneSuggestionsForCands(r.suggestions, r.cands);
-    pushHistoryNow({ fields: r.fields, tables: r.tables, excls, splitY, cands: r.cands,
-                     suggestions: nextSuggestions, candSelected,
+    // issue #136: excls／splitY／candSelected も *Ref.current（最新値）を読む
+    // ——fields/tables/cands/suggestions と同じ理由（await 後の古い closure
+    // 読みで Snap に古い状態が焼き付くのを防ぐ）
+    pushHistoryNow({ fields: r.fields, tables: r.tables,
+                     excls: exclsRef.current, splitY: splitYRef.current, cands: r.cands,
+                     suggestions: nextSuggestions, candSelected: candSelectedRef.current,
                      droppedCells: droppedCellsRef.current });
     setFields(r.fields); setTables(r.tables); setCands(r.cands);
     setSuggestions(nextSuggestions);
@@ -6202,12 +6240,17 @@ export default function Editor(
     // nudge 等）も無効にする（マウス操作は onDown 側で既に framesGenerating
     // を見て無効化済み・§4.5.4「生成中はキャンバスの枠操作を無効化」と揃える）
     if (framesGenerating) return;
-    // issue #136: 保存前確認モーダル（confirmModal）・画面内確認モーダル
-    // （uiConfirm）の表示中はキャンバスのキー操作を止める。モーダルは
-    // オーバーレイでマウス操作を塞いでいるが、キーボードの Delete・矢印は
-    // ここでガードしないとモーダルの裏で選択中の枠が消える／動く。
-    // 結果として「画面の枠」と「保存済みファイル」が黙って食い違っていた
-    if (uiConfirm || confirmModal) return;
+    // issue #136 差し戻し対応: 「開いているモーダルが1つでもあるか」を
+    // 1つの派生値 anyModalOpen に集約する。以前は uiConfirm/confirmModal だけ
+    // を見ており、userTplPanel（利用者テンプレート一覧）・showSettings
+    // （設定モーダル・App.tsx から props で受け取る）が抜けていたため、
+    // それぞれの裏で選択中の枠が Delete/矢印で消える／動く事故が残っていた。
+    // モーダルはオーバーレイでマウス操作を塞いでいるが、キーボードは
+    // ここでガードしないと素通りする。この1つの値を早期 return と
+    // keyAction への modalOpen の両方に使う（新しいモーダルを足すたびに
+    // 複数箇所を直し忘れる事故を防ぐ）
+    const anyModalOpen = !!(uiConfirm || confirmModal || userTplPanel || showSettings);
+    if (anyModalOpen) return;
     const el = document.activeElement as HTMLElement | null;
     const tag = (el?.tagName ?? "").toLowerCase();
     // 入力欄相当の判定に isContentEditable を加える（issue #69 Q-H3）。
@@ -6226,7 +6269,7 @@ export default function Editor(
       || !!el?.isContentEditable) && !(isToggleInput && undoCombo);
     const ka = keyAction(e,
       { active, typing, isButtonFocused: tag === "button", hasSel: !!sel,
-        modalOpen: !!(uiConfirm || confirmModal) });
+        modalOpen: anyModalOpen });
     if (!ka) return;
     if (ka.preventDefault) e.preventDefault();
     switch (ka.action.type) {
@@ -7814,11 +7857,14 @@ export default function Editor(
         );
       })()}
       {/* issue #72 (t)・FR-F27/F29: 「利用者テンプレートから開く」パネル。
-          list_user_templates の一覧を表示名だけで並べる（絶対パスは持たない） */}
+          list_user_templates の一覧を表示名だけで並べる（絶対パスは持たない）。
+          issue #136 差し戻し対応（HIGH-2）: confirmModal/uiConfirm と同じ
+          ダイアログの作り（Tab 循環・Esc で閉じる・初期フォーカス）にする */}
       {userTplPanel && (
         <div className="modal-back" onClick={() => setUserTplPanel(null)}>
-          <div className="modal" role="dialog" aria-modal="true"
-            aria-labelledby="user-tpl-list-title" onClick={(e) => e.stopPropagation()}>
+          <div className="modal" ref={userTplPanelRef} role="dialog" aria-modal="true"
+            aria-labelledby="user-tpl-list-title" onClick={(e) => e.stopPropagation()}
+            onKeyDown={onUserTplPanelKeyDown}>
             <h3 id="user-tpl-list-title">利用者テンプレートから開く</h3>
             {userTplPanel.error && (
               <p className="note" style={{ color: "var(--err-ink)" }}>{userTplPanel.error}</p>
@@ -7845,7 +7891,8 @@ export default function Editor(
               </div>
             ))}
             <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-              <button type="button" className="btn" onClick={() => setUserTplPanel(null)}>閉じる</button>
+              <button ref={userTplCloseBtnRef} type="button" className="btn"
+                onClick={() => setUserTplPanel(null)}>閉じる</button>
             </div>
           </div>
         </div>

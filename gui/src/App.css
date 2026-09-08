@@ -339,7 +339,10 @@ details.logbox pre { max-height: 200px; overflow: auto; font-family: Consolas, m
 .banner.warn b { color: var(--warn-ink); font-size: 17px; }
 .banner.warn span { color: #7a5a26; font-size: 12.5px; }
 
-/* 取り消せない操作のボタン（中間データの削除）。押す前に二段確認を通す */
+/* issue #163 (1): 破壊的操作（削除等）の視覚表現。確認を挟むかどうかは
+   呼び出し側の判断——このクラス自体は色分けのみで、二段確認や Ctrl+Z の
+   可否は保証しない（中間データの purge のように確認を挟む操作もあれば、
+   Editor.tsx の枠/欄/テーブル削除のように Ctrl+Z 1手で戻せる操作にも使う） */
 .btn.danger { background: var(--err-ink); border-color: var(--err-ink);
   color: #fff; font-weight: 600; }
 .btn.danger:hover { background: #7a1717; }
