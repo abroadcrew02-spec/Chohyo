@@ -959,10 +959,31 @@ def _run_locked(input_dir: str | Path, template_path: str | Path, cfg: Config,
                 # 割付だけやり直せる。status は明示的に上書きする——ここで
                 # 何もしないと、以前の run が残した別の status（様式不一致等）
                 # が消えずに残り、今回の原因と食い違って利用者を誤誘導しうる
+                #
+                # 同じ per-page ループ内の他の DB 接触点（このページ処理の冒頭、
+                # Image.open 失敗時に STATUS_EXPAND_FAILED を書く except
+                # Exception ブロック／_restore_alignment の store 読み取りと、
+                # AlignError 処理時に STATUS_FORMAT_MISMATCH・STATUS_ALIGN_FAILED
+                # を書く箇所）は、ここと同じ sqlite3.Error/StoreError 専用の
+                # 切り分けを持たない。DB 障害が起きると展開失敗・様式不一致・
+                # 位置合わせ失敗のいずれかに化けるか、最悪 run が未捕捉例外で
+                # 落ちる可能性が残るが、いずれも Vision 送信前の窓のため二重課金の
+                # 心配は無く、今回はスコープ外とする
                 import traceback
                 summary.processed_failed += 1  # #53 L-9
-                store.set_status(pid, render_rows.STATUS_INTERRUPTED,
-                                 reason="store_error")
+                # レビュー指摘（issue #138 再検証）: この記録用 UPDATE 自体が
+                # sqlite3.OperationalError（database is locked 等・接続は生きて
+                # いるが今は書けない）を投げると、以前は例外がここで再送出されて
+                # ページループを抜け、残りの未処理ページが失われていた
+                # （StoreError＝整合性検査違反なら接続は健全なので成功していたが、
+                # 接続そのものが詰まっているケースは通っていなかった）。記録に
+                # 失敗しても run 全体を道連れにせず、次ページへ進む
+                try:
+                    store.set_status(pid, render_rows.STATUS_INTERRUPTED,
+                                     reason="store_error")
+                except sqlite3.Error as e2:
+                    log.error("store_error_record_failed", page_id=pid,
+                              error_code=type(e2).__name__)
                 log.error("store_error", page_id=pid, error_code=type(e).__name__)
                 log.error_trace(type(e).__name__,
                                 "".join(traceback.format_tb(e.__traceback__)))

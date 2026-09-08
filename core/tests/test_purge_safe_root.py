@@ -91,7 +91,7 @@ def _run(cfg, *args):
     return cli.main(["--config", str(cfg), "purge", *args])
 
 
-def _events(capsys):
+def _purge_events(capsys):
     out = capsys.readouterr().out
     return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
 
@@ -108,7 +108,7 @@ def test_preview_reports_counts_and_absolute_paths(tmp_path, capsys):
     cfg = _cfg_file(tmp_path, wd)
     assert _run(cfg, "--preview") == 0
 
-    events = _events(capsys)
+    events = _purge_events(capsys)
     ev = next(e for e in events if e["event"] == "purge_preview")
     assert ev["tool_items"] == 2          # intermediate.sqlite + pages/
     assert ev["other_items"] == 1         # note.txt（cred.dpapi はどちらにも数えない）
@@ -135,7 +135,7 @@ def test_preview_wins_over_yes(tmp_path, capsys):
     assert _run(cfg, "--preview", "--yes") == 0
     assert (wd / "intermediate.sqlite").exists()
 
-    events = _events(capsys)
+    events = _purge_events(capsys)
     assert any(e["event"] == "purge_preview" for e in events)
     assert not any(e["event"] == "purged" for e in events)
 
@@ -145,7 +145,7 @@ def test_preview_on_missing_workdir_is_zero(tmp_path, capsys):
     wd = tmp_path / "wd"  # 作らない
     cfg = _cfg_file(tmp_path, wd)
     assert _run(cfg, "--preview") == 0
-    ev = next(e for e in _events(capsys) if e["event"] == "purge_preview")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purge_preview")
     assert (ev["tool_items"], ev["other_items"]) == (0, 0)
     assert ev["safe_root"] is True
 
@@ -176,12 +176,12 @@ def test_yes_keeps_unrecognized_items_and_still_deletes_known_ones(tmp_path, cap
     assert mydocs.exists() and (mydocs / "note.txt").exists()
     assert cred.exists()
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["cred_kept"] is True
     assert ev["removed"] == 1 and ev["failed"] == 0
     assert ev["kept"] == 2                      # mydocs + 大事な原本.pdf
     assert sorted(ev["kept_examples"]) == sorted(["mydocs", "大事な原本.pdf"])
-    assert "purge_refused" not in {e["event"] for e in _events(capsys)}
+    assert "purge_refused" not in {e["event"] for e in _purge_events(capsys)}
 
 
 def test_yes_proceeds_when_only_tool_items_present(tmp_path, capsys):
@@ -197,7 +197,7 @@ def test_yes_proceeds_when_only_tool_items_present(tmp_path, capsys):
     assert not (wd / "intermediate.sqlite").exists()
     assert not (wd / "pages").exists()
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 2
     assert ev["kept"] == 0 and ev["kept_examples"] == []
     # path は絶対パスで出る（issue #108）
@@ -211,7 +211,7 @@ def test_yes_refuses_dot_workdir(tmp_path, capsys):
     """workdir=\".\" は削除せず拒否する（起票の再現ケース）。"""
     cfg = _cfg_file(tmp_path, ".")
     assert _run(cfg, "--yes") == 2
-    ev = next(e for e in _events(capsys) if e["event"] == "purge_refused")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purge_refused")
     assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "dot"
 
 
@@ -219,7 +219,7 @@ def test_yes_refuses_drive_root_workdir(tmp_path, capsys):
     """workdir=\"C:\\\" は削除せず拒否する（起票の再現ケース）。"""
     cfg = _cfg_file(tmp_path, "C:\\")
     assert _run(cfg, "--yes") == 2
-    ev = next(e for e in _events(capsys) if e["event"] == "purge_refused")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purge_refused")
     assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "drive_root"
 
 
@@ -229,7 +229,7 @@ def test_yes_refuses_unc_workdir(tmp_path, capsys):
     """
     cfg = _cfg_file(tmp_path, "\\\\nonexistent-share-xyz\\folder")
     assert _run(cfg, "--yes") == 2
-    ev = next(e for e in _events(capsys) if e["event"] == "purge_refused")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purge_refused")
     assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "unc"
 
 
@@ -240,7 +240,7 @@ def test_yes_refuses_profile_root_workdir(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(profile))
     cfg = _cfg_file(tmp_path, profile)
     assert _run(cfg, "--yes") == 2
-    ev = next(e for e in _events(capsys) if e["event"] == "purge_refused")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purge_refused")
     assert ev["reason"] == "unsafe_root" and ev["unsafe_reason"] == "profile_root"
 
 
@@ -265,7 +265,7 @@ def test_logs_kept_when_log_dir_is_sibling_of_workdir(tmp_path, capsys):
     assert not (wd / "intermediate.sqlite").exists()
     assert user_logs.exists() and (user_logs / "my_notes.log").exists()
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["kept"] == 1 and ev["kept_examples"] == ["logs"]
 
 
@@ -347,7 +347,7 @@ def test_yes_removes_responses_inflight_tmp_file(tmp_path, capsys):
     assert not tmp_file.exists()
     assert not responses.exists()          # 中身が空になったのでフォルダごと消える
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 1 and ev["failed"] == 0
     assert ev["kept"] == 0 and ev["kept_examples"] == []
 
@@ -369,7 +369,7 @@ def test_yes_removes_responses_meta_sidecar_inflight_tmp_file(tmp_path, capsys):
     assert not tmp_file.exists()
     assert not responses.exists()
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 2 and ev["kept"] == 0
 
 
@@ -388,7 +388,7 @@ def test_responses_unrelated_tmp_file_is_kept(tmp_path, capsys):
     assert unrelated.exists()
     assert responses.exists()
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 0
     assert ev["kept"] == 1 and ev["kept_examples"] == ["responses/memo.tmp"]
 
@@ -422,7 +422,7 @@ def test_subdir_unreadable_counts_as_failed_not_silently_zero(tmp_path, capsys, 
     # 削除できなかったものがある（failed>0）ので rc=1
     assert _run(cfg, "--yes") == 1
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 0
     assert ev["failed"] == 1
     # プレビュー相当の _scan_workdir_entries も同じ理由で列挙できないため、
@@ -456,7 +456,7 @@ def test_subdir_rmdir_failure_counts_as_failed_not_silently_zero(tmp_path, capsy
     # 削除できなかったもの（フォルダ自体）がある（failed>0）ので rc=1
     assert _run(cfg, "--yes") == 1
 
-    ev = next(e for e in _events(capsys) if e["event"] == "purged")
+    ev = next(e for e in _purge_events(capsys) if e["event"] == "purged")
     assert ev["removed"] == 1        # 中身のファイルは消えている
     assert ev["failed"] == 1         # フォルダ自体が残った分を数える
     assert not (pages / "0001.png").exists()

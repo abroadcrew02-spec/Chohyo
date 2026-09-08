@@ -28,6 +28,22 @@ def _progress(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
+def _human_line(msg: str) -> None:
+    """人が読む1行の要約を、端末で直接叩いたときだけ stderr へ出す（issue #144）。
+
+    件数は `_progress` の JSON イベントに必ず載っており、GUI はそちらを
+    読んで purgeNotice／purgeKeptNotice を表示する。GUI は core の stderr を
+    そのまま `[err] ${line}` として core-err ログへ流すため、パイプ実行
+    （GUI・検証スクリプト）でもこの行を出すと、成功時のサマリまでエラー調に
+    見えてしまう（issue #144 の元の意図は JSON Lines の「1行1イベント」契約を
+    崩さないことだったが、stderr へ移しただけでは GUI の見え方までは
+    守れていなかった）。isatty のときだけ出すことで、CLI を直接叩いた人には
+    従来どおり案内しつつ、GUI 経由では黙らせる。
+    """
+    if sys.stderr.isatty():
+        print(msg, file=sys.stderr)
+
+
 def _load_config_and_init_log(config_path) -> Config:
     """load_config + log.init を1箇所にまとめる（issue #72 (t)・M-1・
     2026-09-02 レビュー担当指摘）。
@@ -1675,17 +1691,17 @@ def cmd_purge(args) -> int:
     # 同じ形で、workdir 側も人が読む1行を必ず出す（セキュリティレビューの指摘: 消し損ねが
     # あっても「purged」とだけ出て気づかれない事故を防ぐ）。kept は0でも
     # 常に出す——「認識できないものは無かった」ことも同じ1行で分かる。
-    # stdout ではなく stderr へ出す（issue #144）——JSON Lines の「1行1
-    # イベント」契約（§7.3）を守るのは stdout だけで、この人が読む1行を
-    # stdout に混ぜると GUI が JSON.parse 前に生行をログ枠へ追記してしまう
+    # 端末で直接叩いたときだけ stderr へ出す（GUI の core-err ログに [err] で
+    # 混ざらないように・issue #144）。件数自体は下の `event`（purged イベント）
+    # に必ず載るので、GUI 側の可視化はそちらで担保する
     cred_note = "資格情報は残した" if cred_kept else "資格情報は無かった"
-    print(f"中間データ {wd_removed} 件を削除し、ツールが作ったものではない "
-          f"{wd_kept} 件は残した（{cred_note}）", file=sys.stderr)
+    _human_line(f"中間データ {wd_removed} 件を削除し、ツールが作ったものではない "
+                f"{wd_kept} 件は残した（{cred_note}）")
     rc = 0
     if wd_failed:
-        print(f"workdir 内の {wd_failed} 件を削除できなかった（使用中または"
-              "権限の問題が残っている可能性がある）。閉じるか権限を確認して"
-              "から再実行する。", file=sys.stderr)
+        _human_line(f"workdir 内の {wd_failed} 件を削除できなかった（使用中または"
+                    "権限の問題が残っている可能性がある）。閉じるか権限を確認して"
+                    "から再実行する。")
         rc = 1
     if args.include_output:
         out_dir = Path(cfg.output_dir)
@@ -1709,12 +1725,12 @@ def cmd_purge(args) -> int:
         # 標準出力の JSON Lines（§7.3）は GUI 用だが、purge は GUI からも
         # 呼べる（#52 M-11・lib.rs の ALLOWED_SUBCOMMANDS）ため、CLI で
         # 直接叩いたときにも状況が分かるよう人が読む1行を併記する。
-        # stdout ではなく stderr へ出す（issue #144・上の workdir 側の行と同じ理由）
-        print(f"削除 {removed} 件／対象外として残したファイル {kept} 件",
-              file=sys.stderr)
+        # 端末で直接叩いたときだけ stderr へ出す（issue #144・上の workdir 側の
+        # 行と同じ理由）
+        _human_line(f"削除 {removed} 件／対象外として残したファイル {kept} 件")
         if failed:
-            print(f"削除できないファイルが {failed} 件ある（Excel などで開かれて"
-                  "いる可能性）。閉じてからやり直す。", file=sys.stderr)
+            _human_line(f"削除できないファイルが {failed} 件ある（Excel などで開かれて"
+                        "いる可能性）。閉じてからやり直す。")
             rc = 1
     _progress(event)
     return rc

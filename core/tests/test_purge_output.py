@@ -20,6 +20,7 @@ import json
 import shutil
 import stat
 import subprocess
+import sys
 
 import pytest
 
@@ -64,8 +65,35 @@ def _events(capsys):
     return events, captured.out, captured.err
 
 
-def test_include_output_removes_generated_files_only(tmp_path, capsys):
+def _force_tty(monkeypatch):
+    """人が読む1行（issue #144 続き）は isatty のときだけ出る。件数そのものは
+    JSON イベント（`_events` の1つ目の戻り値）に必ず載るので GUI 側は
+    そちらを見る——この1行の有無を確かめたいテストだけがこのヘルパーで
+    端末相当にする。
+    """
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+
+
+def test_human_lines_are_stderr_tty_only(tmp_path, capsys):
+    """人が読む1行（「中間データ N 件を削除し…」「削除 N 件／…」）は、
+    パイプ実行（GUI・このテストのようなキャプチャ環境）では stderr に
+    出ない（issue #144 続き）。GUI は core の stderr をそのまま
+    `[err] ${line}` として core-err ログへ流すため、この行を出したままだと
+    成功時のサマリまでエラー調に見えてしまう。件数は purged イベント
+    （JSON Lines）に必ず載るので、GUI 側の可視化はそちらで担保する。
+    """
+    cfg, out, wd = _setup(tmp_path)
+    assert _purge(cfg, "--yes", "--include-output") == 0
+
+    events, _raw, err = _events(capsys)
+    ev = next(e for e in events if e["event"] == "purged")
+    assert (ev["removed"], ev["output_removed"], ev["output_kept"]) == (1, 4, 2)
+    assert err == ""
+
+
+def test_include_output_removes_generated_files_only(tmp_path, capsys, monkeypatch):
     """生成物4件は消え、利用者のファイル2件は残る（件数は出力とログの両方に出る）。"""
+    _force_tty(monkeypatch)
     cfg, out, wd = _setup(tmp_path)
     assert _purge(cfg, "--yes", "--include-output") == 0
 
@@ -123,15 +151,17 @@ def test_subdirectory_is_left_alone(tmp_path, capsys):
     assert next(e for e in events if e["event"] == "purged")["output_kept"] == 2
 
 
-def test_without_include_output_keeps_outputs(tmp_path, capsys):
+def test_without_include_output_keeps_outputs(tmp_path, capsys, monkeypatch):
     """既定（--include-output なし）は出力に一切触れない。
 
-    workdir 側の削除件数は人が読む1行として必ず stderr に出る（セキュリティ
-    レビューの指摘・--include-output と同じ規律。issue #144 で stdout の
-    JSON Lines 契約を破らないよう stderr へ移した）ため、「削除」という語
+    workdir 側の削除件数は人が読む1行として（端末なら）stderr に出る
+    （セキュリティレビューの指摘・--include-output と同じ規律。issue #144 で
+    stdout の JSON Lines 契約を破らないよう stderr へ移し、続く指摘で
+    isatty のときだけ出す形にした）ため、端末相当にすれば「削除」という語
     自体は出力側に触れていなくても err に現れる。ここで見るのは output
     固有のキー・文言が無いことだけに絞る。
     """
+    _force_tty(monkeypatch)
     cfg, out, wd = _setup(tmp_path)
     assert _purge(cfg, "--yes") == 0
     assert wd.exists()                                       # keep-list 方式（#83）
@@ -157,8 +187,9 @@ def test_requires_yes_even_with_include_output(tmp_path):
     assert len(list(out.iterdir())) == len(TOOL_FILES) + len(KEEP_FILES)
 
 
-def test_missing_output_dir_is_not_an_error(tmp_path, capsys):
+def test_missing_output_dir_is_not_an_error(tmp_path, capsys, monkeypatch):
     """出力先が無い／空でも件数0で正常終了する（未実行の workdir を消すだけの用途）。"""
+    _force_tty(monkeypatch)
     cfg, out, _wd = _setup(tmp_path, tool_files=(), keep_files=())
     out.rmdir()
     assert _purge(cfg, "--yes", "--include-output") == 0
@@ -222,7 +253,7 @@ def test_purge_without_credentials_still_removes_intermediate_data(tmp_path, cap
     events, _raw, _err = _events(capsys)
     ev = next(e for e in events if e["event"] == "purged")
     assert ev["cred_kept"] is False
-def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
+def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys, monkeypatch):
     """読み取り専用ファイルは chmod で書き込み許可を復元して削除する
     （セキュリティ表層レビュー担当/セキュリティレビューの指摘）。ロックではなく読み取り専用属性だけの場合は
     chmod で解除できるため、failed=0（削除できた側）に固定する。
@@ -231,6 +262,7 @@ def test_purge_clears_readonly_file_via_chmod_retry(tmp_path, capsys):
     other_items 拒否（このツールが作ったと分からない名前が1件でもあれば
     削除しない）に引っかからないようにするため。
     """
+    _force_tty(monkeypatch)
     cfg, _out, wd = _setup(tmp_path)
     ro = wd / "intermediate.sqlite-wal"
     ro.write_text("x", encoding="utf-8")

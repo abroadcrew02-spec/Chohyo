@@ -50,7 +50,7 @@ def _cfg_path(tmp_path) -> "str":
     return str(cfg_path)
 
 
-def _events(capsys):
+def _cmd_events(capsys):
     out = capsys.readouterr().out
     return [json.loads(line) for line in out.splitlines() if line.startswith("{")]
 
@@ -77,7 +77,7 @@ def test_expand_page_import_failure_still_emits_event(tmp_path, capsys, boom_pil
                    "--input", str(src), "--page", "1"])
     assert rc == 0
 
-    ev = next(e for e in _events(capsys) if e["event"] == "expand_page")
+    ev = next(e for e in _cmd_events(capsys) if e["event"] == "expand_page")
     assert ev["ok"] is True          # 生画像で続行する契約は変えない
     assert ev["aligned"] is False
     assert ev["reason"] == "other"
@@ -97,7 +97,7 @@ def test_match_templates_import_failure_still_emits_event(tmp_path, capsys, boom
                    "--input", str(src), "--page", "1", "--shipped", str(shipped)])
     assert rc == 0
 
-    ev = next(e for e in _events(capsys) if e["event"] == "match_templates")
+    ev = next(e for e in _cmd_events(capsys) if e["event"] == "match_templates")
     assert ev == {"event": "match_templates", "ok": False, "error": "internal"}
 
     app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")
@@ -113,7 +113,7 @@ def test_detect_frames_import_failure_still_emits_event(tmp_path, capsys, boom_p
                    "--input", str(src), "--page", "1"])
     assert rc == 0
 
-    ev = next(e for e in _events(capsys) if e["event"] == "detect_frames")
+    ev = next(e for e in _cmd_events(capsys) if e["event"] == "detect_frames")
     assert ev == {"event": "detect_frames", "ok": False, "error": "internal"}
 
     app_log = (tmp_path / "logs" / "app.log").read_text(encoding="utf-8")

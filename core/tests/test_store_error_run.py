@@ -94,6 +94,74 @@ def test_db_failure_does_not_become_format_mismatch_and_state_stays_resendable(
 
 
 @needs_replay
+def test_db_failure_record_also_fails_run_continues_to_remaining_pages(
+        tmp_path, monkeypatch):
+    """接続自体が死んでいる場合（`_map_and_score` だけでなく、それを受けての
+    記録用 `store.set_status(..., reason="store_error")` 自体も同じ例外を
+    投げる二重障害）でも、run はページループを抜けずに残りのページを
+    処理し切る（issue #138 再検証・MEDIUM 指摘）。
+
+    以前は `store.set_status` の呼び出しが例外ハンドラの中で無条件に行われ、
+    `database is locked` のように接続そのものが詰まっているケースでは同じ
+    例外が再送出されて run 全体が落ち、未処理のページが失われていた
+    （StoreError＝整合性検査違反なら接続は健全なので `set_status` は成功して
+    おり、この経路は通っていなかった）。
+    """
+    inp = tmp_path / "input"; inp.mkdir()
+    replay = tmp_path / "responses"; replay.mkdir()
+    # 同一バイト列だと「同一内容の二重投入」判定（issue #46・pipeline.py の
+    # source.read_bytes() ハッシュ）に引っかかり、b/c が送信すらされない
+    # skip_duplicate 行になってしまう。末尾に無害なゴミバイトを付けて中身を
+    # ページごとに変える（PNG は IEND チャンクで読み終わるので、その後ろの
+    # バイト列があっても PIL の Image.open は無視して読める）
+    for name in ("a", "b", "c"):
+        (inp / f"{name}.png").write_bytes(PAGE_PNG.read_bytes() + f"__{name}__".encode())
+        shutil.copy(RESP, replay / f"{name}_p0001.json")
+    logging_safe.init(str(tmp_path / "logs"))
+    cfg = _cfg(tmp_path)
+
+    # page_id は ingest.page_id_for が "<stem>_p0001" 形式で決定論的に作る
+    # （tests/test_duplicate_source.py と同じ前提）。b だけを対象にすることで、
+    # b より前（a）・後（c）のどちらのページも失われないことを確認する
+    target_pid = "b_p0001"
+    real_map_and_score = pipeline_mod._map_and_score
+
+    def _map_and_score_boom(store, template, pid, resp, faces, *, snap_by_face):
+        if pid == target_pid:
+            raise sqlite3.OperationalError("database is locked")
+        return real_map_and_score(store, template, pid, resp, faces,
+                                  snap_by_face=snap_by_face)
+
+    monkeypatch.setattr(pipeline_mod, "_map_and_score", _map_and_score_boom)
+
+    real_set_status = Store.set_status
+
+    def _set_status_boom(self, page_id, status, reason=""):
+        if page_id == target_pid and status == render_rows.STATUS_INTERRUPTED:
+            raise sqlite3.OperationalError("database is locked")
+        return real_set_status(self, page_id, status, reason=reason)
+
+    monkeypatch.setattr(Store, "set_status", _set_status_boom)
+
+    summary = run(inp, TPL, cfg, ReplayClient(replay))
+
+    # 3ページとも送信は起きている（DB 障害は送信後にしか起きないため）
+    assert summary.api_calls == 3
+    assert summary.format_mismatch == 0
+    assert summary.processed_failed == 1  # 失敗は対象ページの1件のみ
+
+    pages = _pages(cfg)
+    # 記録用 UPDATE 自体も失敗したので status は初期値（空文字列）のまま
+    assert pages[target_pid]["status"] == ""
+    assert pages[target_pid]["state"] == "received"
+
+    # 対象ページより前・後のページはどちらも正常に最後まで処理されている
+    # （run がページループを抜けて丸ごと落ちていたら "done" にならない）
+    assert pages["a_p0001"]["state"] == "done"
+    assert pages["c_p0001"]["state"] == "done"
+
+
+@needs_replay
 def test_retry_after_db_failure_reuses_saved_response_without_resending(
         tmp_path, monkeypatch):
     """1回目の run で DB 障害に遭って state="received" のまま残ったページは、
