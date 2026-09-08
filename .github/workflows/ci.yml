@@ -162,73 +162,76 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: python -m playwright install chromium
 
-      - name: vite dev サーバーを起動（バックグラウンド）
-        working-directory: gui
+      # 起動・待ち合わせ・スモーク・停止を 1 ステップにまとめる。別ステップで
+      # Start-Process した cmd.exe → npm → vite のツリーは、そのステップが終わると
+      # 次のステップの netstat に 1420 が現れず（run 34201625141・34202883093・
+      # 2026-09-08。vite のログには ready と http://localhost:1420/ が出ていた）、
+      # 待ち合わせが 90 秒待ち切って落ちた。同じステップの中なら生き続ける。
+      #
+      # 待ち合わせは [::1]・127.0.0.1・localhost の順に叩く——vite（Node 17 以降）は
+      # localhost を IPv6 の [::1] に解決してそこだけで待ち受けることがあり、
+      # pwsh が localhost を 127.0.0.1 に解決すると接続拒否になる。ブラウザ
+      # （Chromium）は両方を試すのでスモーク側の URL は localhost のままでよい。
+      #
+      # pytest は -n auto を使わない（逐次実行）。この1ファイルはモジュール
+      # スコープの page フィクスチャ（同一ブラウザページ）をテスト間で共有して
+      # おり、xdist のワーカー分散でテストがばらけるとフィクスチャがワーカー
+      # ごとに作り直され、状態を積み上げていく前提の検証が壊れる（issue #139）。
+      # 件数の正本は 03 §3。
+      - name: GUI スモーク（vite dev を起動 → 待ち合わせ → pytest → 停止・issue #139）
         shell: pwsh
         run: |
-          $log = Join-Path $env:RUNNER_TEMP 'vite-dev.log'
-          $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm run dev' `
-            -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
-          $p.Id | Out-File -FilePath (Join-Path $env:RUNNER_TEMP 'vite-dev.pid') -Encoding ascii
-
-      # vite（Node 17 以降）は `localhost` を IPv6 の [::1] に解決して、そこだけで
-      # 待ち受ける（vite.config.ts の host は未指定）。ランナーの pwsh が
-      # `localhost` を 127.0.0.1 に解決すると接続拒否のまま 60 秒待ち切って
-      # 落ちる（run 34201625141・2026-09-08）。ブラウザ（Chromium）は両方を
-      # 試すのでスモーク自体は localhost のままでよく、ここだけ [::1]・
-      # 127.0.0.1・localhost の順に叩く
-      - name: vite dev サーバーの起動を待つ（最大90秒・issue #139）
-        shell: pwsh
-        run: |
-          $deadline = (Get-Date).AddSeconds(90)
-          $up = $null
-          $urls = @('http://[::1]:1420/', 'http://127.0.0.1:1420/', 'http://localhost:1420/')
-          while ((Get-Date) -lt $deadline -and -not $up) {
-            foreach ($u in $urls) {
-              try {
-                $resp = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 2
-                if ($resp.StatusCode -eq 200) { $up = $u; break }
-              } catch {}
-            }
-            if (-not $up) { Start-Sleep -Seconds 2 }
-          }
-          if (-not $up) {
-            Write-Host '--- vite-dev.log ---'
-            Get-Content (Join-Path $env:RUNNER_TEMP 'vite-dev.log') -ErrorAction SilentlyContinue
-            Write-Host '--- vite-dev.log.err ---'
-            Get-Content (Join-Path $env:RUNNER_TEMP 'vite-dev.log.err') -ErrorAction SilentlyContinue
-            Write-Host '--- netstat :1420 ---'
-            netstat -ano | Select-String ':1420'
-            throw 'vite dev サーバーが 90 秒以内に応答しなかった'
-          }
-          Write-Host "vite dev サーバー起動確認（$up）"
-
-      # -n auto を使わない（逐次実行）。この1ファイルはモジュールスコープの
-      # page フィクスチャ（同一ブラウザページ）をテスト間で共有しており、
-      # xdist のワーカー分散でテストがばらけるとフィクスチャがワーカーごとに
-      # 作り直され、状態を積み上げていく前提の検証が壊れる（issue #139）。
-      - name: pytest（GUI スモーク・件数の正本は 03 §3）
-        working-directory: core
-        run: python -X utf8 -m pytest tests/test_gui_smoke.py -q -p no:randomly --tb=short -rf -rs
-
-      - name: vite dev サーバーを停止
-        if: always()
-        shell: pwsh
-        run: |
-          $pidFile = Join-Path $env:RUNNER_TEMP 'vite-dev.pid'
-          if (Test-Path $pidFile) {
-            $procId = Get-Content $pidFile
+          function Stop-Tree([int]$procId) {
+            Get-CimInstance Win32_Process -Filter "ParentProcessId = $procId" -ErrorAction SilentlyContinue |
+              ForEach-Object { Stop-Tree $_.ProcessId }
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
           }
-          # cmd.exe 経由で起動した npm run dev は子の node（vite）プロセスを
-          # 別 PID で持つ。ポート 1420 を掴んでいるプロセスも合わせて止める
-          # （ベストエフォート。ランナーはこのジョブの直後に破棄されるため、
-          # 取りこぼしても後続ステップの実害はない）。
+          $log = Join-Path $env:RUNNER_TEMP 'vite-dev.log'
+          $p = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'npm run dev' `
+            -WorkingDirectory (Join-Path $PWD 'gui') `
+            -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru -NoNewWindow
           try {
-            Get-NetTCPConnection -LocalPort 1420 -State Listen -ErrorAction Stop |
-              Select-Object -ExpandProperty OwningProcess -Unique |
-              ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
-          } catch {}
+            $deadline = (Get-Date).AddSeconds(90)
+            $up = $null
+            $urls = @('http://[::1]:1420/', 'http://127.0.0.1:1420/', 'http://localhost:1420/')
+            while ((Get-Date) -lt $deadline -and -not $up) {
+              if ($p.HasExited) { break }
+              foreach ($u in $urls) {
+                try {
+                  $resp = Invoke-WebRequest -Uri $u -UseBasicParsing -TimeoutSec 2
+                  if ($resp.StatusCode -eq 200) { $up = $u; break }
+                } catch {}
+              }
+              if (-not $up) { Start-Sleep -Seconds 2 }
+            }
+            if (-not $up) {
+              Write-Host "--- vite-dev.log（プロセス終了済み: $($p.HasExited)）---"
+              Get-Content $log -ErrorAction SilentlyContinue
+              Write-Host '--- vite-dev.log.err ---'
+              Get-Content "$log.err" -ErrorAction SilentlyContinue
+              Write-Host '--- netstat :1420 ---'
+              netstat -ano | Select-String ':1420'
+              throw 'vite dev サーバーが 90 秒以内に応答しなかった'
+            }
+            Write-Host "vite dev サーバー起動確認（$up）"
+            Push-Location core
+            try {
+              python -X utf8 -m pytest tests/test_gui_smoke.py -q -p no:randomly --tb=short -rf -rs
+              if ($LASTEXITCODE -ne 0) { throw "GUI スモークが失敗した（exit $LASTEXITCODE）" }
+            } finally { Pop-Location }
+          } finally {
+            # cmd.exe 経由の npm run dev は子の node（vite）を別 PID で持つので
+            # ツリーごと止め、1420 を掴んでいるプロセスも合わせて止める
+            # （ベストエフォート。ランナーはこのジョブの直後に破棄される）。
+            # taskkill を使わないのは、その終了コードが $LASTEXITCODE に残って
+            # ステップの成否に混ざるのを避けるため
+            if (-not $p.HasExited) { Stop-Tree $p.Id }
+            try {
+              Get-NetTCPConnection -LocalPort 1420 -State Listen -ErrorAction Stop |
+                Select-Object -ExpandProperty OwningProcess -Unique |
+                ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+            } catch {}
+          }
       # --- GUI スモークここまで ---------------------------------------------
 
       # tsc && vite build。型検査を兼ねるうえ、gui/dist を作る——tauri-build が
