@@ -45,6 +45,30 @@ function changedKeys(loaded: Cfg, next: Cfg): Partial<Cfg> {
   return patch;
 }
 
+/** モーダルの Tab 循環キーハンドラ（issue #162 M1）。RunScreen.tsx の
+ *  ConfirmDialog／Editor.tsx の modalKeyHandler と同じ実装——Escape で
+ *  閉じ、ダイアログ内の最初/最後の要素で Tab が背景へ抜けないようにする。
+ *  設定モーダルは App.tsx にしか無いためここに小さな関数として持つ
+ *  （RunScreen.tsx・Editor.tsx を跨いだ共有ファイルは無く、App.tsx から
+ *  それらを import すると循環 import になる）。 */
+function modalKeyHandler(
+  rootRef: React.RefObject<HTMLDivElement | null>, onClose: () => void,
+) {
+  return (e: React.KeyboardEvent) => {
+    if (e.key === "Escape") { e.preventDefault(); onClose(); return; }
+    if (e.key !== "Tab") return;
+    const root = rootRef.current;
+    if (!root) return;
+    const focusables = Array.from(root.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+      .filter((el) => !el.hasAttribute("disabled"));
+    if (focusables.length === 0) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  };
+}
+
 function Settings({ onClose }: { onClose: () => void }) {
   const [cfg, setCfg] = useState<Cfg>(CFG_DEFAULT);
   // 読み込んだ時点の値。保存時に差分を取る基準（issue #69 Q-MF）
@@ -56,6 +80,13 @@ function Settings({ onClose }: { onClose: () => void }) {
   // 既定の100へ戻り、意図せず送信上限が変わる）。読み込めた項目が分から
   // ない以上、保存自体を止める
   const [loadError, setLoadError] = useState("");
+  // issue #162 M1: ダイアログとして成立させるための3点——初期フォーカス先
+  // （閉じる。破壊的でない側を既定にする＝ConfirmDialog と同じ考え方）・
+  // Tab 循環の走査対象（modalRef）・Escape/Tab の共通ハンドラ
+  const modalRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { closeBtnRef.current?.focus(); }, []);
+  const onModalKeyDown = modalKeyHandler(modalRef, onClose);
   useEffect(() => {
     invoke<Partial<Cfg>>("read_config")
       .then((c) => {
@@ -128,8 +159,10 @@ function Settings({ onClose }: { onClose: () => void }) {
   };
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>設定</h3>
+      <div className="modal" ref={modalRef} role="dialog" aria-modal="true"
+        aria-labelledby="settings-title" onClick={(e) => e.stopPropagation()}
+        onKeyDown={onModalKeyDown}>
+        <h3 id="settings-title">設定</h3>
         <p className="note" style={{ marginTop: -6 }}>
           通常は変更不要です。
         </p>
@@ -179,7 +212,7 @@ function Settings({ onClose }: { onClose: () => void }) {
         </label>
         <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 6 }}>
           <button className="btn primary" onClick={save} disabled={!!loadError}>保存</button>
-          <button className="btn" onClick={onClose}>閉じる</button>
+          <button ref={closeBtnRef} className="btn" onClick={onClose}>閉じる</button>
           {saved && <span style={{ color: "var(--ok-ink)", fontSize: 12.5 }}>保存しました。次回の読み取りから適用されます。</span>}
           {err && <span style={{ color: "var(--err-ink)", fontSize: 12.5 }}>{err}</span>}
         </div>
@@ -194,6 +227,15 @@ export default function App() {
   // 設定の保存回数。実行画面が出力先の表示を読み直す合図にする（M-3）
   const [configRev, setConfigRev] = useState(0);
   const editorDirty = useRef(false);
+  // issue #162 M1: 設定モーダルを閉じたら呼び出し元（歯車ボタン）へ
+  // フォーカスを戻す（3点目）。Editor.tsx の closeConfirmModal と同じ理由で
+  // 1フレームずらす——モーダルの unmount 後に対象が存在する必要がある
+  const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const closeSettings = () => {
+    setShowSettings(false);
+    setConfigRev((r) => r + 1);
+    requestAnimationFrame(() => settingsBtnRef.current?.focus());
+  };
 
   useEffect(() => {
     if (!isTauri) return;
@@ -248,8 +290,8 @@ export default function App() {
           <button className={tab === "editor" ? "active" : ""}
             onClick={() => switchTo("editor")}>テンプレート編集
             <span className="badge">管理者向け</span></button>
-          <button title="設定" aria-label="設定" onClick={() => setShowSettings(true)}
-            style={{ padding: "9px 12px" }}>
+          <button ref={settingsBtnRef} title="設定" aria-label="設定"
+            onClick={() => setShowSettings(true)} style={{ padding: "9px 12px" }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -264,8 +306,7 @@ export default function App() {
       <div className="editor-wrap" style={{ display: tab === "editor" ? "flex" : "none" }}>
         <Editor active={tab === "editor"} onDirty={(d) => { editorDirty.current = d; }} />
       </div>
-      {showSettings && <Settings onClose={() => { setShowSettings(false);
-                                                 setConfigRev((r) => r + 1); }} />}
+      {showSettings && <Settings onClose={closeSettings} />}
     </div>
   );
 }

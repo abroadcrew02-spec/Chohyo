@@ -264,7 +264,7 @@ const _rectsTouch = (a: Rect, b: Rect) =>
 export function exclusionRegressionNotice(
   loadedCount: number, currentCount: number): string | null {
   if (currentCount >= loadedCount) return null;
-  return `除外領域（Vision へ送らないマスク）が ${loadedCount}→${currentCount} `
+  return `送信しない範囲が ${loadedCount}→${currentCount} `
     + "に減っています。減らした覚えがなければキャンセルしてください。";
 }
 
@@ -297,7 +297,7 @@ export function exclusionChangeNotice(
       .map((c) => `「${c.id}」の位置/サイズが変わっています（${fmt(c.from)} → ${fmt(c.to)}）`)
       .join("、");
     const more = changed.length > 3 ? `、ほか ${changed.length - 3} 件` : "";
-    return `除外領域${shown}${more}。`
+    return `送信しない範囲${shown}${more}。`
       + "マスクの位置がズレると隠すべき領域が Vision へ送信されます。意図した変更ですか？";
   }
 
@@ -307,7 +307,7 @@ export function exclusionChangeNotice(
   const removed = loaded.filter((e) => !currentIds.has(e.id)).map((e) => e.id);
   const added = current.filter((e) => !loadedIds.has(e.id)).map((e) => e.id);
   if (removed.length && removed.length === added.length) {
-    return "除外領域の構成が入れ替わっています（削除: " + removed.join("、")
+    return "送信しない範囲の構成が入れ替わっています（削除: " + removed.join("、")
       + " ／ 追加: " + added.join("、")
       + "）。減らした・ズラした覚えがなければキャンセルしてください。";
   }
@@ -341,7 +341,7 @@ export function saveDiffNote(loaded: CountSnapshot, current: CountSnapshot): {
   const text = [
     part("欄", loaded.fields, current.fields),
     part("金額", loaded.amountCells, current.amountCells),
-    part("除外", loaded.exclusions, current.exclusions),
+    part("送信しない範囲", loaded.exclusions, current.exclusions),
     part("列", loaded.columns, current.columns),
   ].join("・");
   return { text, decreasedLabels };
@@ -3103,12 +3103,19 @@ export type KeyAction = { action: KeyActionType; preventDefault: boolean };
 /// Space は素通りする（preventDefault されない）」を直接固定できる
 export function keyAction(
   e: { code: string; key: string; shiftKey: boolean; ctrlKey: boolean; metaKey: boolean },
-  ctx: { active: boolean; typing: boolean; isButtonFocused: boolean; hasSel: boolean },
+  ctx: { active: boolean; typing: boolean; isButtonFocused: boolean; hasSel: boolean;
+    modalOpen?: boolean },
 ): KeyAction | null {
   // Editor が表示されていないタブ（実行タブ等）ではキー入力を一切拾わない。
   // 旧実装はグローバル window リスナーがタブ非表示中も生き続けていたため、
   // 実行タブで Delete を押すとテンプレートの欄が消える事故があった
   if (!ctx.active) return null;
+  // issue #136: 保存前確認モーダル（confirmModal）・画面内確認モーダル
+  // （uiConfirm）の表示中は一切のキー操作を no-op にする。呼び出し側
+  // （keyRef.current）は modalOpen を待たず早期 return も行うが、判定を
+  // この純関数側にも持たせることで「モーダル中は keyAction が no-op」を
+  // 単体テストで固定できる（active と同じ考え方）
+  if (ctx.modalOpen) return null;
   if (e.code === "Space" && !ctx.typing) {
     // ボタンにフォーカスがある間の Space はボタン自身のクリック起動に譲る。
     // ここを typing 扱いにはしない——それだと Delete/矢印キーまで死ぬため、
@@ -3347,6 +3354,23 @@ export default function Editor(
   // 升候補で足りる。「表にまとめる」を Undo すると升候補と確定枠は戻るが提案
   // カードは戻らない（再生成で戻る）。この非対称は設計 R-11 に記載済み
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  // issue #136: acceptOneCandidate／adoptSuggestion は保存前確認等の await
+  // 中に閉じ込めた fields/tables/cands/suggestions を await の後もそのまま
+  // 読んでおり、await 中に状態が変わっていてもそれを踏まえず古い値のまま
+  // setState（上書き）していた。setX(prev => ...) の関数型更新にしても、
+  // updater の実行結果は次のレンダーまで同期的には読めず、この await 後の
+  // 分岐（null チェック・件数メッセージ）には使えない。かつ updater 内で
+  // 外側の可変値を書き換えるのは StrictMode の二重実行で壊れる
+  // （autoCarve のコメント参照）。そのため常に最新値を指す ref を用意し、
+  // await 後の読み出し先をこちらへ切り替える
+  const fieldsRef = useRef(fields);
+  useEffect(() => { fieldsRef.current = fields; }, [fields]);
+  const tablesRef = useRef(tables);
+  useEffect(() => { tablesRef.current = tables; }, [tables]);
+  const candsRef = useRef(cands);
+  useEffect(() => { candsRef.current = cands; }, [cands]);
+  const suggestionsRef = useRef(suggestions);
+  useEffect(() => { suggestionsRef.current = suggestions; }, [suggestions]);
   // 升候補一覧に出している件数（デザインレビュー §4.5: 50 件ずつ「もっと見る」で伸ばす。
   // ページングにしない＝何ページ目に何があったかを覚えさせない）
   const [candShown, setCandShown] = useState(CAND_PAGE_SIZE);
@@ -4896,6 +4920,11 @@ export default function Editor(
   const modalKeyHandler = (
     rootRef: React.RefObject<HTMLDivElement | null>, onCancel: () => void) =>
     (e: React.KeyboardEvent) => {
+      // issue #136: モーダル内のキー入力は Escape/Tab 以外もここで止める。
+      // stopPropagation を呼ばないと、window 直付けの keydown リスナー
+      // （キャンバスの keyRef.current・Delete/矢印を処理する）まで
+      // イベントが素通りし、モーダルの裏で選択中の枠が消える／動く
+      e.stopPropagation();
       if (e.key === "Escape") { e.preventDefault(); onCancel(); return; }
       if (e.key !== "Tab") return;
       const root = rootRef.current;
@@ -5198,7 +5227,7 @@ export default function Editor(
                 + (split ? `＋分割+${split}` : "") + `＋管理6`)
            : columnsText)
         + (tpl.amount_cells != null ? `・金額 ${tpl.amount_cells} 列` : "")
-        + `・除外 ${exclCount}`
+        + `・送信しない範囲 ${exclCount}`
         + (disabledCount ? `・うち出力しない ${disabledCount} 欄` : "")
         + `）: ${p} ／ 読み込み時から: ${diff.text}`
         + (popNote ? ` ／ ${popNote}` : "")
@@ -5494,7 +5523,7 @@ export default function Editor(
         setFramesMsg(`枠候補: 升${fieldCount}件`
           + (tableCount ? `・表${tableCount}件` : "")
           + (newSuggestions.length ? `・まとめ提案${newSuggestions.length}件` : "")
-          + (overlapCount ? `（うち重なりのため対象外 ${overlapCount} 件） ` : "")
+          + (overlapCount ? `（うち重なりのため採用できない ${overlapCount} 件） ` : "")
           + `・${statsText}・${ev.elapsed_ms ?? 0}ms`
           + (extraNotes ? ` ／ ${extraNotes}` : ""));
       }
@@ -5543,7 +5572,7 @@ export default function Editor(
   const acceptSelectedCandidates = () => {
     const beforeTablesLen = tables.length;
     const result = applyCandidates(fields, tables, cands, candSelected, uid);
-    if (result.acceptedCount === 0) { setFramesMsg("選択した候補がありません（重なりのある候補は対象外です）"); return; }
+    if (result.acceptedCount === 0) { setFramesMsg("選択した候補がありません（重なりのある候補は採用できません）"); return; }
     const newTableUids = result.tables.slice(beforeTablesLen).map((t) => t.uid);
     // issue #109 (a): 採用で cands から消えた升だけを指していた提案は解決
     // 不能になるので、ここで落とす（一括採用・個別採用・全除去のどれでも
@@ -5580,18 +5609,20 @@ export default function Editor(
   // 逃げず人に決めさせる）。確認は画面内モーダル（issue #87 項目1）
   const acceptOneCandidate = async (cand: Cand) => {
     if (cand.overlaps && !(await askUiConfirm("adopt-overlapping-candidate"))) return;
+    // issue #136: await の後は closure の fields/tables/cands ではなく
+    // *Ref.current（最新値）を読む（このファイル冒頭のコメント参照）
     if (cand.kind === "field") {
-      const spec = fieldSpecFromCandidate(cand, fields.map((f) => f.field_id));
+      const spec = fieldSpecFromCandidate(cand, fieldsRef.current.map((f) => f.field_id));
       setFields((fs) => [...fs, { uid: uid(), ...spec }]);
     } else {
-      const spec = tableSpecFromCandidate(cand, tables.map((t) => t.table_id));
+      const spec = tableSpecFromCandidate(cand, tablesRef.current.map((t) => t.table_id));
       if (!spec) return;
       const newUid = uid();
       setTables((ts) => [...ts, { uid: newUid, ...spec }]);
       setRecentCandTableUids((prev) => [...prev, newUid]);
     }
     // issue #109 (a): この候補だけを参照していた提案は解決不能になるので落とす
-    const nextCands = cands.filter((c) => c.id !== cand.id);
+    const nextCands = candsRef.current.filter((c) => c.id !== cand.id);
     setCands(nextCands);
     setSuggestions((ss) => pruneSuggestionsForCands(ss, nextCands));
     // 設計レビュー差し戻し Must-2: 重なりを承知で採用した場合、保存するまで
@@ -5626,7 +5657,12 @@ export default function Editor(
       : s.overlaps;
     if (mode === "table" && overlapsNow
         && !(await askUiConfirm("adopt-overlapping-candidate"))) return;
-    const r = adoptSuggestionResult({ fields, tables, cands, suggestions }, s, mode, uid);
+    // issue #136: await の後は closure の fields/tables/cands/suggestions
+    // ではなく *Ref.current（最新値）を読む
+    const r = adoptSuggestionResult(
+      { fields: fieldsRef.current, tables: tablesRef.current,
+        cands: candsRef.current, suggestions: suggestionsRef.current },
+      s, mode, uid);
     if (!r) return;
     if (r.acceptedCount === 0) {
       setFramesMsg("この提案の升は既に採用済みか、既存の枠と重なるため採用できません");
@@ -6166,6 +6202,12 @@ export default function Editor(
     // nudge 等）も無効にする（マウス操作は onDown 側で既に framesGenerating
     // を見て無効化済み・§4.5.4「生成中はキャンバスの枠操作を無効化」と揃える）
     if (framesGenerating) return;
+    // issue #136: 保存前確認モーダル（confirmModal）・画面内確認モーダル
+    // （uiConfirm）の表示中はキャンバスのキー操作を止める。モーダルは
+    // オーバーレイでマウス操作を塞いでいるが、キーボードの Delete・矢印は
+    // ここでガードしないとモーダルの裏で選択中の枠が消える／動く。
+    // 結果として「画面の枠」と「保存済みファイル」が黙って食い違っていた
+    if (uiConfirm || confirmModal) return;
     const el = document.activeElement as HTMLElement | null;
     const tag = (el?.tagName ?? "").toLowerCase();
     // 入力欄相当の判定に isContentEditable を加える（issue #69 Q-H3）。
@@ -6183,7 +6225,8 @@ export default function Editor(
     const typing = (tag === "input" || tag === "textarea" || tag === "select"
       || !!el?.isContentEditable) && !(isToggleInput && undoCombo);
     const ka = keyAction(e,
-      { active, typing, isButtonFocused: tag === "button", hasSel: !!sel });
+      { active, typing, isButtonFocused: tag === "button", hasSel: !!sel,
+        modalOpen: !!(uiConfirm || confirmModal) });
     if (!ka) return;
     if (ka.preventDefault) e.preventDefault();
     switch (ka.action.type) {
@@ -6657,7 +6700,7 @@ export default function Editor(
                       ? { ...v, fallback: undefined } : v));
                     setSel({ type: "field", uid: f.uid });
                     markDirty(true);
-                  }}>参照先を削除</button>
+                  }} className="btn danger">参照先を削除</button>
                 </>
               ) : (
                 <button disabled={!hasImage}
@@ -6679,7 +6722,7 @@ export default function Editor(
             // （issue #71 (a')・設計レビュー差し戻し1）
             if (selIsHiddenByFormat()) return;
             setFields((fs) => fs.filter((v) => v.uid !== f.uid));
-            setSel(null); markDirty(true); }}>この欄を削除</button>
+            setSel(null); markDirty(true); }} className="btn danger">この欄を削除</button>
         </div>);
     }
     if (sel.type === "excl") {
@@ -6687,12 +6730,12 @@ export default function Editor(
       if (!x) return null;
       return (
         <div className="panel">
-          <h3>除外領域</h3>
+          <h3>送信しない範囲</h3>
           <label>id <input value={x.id} onChange={(e) => {
             setExcls((es) => es.map((v) => v.uid === x.uid ? { ...v, id: e.target.value } : v));
             markDirty(true); }} /></label>
           <div className="mono">x:{x.rect.x} y:{x.rect.y} w:{x.rect.w} h:{x.rect.h}</div>
-          <button onClick={removeSel}>削除</button>
+          <button onClick={removeSel} className="btn danger">削除</button>
         </div>);
     }
     const t = tables.find((x) => x.uid === sel.uid);
@@ -6949,7 +6992,7 @@ export default function Editor(
             </span>
             <button onClick={() => removeTableColumn(t, i)}>×</button>
           </div>))}
-        <button onClick={removeSel}>テーブル削除</button>
+        <button onClick={removeSel} className="btn danger">テーブル削除</button>
         {/* 操作を左右する一次情報なので通常 note（--faint）より濃い色で出す（レビュー N-1） */}
         <p className="note" style={{ color: "var(--sub)" }}>金額の列には「正規化」で「金額」を設定してください（未設定は「保存して検証」で検出されます）。
           種類が「選択式」の列、分割を指定した列では正規化は使いません（入力が無効になります）。</p>
@@ -7086,8 +7129,10 @@ export default function Editor(
               ——閉じたままでも「出力しない升の数」は上の名前に出ている */}
           <button className="btn" type="button" disabled={faceHidden}
             aria-expanded={expanded}
+            // issue #148: 「升」は凡例なしで出る用語なので、この表の行×列
+            // 展開ボタンの title に定義を添える（升＝表の1マス）
             title={faceHidden ? "様式が違う面の表のため選択できません（上書き表示中は選べます）"
-              : "この表の行×列を出して、升ごとに出力する/しないを切り替えます"}
+              : "升（表の1マス）ごとに出力する/しないを切り替えます。この表の行×列を出します"}
             style={{ minHeight: 28, padding: "3px 10px" }}
             onClick={() => setExpandedTableUid(expanded ? null : t.uid)}>
             {expanded ? "▾ 升" : "▸ 升"}</button>
@@ -7098,9 +7143,18 @@ export default function Editor(
     const faceSection = (
       label: string, group: { fields: Field[]; tables: Table[] }, faceId: "front" | "back") => {
       const faceHidden = hidden.has(faceId);
+      // issue #148: 「表面/裏面」は凡例なしで出る用語なので、hover 向けの
+      // title と読み上げ向けの aria-describedby（sr-only の説明文）を添える。
+      // front/back の2回しか呼ばれないため、面ごとに別 id を振っても
+      // 升グリッドのような大量繰り返しにはならない
+      const termId = `face-term-${faceId}`;
       return (
         <div key={label}>
-          <h4>{label}{faceHidden && <> {hiddenBadge}</>}</h4>
+          <h4 title="面＝紙の表面・裏面のように、1枚の画像の中で別々に扱う領域です"
+            aria-describedby={termId}>{label}{faceHidden && <> {hiddenBadge}</>}</h4>
+          <span id={termId} className="sr-only">
+            面は紙の表面・裏面のように、1枚の画像の中で別々に扱う領域です。
+          </span>
           {group.fields.length === 0 && group.tables.length === 0
             ? <p className="note">欄がありません</p>
             : <>{group.fields.map((f) => fieldRow(f, faceHidden))}
@@ -7143,9 +7197,17 @@ export default function Editor(
           読み上げは変わらない・視覚的な省略のみ） */}
       <div style={{ flexShrink: 0, padding: "10px 18px 6px" }}>
         {/* 見出しには升候補と提案の **両方の件数** を出す（デザインレビュー §4.3）。
-            0 のほうは書かない */}
-        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}>
+            0 のほうは書かない。issue #148: 「升」「まとめ提案」は凡例なしで
+            出る画面内用語のため、hover 向けの title と読み上げ向けの
+            aria-describedby（sr-only の説明文）を両方添える（ライブ領域は
+            増やさない・静的な説明文なので aria-live は付けない） */}
+        <h3 style={{ margin: "0 0 4px", fontSize: 14 }}
+          title="升＝表の1マスのこと。まとめ提案＝複数の升をまとめて表にする提案です"
+          aria-describedby="cand-panel-term-note">
           {candidatePanelHeading(cands.length, suggestions.length)}</h3>
+        <span id="cand-panel-term-note" className="sr-only">
+          升は表の1マスのことです。まとめ提案は複数の升をまとめて表にする提案です。
+        </span>
         {/* a11y 担当差し戻し（3回目・Must）: overlapAcceptNotice の可視表示は
             タブ非依存の常時表示エリア（errMsg と同じ場所）へ移した——タブを
             離れても見えなくならないようにするため。ここには残さない。
@@ -7174,12 +7236,17 @@ export default function Editor(
                 新世代へ丸ごと差し替わる直前に押すと、直前の採用と重なる新候補が
                 既定チェックのまま並びうる（overlaps は採用前の fields/tables
                 基準のまま）ため、生成中は他のツールと同じく操作できなくする */}
-            <button className="btn" type="button" onClick={acceptSelectedCandidates}
+            {/* issue #163 (1): 主操作「選んだ候補を採用」と全消去「すべて除去」が
+                同じグレー .btn で縦に隣接し、採用が主操作だと視覚的に伝わらな
+                かった。採用は枠が増えるだけの操作（Ctrl+Z で戻せる）なので
+                primary、除去は一覧を丸ごと空にする重い操作なので .btn.subtle
+                で弱め、primary との強度差で「押しやすい方＝安全な方」にする */}
+            <button className="btn primary" type="button" onClick={acceptSelectedCandidates}
               disabled={framesGenerating}
               title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
               {acceptSelectedLabel(cands, candSelected)}
             </button>
-            <button className="btn" type="button" onClick={clearAllCandidates}
+            <button className="btn subtle" type="button" onClick={clearAllCandidates}
               disabled={framesGenerating}
               title={framesGenerating ? "枠候補の生成中は操作できません" : undefined}>
               すべて除去
@@ -7266,7 +7333,7 @@ export default function Editor(
           <div key={c.id} className="panel-outrow">
             <input type="checkbox" className="cand-check"
               checked={!!candSelected[c.id]} disabled={c.overlaps}
-              title={c.overlaps ? "既存の枠と重なるため一括採用の対象外です（個別採用は可能）" : undefined}
+              title={c.overlaps ? "既存の枠と重なるため一括採用できません（個別採用は可能）" : undefined}
               aria-label={candidateAriaLabel(c)}
               onChange={(e) => setCandSelected((s) => ({ ...s, [c.id]: e.target.checked }))} />
             <span className="cand-name">
@@ -7360,7 +7427,7 @@ export default function Editor(
                 ? (framesGenerating ? "枠候補の生成中は操作できません" : "帳票の画像か PDF を開くと使えます")
                 : undefined}
               onClick={() => setTool(t)}>
-              {{ select: "選択", field: "欄を追加", excl: "除外範囲",
+              {{ select: "選択", field: "欄を追加", excl: "送信しない範囲",
                  table: "くり返し行（家族・明細）", split: "表裏の境界" }[t]}
             </button>);
         })}

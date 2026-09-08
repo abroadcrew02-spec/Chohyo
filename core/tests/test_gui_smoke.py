@@ -131,7 +131,7 @@ def test_settings_modal_six_items(page):
 def test_editor_tab_admin_guardrails(page):
     page.locator(".tabs button", has_text="テンプレート編集").click()
     page.wait_for_selector("text=管理者向け")
-    for tool in ["選択", "欄を追加", "除外範囲",
+    for tool in ["選択", "欄を追加", "送信しない範囲",
                  "くり返し行（家族・明細）", "表裏の境界"]:
         expect(page.get_by_role("button", name=tool)).to_be_visible()
     # 実行タブへ戻れる（未保存なしなので確認は出ない）
@@ -160,7 +160,7 @@ def test_editor_no_image_notice_blocks_canvas_edits(page):
 
     # ツールボタンは select 以外、画像が無い間 disabled になる
     # （レビュー H-1・押しても無反応にしない）
-    for tool in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
+    for tool in ["欄を追加", "送信しない範囲", "くり返し行（家族・明細）", "表裏の境界"]:
         expect(page.get_by_role("button", name=tool)).to_be_disabled()
     expect(page.get_by_role("button", name="選択", exact=True)).to_be_enabled()
 
@@ -859,10 +859,10 @@ def test_editor_locks_frame_replacing_actions_while_generating(page):
     expect(page.get_by_role("button", name="候補から新しく作る", exact=True)).to_be_disabled()
     expect(page.get_by_role("button", name="欄を追加", exact=True)).to_be_disabled()
 
-    # AC-F78: 完了後は欄の追加・除外範囲・くり返し行・表裏の境界と「開く」系が
+    # AC-F78: 完了後は欄の追加・送信しない範囲・くり返し行・表裏の境界と「開く」系が
     # すべて操作できる状態に戻る（生成中の締め出しが居残らない）
     page.wait_for_selector("text=枠候補（升 3 件・まとめ提案 1 件）")
-    for name in ["欄を追加", "除外範囲", "くり返し行（家族・明細）", "表裏の境界"]:
+    for name in ["欄を追加", "送信しない範囲", "くり返し行（家族・明細）", "表裏の境界"]:
         expect(page.get_by_role("button", name=name, exact=True)).to_be_enabled()
     expect(page.get_by_role("button", name="帳票を開く（PDF・画像）")).to_be_enabled()
     expect(page.get_by_role("button", name="テンプレートを開く", exact=True)).to_be_enabled()
@@ -1047,6 +1047,50 @@ def test_editor_cell_grid_column_bulk_toggle_and_save_population(page):
     # subfields を持つ列の升は 1 升 = N 列に展開されるため、列差と内訳の合計は
     # 一致しないことがある。画面が一致を約束しないよう「を除く」は書かない
     expect(page.get_by_text("升 3 を除く", exact=False)).to_have_count(0)
+
+
+def test_editor_delete_ignored_while_save_confirm_modal_open(page):
+    # issue #136: 保存前確認モーダル（confirmModal）の表示中もキャンバスの
+    # keydown リスナーが Delete/矢印を拾っており、モーダルの裏で選択中の枠が
+    # 消える／動くのに保存済み表示は変わらない事故があった（画面とファイルの
+    # 黙った食い違い）。列を1つ外して保存前確認を開き、開いたままの状態で
+    # Delete を押しても選択中の欄が消えないことを固定する。
+    _open_editor_with_demo_template(page)
+
+    # 出力列が減る変更を作り、保存前確認（columnDecrease 警告）を出させる
+    # （test_editor_cell_grid_column_bulk_toggle_and_save_population と同じ手順）
+    page.get_by_role("button", name="▸ 升", exact=True).click()
+    col = page.get_by_role("checkbox", name="family 続柄 の 3升 をまとめて切り替える",
+                           exact=False)
+    expect(col).to_have_count(1)
+    col.uncheck()
+
+    # 別の欄（person_氏名）を選択しておく。選択すると自動で「選択中」タブへ
+    # 切り替わる（issue #69 Q-H3 のテストと同じ導線）——ここで hasSel: true
+    # の状態を作ってから保存前確認を開く
+    page.locator("#edittab-output").click()
+    page.get_by_role("button", name="person_氏名", exact=True).click()
+    expect(page.get_by_text("選択中の欄")).to_be_visible()
+
+    # 保存前確認を開く（columnDecrease 警告で1枚出る）
+    page.get_by_role("button", name="保存して検証", exact=True).click()
+    modal = page.get_by_role("alertdialog")
+    expect(modal).to_be_visible()
+
+    # モーダルが開いたまま Delete を押す。#136 修正前は keyRef.current が
+    # モーダルの開閉を見ておらず、選択中の person_氏名 がここで消えていた
+    page.keyboard.press("Delete")
+
+    # モーダルはまだ開いたまま（Delete がモーダル自身の操作にもならない）
+    expect(modal).to_be_visible()
+    # 「保存しない」で閉じて確認する。欄一覧に person_氏名 が残っていれば
+    # Delete がキャンバスへ抜けていない証拠
+    page.get_by_role("button", name="保存しない", exact=True).click()
+    expect(modal).to_have_count(0)
+    expect(page.get_by_text("選択中の欄")).to_be_visible()
+    expect(page.get_by_label("欄の名前（出力の列名になります）")).to_have_value("person_氏名")
+    page.locator("#edittab-output").click()
+    expect(page.get_by_role("button", name="person_氏名", exact=True)).to_be_visible()
 
 
 def test_editor_suggestion_card_merge_into_table_and_undo(page):

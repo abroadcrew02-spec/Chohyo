@@ -959,6 +959,24 @@ export function acceptsRunEvent(f: RunFilter, runId?: string): boolean {
   return f.current === null || f.current === runId;
 }
 
+/** 進捗バーの ARIA 属性（issue #162 M2・WCAG 4.1.2）。role="progressbar" に加え
+ *  aria-valuemin/aria-valuemax/aria-label を返す。total が確定していない
+ *  （0 のまま・未取得）ときは aria-valuenow を省く——0 を出すと「0% で
+ *  止まっている」という誤った値の断定になる。呼び出し側は
+ *  `<div className="bar" {...progressAriaProps(done, total)}>` のように展開する。 */
+export function progressAriaProps(done: number, total: number): {
+  role: "progressbar"; "aria-valuemin": number; "aria-valuemax": number;
+  "aria-valuenow"?: number; "aria-label": string;
+} {
+  return {
+    role: "progressbar",
+    "aria-valuemin": 0,
+    "aria-valuemax": total,
+    ...(total > 0 ? { "aria-valuenow": done } : {}),
+    "aria-label": "読み取りの進捗",
+  };
+}
+
 /** 破壊的な操作の前に出す確認ダイアログ（issue #52 M-10／M-11）。
  *
  *  作りは Editor.tsx の保存前確認モーダル（issue #87 項目1）に揃える:
@@ -1503,75 +1521,79 @@ ${ev.hint}` : ""));
       )}
       <div className="run-main">
 
-        {/* 完了バナー。1件も送信せず全ページ様式不一致で終わった実行は
-            緑ではなく注意色にする（issue #69 残置1・completionBannerTone）。
-            文言は変えない——何が起きたかは completionNotice の赤帯が既に
-            説明しており、同じ内容を2箇所に持たない */}
+        {/* A11y-Must（WCAG 4.1.3 Status Messages）: 完了バナー・サマリ6項目・
+            実行時のお知らせ・様式不一致の黄帯は、フォーカスを動かさずに
+            まとめて現れる（issue #162 M3）。バナーからこの完了ブロックの
+            末尾（様式不一致の黄帯）までを1つの role="status" ライブ領域に
+            まとめる——分割すると領域を増やしすぎるか、この一括更新の一部を
+            ライブ領域の外に置くかのどちらかになる。role="status" の div
+            自体は summary の有無で出し入れするが、中身をまとめて包むこの
+            外枠は run-main の直接の子が1つ減る分、.run-main と同じ
+            flex/gap をここに引き継いで元の見た目を保つ */}
         {summary && (
-          <div className={`banner ${bannerTone}`}>
-            {bannerTone === "ok" ? (
-              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
-                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" /><path d="M8 12.5l3 3 5-6" />
-              </svg>
-            ) : (
-              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#a16207"
-                strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" role="img"
-                aria-label="注意">
-                <path d="M12 3.5L21.5 20H2.5z" /><path d="M12 10v4" /><path d="M12 17.2v.1" />
-              </svg>
-            )}
-            <div className="txt">
-              <b>読み取りが完了しました</b>
-              <span>Excel と CSV を保存しました{xlsxName ? `（${xlsxName}）` : ""}</span>
+          <div role="status" aria-live="polite"
+            style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {/* 完了バナー。1件も送信せず全ページ様式不一致で終わった実行は
+                緑ではなく注意色にする（issue #69 残置1・completionBannerTone）。
+                文言は変えない——何が起きたかは completionNotice の赤帯が既に
+                説明しており、同じ内容を2箇所に持たない */}
+            <div className={`banner ${bannerTone}`}>
+              {bannerTone === "ok" ? (
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#16a34a"
+                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" /><path d="M8 12.5l3 3 5-6" />
+                </svg>
+              ) : (
+                <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#a16207"
+                  strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" role="img"
+                  aria-label="注意">
+                  <path d="M12 3.5L21.5 20H2.5z" /><path d="M12 10v4" /><path d="M12 17.2v.1" />
+                </svg>
+              )}
+              <div className="txt">
+                <b>読み取りが完了しました</b>
+                <span>Excel と CSV を保存しました{xlsxName ? `（${xlsxName}）` : ""}</span>
+              </div>
             </div>
-          </div>
-        )}
 
-        {/* 完了サマリ6項目（要件 §5.9 と同一。副題は平易な言葉） */}
-        {summary && (
-          <div className="summary6">
-            <div className="sumcard"><span className="k">処理枚数</span>
-              <span className="v">{summary.pages}</span><span className="s">読み取ったページ数</span></div>
-            <div className="sumcard"><span className="k">出力行数</span>
-              <span className="v">{summary.rows}</span><span className="s">Excel に出力した行数</span></div>
-            <div className="sumcard"><span className="k">API送信回数</span>
-              <span className="v">{summary.api_calls}</span><span className="s">クラウド OCR の送信回数</span></div>
-            <div className="sumcard warn"><span className="k">要確認セル数総計</span>
-              <span className="v">{summary.unclear_cells}</span><span className="s">〓の個数（要修正箇所）</span></div>
-            <div className={summary.align_failed > 0 ? "sumcard err" : "sumcard"}>
-              <span className="k">位置合わせ失敗</span>
-              <span className="v">{summary.align_failed}</span><span className="s">読み取れなかったページ数</span></div>
-            <div className="sumcard"><span className="k">行数超過件数</span>
-              <span className="v">{summary.overflow}</span><span className="s">行数を超過したページ数</span></div>
-          </div>
-        )}
-        {/* issue #72 (t)・実機通し確認の指摘: 「API送信回数」がページ数より
-            少ない理由（中間データの再利用）を、その項目の直後に説明する。
-            summary6 は要件 §5.9 が固定した6項目のグリッドのため、7件目の
-            カードとしては足さず、グリッドのすぐ下に注記として置く */}
-        {summary && reusedPagesNotice(summary.reused_pages) && (
-          <div className="muted" style={{ fontSize: 12.5, marginTop: -8 }}>
-            {reusedPagesNotice(summary.reused_pages)}
-          </div>
-        )}
-        {summary && (
-          <div style={{ display: "flex", gap: 12 }}>
-            <button className="btn primary big" onClick={openOutput}>
-              <FolderIcon c="#ffffff" />出力フォルダを開く
-            </button>
-            <button className="btn big" onClick={start}>再度読み取る</button>
-            <button className="btn" onClick={() => setSummary(null)}>条件を変更して読み取る</button>
-          </div>
-        )}
+            {/* 完了サマリ6項目（要件 §5.9 と同一。副題は平易な言葉） */}
+            <div className="summary6">
+              <div className="sumcard"><span className="k">処理枚数</span>
+                <span className="v">{summary.pages}</span><span className="s">読み取ったページ数</span></div>
+              <div className="sumcard"><span className="k">出力行数</span>
+                <span className="v">{summary.rows}</span><span className="s">Excel に出力した行数</span></div>
+              <div className="sumcard"><span className="k">API送信回数</span>
+                <span className="v">{summary.api_calls}</span><span className="s">クラウド OCR の送信回数</span></div>
+              <div className="sumcard warn"><span className="k">要確認セル数総計</span>
+                <span className="v">{summary.unclear_cells}</span><span className="s">〓の個数（要修正箇所）</span></div>
+              <div className={summary.align_failed > 0 ? "sumcard err" : "sumcard"}>
+                <span className="k">位置合わせ失敗</span>
+                <span className="v">{summary.align_failed}</span><span className="s">読み取れなかったページ数</span></div>
+              <div className="sumcard"><span className="k">行数超過件数</span>
+                <span className="v">{summary.overflow}</span><span className="s">行数を超過したページ数</span></div>
+            </div>
+            {/* issue #72 (t)・実機通し確認の指摘: 「API送信回数」がページ数より
+                少ない理由（中間データの再利用）を、その項目の直後に説明する。
+                summary6 は要件 §5.9 が固定した6項目のグリッドのため、7件目の
+                カードとしては足さず、グリッドのすぐ下に注記として置く */}
+            {reusedPagesNotice(summary.reused_pages) && (
+              <div className="muted" style={{ fontSize: 12.5, marginTop: -8 }}>
+                {reusedPagesNotice(summary.reused_pages)}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 12 }}>
+              <button className="btn primary big" onClick={openOutput}>
+                <FolderIcon c="#ffffff" />出力フォルダを開く
+              </button>
+              <button className="btn big" onClick={start}>再度読み取る</button>
+              <button className="btn" onClick={() => setSummary(null)}>条件を変更して読み取る</button>
+            </div>
 
-        {/* 完了後の付随情報（次の作業・実行時のお知らせ・CSV注意・位置合わせ失敗）。
-            issue #65-5: 以前は右カラム（幅380px固定）に出していたが、実行前は
-            その右カラムが空のまま幅だけ確保されて余白になっていた（issue #65-4
-            で説明文を消した後に発覚）。単一カラムへ統合し、完了時にウィンドウ幅を
-            変えずに済むようにする（完了の瞬間にリサイズすると体験が悪い） */}
-        {summary && (
-          <>
+            {/* 完了後の付随情報（次の作業・実行時のお知らせ・CSV注意・位置合わせ失敗）。
+                issue #65-5: 以前は右カラム（幅380px固定）に出していたが、実行前は
+                その右カラムが空のまま幅だけ確保されて余白になっていた（issue #65-4
+                で説明文を消した後に発覚）。単一カラムへ統合し、完了時にウィンドウ幅を
+                変えずに済むようにする（完了の瞬間にリサイズすると体験が悪い） */}
             <div className="card nextsteps">
               <div className="explain"><div className="h">次の作業（目視確認）</div></div>
               <div className="row"><b>1.</b>
@@ -1614,12 +1636,15 @@ ${ev.hint}` : ""));
                   （テンプレート選択は「条件を変更して読み取る」を押すと画面上部に出ます）。</div>
               </div>
             )}
-          </>
+          </div>
         )}
 
         {/* サマリが無いとき（削除だけを行った直後など）のお知らせ。
-            summary があるときは上の付随情報の並びの中で出している */}
-        {!summary && noticesCard}
+            summary があるときは上の付随情報の並びの中で出している。
+            A11y-Must: こちらも role="status" のライブ領域にする（issue #162 M3） */}
+        {!summary && noticesCard && (
+          <div role="status" aria-live="polite">{noticesCard}</div>
+        )}
 
         {/* 処理中 */}
         {running && (
@@ -1635,7 +1660,9 @@ ${ev.hint}` : ""));
               </div>
             </div>
             <div className="counter">処理中: <b>{Math.min(done + 1, Math.max(total, 1))}</b> / <b>{total || "?"}</b> ページ</div>
-            <div className="bar"><div style={{ width: `${total ? (done / total) * 100 : 4}%` }} /></div>
+            <div className="bar" {...progressAriaProps(done, total)}>
+              <div style={{ width: `${total ? (done / total) * 100 : 4}%` }} />
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div className="softnote" style={{ flex: 1 }}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#5a6577"
@@ -1648,8 +1675,11 @@ ${ev.hint}` : ""));
           </div>
         )}
 
+        {/* A11y-Must（WCAG 4.1.3）: 開始を拒否した理由。フォーカスは動かない
+            ため role="alert" で読み上げる（issue #162 M3・error/purgeBlocked
+            と同じ考え方） */}
         {refused && (
-          <div className="card errbox" style={{ whiteSpace: "pre-wrap" }}>
+          <div className="card errbox" role="alert" style={{ whiteSpace: "pre-wrap" }}>
             <b>読み取りを開始できません</b>
             <div>{refused}</div>
           </div>
@@ -1735,9 +1765,14 @@ ${ev.hint}` : ""));
           <div className="card warnbox" style={{ fontSize: 12.5 }}>
             <div>{credNotice(verify.cred, verify.envPresent)}</div>
             <button className="btn primary" style={{ width: "fit-content", marginTop: 8 }}
-              onClick={pickCredentials} disabled={importing}>
+              onClick={pickCredentials} disabled={importing} aria-describedby="cred-note-env">
               {importing ? "取り込み中…" : "認証キーを選択"}
             </button>
+            {/* issue #148: 何のキーをどこから受け取るかが画面に無く、README を
+                読まないと分からなかった */}
+            <div id="cred-note-env" className="muted" style={{ marginTop: 6 }}>
+              この JSON ファイルは管理者から受け取ってください（自分では作れません）。
+            </div>
           </div>
         )}
 
@@ -1767,9 +1802,15 @@ ${ev.hint}` : ""));
                   )}
                 </div>
                 <button className="btn primary" style={{ width: "fit-content" }}
-                  onClick={pickCredentials} disabled={importing}>
+                  onClick={pickCredentials} disabled={importing} aria-describedby="cred-note-missing">
                   {importing ? "取り込み中…" : "認証キーを選択"}
                 </button>
+                {/* issue #148: 「管理者から受け取る」に加えて「自分では作れない」も
+                    明示する——初回起動の利用者が自分で鍵を用意しようとして
+                    詰まらないように */}
+                <div id="cred-note-missing" className="muted">
+                  この JSON ファイルは管理者から受け取ってください（自分では作れません）。
+                </div>
               </div>
             </div>
           </div>
@@ -1848,9 +1889,15 @@ ${ev.hint}` : ""));
             <div className={inputDir ? "card step on" : "card step"}>
               <div className="no">3</div>
               <div className="body">
+                {/* issue #150 (7): このボタンはそもそも `!running` の親ブロック
+                    （手順1〜3）の下でしかマウントされないため、実行中は
+                    ブロックごと外れて自動的に押せなくなる。ただし disabled 条件
+                    自体にも running を入れておく——親のアンマウント依存だけに
+                    頼らない（このブロックの外し方が将来変わっても disabled が
+                    独立して正しいままになる） */}
                 <button className="btn primary big" style={{ width: "fit-content" }}
                   onClick={start}
-                  disabled={!inputDir || purging || (!!verify && !verify.parsed)
+                  disabled={running || !inputDir || purging || (!!verify && !verify.parsed)
                     || verify?.cred === "missing"
                     || (!!verify && verify.budgetUsed >= verify.budgetCap)
                     || (!!verify && !verify.storage && !storageAck)}>

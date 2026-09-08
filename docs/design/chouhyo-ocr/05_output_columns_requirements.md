@@ -426,7 +426,7 @@ ID は 3層構成。**FR-0.x = 両弾の共通基盤／FR-1.x = 第1弾（出力
 | **AC-1.20** | 対象外欄の `Row.origins` が values と同時にスキップされ、**残りの行で由来色が生きている**こと（全行で静かに死んでいないこと）。**`debug_images._field_origins` と `assign()` の両方で確認**し、`test_debug_images.py:249` が固定している一致が保たれること（T-S1・F-13） | FR-1.2 | L1 |
 | **AC-1.21** | 「出力する」チェックボックスの accessible name が対象欄の識別子を含む（例:「氏名を出力する」）。NVDA/ナレーターのフォームコントロール一覧で複数行の読み上げテキストが重複しないこと（a11y 判定 2026-09-01 M1・SC 2.4.6） | FR-1.8 | L3 |
 | **AC-1.22** | ⊘バッジは不透明チップ（塗り背景＋前景記号）で描画し、チップ単体の配色で 3:1 以上を満たす（可変のスキャン画像を背景に取らない）。判定: 実装後スクリーンショットのピクセル色を WebAIM Contrast Checker で確認（M2・SC 1.4.11） | FR-1.5 | L3 |
-| **AC-1.23** | 保存前確認モーダルに `role="alertdialog"`・`aria-modal="true"`・`aria-labelledby` を付与。Tab/Shift+Tab がモーダル内で循環し、初期フォーカスは「保存しない」、Esc でキャンセル、閉じた後は保存ボタンへフォーカスが戻ること（M3・SC 4.1.2/2.4.3。`window.confirm` からの置換で後退させない） | FR-1.6 | L2+L3 |
+| **AC-1.23** | 保存前確認モーダルに `role="alertdialog"`・`aria-modal="true"`・`aria-labelledby` を付与。Tab/Shift+Tab がモーダル内で循環し、初期フォーカスは「保存しない」、Esc でキャンセル、閉じた後は保存ボタンへフォーカスが戻ること（M3・SC 4.1.2/2.4.3。`window.confirm` からの置換で後退させない）。**モーダル表示中はキャンバスの keydown（Delete・矢印・Ctrl+Z 等）を一切拾わない**——マウスはオーバーレイで塞がれているが、キーボードはモーダル自身の Tab 循環処理だけが `stopPropagation` していなかったため、モーダルの裏で選択中の枠が消える／動く事故があった（issue #136。画面と保存済みファイルが黙って食い違う） | FR-1.6 | L2+L3 |
 | **AC-1.24** | 「選択中/出力列」タブに `role="tablist"`/`role="tab"`＋`aria-selected` を付与し、アクティブ状態が色以外でも判定可能なこと（M4・SC 4.1.2） | FR-1.8 | L3 |
 | **AC-1.25** | チェック操作の読み上げに結果が含まれること——チェックボックスの `aria-label` に現在の列番号または「出力対象外」を動的に含める（例: 未チェック時「氏名を出力する（現在: 出力対象外）」）（M5・SC 4.1.3） | FR-1.8 | L3 |
 
@@ -443,6 +443,8 @@ ID は 3層構成。**FR-0.x = 両弾の共通基盤／FR-1.x = 第1弾（出力
 | AC-1.25 | PASS | 出力列タブの単発欄チェックボックスを操作前後で `aria-label` を取得し比較 | 操作前: `person_氏名を出力する（現在: 出力する）` → チェック解除後: `person_氏名を出力する（現在: 出力対象外）`（結果が動的に読み上げテキストへ反映）。※デモモックの `column_names` は代表列名（`demo_col_NNN`）で実フィールド名と一致しないため、`outputCheckboxLabel`（Editor.tsx:445-453）の「列番号」分岐は本実測では発火せず、この分岐の実装はコード確認のみに留まる。「出力対象外」分岐は実測で確認済み |
 
 検証スクリプト（scratchpad・リポジトリ非追跡）: `verify_a11y.py`（AC-1.21・1.22・1.23・1.24・1.25の主測定）／`verify_a11y_table.py`（AC-1.21の表列側の補足測定）。実施日: 2026-09-01。
+
+**AC-1.23 追補（issue #136・2026-09-08）**: 上表の 2026-09-01 実測はモーダル自身の role/aria/フォーカス循環のみを見ており、**モーダルの裏のキャンバスがキー入力を拾うかは確認していなかった**。`keyRef.current`（キャンバスの keydown）が `confirmModal`／`uiConfirm`（画面内確認モーダル）の開閉を見ておらず、`modalKeyHandler` も `stopPropagation` を呼んでいなかったため、モーダル表示中に Delete を押すと選択中の枠が裏で消え、保存済みファイルとの食い違いに気づけなかった。`gui/src/Editor.tsx` の `keyRef.current` 先頭で `uiConfirm || confirmModal` を早期 return し、`keyAction` にも `modalOpen` を追加（純関数側でも no-op を保証・単体テストの対象にできるようにする）、`modalKeyHandler` の先頭で `e.stopPropagation()` を追加した。固定したテスト: `gui/tests/gui-logic.test.mjs`（issue #136 の2件）・`core/tests/test_gui_smoke.py::test_editor_delete_ignored_while_save_confirm_modal_open`。**GUI スモークの実行は本追補の時点では未実施**（実行は別担当）——gui-logic と `tsc --noEmit` のみ自分で確認済み。
 
 **Should 5件の消化（2026-09-03）**: issue #67 へ移管した5件は `fixing-accessibility` の再判定（2026-09-03）で判定を付け直し、同日すべて実装した——①ハッチ不透明度=Should、②〜⑤は Must。実装は `gui/src/Editor.tsx`、検査は `gui/tests/gui-logic.test.mjs`。
 

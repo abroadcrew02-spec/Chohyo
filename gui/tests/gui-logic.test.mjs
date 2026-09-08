@@ -23,7 +23,7 @@ const bundle = await build({
   stdin: {
     contents:
       'export { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, expandPageArgs, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner } from "./Editor.tsx";\n' +
-      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } from "./RunScreen.tsx";\n' +
+      'export { noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice, progressAriaProps } from "./RunScreen.tsx";\n' +
       // AC-F11（判定不能の弱い描画）。既存の長い export 行に足すと他の作業と
       // 衝突しやすいので独立した1行にする
       'export { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } from "./Editor.tsx";\n' +
@@ -51,7 +51,7 @@ writeFileSync(outFile, bundle.outputFiles[0].text);
 // だけがこのバンドルの外部から呼べる操作の全量なので、その中に face/block の
 // 並べ替えに相当する名前が無いことを機械的に確認できる
 const mod = await import(pathToFileURL(outFile).href);
-const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, expandPageArgs, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice } = mod;
+const { layoutMarks, remapMarks, applyRectToField, handleAt, resizeBy, nextOverlapPick, absorbField, subtractRect, carveField, evaluateCarve, carveWarningNotice, resolveOverlaps, exclusionRegressionNotice, exclusionChangeNotice, saveDiffNote, remapColumnMarks, extraIndexValid, expandAlignNotice, expandPageArgs, promoteFailureNotice, isOutput, outputAttrForJson, countOutputDisabled, findColumnPositions, findTableColumnPositions, outputCheckboxLabel, saveConfirmWarnings, unclearPopulationNote, fieldColumnPositionNote, tableColumnRangeInfo, tableColumnOrderNote, outputOrderSnapshot, outputOrderChanged, fieldGeometrySnapshot, geometryUnchanged, reorderCarveBlockedNotice, orderChangeReportNote, fieldsForFace, moveFieldOutputOrder, moveTableColumnOrder, tableColumnReorderImpactNote, columnDecreaseFor, keyAction, clampRect, outOfFaceElements, buildTemplateJson, noImageNotice, canvasInteractionAllowed, newTemplateActionAvailable, hiddenFaces, visibleFields, visibleTables, visibleExcls, selHiddenByFormat, rankCandidates, emptyTemplateFor, newTemplateNotice, restoredTemplateNotice, templateSwitchImageSizeNotice, excludedReasonJa, matchErrorJa, formatOverrideBannerText, candidateDefaultChecked, candidateOverlapWarning, overlapAcceptedNotice, candidateOverlapsExisting, candidateAriaLabel, excludedSummaryJa, templateSkipReasonNotice, shouldSwitchToCandidatesTab, fieldSpecFromCandidate, tableSpecFromCandidate, applyCandidates, renameTableColumnsWithPrefix, zeroReasonNotice, candidatesFromDetectFrames, layoutColumnMarks, choiceColumnsNeedingMarks, choiceFieldsNeedingMarks, choiceColumnMarksNotice, relativeLuminance, contrastRatio, SELECTION_COLOR, SELECTION_FILL_STYLE, HATCH_STROKE_STYLE, PAPER_BG_COLOR, CANVAS_BG_COLOR, reorderAnnouncement, nextReorderFocusDir, saveConfirmButtonLabel, saveConfirmButtonTitle, saveSuccessNotices, pushHistory, clearCandidates, uiConfirmSpec, saveOkBanner, noticeFor, STATUS_JA, outputDisabledNotice, counterNotice, snapNotice, targetWindowHeight, RUN_WINDOW_HEIGHT_DEFAULT, RUN_WINDOW_WIDTH, parseVerify, credNotice, missingCredentialsNotice, accumulationNotice, completionNotice, reasonCodeNotice, REASON_CODE_JA, parseLastTemplate, formatLastTemplate, resolveSelectedTemplate, startDisabledReason, reusedPagesNotice, readCoreLine, emptyRunFilter, beginRun, adoptRun, finishRun, acceptsRunEvent, purgeNotice, importCredentialsNotice, completionBannerTone, appendFailure, truncatedFailureNotice, FAILURE_KEEP, interruptOutcome, nextInterruptedFlag, UNSAFE_REASON_JA, unsafeRootNotice, parsePurgePreview, purgeGate, purgeBlockedNotice, purgeKeptNotice, purgeRefusedNotice, progressAriaProps } = mod;
 const { frameStyleFor, undecidableFaces, UNDECIDABLE_ALPHA, UNDECIDABLE_DASH, FALLBACK_DASH } = mod;
 const { autoDetectEnabled, appliedTemplateMemory, autoApplyTarget, applyTemplateMemoryValue, initialFrameView, shouldAutoApplyMemory, formatBandApplies, undecidableAutoApplyNotice, staleAppliedMemoryNotice, appliedTemplateBarText, unappliedTemplateBarText, templateDecisionMsg, templateChoiceNotice, useTemplateButtonName, detectFramesEffects, autoDetectFailureNotice, candidateOverlapFlag, candidateResultApplies } = mod;
 const { cellKey, parseCellKey, tableTotalRows, isCellOutput, toggleCellOutput, columnCellState, toggleColumnOutput, disabledCellsForJson, disabledCellsAttrForJson, cellsOffFromJson, verticalOffRuns, cellAtPoint, cellColumnPosition, remapCellsOffOnColumnRename, remapCellsOffOnColumnDelete, remapCellsOffOnBlocksChange, outputDisabledBreakdown, cellCheckboxDisplayName, columnBulkToggleLabel, columnBulkToggleAriaLabel, cellGridNote, suggestionsFromDetectFrames, suggestionCardText, candidatePanelHeading, adoptSuggestionResult, dismissSuggestion, suggestionAdoptMessage, CAND_PAGE_SIZE, countColumnCellsOff, acceptSelectedLabel, suggestionButtonAriaLabel, pruneSuggestionsForCands, duplicateColumnNames, duplicateColumnNamesNotice, remapSelCellOnColumnDelete, remapSelCellOnColumnMove, buildCellColumnPositionIndex, countCellsOffByColumn, cellsOffDropSummary, mergeCellsOffDropSummaries, cellsOffDropNotice, nextBlockX, NEW_BLOCK_GAP_PX, overlappingTableBlocks, overlappingTableBlocksNotice } = mod;
@@ -708,7 +708,7 @@ test("saveDiffNote: 減少を検知し、不変なら静か（増減なしは単
   assert.deepEqual(decreased.decreasedLabels, ["欄"]);
 
   const quiet = saveDiffNote(loaded, loaded);
-  assert.equal(quiet.text, "欄 194・金額 28・除外 9・列 220");
+  assert.equal(quiet.text, "欄 194・金額 28・送信しない範囲 9・列 220");
   assert.deepEqual(quiet.decreasedLabels, [], "不変時は静か（警告対象なし）");
 
   const increased = saveDiffNote(loaded, { fields: 195, amountCells: 28, exclusions: 9, columns: 220 });
@@ -737,7 +737,7 @@ test("saveDiffNote: 両辺を verify 応答（core の cells/amount_cells）に�
   const verifyResponseAtLoad = { fields: 194, amountCells: 28, exclusions: 9, columns: 220 };
   const verifyResponseAtSave = { fields: 194, amountCells: 28, exclusions: 9, columns: 220 };
   const diff = saveDiffNote(verifyResponseAtLoad, verifyResponseAtSave);
-  assert.equal(diff.text, "欄 194・金額 28・除外 9・列 220",
+  assert.equal(diff.text, "欄 194・金額 28・送信しない範囲 9・列 220",
     "無編集保存なのに矢印つきの差分が出ている（F-10 の再発）: " + diff.text);
   assert.deepEqual(diff.decreasedLabels, []);
 
@@ -794,7 +794,7 @@ test("exclusionRegressionNotice: 除外数が減っていれば確認文言・�
   const notice = exclusionRegressionNotice(7, 3);
   assert.ok(notice, "減っていれば null 以外を返すはず");
   assert.ok(notice.includes("7") && notice.includes("3"), notice);
-  assert.ok(notice.includes("除外領域"), notice);
+  assert.ok(notice.includes("送信しない範囲"), notice);
 });
 
 // issue #59 QA再判定条件④: 「数」だけでなく「座標」の変化も検知する
@@ -1388,14 +1388,14 @@ test("saveConfirmWarnings: 該当する項目だけを順に積む（4種統合�
   const w = saveConfirmWarnings({
     isShipped: true,
     imageSizeMismatch: { from: "2490×3510", to: "2480×3500" },
-    exclusionNotice: "除外領域が減っています",
+    exclusionNotice: "送信しない範囲が減っています",
     columnDecrease: { kind: "decrease", from: 220, to: 217 },
   });
   assert.equal(w.length, 4);
   assert.deepEqual(w.map((x) => x.key), ["shipped", "image-size", "exclusion", "columns"]);
   assert.ok(w[0].text.includes("出荷テンプレート"), w[0].text);
   assert.ok(w[1].text.includes("2490×3510") && w[1].text.includes("2480×3500"), w[1].text);
-  assert.equal(w[2].text, "除外領域が減っています");
+  assert.equal(w[2].text, "送信しない範囲が減っています");
   assert.ok(w[3].text.includes("220 → 217"), w[3].text);
   assert.ok(w[3].text.includes("枠と読み取りは残ります"),
     "対象外欄の可逆性（Q-29）を保存前確認にも明示する: " + w[3].text);
@@ -1577,7 +1577,7 @@ test("AC-1.18 (a): 欄オブジェクトの直列化は「false のときだけ 
 const keyEv = (over = {}) => ({ code: "", key: "", shiftKey: false,
   ctrlKey: false, metaKey: false, ...over });
 const keyCtx = (over = {}) => ({ active: true, typing: false,
-  isButtonFocused: false, hasSel: true, ...over });
+  isButtonFocused: false, hasSel: true, modalOpen: false, ...over });
 
 test("Q-H3: 非アクティブ（実行タブ表示中）は種類を問わず常に null を返す", () => {
   assert.equal(keyAction(keyEv({ key: "Delete" }), keyCtx({ active: false })), null);
@@ -1610,6 +1610,25 @@ test("Q-H3: 入力欄にフォーカスがある間の Delete は null（テキ�
 test("Q-H3: Shift+矢印キーは10pxのnudgeアクションを返す", () => {
   const r = keyAction(keyEv({ key: "ArrowUp", shiftKey: true }), keyCtx());
   assert.deepEqual(r, { action: { type: "nudge", dx: 0, dy: -10 }, preventDefault: true });
+});
+
+// ---------------------------------------------------------------- issue #136
+// 保存前確認モーダル（confirmModal）／画面内確認モーダル（uiConfirm）の
+// 表示中は、選択済みの枠があってもキー操作を一切拾わない（種類を問わず
+// null）。modalOpen を立てていない通常時は同じ入力で delete/nudge が
+// 返る対照テストも合わせて固定する
+test("issue #136: モーダル表示中は選択ありでも Delete・矢印・Ctrl+Z が no-op（null）になる", () => {
+  assert.equal(keyAction(keyEv({ key: "Delete" }), keyCtx({ modalOpen: true, hasSel: true })), null);
+  assert.equal(
+    keyAction(keyEv({ key: "ArrowLeft" }), keyCtx({ modalOpen: true, hasSel: true })), null);
+  assert.equal(
+    keyAction(keyEv({ key: "z", ctrlKey: true }), keyCtx({ modalOpen: true })), null);
+  assert.equal(keyAction(keyEv({ key: "Escape" }), keyCtx({ modalOpen: true })), null);
+});
+
+test("issue #136: 対照 — modalOpen が false の同じ入力は通常どおり delete アクションを返す", () => {
+  const r = keyAction(keyEv({ key: "Delete" }), keyCtx({ modalOpen: false, hasSel: true }));
+  assert.deepEqual(r, { action: { type: "delete" }, preventDefault: true });
 });
 
 // ---------------------------------------------------------------- issue #69 Q-H2
@@ -4962,6 +4981,46 @@ test("#117 H-2 配線: restoreSnap が selCell を setSel と一緒に解除す�
   const selCellAt = m[1].indexOf("setSelCell(null);");
   assert.ok(selAt >= 0 && selCellAt >= 0 && selCellAt > selAt,
     "setSelCell(null) が setSel(null) の近くに無い");
+});
+
+// ================================================================ issue #162
+// M2: 進捗バーの ARIA 属性。total 確定前は aria-valuenow を出さない
+// （0% で止まっていると誤って断定しないため）
+test("#162 M2 progressAriaProps: total>0 では role/valuemin/valuemax/valuenow/label が揃う", () => {
+  const p = progressAriaProps(4, 8);
+  assert.equal(p.role, "progressbar");
+  assert.equal(p["aria-valuemin"], 0);
+  assert.equal(p["aria-valuemax"], 8);
+  assert.equal(p["aria-valuenow"], 4);
+  assert.equal(p["aria-label"], "読み取りの進捗");
+});
+test("#162 M2 progressAriaProps: total===0（未取得）では aria-valuenow を出さない", () => {
+  const p = progressAriaProps(0, 0);
+  assert.ok(!("aria-valuenow" in p), "total 未確定なのに aria-valuenow が付いている");
+  assert.equal(p["aria-valuemax"], 0);
+});
+test("#162 M2 progressAriaProps: done===0 かつ total>0（開始直後）では aria-valuenow=0 を出す", () => {
+  const p = progressAriaProps(0, 8);
+  assert.ok("aria-valuenow" in p, "total が確定していれば done=0 でも aria-valuenow は出す");
+  assert.equal(p["aria-valuenow"], 0);
+});
+
+// ================================================================ issue #162
+// M4: .muted・.modal .note の文字色を --faint から --sub へ変更した根拠。
+// Editor.tsx が既に持つ contrastRatio/relativeLuminance をそのまま使い、
+// 実際に使う背景2種（.card の --surface と、素の run-main の --bg）の
+// どちらでも本文基準 4.5:1 を満たすことを固定する（回帰があれば壊れる）
+test("#162 M4 コントラスト: --sub(#5a6577) は --surface(#fff) 背景で 4.5:1 を満たす", () => {
+  const ratio = contrastRatio("#5a6577", "#ffffff");
+  assert.ok(ratio >= 4.5, `--sub は白背景で ${ratio.toFixed(2)}:1 しかない`);
+});
+test("#162 M4 コントラスト: --sub(#5a6577) は --bg(#f4f6f9) 背景でも 4.5:1 を満たす（.muted は card の外でも使われる）", () => {
+  const ratio = contrastRatio("#5a6577", "#f4f6f9");
+  assert.ok(ratio >= 4.5, `--sub は --bg 背景で ${ratio.toFixed(2)}:1 しかない（本文基準割れ）`);
+});
+test("#162 M4 コントラスト（回帰用）: 旧配色 --faint(#99a2b1) はどちらの背景でも 4.5:1 に届かない", () => {
+  assert.ok(contrastRatio("#99a2b1", "#ffffff") < 4.5, "--faint が白背景で基準を満たしてしまっている（前提が変わっている）");
+  assert.ok(contrastRatio("#99a2b1", "#f4f6f9") < 4.5, "--faint が --bg 背景で基準を満たしてしまっている（前提が変わっている）");
 });
 
 // scripts/run_all_tests.py の集計器が読む形式（"N passed ... in <秒>"）で
