@@ -54,13 +54,9 @@
 
 **最終決定（2026-09-02・#77 追補・レビュー指摘を受けて明記）**: `run_start` にはハッシュを載せず `path=` のみとする。テンプレートの由来は直後の `template_loaded`（`template_hash`）で残す。ロック取得前に落ちた run は序数のログも出ないため不変条件 A は破れない。二重読みを避ける判断を優先した。
 
-### 1.2 許可キーの現在値
+### 1.2 許可キー（正本は実装）
 
-```
-source_file, page_no, page_id, step, error_code, conf, count, duplicate_of,
-path, state, status, attempt, template_hash, cell_idx, col_idx,
-sx, sy, kept, failed, timestamps
-```
+許可キーの正本は `core/chouhyo_ocr/logging_safe.py:39` の `_ALLOWED_KEYS`。本書には一覧を置かない——キーを足すたびに食い違うため（初版は 2026-09-02 時点の 20 キーを転記していたが、2026-09-08 の実装は 36 キーだった）。件数を数えるなら `python -c "from chouhyo_ocr import logging_safe as L; print(len(L._ALLOWED_KEYS))"`（2026-09-08 実行 → 36）。中身は同ファイルの定義をそのまま読む——キーごとの追加理由がコメントで併記してある。
 
 方針は「**名前を持つキーを1つも許可しない。位置・序数・件数・ハッシュ・列挙値のみ**」。`source_file`・`path`・`duplicate_of` は**入力帳票**のファイル名・パスで、Q-S1 の対象（テンプレート名・欄名）には当たらないため残っている（§7-4 に確認事項として挙げる）。
 
@@ -797,7 +793,7 @@ fn validate_user_template_name(
 
 | 案 | 内容 | 判断 |
 |---|---|---|
-| **B-1（推奨）** | `unicode-normalization` クレートを追加（MIT/Apache-2.0・実行時依存は `tinyvec` のみ） | 供給網レビュー（セキュリティ担当＋ミオ）を通したうえで採用する |
+| **B-1（推奨）** | `unicode-normalization` クレートを追加（MIT/Apache-2.0・実行時依存は `tinyvec` のみ） | 供給網レビュー（セキュリティ担当＋法務担当）を通したうえで採用する |
 | B-2 | webview 側で `name.normalize("NFC")` してから渡し、Rust は受け取った文字列をそのまま比較 | **不採用**。レンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる。AC-F51 が「名前検証を Rust の純関数で」と要求した趣旨からも外れる |
 | B-3 | NFC 判定だけ core（Python の `unicodedata`）へ出す | **不採用**。名前検証が Rust と Python に割れる。AC-F51 が `cargo test` の表駆動を求めているのは判定を1箇所へ集めるため |
 
@@ -2473,7 +2469,7 @@ chouhyo-ocr snap-diff [--template <path>] [--page <page_id>] [--limit N]
 
 - 07 §7.4 は「**NFC 正規化後**に予約名と一致しない」「**NFC 正規化後に case-insensitive** で比較する」を要求している。AC-F51 はこの検証を **Rust の純関数として `cargo test` で表駆動**することを求める
 - `gui/src-tauri/Cargo.toml` の依存は `tauri`・`serde`・`serde_json`・`rfd`・`base64` の5つで、**Unicode 正規化を持つものは無い**（2026-09-02 確認）
-- **提案**: `unicode-normalization`（MIT/Apache-2.0・実行時依存は `tinyvec` のみ）を追加し、**供給網レビュー（セキュリティ担当＋ミオ）を通す**。代替（webview 側で正規化して渡す）はレンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる
+- **提案**: `unicode-normalization`（MIT/Apache-2.0・実行時依存は `tinyvec` のみ）を追加し、**供給網レビュー（セキュリティ担当＋法務担当）を通す**。代替（webview 側で正規化して渡す）はレンダラを掌握されると NFD の名前が通り、見た目が同一の別ファイルを作れる
 - 却下される場合は、**「見た目が同じ別名ファイルが作れる」を残存リスクとして 07 §7.4 に明記**したうえで比較を case-insensitive のみに落とす。範囲逸脱（`templates_user/` の外へ書く）は別レイヤ（親ディレクトリ一致検査）で塞がれているため、影響は重複ファイルに留まる
 
 ### 7-7. 照合の列挙責務を Rust に一本化する（FR-F28 の表現）

@@ -36,79 +36,82 @@
 
 ## 3. テストスイート一覧（L1）
 
-件数は 2026-09-03 実測（`cd core && ..\.venv\Scripts\python.exe -m pytest --collect-only -q tests` → 752 collected をファイル別に集計）。GUI スモーク 14 件は dev サーバー未起動なら skip する。#75（枠のスナップ）のテストは別レーンで追加中のため未掲載。
+件数はこの表に載せない。**件数の正本は §3 末尾の「回帰ゲート基準値」**で、そこに実行コマンド（`python scripts/run_all_tests.py`）と実行日を併記してある。以前はファイル別の件数をこの表に持っていたが、テストが増えるたびに §2・§3 末尾と食い違ったため、2026-09-08 に件数列を落として「対象」だけを残した（#149 A-1）。行の並びは件数を載せていた頃の多い順のまま。
 
 **素材が要るテストの置き場（2026-09-03・#88）**: 実サンプル（`testdata/local/pages/sample-1.png`・`sample-2.png`）と保存済み Vision 応答（`testdata/local/s2/resp_*.json`）、golden 出力（`testdata/local/golden/<head_short>/`）は `testdata/local/`（`.gitignore` 済み・git 管理外）に置く。以前は `workdir/` 配下にあり、中間データと同居していたため `purge --yes` を一度実行すると golden 比較（AC-F45）と性能計測が再現できなくなっていた。素材を持たない環境（CI・別マシン）では該当テストが skip する——この 32 ファイルが「素材が無いと skip する」母集団。
 
-| ファイル | 件数 | 対象 |
-|---|---|---|
-| core/tests/test_review_fixes.py | 43 | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page）＋ `verify --expect-columns` の列数ゲート3方向検証（#65-2 の緑偽装置換）・同期フォルダ判定の誤検知（#53 L-19） |
-| core/tests/test_cred_config_atomicity.py | 38 | 資格情報と config の検証・原子的書き込み（#97・#52 M-10/M-11・#53 L-15: service_account 形の検証・tmp+replace・破損 blob を verify が ok:false にする・`cred.dpapi` の `%LOCALAPPDATA%\ChouhyoOCR\` 分離と旧置き場からの移行・`--delete-source` のランダム上書き→削除・config.json 破損時に error.log を案内しない） |
-| core/tests/test_field_anchor.py | 35 | 表を持たない面を欄の枠線で位置合わせ（#86・決定 T1〜T13: 表のある面が欄経路へ入らないこと・出荷テンプレの推定不変・ALGO_VERSION 据え置き・1 ピッチずれの拒否・アンカー 0 本／水平のみの拒否・探索上限の render_dpi 比例） |
-| core/tests/test_normalize.py | 30 | 金額 D-01・複合セル分割 D-23 |
-| core/tests/test_template.py | 25 | テンプレート読込・v1 受入範囲・格子展開（列導出の前提。現行テンプレートの導出結果は220列） |
-| core/tests/test_detect_frames.py | 25 | `grid.detect_frames`／`detect-frames`（#73 (b)・08 §4・AC-F16〜F18・NFR-F02。レビュー H-1〜M-6 反映: 罫線を共有する左右2ブロックが1表に融合しないこと・`stats.components`／`excluded` の内訳突合・残差 `residual_px` と `not_closed` の計上 #85） |
-| core/tests/test_response_robustness.py | 24 | 応答異常・出力の原子性・多重起動・対象外入力の可視化（#35〜#40・M-2）＋ 保存と状態更新の間で落ちても再送しないこと・部分書き込みは再送・送信画像の sha256 不一致で再送（#92） |
-| core/tests/test_format_check.py | 24 | 様式判定の3値化（#71 (a')・08 §2.3/§2.9・AC-F05/F06/F15: 理由コード対応表・片面 mismatch の畳み込み・面切りを関数の内側で行うこと） |
-| core/tests/test_char_level_unclear.py | 20 | 文字単位〓（#62・U-10〜U-13・判定表 T-12〜T-21） |
-| core/tests/test_local_storage_guard.py | 19 | 同期フォルダ検知（issue #8・`debug-images --out` の検査 #59 H-5 を含む） |
-| core/tests/test_fallback.py | 18 | 参照先（fallback_rect）の採否3分岐・由来印（#54・U-02〜U-04） |
-| core/tests/test_e2e_replay.py | 18 | run→xlsx/csv 貫通・配置検証・バイト一致再現性 |
-| core/tests/test_dpi_scaling.py | 16 | px 定数の dpi 正規化（汎用化 A-3: `mapping._LINE_GAP`・`mapping._BUCKET`・`align.COARSE_DILATE`・`grid.ROW_INSET` が render_dpi 可変でも成り立つこと） |
-| core/tests/test_render_status.py | 15 | render 段の失敗ステータス配線（#80・T-20〜T-29: `row_build_failed` / `row_build_bug` を「出力失敗」として page.status と進捗イベントへ残す。T-24＝失敗しても `page.state` は done のまま保ち、次の run での再送＝二重課金を防ぐ） |
-| core/tests/test_union_regions.py | 14 | 複数領域（L字・コの字）の連結順「領域→帯→行→x」（#57・U-06） |
-| core/tests/test_render_rows.py | 14 | セル3状態・〓判定・ステータス合成・制御文字〓化 |
-| core/tests/test_purge_output.py | 14 | `purge` の削除範囲（#83: 資格情報 `cred.dpapi` の保持・keep-list・部分失敗の続行と件数・workdir 自体と配下のジャンクション／symlink の扱い・読み取り専用の再試行）と `--include-output` の命名一致削除。file symlink は権限不足時 skip 1 件 |
-| core/tests/test_gui_smoke.py | 14 | GUI 導線（Playwright・デモモック。dev サーバー無しは skip）。寸法不一致→新規テンプレート→生成→採用→保存の通し・実行タブ表示中の Delete 無効化（#69）・画像なし初期表示のピクセル検査。待ちは固定 sleep をやめ `expect` と `SMOKE_TIMEOUT_MS` に一本化（#79・2026-09-03） |
-| core/tests/test_review4_io.py | 13 | 4巡目の入出力修正（#51/#47/#52 M-4）＋ 応答内エラーの gRPC ステータス分類（#99: 決定的エラー 3/5/7/9/12/16 は 1 ユニットで停止・一時エラーは再試行・例外は型名と `grpc_status_code` の二段構え） |
-| core/tests/test_render_out_unclear.py | 13 | 由来色・部分〓の条件付き書式・COUNTIF の `unclear_char_level` ゲート（U-04/U-12/U-13） |
-| core/tests/test_output_columns_stage2.py | 13 | 段2: 対象外欄の母集団維持・W 警告の（出力対象外）印・カウンタの run/remap 両配線（AC-1.4 系） |
-| core/tests/test_output_columns_stage1.py | 13 | 出力列制御 段1: `output` 属性・列導出3経路・抽出列0拒否（#66・AC-1.1 系・§8-16 後半） |
-| core/tests/test_dist_stamp.py | 13 | core-dist 鮮度検査（`BUILD_STAMP.json` の内容ハッシュ比較・SKIP/PASS/FAIL 判定・追加/削除/サブディレクトリ検出・対象外ファイルの非検出・スタンプ破損時の FAIL・2026-09-02） |
-| core/tests/test_align_residual.py | 13 | 位置合わせ残差の記録（#74 段 (c)・08 §5.7: 残差の算出・非対称 2 ブロックでの分離・失敗面の未計測・`alignment` 列と旧 DB 互換・`align_residual` ログの `face_idx` のみ・境界値 6 件。件数は parametrize 展開後） |
-| core/tests/test_segments.py | 11 | 端点付き線分抽出 `detect_segments`（#73 (b)・AC-F55。`projection.py` を参照しないため既存の位置合わせの検出条件に影響しないことが前提） |
-| core/tests/test_review4_pipeline.py | 11 | 位置合わせの再利用（#45）・入力ファイル改名時の行数保存（#46） |
-| core/tests/test_response_atomicity.py | 11 | 応答保存の原子性と入力画像ハッシュの紐づけ（#92: tmp+replace・「応答は残っているのに state=sending」のページを received へ復旧して再送しない・サイドカーの sha256 が合わなければ再送） |
-| core/tests/test_paths.py | 11 | `paths.user_templates_dir()`（#72 (t)・08 §3.1: `CHOUHYO_USER_DIR` で受け取った値の検証だけを行い、列挙と reparse point 検査は Rust 側の1箇所に集約する契約） |
-| core/tests/test_diag_overflow.py | 11 | `diag-overflow` の数え方（#63: 主枠に部分記入＋右隣へ溢れた候補の判定・欄の高さと倍率から決まる帯・合成 token のみで API 送信ゼロ・CLI が候補1行＋サマリを出すこと） |
-| core/tests/test_debug_images.py | 11 | debug-images の判定共通化・テンプレート不一致の拒否ゲート（#60 M-1・U-15）＋ 由来印を DB の `cell.origin` から描くこと（#65-6）。実サンプル素材が無い環境では skip |
-| core/tests/test_api_budget.py | 11 | API 送信ユニットの月次上限（強制停止）＋ カウンタの堅牢化（#91: 破損時は退避してログ・無音の 0 リセットをやめる・tmp 名をプロセス固有に・保存失敗時は前回値を残す） |
-| core/tests/test_review6_pipeline_low.py | 10 | 6巡目 LOW 群（#53 L-5/L-9/L-10・#65-4/#65-9: `taken` の更新・終了コードの母集団・空リストの SQL・配布版 CLI で利用者テンプレートに `--template` 明示を要求・`upsert_cell_extras` の rowcount 検証） |
-| core/tests/test_mapping.py | 10 | symbol 割付・行クラスタ・除外領域（実応答回帰）＋ 面の索引をテンプレートごとに1回だけ構築すること（#53 L-18） |
-| core/tests/test_format_check_shared_prep.py | 10 | 様式判定の前処理を候補間で共有しても判定が変わらないこと（#82・08 §3.3.4: `align._face_estimate` と同一の `ShiftEstimate`・素材×テンプレートの全組み合わせで `PageVerdict` 一致・同一幾何での使い回し・キャッシュ上限と寸法不一致の扱い） |
-| core/tests/test_page_size_guard.py | 9 | 入力ページの寸法検査（Q-H1: 縦5%伸ばした入力を `align_page` が無検証で resize して「一致」と誤判定していた事故の再発防止） |
-| core/tests/test_match_templates.py | 9 | `match-templates` サブコマンド（#72 (t)・08 §3.3: 候補は `--candidate` で受け取り、自身はディレクトリ列挙をしない） |
-| core/tests/test_leak_guards.py | 9 | 漏出防止の再発防止（issue #2/#3/#4）・detect-frames 経路の無漏出 |
-| core/tests/test_exclusion_warnings.py | 8 | 除外領域×受け皿の重なり警告 W-1/W-2（U-09・H-6） |
-| core/tests/test_columns.py | 8 | 列導出（出荷テンプレの現在値220列・内訳・field_id 一意）。拒否は列名重複と抽出列0（FR-1.3）のみ |
-| core/tests/test_adjacent_gap_warnings.py | 8 | 受け皿間の隙間（死角）警告 W-3（#61 L-4） |
-| core/tests/test_store_extras.py | 7 | cell.char_confs / cell.origin の追加列とマイグレーション（§10） |
-| core/tests/test_review4_ingest.py | 7 | PDF 展開の高速化が出力を変えていないことの回帰（#50） |
-| core/tests/test_era_band.py | 7 | 元号スコアの測定帯が隣の欄へ食い込まないこと（#52 M-1: `cell.rect`＋slack 4px でクランプ・帯幅は欄の高さと倍率に追随・合成画像だけで完結。実帳票 8/8 の較正は test_era_calibration.py 側） |
-| core/tests/test_output_columns_stage7.py | 6 | 段7: 並べ替え3閉区間・座標不変（AC-2.x） |
-| core/tests/test_hole_overlap_warnings.py | 6 | 切り抜き穴どうしの重なり警告 W-4（#66 第2弾 段6） |
-| core/tests/test_format_check_pipeline.py | 6 | 様式判定の pipeline 配線（#71 (a')・08 §2.4/§2.5・AC-F01/F12/F13/F14: 別様式は API 0回・一部不一致でも全ページ分の行が出る・判定関数の例外が様式不一致に化けない） |
-| core/tests/test_acceptance_gaps.py | 6 | 受入 Gap（TR-G1〜G6・§5） |
-| core/tests/test_unclear_char_level_config.py | 5 | `unclear_char_level` 設定の検証・既定 OFF（U-14） |
-| core/tests/test_runlock_transactions.py | 5 | remap のロック取得と1ページ更新の原子性（#93: remap も RunLock を取り remap→render をロック保持のまま一体化・`Store.transaction` で cell／拡張列／era_score／template_hash／unassigned を単一トランザクションに・busy_timeout=5000） |
-| core/tests/test_reuse_guards.py | 5 | 中間データ再利用の歯止め・重複行（#25/#29 B-2）|
-| core/tests/test_resume_cap.py | 5 | 再開規則・送信上限（§8-6/7）＋ 中断した sending ページに応答が残っていれば再送しないこと（#92） |
-| core/tests/test_output_columns_stage8.py | 5 | 段8: 列名一覧ファイル・列順報告（FR-2.7・AC-2.10） |
-| core/tests/test_ingest_arg_safety.py | 5 | pdftoppm/pdfinfo へ渡すパス引数の先頭 `-` 対策（L-S2・CWE-88: `ingest._safe_path_arg` の単体と、実際に subprocess へ渡る args の両方で固定） |
-| core/tests/test_grid.py | 5 | 枠候補生成（罫線検出・等分割、§8-16/17 の土台） |
-| core/tests/test_exclusion_guard.py | 5 | 除外領域の後退検知・verify の exclusions 出力（#55・#59 H-8） |
-| core/tests/test_credentials_warn.py | 5 | 環境変数の平文鍵（`GOOGLE_APPLICATION_CREDENTIALS`）を verify が警告すること（#69 S-MB: 実行可否は変えず、dpapi と併存して state が畳まれる場合も残置が見えること） |
-| core/tests/test_output_columns_stage4.py | 4 | 段4: debug-images の対象外表示・verify `output_disabled_cells`（FR-1.9） |
-| core/tests/test_output_columns_stage0.py | 4 | 段0: verify `column_names`・保存時差分の母集団是正（AC-0.x） |
-| core/tests/test_alignment_robustness.py | 4 | 位置合わせ頑健性（回転・平行移動・#30）|
-| core/tests/test_era_calibration.py | 3 | 丸印判定の較正（#23・8箇所全問正解と閾値への余裕）|
-| core/tests/test_duplicate_source.py | 2 | 二重取り込み検知 |
-| core/tests/test_process_interrupt.py | 1 | 実プロセス強制終了→再開（C10 の自動化可能部分） |
-| core/tests/test_output_columns_ac118_equivalence.py | 1 | AC-1.18: JSON 直接編集と画面経由の run 出力一致 |
-| core/tests/test_charset.py | 1 | 異体字・サロゲートペア保持（§6.4） |
-| core/tests/conftest.py | 0（fixture のみ） | テスト全体を実行環境の `%LOCALAPPDATA%` から隔離する（#52 M-6/M-11）。`api_usage.json` と `cred.dpapi` を使い捨てディレクトリへ向け、開発機の本物のカウンタ・資格情報を読み書きさせない |
-| gui/tests/gui-logic.test.mjs（node 直実行） | 336 | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブ・画像なし初期表示の `noImageNotice`／`canvasInteractionAllowed`・候補破棄と履歴 `clearCandidates`／`pushHistory`（#87 AC-F20/F21）・判定不能な面の弱い描画（#81 AC-F11）・実行 ID による core-line/core-err の絞り込み（#96）ほか） |
-| gui/src-tauri（cargo test） | 131 | サブコマンド白リスト（issue #7）・コア実体の選択規則 `resolve_core_program`（2026-09-02）・テンプレート保存の原子化と古い `.bak` の掃除・staged への reparse point／ハードリンク経由の書き込み拒否・実行 ID の採番（プロセス内で一意・スレッド跨ぎでも重複なし・#96）・`SystemRoot` 由来のプログラムパス解決（#89/#90）ほか GUI 境界 |
+| ファイル | 対象 |
+|---|---|
+| core/tests/test_snap_geometry.py | ブロック単位の枠吸着の幾何と純関数（#75 (f)・08 §6・AC-F32/F33/F35/F64: 許容幅を超えたらテンプレート座標へ戻る・許容幅の導出と x を対象外にすること・信用する下限と面単位の除外・保存時の警告。画像を1枚も開かず合成罫線だけで固定する） |
+| core/tests/test_review_fixes.py | レビュー指摘の再発防止（issue #11/#13/#14/#19: normalize 属性・glob エスケープ・config 検証・単一ファイル入力・expand-page）＋ `verify --expect-columns` の列数ゲート3方向検証（#65-2 の緑偽装置換）・同期フォルダ判定の誤検知（#53 L-19） |
+| core/tests/test_cred_config_atomicity.py | 資格情報と config の検証・原子的書き込み（#97・#52 M-10/M-11・#53 L-15: service_account 形の検証・tmp+replace・破損 blob を verify が ok:false にする・`cred.dpapi` の `%LOCALAPPDATA%\ChouhyoOCR\` 分離と旧置き場からの移行・`--delete-source` のランダム上書き→削除・config.json 破損時に error.log を案内しない） |
+| core/tests/test_field_anchor.py | 表を持たない面を欄の枠線で位置合わせ（#86・決定 T1〜T13: 表のある面が欄経路へ入らないこと・出荷テンプレの推定不変・ALGO_VERSION 据え置き・1 ピッチずれの拒否・アンカー 0 本／水平のみの拒否・探索上限の render_dpi 比例） |
+| core/tests/test_normalize.py | 金額 D-01・複合セル分割 D-23 |
+| core/tests/test_template.py | テンプレート読込・v1 受入範囲・格子展開（列導出の前提。現行テンプレートの導出結果は220列） |
+| core/tests/test_detect_frames.py | `grid.detect_frames`／`detect-frames`（#73 (b)・08 §4・AC-F16〜F18・NFR-F02。レビュー H-1〜M-6 反映: 罫線を共有する左右2ブロックが1表に融合しないこと・`stats.components`／`excluded` の内訳突合・残差 `residual_px` と `not_closed` の計上 #85） |
+| core/tests/test_response_robustness.py | 応答異常・出力の原子性・多重起動・対象外入力の可視化（#35〜#40・M-2）＋ 保存と状態更新の間で落ちても再送しないこと・部分書き込みは再送・送信画像の sha256 不一致で再送（#92） |
+| core/tests/test_format_check.py | 様式判定の3値化（#71 (a')・08 §2.3/§2.9・AC-F05/F06/F15: 理由コード対応表・片面 mismatch の畳み込み・面切りを関数の内側で行うこと） |
+| core/tests/test_char_level_unclear.py | 文字単位〓（#62・U-10〜U-13・判定表 T-12〜T-21） |
+| core/tests/test_local_storage_guard.py | 同期フォルダ検知（issue #8・`debug-images --out` の検査 #59 H-5 を含む） |
+| core/tests/test_fallback.py | 参照先（fallback_rect）の採否3分岐・由来印（#54・U-02〜U-04） |
+| core/tests/test_snap_pipeline.py | ブロック単位の枠吸着の永続化・再利用ガード・5経路（#75 (f)・AC-F30/F34/F36〜F38/F41〜F43b/F56〜F58: 記録の中身・ON→OFF の拒否・既定 OFF の記録・remap・中断→再 run。実サンプル素材が無い環境では skip） |
+| core/tests/test_e2e_replay.py | run→xlsx/csv 貫通・配置検証・バイト一致再現性 |
+| core/tests/test_dpi_scaling.py | px 定数の dpi 正規化（汎用化 A-3: `mapping._LINE_GAP`・`mapping._BUCKET`・`align.COARSE_DILATE`・`grid.ROW_INSET` が render_dpi 可変でも成り立つこと） |
+| core/tests/test_render_status.py | render 段の失敗ステータス配線（#80・T-20〜T-29: `row_build_failed` / `row_build_bug` を「出力失敗」として page.status と進捗イベントへ残す。T-24＝失敗しても `page.state` は done のまま保ち、次の run での再送＝二重課金を防ぐ） |
+| core/tests/test_union_regions.py | 複数領域（L字・コの字）の連結順「領域→帯→行→x」（#57・U-06） |
+| core/tests/test_render_rows.py | セル3状態・〓判定・ステータス合成・制御文字〓化 |
+| core/tests/test_purge_output.py | `purge` の削除範囲（#83: 資格情報 `cred.dpapi` の保持・keep-list・部分失敗の続行と件数・workdir 自体と配下のジャンクション／symlink の扱い・読み取り専用の再試行）と `--include-output` の命名一致削除。file symlink は権限不足時 skip 1 件 |
+| core/tests/test_gui_smoke.py | GUI 導線（Playwright・デモモック。dev サーバー無しは skip）。寸法不一致→新規テンプレート→生成→採用→保存の通し・実行タブ表示中の Delete 無効化（#69）・画像なし初期表示のピクセル検査。待ちは固定 sleep をやめ `expect` と `SMOKE_TIMEOUT_MS` に一本化（#79・2026-09-03） |
+| core/tests/test_review4_io.py | 4巡目の入出力修正（#51/#47/#52 M-4）＋ 応答内エラーの gRPC ステータス分類（#99: 決定的エラー 3/5/7/9/12/16 は 1 ユニットで停止・一時エラーは再試行・例外は型名と `grpc_status_code` の二段構え） |
+| core/tests/test_render_out_unclear.py | 由来色・部分〓の条件付き書式・COUNTIF の `unclear_char_level` ゲート（U-04/U-12/U-13） |
+| core/tests/test_output_columns_stage2.py | 段2: 対象外欄の母集団維持・W 警告の（出力対象外）印・カウンタの run/remap 両配線（AC-1.4 系） |
+| core/tests/test_output_columns_stage1.py | 出力列制御 段1: `output` 属性・列導出3経路・抽出列0拒否（#66・AC-1.1 系・§8-16 後半） |
+| core/tests/test_dist_stamp.py | core-dist 鮮度検査（`BUILD_STAMP.json` の内容ハッシュ比較・SKIP/PASS/FAIL 判定・追加/削除/サブディレクトリ検出・対象外ファイルの非検出・スタンプ破損時の FAIL・2026-09-02） |
+| core/tests/test_align_residual.py | 位置合わせ残差の記録（#74 段 (c)・08 §5.7: 残差の算出・非対称 2 ブロックでの分離・失敗面の未計測・`alignment` 列と旧 DB 互換・`align_residual` ログの `face_idx` のみ・境界値 6 件。件数は parametrize 展開後） |
+| core/tests/test_segments.py | 端点付き線分抽出 `detect_segments`（#73 (b)・AC-F55。`projection.py` を参照しないため既存の位置合わせの検出条件に影響しないことが前提） |
+| core/tests/test_review4_pipeline.py | 位置合わせの再利用（#45）・入力ファイル改名時の行数保存（#46） |
+| core/tests/test_response_atomicity.py | 応答保存の原子性と入力画像ハッシュの紐づけ（#92: tmp+replace・「応答は残っているのに state=sending」のページを received へ復旧して再送しない・サイドカーの sha256 が合わなければ再送） |
+| core/tests/test_paths.py | `paths.user_templates_dir()`（#72 (t)・08 §3.1: `CHOUHYO_USER_DIR` で受け取った値の検証だけを行い、列挙と reparse point 検査は Rust 側の1箇所に集約する契約） |
+| core/tests/test_diag_overflow.py | `diag-overflow` の数え方（#63: 主枠に部分記入＋右隣へ溢れた候補の判定・欄の高さと倍率から決まる帯・合成 token のみで API 送信ゼロ・CLI が候補1行＋サマリを出すこと） |
+| core/tests/test_debug_images.py | debug-images の判定共通化・テンプレート不一致の拒否ゲート（#60 M-1・U-15）＋ 由来印を DB の `cell.origin` から描くこと（#65-6）。実サンプル素材が無い環境では skip |
+| core/tests/test_api_budget.py | API 送信ユニットの月次上限（強制停止）＋ カウンタの堅牢化（#91: 破損時は退避してログ・無音の 0 リセットをやめる・tmp 名をプロセス固有に・保存失敗時は前回値を残す） |
+| core/tests/test_review6_pipeline_low.py | 6巡目 LOW 群（#53 L-5/L-9/L-10・#65-4/#65-9: `taken` の更新・終了コードの母集団・空リストの SQL・配布版 CLI で利用者テンプレートに `--template` 明示を要求・`upsert_cell_extras` の rowcount 検証） |
+| core/tests/test_mapping.py | symbol 割付・行クラスタ・除外領域（実応答回帰）＋ 面の索引をテンプレートごとに1回だけ構築すること（#53 L-18） |
+| core/tests/test_format_check_shared_prep.py | 様式判定の前処理を候補間で共有しても判定が変わらないこと（#82・08 §3.3.4: `align._face_estimate` と同一の `ShiftEstimate`・素材×テンプレートの全組み合わせで `PageVerdict` 一致・同一幾何での使い回し・キャッシュ上限と寸法不一致の扱い） |
+| core/tests/test_page_size_guard.py | 入力ページの寸法検査（Q-H1: 縦5%伸ばした入力を `align_page` が無検証で resize して「一致」と誤判定していた事故の再発防止） |
+| core/tests/test_match_templates.py | `match-templates` サブコマンド（#72 (t)・08 §3.3: 候補は `--candidate` で受け取り、自身はディレクトリ列挙をしない） |
+| core/tests/test_leak_guards.py | 漏出防止の再発防止（issue #2/#3/#4）・detect-frames 経路の無漏出 |
+| core/tests/test_exclusion_warnings.py | 除外領域×受け皿の重なり警告 W-1/W-2（U-09・H-6） |
+| core/tests/test_snap_diff.py | `snap-diff`（吸着 ON/OFF で読取値が変わる欄を数える点検）（#75 (f)・FR-F40・AC-F39: 合成 token のみで API 送信ゼロ・件数と場所だけを出して記入値は出さない・中間データが 1 バイトも変わらないこと） |
+| core/tests/test_columns.py | 列導出（出荷テンプレの現在値220列・内訳・field_id 一意）。拒否は列名重複と抽出列0（FR-1.3）のみ |
+| core/tests/test_adjacent_gap_warnings.py | 受け皿間の隙間（死角）警告 W-3（#61 L-4） |
+| core/tests/test_store_extras.py | cell.char_confs / cell.origin の追加列とマイグレーション（§10） |
+| core/tests/test_review4_ingest.py | PDF 展開の高速化が出力を変えていないことの回帰（#50） |
+| core/tests/test_era_band.py | 元号スコアの測定帯が隣の欄へ食い込まないこと（#52 M-1: `cell.rect`＋slack 4px でクランプ・帯幅は欄の高さと倍率に追随・合成画像だけで完結。実帳票 8/8 の較正は test_era_calibration.py 側） |
+| core/tests/test_output_columns_stage7.py | 段7: 並べ替え3閉区間・座標不変（AC-2.x） |
+| core/tests/test_hole_overlap_warnings.py | 切り抜き穴どうしの重なり警告 W-4（#66 第2弾 段6） |
+| core/tests/test_format_check_pipeline.py | 様式判定の pipeline 配線（#71 (a')・08 §2.4/§2.5・AC-F01/F12/F13/F14: 別様式は API 0回・一部不一致でも全ページ分の行が出る・判定関数の例外が様式不一致に化けない） |
+| core/tests/test_acceptance_gaps.py | 受入 Gap（TR-G1〜G6・§5） |
+| core/tests/test_unclear_char_level_config.py | `unclear_char_level` 設定の検証・既定 OFF（U-14） |
+| core/tests/test_runlock_transactions.py | remap のロック取得と1ページ更新の原子性（#93: remap も RunLock を取り remap→render をロック保持のまま一体化・`Store.transaction` で cell／拡張列／era_score／template_hash／unassigned を単一トランザクションに・busy_timeout=5000） |
+| core/tests/test_reuse_guards.py | 中間データ再利用の歯止め・重複行（#25/#29 B-2）|
+| core/tests/test_resume_cap.py | 再開規則・送信上限（§8-6/7）＋ 中断した sending ページに応答が残っていれば再送しないこと（#92） |
+| core/tests/test_output_columns_stage8.py | 段8: 列名一覧ファイル・列順報告（FR-2.7・AC-2.10） |
+| core/tests/test_ingest_arg_safety.py | pdftoppm/pdfinfo へ渡すパス引数の先頭 `-` 対策（L-S2・CWE-88: `ingest._safe_path_arg` の単体と、実際に subprocess へ渡る args の両方で固定） |
+| core/tests/test_grid.py | 枠候補生成（罫線検出・等分割、§8-16/17 の土台） |
+| core/tests/test_exclusion_guard.py | 除外領域の後退検知・verify の exclusions 出力（#55・#59 H-8） |
+| core/tests/test_credentials_warn.py | 環境変数の平文鍵（`GOOGLE_APPLICATION_CREDENTIALS`）を verify が警告すること（#69 S-MB: 実行可否は変えず、dpapi と併存して state が畳まれる場合も残置が見えること） |
+| core/tests/test_output_columns_stage4.py | 段4: debug-images の対象外表示・verify `output_disabled_cells`（FR-1.9） |
+| core/tests/test_output_columns_stage0.py | 段0: verify `column_names`・保存時差分の母集団是正（AC-0.x） |
+| core/tests/test_alignment_robustness.py | 位置合わせ頑健性（回転・平行移動・#30）|
+| core/tests/test_era_calibration.py | 丸印判定の較正（#23・8箇所全問正解と閾値への余裕）|
+| core/tests/test_duplicate_source.py | 二重取り込み検知 |
+| core/tests/test_process_interrupt.py | 実プロセス強制終了→再開（C10 の自動化可能部分） |
+| core/tests/test_output_columns_ac118_equivalence.py | AC-1.18: JSON 直接編集と画面経由の run 出力一致 |
+| core/tests/test_charset.py | 異体字・サロゲートペア保持（§6.4） |
+| core/tests/conftest.py | fixture のみ（テストは持たない）。テスト全体を実行環境の `%LOCALAPPDATA%` から隔離する（#52 M-6/M-11）。`api_usage.json` と `cred.dpapi` を使い捨てディレクトリへ向け、開発機の本物のカウンタ・資格情報を読み書きさせない |
+| gui/tests/gui-logic.test.mjs（node 直実行） | GUI 純関数ロジック（保存前確認の警告合成・列数比較 `columnDecreaseFor`・カウンタ通知 `counterNotice`・出力列タブ・画像なし初期表示の `noImageNotice`／`canvasInteractionAllowed`・候補破棄と履歴 `clearCandidates`／`pushHistory`（#87 AC-F20/F21）・判定不能な面の弱い描画（#81 AC-F11）・実行 ID による core-line/core-err の絞り込み（#96）ほか） |
+| gui/src-tauri（cargo test） | サブコマンド白リスト（issue #7）・コア実体の選択規則 `resolve_core_program`（2026-09-02）・テンプレート保存の原子化と古い `.bak` の掃除・staged への reparse point／ハードリンク経由の書き込み拒否・実行 ID の採番（プロセス内で一意・スレッド跨ぎでも重複なし・#96）・`SystemRoot` 由来のプログラムパス解決（#89/#90）ほか GUI 境界 |
 
 **回帰ゲート基準値（正本・05 P4-1 の管理先）**: `python scripts/run_all_tests.py` → `SUMMARY: PASS / pytest: PASS (972 passed, 34 skipped, 196.8s) | gui logic: PASS (470 passed, 0.6s) | cargo test: PASS (154 passed, 19.4s) | tsc: PASS (型エラーなし, 6.1s) | core-dist: PASS (built_at 2026-09-07T08:20:51+00:00 と一致) / total 222.9s`（実行日 2026-09-07 後半・残 open の消化ラウンド（#103 D-15 の被覆率スケーリング・#63 溢れ診断の可視化・#105 AC-F30 合成素材・#106/#107/#66・#129）の後。skip 34 件のうち 32 件は dev サーバー未起動時の GUI スモーク（同日、`npm run tauri dev` 起動下で逐次 → **32 passed, 42.0s**）、2 件は symlink 権限。直前の基準（同日前半・bug-hunt #108〜#128 の改修ラウンド直後）は `pytest 960 / 32 skipped・gui 467・cargo 154・tsc PASS・core-dist PASS (built_at 2026-09-07T04:20:56+00:00) / total 226.9s`（purge の許可リスト化・見出し切り離しの縦連続性・升グリッドのメモ化・提案カードと履歴の整合ほかの後。dev サーバー未起動のため GUI スモーク 30 件（ゲート実行時点）は skip。同日、スモークをデモ応答の変更（#127(1)・升候補 4→3 件）に追従させ #108・#114 の 2 本を足して 32 件にし、`npm run tauri dev` 起動下で逐次 `pytest tests/test_gui_smoke.py -q -p no:randomly` を 2 周 → **32 passed, 45.2s／32 passed, 50.5s**。skip の残り 2 件は symlink 権限のテスト。直前の基準（2026-09-04・升の集まり直後）は `pytest 915 / 32 skipped・gui 387・cargo 135・tsc PASS・core-dist PASS (built_at 2026-09-04T08:59:06+00:00) / total 227.4s`（表を升の集まりとして扱う（05 FR-3.1〜3.4・AC-3.1〜3.33・07 FR-F56/F57/F59・AC-F90〜F104）の後。GUI スモーク 30 件は `npm run dev` 起動下で **30 passed, 39.5s**）。直前の基準（同日・候補優先フロー直後）は `pytest 861 / 28 skipped・gui 355・cargo 135・tsc PASS・core-dist PASS (built_at 2026-09-04T03:39:05+00:00) / total 202.2s`（テンプレート編集の初回読み込み＝候補優先フロー（FR-F51〜F55・AC-F67〜F89・`test_editor_open_config.py` 58 件・GUI スモーク +12）の後。dev サーバー未起動のため GUI スモーク 26 件は skip（同日、`npm run dev` 起動下で逐次 `pytest tests/test_gui_smoke.py -q -p no:randomly` → **26 passed, 31.2s**）。skip の残り 2 件は symlink 権限のテスト。直前の基準（同日午前・issue 一括消化ラウンド直後）は `pytest 815 / 16 skipped・gui 341・cargo 131・tsc PASS・core-dist PASS (built_at 2026-09-04T00:44:31+00:00) / total 202.7s`（issue 一括消化ラウンド（#75 (f) ブロック吸着・#86 欄アンカー・#80 出力失敗・#92/#97/#91/#99 の課金と資格情報・#93 排他・#98/#94/#95 のゲート強化・#88 素材移設ほか）の後。dev サーバー未起動のため GUI スモーク 14 件は skip（同日、`npm run dev` 起動下で逐次 `pytest tests/test_gui_smoke.py -q -p no:randomly` → **14 passed, 22.2s**・QA 独立実走）。skip の残り 2 件はファイル symlink の作成に管理者権限が要るテスト（`test_paths.py`・`test_purge_output.py`）。dev サーバー起動下なら 829 passed / 2 skipped が同値（計算値）。直前の基準（2026-09-03・段 (c) 直後）は `pytest 585 / gui 252 / cargo 109 / core-dist PASS (built_at 2026-09-03T08:17:16+00:00) / total 402.2s`（#83 の purge 修正と枠判定の自動化 段 (c)（`test_purge_output.py` 14・`test_align_residual.py` 13。skip 2 件はファイル symlink の作成に管理者権限が要るテスト＝`test_paths.py`・`test_purge_output.py`。cargo の 96 秒は再ビルド込み）の後。段 (b) 直後（同日午後）は 566 / 252 / 109（`test_segments.py` 11・`test_segments.py` 11・`test_detect_frames.py` 19・`test_leak_guards.py` に detect-frames 経路・gui-logic 252・スモーク 14＝寸法不一致→新規テンプレート→生成→採用→保存の通し・cargo 109＝`detect-frames` 白リスト）と初見ユーザー確認の反映（片面テンプレート）の後。段 (t) 直後（2026-09-02）は 534 / 210 / 106（枠判定の自動化 段 (t)（`test_match_templates.py`・`test_paths.py`・gui-logic 210・スモーク 12・cargo 106）と実機の通し確認の反映（summary.reused_pages）の後。skip 1 件はファイル symlink の作成に管理者権限が要るテスト（junction 版は実走）。段 (a') 直後は 505 / 173 / 61。同日午前の 471 / 148 / 61 は同梱 exe 陳腐化対策と編集画面の画像なし初期表示の直後・pytest-xdist `-n auto`。dev サーバー起動下で実走したため GUI スモーク 14 件も passed に含まれる。未起動なら 552 passed / 15 skipped が同値（計算値・段 (t) 時点の実測は 522 / 13）。並列エージェント作業中の負荷で Playwright が 1 件タイムアウトしていた件（#79）は2026-09-03 に解消した——固定 sleep と「今この瞬間」を読む assert を状態変化を待つ `expect` へ置き換え、待ち時間の上限を `SMOKE_TIMEOUT_MS`（既定 45 秒・環境変数 `CHOUHYO_SMOKE_TIMEOUT_MS` で上書き）に一本化した（素の Playwright は操作 30 秒・expect 5 秒とばらばらで、expect 側が先に切れていた）。確認: `pytest tests/test_gui_smoke.py -q` を dev サーバー起動下で 3 回連続 → 14 passed（48.2s / 26.0s / 29.0s）、さらに CPU 8 並列のビジーループを回した状態で 14 passed（50.9s）・実行日 2026-09-03。参考: 同日午前のレビュー7巡目（#69）対応後は 451 passed / 6 skipped・gui 145・cargo 47、2026-09-01 は 421 / 115 / 18。並列化前の直列実測は 400 passed / total 490.7s）。**tsc（型検査）を 2026-09-03 に追加したため、サマリは `tsc: PASS/FAIL` の項目が1つ増えている**（`SUMMARY: ... | tsc: PASS (型エラーなし, 10.8s) | core-dist: ...`。実測 2026-09-03・型エラー 0）。tsc が FAIL ならゲート全体を FAIL にする（判定の形が pytest/cargo と違うため core-dist と同様に個別扱いで、件数集計には乗せない）。`--coverage` を付けたときの `coverage: NN%` 行は測定値を並べるだけで合否には効かない（閾値が未定のため・下記）。上の件数は 2026-09-04 の再測値（issue 一括消化ラウンドの反映後）。判定は**全件 passed かつ passed 件数がこの基準値以上**——skip の増加で件数が保たれる場合を弾くため、件数のみでは判定しない（05 T-S5）。4項目目の `core-dist` は同梱 exe の鮮度で、`build_dist.py` が書く `BUILD_STAMP.json` と core/・schema/・出荷テンプレートの内容ハッシュを比べる。SKIP は core-dist 未ビルド（開発チェックアウトでは GUI が `.venv` のコアを起動するため任意）、FAIL は再ビルド漏れで、FAIL ならゲート全体を FAIL にする（2026-09-02: 同梱 exe が 8/31 ビルドのまま 17 commit 放置され、編集画面の PDF 展開が `--no-mask` の argparse エラーで落ちた事故の再発防止）。skip 32 件のうち 30 件は dev サーバー未起動時の GUI スモーク（既知・L2 で実走する。2026-09-07 の更新後は 32 件。直近の L2 実走: `npm run tauri dev` 起動下で `pytest tests/test_gui_smoke.py -q -p no:randomly` → **32 passed, 45.2s／50.5s・実行日 2026-09-07**。7巡目で追加した `test_editor_delete_ignored_while_run_tab_active`＝実行タブ表示中の Delete で編集内容が変わらないこと、を含む）。
 
