@@ -25,7 +25,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rfd = "0.15"
+rfd = "0.17"
 base64 = "0.22"
 # テンプレート名の NFC 正規化（issue #72 (t)・07 §7.4／08 設計 §3.2.4 B-1）。
 # 供給網レビュー（AZKi・2026-09-02）判断: tauri → url → idna 経由で既に
